@@ -404,7 +404,8 @@ void fake_process_info(uint32_t pid, const char* fake_name, uint32_t fake_ppid);
 process_t* find_process(uint32_t pid);
 process_t* get_current_process(void);
 void schedule(void);
-void switch_to_task(process_t* next);
+void switch_context(uint32_t* old_esp_ptr, uint32_t new_esp);
+uint32_t create_task_stack(uint32_t stack_top, uint32_t entry_point);
 
 void init_syscalls(void);
 void syscall_handler(uint32_t syscall_no, uint32_t arg1, uint32_t arg2, uint32_t arg3, uint32_t arg4);
@@ -475,6 +476,8 @@ void eth_poll(int iface_idx);
 void arp_init(void);
 void udp_register_listener(uint16_t port, void (*handler)(uint8_t*, uint32_t, uint32_t, uint16_t));
 int icmp_ping(uint32_t dst_ip, int count, int iface_idx);
+void init_background_tasks(void);
+void run_background_tasks(void);
 
 // New VFS helpers
 const char* vfs_getcwd(void);

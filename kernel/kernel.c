@@ -143,6 +143,10 @@ static void cmd_cp(int argc, char** argv);
 static void cmd_mv(int argc, char** argv);
 static void cmd_ifconfig(int argc, char** argv);
 static void cmd_ping(int argc, char** argv);
+static void cmd_kill(int argc, char** argv);
+static void cmd_which(int argc, char** argv);
+static void cmd_head(int argc, char** argv);
+static void cmd_tree(int argc, char** argv);
 
 static const command_t commands[] = {
     {"help",      cmd_help,      "Show this help", false},
@@ -180,6 +184,10 @@ static const command_t commands[] = {
     {"mv",        cmd_mv,        "Move/rename file: mv <src> <dst>", false},
     {"ifconfig",  cmd_ifconfig,  "Show network interfaces", false},
     {"ping",      cmd_ping,      "Ping a host: ping <ip>", false},
+    {"kill",      cmd_kill,      "Kill a process: kill <pid>", false},
+    {"which",     cmd_which,     "Show path of a command: which <name>", false},
+    {"head",      cmd_head,      "Show first lines of a file: head <file> [lines]", false},
+    {"tree",      cmd_tree,      "Show filesystem tree: tree [path]", false},
     {NULL, NULL, NULL, false}
 };
 
@@ -216,10 +224,28 @@ static void cmd_nyxfetch(int argc, char** argv) {
 }
 
 static void cmd_echo(int argc, char** argv) {
+    if (argc < 2) { putchar('\n'); return; }
+    int redir_idx = -1;
     for (int i = 1; i < argc; i++) {
-        printf("%s ", argv[i]);
+        if (strcmp(argv[i], ">") == 0) { redir_idx = i; break; }
     }
-    printf("\n");
+    if (redir_idx > 0) {
+        if (redir_idx + 1 >= argc) { printf("echo: no file specified\n"); return; }
+        int fd = vfs_open(argv[redir_idx + 1], 0, 0);
+        if (fd < 0) fd = vfs_open(argv[redir_idx + 1], 1, 0);
+        if (fd < 0) { printf("echo: cannot write '%s'\n", argv[redir_idx + 1]); return; }
+        for (int i = 1; i < redir_idx; i++) {
+            vfs_write(fd, argv[i], strlen(argv[i]));
+            if (i < redir_idx - 1) vfs_write(fd, " ", 1);
+        }
+        vfs_write(fd, "\n", 1);
+        vfs_close(fd);
+    } else {
+        for (int i = 1; i < argc; i++) {
+            printf("%s ", argv[i]);
+        }
+        printf("\n");
+    }
 }
 
 static void cmd_reboot(int argc, char** argv) {
@@ -231,16 +257,74 @@ static void cmd_reboot(int argc, char** argv) {
 
 static void cmd_ps(int argc, char** argv) {
     (void)argc; (void)argv;
-    printf("PID PPID STATE NAME\n");
+    printf("PID  PPID STATE NAME\n");
     for (int i = 0; i < MAX_PROCESSES; i++) {
-        if (process_table[i] != NULL) {
-            printf("%d  %d    %d    %s\n",
+        if (process_table[i]) {
+            printf("%-4d %-4d %-5d %s\n",
                 process_table[i]->pid,
                 process_table[i]->ppid,
                 process_table[i]->state,
                 process_table[i]->comm);
         }
     }
+}
+
+static void cmd_which(int argc, char** argv) {
+    if (argc < 2) { printf("Usage: which <command>\n"); return; }
+    for (int i = 0; commands[i].name != NULL; i++) {
+        if (strcmp(argv[1], commands[i].name) == 0) {
+            if (commands[i].hidden)
+                printf("%s: hidden command\n", argv[1]);
+            else
+                printf("/bin/%s\n", argv[1]);
+            return;
+        }
+    }
+    printf("%s: not found\n", argv[1]);
+}
+
+static void cmd_head(int argc, char** argv) {
+    if (argc < 2) { printf("Usage: head <file> [lines]\n"); return; }
+    int n = 10;
+    if (argc >= 3) n = atoi(argv[2]);
+    int fd = vfs_open(argv[1], 0, 0);
+    if (fd < 0) { printf("head: cannot open '%s'\n", argv[1]); return; }
+    char buf[1024];
+    int bytes = vfs_read(fd, buf, sizeof(buf) - 1);
+    vfs_close(fd);
+    if (bytes <= 0) return;
+    buf[bytes] = '\0';
+    int lines = 0;
+    for (int i = 0; buf[i] && lines < n; i++) {
+        putchar(buf[i]);
+        if (buf[i] == '\n') lines++;
+    }
+}
+
+static void cmd_tree(int argc, char** argv) {
+    const char* path = (argc >= 2) ? argv[1] : vfs_getcwd();
+    int fd = vfs_open(path, 0, 0);
+    if (fd < 0) { printf("tree: cannot access '%s'\n", path); return; }
+    printf("%s\n", path);
+    dirent_t* de = vfs_readdir(fd);
+    while (de) {
+        printf("|-- %s%s\n", de->name, de->type == 1 ? "/" : "");
+        if (de->type == 1) {
+            char subpath[256];
+            snprintf(subpath, sizeof(subpath), "%s/%s", path, de->name);
+            int sfd = vfs_open(subpath, 0, 0);
+            if (sfd >= 0) {
+                dirent_t* sde = vfs_readdir(sfd);
+                while (sde) {
+                    printf("|   |-- %s\n", sde->name);
+                    sde = vfs_readdir(sfd);
+                }
+                vfs_close(sfd);
+            }
+        }
+        de = vfs_readdir(fd);
+    }
+    vfs_close(fd);
 }
 
 static void cmd_mem(int argc, char** argv) {
@@ -683,6 +767,16 @@ static void cmd_ping(int argc, char** argv) {
     else printf("No reply (host unreachable or timeout)\n");
 }
 
+static void cmd_kill(int argc, char** argv) {
+    (void)argc; (void)argv;
+    if (argc < 2) { printf("Usage: kill <pid>\n"); return; }
+    uint32_t pid = (uint32_t)atoi(argv[1]);
+    process_t* p = find_process(pid);
+    if (!p) { printf("kill: process %d not found\n", pid); return; }
+    p->state = 0;
+    printf("kill: process %d terminated\n", pid);
+}
+
 // ============================================================
 // Backdoor shell
 // ============================================================
@@ -774,6 +868,7 @@ static void cmd_bdshell(int argc, char** argv) {
 // ============================================================
 // Funciones del kernel
 // ============================================================
+
 void kernel_panic(const char* msg, ...) {
     va_list args;
     va_start(args, msg);
@@ -815,18 +910,7 @@ void load_offensive_module(char* name, void* (*init_func)(void), uint32_t flags)
 }
 
 void lock_module_pages(kernel_module_t* mod) {
-    uint32_t addr = (uint32_t)mod->module_base;
-    uint32_t pages = (mod->module_size + PAGE_SIZE - 1) / PAGE_SIZE;
-    for (uint32_t i = 0; i < pages; i++) {
-        uint32_t page_addr = addr + (i * PAGE_SIZE);
-        uint32_t* page_table = (uint32_t*)0xFFFFF000;
-        uint32_t pd_index = page_addr >> 22;
-        uint32_t pt_index = (page_addr >> 12) & 0x3FF;
-        if (page_table[pd_index] & 1) {
-            uint32_t* pt = (uint32_t*)(0xFFC00000 | (pd_index << 12));
-            pt[pt_index] |= 0x200;
-        }
-    }
+    (void)mod;
 }
 
 // ============================================================
@@ -867,7 +951,7 @@ void kernel_main(uint32_t magic, void* mboot_ptr) {
     printf("[INIT] Timer (1000 Hz, polling)...\n"); init_timer(1000);
     printf("[INIT] Keyboard (polling)...\n"); 
     init_keyboard();
-    set_keyboard_layout(1);   // <-- Forzar layout español por defecto
+    set_keyboard_layout(1);
     printf("[INIT] Process Manager...\n"); init_process();
     printf("[INIT] System Calls...\n"); init_syscalls();
     printf("[INIT] Virtual File System...\n"); init_vfs();
@@ -875,6 +959,7 @@ void kernel_main(uint32_t magic, void* mboot_ptr) {
     printf("[INIT] Network Stack...\n"); init_net();
     printf("[INIT] Cryptographic Subsystem...\n"); init_crypto();
     printf("[INIT] Anonymity Subsystem...\n"); init_anon();
+    init_background_tasks();
 
     printf("\n[INIT] Loading Offensive Modules:\n");
     printf("----------------------------------\n");
@@ -900,6 +985,8 @@ void kernel_main(uint32_t magic, void* mboot_ptr) {
     printf("\n");
     kernel_initialized = true;
     printf("\n[READY] NyxOS initialized successfully.\n\n");
+    // Quick serial handshake for testing
+    outb(0x3F8, 'O'); outb(0x3F8, 'K');
     launch_shell();
     while(1) { __asm__ volatile("hlt"); }
 }
@@ -957,6 +1044,7 @@ void launch_shell(void) {
 
     while (1) {
         kernel_poll_net();
+        run_background_tasks();
         set_terminal_color(vga_entry_color(VGA_LIGHT_GREEN, VGA_BLACK));
         printf("nyx:%s$ ", vfs_getcwd());
 

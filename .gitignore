@@ -24,6 +24,9 @@ gcc-13.2.0/
 
 # QEMU logs
 qemu.log
+qemu_trace.log
+qemu_int.log
+iso_trace.log
 
 # IDE
 .vscode/
