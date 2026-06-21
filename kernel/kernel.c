@@ -110,6 +110,7 @@ extern void cmd_dhcp(int argc, char** argv);
 static void cmd_history(int argc, char** argv);
 static void cmd_diff(int argc, char** argv);
 static void cmd_doom(int argc, char** argv);
+void cmd_doomtest(int argc, char** argv);
 
 static const command_t commands[] = {
     {"help",      cmd_help,      "Show this help", false},
@@ -154,6 +155,7 @@ static const command_t commands[] = {
     {"history",   cmd_history,   "Show command history", false},
     {"diff",      cmd_diff,      "Compare two files: diff <file1> <file2>", false},
     {"doom",      cmd_doom,      "Launch DOOM game", false},
+    {"doomtest",  cmd_doomtest,  "Test DOOM WAD loading", false},
     {NULL, NULL, NULL, false}
 };
 
@@ -820,8 +822,7 @@ void kernel_main(uint32_t magic, void* mboot_ptr) {
     enable_interrupts();
     kernel_initialized = true;
     printf("\n[READY] NyxOS initialized successfully.\n\n");
-    // Quick serial handshake for testing
-    outb(0x3F8, 'O'); outb(0x3F8, 'K');
+    outb(0x3F8, 'O'); outb(0x3F8, 'K'); outb(0x3F8, '\n');
     launch_shell();
     while(1) { __asm__ volatile("hlt"); }
 }

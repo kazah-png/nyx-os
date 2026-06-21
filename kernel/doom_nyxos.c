@@ -64,3 +64,19 @@ void run_doom(void) {
     init_screen();
     clear_screen();
 }
+
+void cmd_doomtest(int argc, char** argv) {
+    (void)argc; (void)argv;
+    printf("DOOM test: checking WAD...\n");
+    FILE* f = fopen("doom1.wad", "rb");
+    if (!f) { printf("FAIL: fopen returned NULL\n"); return; }
+    uint8_t hdr[12];
+    int n = fread(hdr, 1, 12, f);
+    printf("fread=%d, pos=%d, ", n, ftell(f));
+    printf("magic=%.4s, lumps=%d, infotableofs=%d\n",
+        hdr, *(int*)(hdr+4), *(int*)(hdr+8));
+    fseek(f, 0, SEEK_END);
+    printf("WAD size: %d bytes\n", ftell(f));
+    fclose(f);
+    printf("DOOM test PASSED\n");
+}

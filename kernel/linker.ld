@@ -15,6 +15,7 @@ SECTIONS {
 
     .bss : ALIGN(4) {
         *(.bss)
+        *(.bss.*)
         *(COMMON)
     }
 
