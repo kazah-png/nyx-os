@@ -13,6 +13,30 @@ static int cursor_x = 0;
 static int cursor_y = 0;
 static uint8_t terminal_color = 0x0F;
 
+// Pipe capture buffer
+static char pipe_buffer[4096];
+static int pipe_pos = 0;
+static int pipe_active = 0;
+
+void pipe_start(void) {
+    pipe_pos = 0;
+    pipe_active = 1;
+}
+
+int pipe_stop(void) {
+    pipe_active = 0;
+    if (pipe_pos < 4096) pipe_buffer[pipe_pos] = '\0';
+    return pipe_pos;
+}
+
+const char* pipe_get_data(void) {
+    return pipe_buffer;
+}
+
+int pipe_get_len(void) {
+    return pipe_pos;
+}
+
 // El enum vga_color ya está en kernel.h, no se redefine
 
 static uint16_t vga_entry(char c, uint8_t color) {
@@ -57,6 +81,9 @@ void scroll_up(void) {
 }
 
 void putchar(char c) {
+    if (pipe_active && pipe_pos < 4096) {
+        pipe_buffer[pipe_pos++] = c;
+    }
     if (c == '\n') {
         cursor_x = 0;
         cursor_y++;

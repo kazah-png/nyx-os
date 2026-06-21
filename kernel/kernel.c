@@ -931,46 +931,153 @@ void launch_shell(void) {
 
         if (strlen(cmd_line) > 0) {
             add_history(cmd_line);
-            char* argv[10];
-            char expanded[10][256];
-            int argc = 0;
-            char* token = strtok(cmd_line, " ");
-            while (token != NULL && argc < 10) {
-                if (token[0] == '$' && strlen(token) > 1) {
-                    char varname[64];
-                    strncpy(varname, token + 1, 63);
-                    varname[63] = '\0';
-                    int found = 0;
-                    for (int e = 0; e < env_count; e++) {
-                        char *eq = strchr(env_vars[e], '=');
-                        if (eq && strncmp(env_vars[e], varname, eq - env_vars[e]) == 0 && (int)strlen(varname) == (int)(eq - env_vars[e])) {
-                            strncpy(expanded[argc], eq + 1, 255);
-                            expanded[argc][255] = '\0';
-                            argv[argc] = expanded[argc];
-                            found = 1;
+            char* pipe_pos_ptr = strchr(cmd_line, '|');
+            if (pipe_pos_ptr) {
+                *pipe_pos_ptr = '\0';
+                char* left_str = cmd_line;
+                char* right_str = pipe_pos_ptr + 1;
+                while (*right_str == ' ') right_str++;
+                // Parse left command
+                char* argv_left[10];
+                char expanded_left[10][256];
+                int argc_left = 0;
+                char* token = strtok(left_str, " ");
+                while (token != NULL && argc_left < 10) {
+                    if (token[0] == '$' && strlen(token) > 1) {
+                        char varname[64];
+                        strncpy(varname, token + 1, 63);
+                        varname[63] = '\0';
+                        int found = 0;
+                        for (int e = 0; e < env_count; e++) {
+                            char *eq = strchr(env_vars[e], '=');
+                            if (eq && strncmp(env_vars[e], varname, eq - env_vars[e]) == 0 && (int)strlen(varname) == (int)(eq - env_vars[e])) {
+                                strncpy(expanded_left[argc_left], eq + 1, 255);
+                                expanded_left[argc_left][255] = '\0';
+                                argv_left[argc_left] = expanded_left[argc_left];
+                                found = 1;
+                                break;
+                            }
+                        }
+                        if (!found) argv_left[argc_left] = token;
+                    } else {
+                        argv_left[argc_left] = token;
+                    }
+                    argc_left++;
+                    token = strtok(NULL, " ");
+                }
+                if (argc_left > 0) {
+                    pipe_start();
+                    int cmd_found = 0;
+                    for (int i = 0; commands[i].name != NULL; i++) {
+                        if (strcmp(argv_left[0], commands[i].name) == 0) {
+                            commands[i].func(argc_left, argv_left);
+                            cmd_found = 1;
                             break;
                         }
                     }
-                    if (!found) argv[argc] = token;
-                } else {
-                    argv[argc] = token;
-                }
-                argc++;
-                token = strtok(NULL, " ");
-            }
-            if (argc > 0) {
-                bool found = false;
-                for (int i = 0; commands[i].name != NULL; i++) {
-                    if (strcmp(argv[0], commands[i].name) == 0) {
+                    if (!cmd_found) {
+                        printf("Command not found: %s\n", argv_left[0]);
+                    }
+                    int pipe_len = pipe_stop();
+                    if (cmd_found && pipe_len > 0) {
+                        int fd = vfs_open("/tmp/pipe", 0, 0);
+                        if (fd < 0) fd = vfs_open("/tmp/pipe", 1, 0);
+                        if (fd >= 0) {
+                            vfs_write(fd, pipe_get_data(), pipe_len);
+                            vfs_close(fd);
+                        }
+                    }
+                    // Parse and execute right command with /tmp/pipe as file arg
+                    char* argv_right[10];
+                    char expanded_right[10][256];
+                    int argc_right = 0;
+                    char right_copy[256];
+                    strncpy(right_copy, right_str, 255);
+                    right_copy[255] = '\0';
+                    token = strtok(right_copy, " ");
+                    while (token != NULL && argc_right < 9) {
+                        if (token[0] == '$' && strlen(token) > 1) {
+                            char varname[64];
+                            strncpy(varname, token + 1, 63);
+                            varname[63] = '\0';
+                            int found = 0;
+                            for (int e = 0; e < env_count; e++) {
+                                char *eq = strchr(env_vars[e], '=');
+                                if (eq && strncmp(env_vars[e], varname, eq - env_vars[e]) == 0 && (int)strlen(varname) == (int)(eq - env_vars[e])) {
+                                    strncpy(expanded_right[argc_right], eq + 1, 255);
+                                    expanded_right[argc_right][255] = '\0';
+                                    argv_right[argc_right] = expanded_right[argc_right];
+                                    found = 1;
+                                    break;
+                                }
+                            }
+                            if (!found) argv_right[argc_right] = token;
+                        } else {
+                            argv_right[argc_right] = token;
+                        }
+                        argc_right++;
+                        token = strtok(NULL, " ");
+                    }
+                    if (argc_right > 0) {
+                        argv_right[argc_right] = "/tmp/pipe";
+                        argc_right++;
                         set_terminal_color(vga_entry_color(VGA_LIGHT_CYAN, VGA_BLACK));
-                        commands[i].func(argc, argv);
-                        found = true;
-                        break;
+                        int cmd2_found = 0;
+                        for (int i = 0; commands[i].name != NULL; i++) {
+                            if (strcmp(argv_right[0], commands[i].name) == 0) {
+                                commands[i].func(argc_right, argv_right);
+                                cmd2_found = 1;
+                                break;
+                            }
+                        }
+                        if (!cmd2_found) {
+                            set_terminal_color(vga_entry_color(VGA_LIGHT_RED, VGA_BLACK));
+                            printf("Command not found: %s\n", argv_right[0]);
+                        }
                     }
                 }
-                if (!found) {
-                    set_terminal_color(vga_entry_color(VGA_LIGHT_RED, VGA_BLACK));
-                    printf("Command not found: %s\n", argv[0]);
+            } else {
+                char* argv[10];
+                char expanded[10][256];
+                int argc = 0;
+                char* token = strtok(cmd_line, " ");
+                while (token != NULL && argc < 10) {
+                    if (token[0] == '$' && strlen(token) > 1) {
+                        char varname[64];
+                        strncpy(varname, token + 1, 63);
+                        varname[63] = '\0';
+                        int found = 0;
+                        for (int e = 0; e < env_count; e++) {
+                            char *eq = strchr(env_vars[e], '=');
+                            if (eq && strncmp(env_vars[e], varname, eq - env_vars[e]) == 0 && (int)strlen(varname) == (int)(eq - env_vars[e])) {
+                                strncpy(expanded[argc], eq + 1, 255);
+                                expanded[argc][255] = '\0';
+                                argv[argc] = expanded[argc];
+                                found = 1;
+                                break;
+                            }
+                        }
+                        if (!found) argv[argc] = token;
+                    } else {
+                        argv[argc] = token;
+                    }
+                    argc++;
+                    token = strtok(NULL, " ");
+                }
+                if (argc > 0) {
+                    bool found = false;
+                    for (int i = 0; commands[i].name != NULL; i++) {
+                        if (strcmp(argv[0], commands[i].name) == 0) {
+                            set_terminal_color(vga_entry_color(VGA_LIGHT_CYAN, VGA_BLACK));
+                            commands[i].func(argc, argv);
+                            found = true;
+                            break;
+                        }
+                    }
+                    if (!found) {
+                        set_terminal_color(vga_entry_color(VGA_LIGHT_RED, VGA_BLACK));
+                        printf("Command not found: %s\n", argv[0]);
+                    }
                 }
             }
         }

@@ -445,6 +445,10 @@ char* itoa(int value, char* str, int base);
 uint8_t vga_entry_color(enum vga_color fg, enum vga_color bg);
 void set_terminal_color(uint8_t color);
 uint8_t get_terminal_color(void);
+void pipe_start(void);
+int pipe_stop(void);
+const char* pipe_get_data(void);
+int pipe_get_len(void);
 
 void init_ext2(void);
 
