@@ -5,6 +5,9 @@
 #include "kernel.h"
 
 FILE *stderr = NULL;
+FILE *stdout = NULL;
+FILE *stdin = NULL;
+int errno = 0;
 
 // Funciones de memoria
 void *memcpy(void *dest, const void *src, size_t n) {
@@ -79,15 +82,7 @@ char *strrchr(const char *s, int c) {
     return (char*)last;
 }
 
-char *strstr(const char *haystack, const char *needle) {
-    if (!*needle) return (char*)haystack;
-    for (; *haystack; haystack++) {
-        const char *h = haystack, *n = needle;
-        while (*h && *n && (*h == *n)) { h++; n++; }
-        if (!*n) return (char*)haystack;
-    }
-    return NULL;
-}
+
 
 char *strpbrk(const char *s, const char *accept) {
     while (*s) {
@@ -205,41 +200,55 @@ long ftell(FILE *stream) { (void)stream; return 0; }
 int feof(FILE *stream) { (void)stream; return 1; }
 int ferror(FILE *stream) { (void)stream; return 0; }
 
-int printf(const char *fmt, ...) {
-    va_list args;
-    va_start(args, fmt);
-    // Usamos vprintf del kernel (que devuelve int)
-    // Pero vprintf está en screen.c y devuelve int.
-    // Llamamos a la función del kernel.
-    int ret = vprintf(fmt, args);
-    va_end(args);
-    return ret;
+char *strncat(char *dest, const char *src, size_t n) {
+    char *orig = dest;
+    while (*dest) dest++;
+    for (size_t i = 0; i < n && src[i]; i++) dest[i] = src[i];
+    dest[n] = '\0';
+    return orig;
 }
 
-int vprintf(const char *fmt, va_list args) {
-    // Usamos la función del kernel (screen.c)
-    return vprintf(fmt, args);
+int sscanf(const char *str, const char *format, ...) {
+    (void)str; (void)format;
+    return 0;
 }
 
-int snprintf(char *buf, size_t size, const char *fmt, ...) {
-    va_list args;
-    va_start(args, fmt);
-    int ret = vsnprintf(buf, size, fmt, args);
-    va_end(args);
-    return ret;
-}
+// Faltantes: redirigir a kernel
 
 int vsnprintf(char *buf, size_t size, const char *fmt, va_list args) {
     (void)buf; (void)size; (void)fmt; (void)args;
     return 0;
 }
 
-int sprintf(char *buf, const char *fmt, ...) {
-    va_list args;
-    va_start(args, fmt);
-    int ret = vsnprintf(buf, 0x7FFFFFFF, fmt, args);
-    va_end(args);
-    return ret;
+
+
+void *calloc(size_t nmemb, size_t size) {
+    size_t total = nmemb * size;
+    void *p = malloc(total);
+    if (p) memset(p, 0, total);
+    return p;
+}
+
+void *realloc(void *ptr, size_t size) {
+    (void)ptr;
+    return malloc(size);
+}
+
+int fflush(FILE *stream) {
+    (void)stream;
+    return 0;
+}
+
+
+
+int remove(const char *pathname) {
+    (void)pathname;
+    return -1;
+}
+
+int rename(const char *oldpath, const char *newpath) {
+    (void)oldpath; (void)newpath;
+    return -1;
 }
 
 int fprintf(FILE *stream, const char *fmt, ...) {
@@ -255,6 +264,23 @@ int vfprintf(FILE *stream, const char *fmt, va_list args) {
     (void)stream;
     return vprintf(fmt, args);
 }
+
+int system(const char *command) {
+    (void)command;
+    return -1;
+}
+
+double atof(const char *s) {
+    (void)s;
+    return 0.0;
+}
+
+int mkdir(const char *pathname) {
+    (void)pathname;
+    return -1;
+}
+
+
 
 // Matemáticas
 double sin(double x) {

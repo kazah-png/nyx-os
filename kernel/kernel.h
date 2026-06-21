@@ -437,7 +437,7 @@ void keyboard_irq_handler(void* unused);
 
 void init_screen(void);
 void putchar(char c);
-void puts(const char* str);
+int puts(const char* str);
 int printf(const char* fmt, ...);
 int vprintf(const char* fmt, va_list args);
 void clear_screen(void);

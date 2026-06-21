@@ -113,10 +113,15 @@ void putchar(char c) {
     update_cursor();
 }
 
-void puts(const char* str) {
+int puts(const char* str) {
+    int n = 0;
     while (*str) {
         putchar(*str++);
+        n++;
     }
+    putchar('\n');
+    n++;
+    return n;
 }
 
 // Cambiado: ahora devuelve int (número de caracteres escritos, aunque no se calcula exactamente)

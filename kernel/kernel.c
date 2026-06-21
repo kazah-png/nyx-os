@@ -109,6 +109,7 @@ static void cmd_write(int argc, char** argv);
 extern void cmd_dhcp(int argc, char** argv);
 static void cmd_history(int argc, char** argv);
 static void cmd_diff(int argc, char** argv);
+static void cmd_doom(int argc, char** argv);
 
 static const command_t commands[] = {
     {"help",      cmd_help,      "Show this help", false},
@@ -152,6 +153,7 @@ static const command_t commands[] = {
     {"dhcp",      cmd_dhcp,      "Request IP via DHCP", false},
     {"history",   cmd_history,   "Show command history", false},
     {"diff",      cmd_diff,      "Compare two files: diff <file1> <file2>", false},
+    {"doom",      cmd_doom,      "Launch DOOM game", false},
     {NULL, NULL, NULL, false}
 };
 
@@ -498,6 +500,13 @@ static void cmd_diff(int argc, char** argv) {
         }
     }
     printf("---\n%d line(s) differ\n", diffs);
+}
+
+static void cmd_doom(int argc, char** argv) {
+    (void)argc; (void)argv;
+    printf("Launching DOOM...\n");
+    printf("Controls: WASD=move, Space=fire, Enter=menu, Esc=quit\n");
+    run_doom();
 }
 
 // Add history entry (called from shell loop)

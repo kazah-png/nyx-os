@@ -1,10 +1,18 @@
 // ============================================================
-// doom_nyxos.c - Capa de adaptación de DOOM para NyxOS
+// doom_nyxos.c - Capa de adaptacion de DOOM para NyxOS
 // ============================================================
+#define CMAP256 1
+#define DOOMGENERIC_RESX 320
+#define DOOMGENERIC_RESY 200
 #include "kernel.h"
 #include "doom_src/doom.h"
+#include "doom_src/doomgeneric.h"
+#include "doom_src/doomkeys.h"
+#include "doom_src/m_fixed.h"
+#include "doom_src/m_argv.h"
 
-uint8_t screenBuffer[320 * 200];
+uint8_t screenBuffer[DOOMGENERIC_RESX * DOOMGENERIC_RESY];
+pixel_t* DG_ScreenBuffer = (pixel_t*)screenBuffer;
 
 void DG_Init(void) {
     vga_set_mode_13h();
@@ -14,22 +22,32 @@ void DG_DrawFrame(void) {
     vga_copy_buffer(screenBuffer);
 }
 
-int DG_GetKey(void) {
-    char c = getchar();
+int DG_GetKey(int* pressed, unsigned char* key) {
+    char c = getchar_poll();
+    if (!c) return 0;
+    *pressed = 1;
     switch (c) {
-        case 'w': return 0x48;
-        case 's': return 0x50;
-        case 'a': return 0x4B;
-        case 'd': return 0x4D;
-        case ' ': return 0x39;
-        case 'q': return 0x10;
-        case 'e': return 0x12;
-        default: return (int)c;
+        case 'w': *key = KEY_UPARROW; break;
+        case 's': *key = KEY_DOWNARROW; break;
+        case 'a': *key = KEY_LEFTARROW; break;
+        case 'd': *key = KEY_RIGHTARROW; break;
+        case ' ': *key = KEY_FIRE; break;
+        case 0x0D: *key = KEY_ENTER; break;
+        case 0x1B: *key = KEY_ESCAPE; break;
+        default: *key = (unsigned char)c; break;
     }
+    return 1;
 }
 
 void DG_SleepMs(uint32_t ms) {
-    for (uint32_t i = 0; i < ms * 10000; i++);
+    uint32_t start = tick_count;
+    while ((tick_count - start) < ms) {
+        __asm__ volatile("hlt");
+    }
+}
+
+uint32_t DG_GetTicksMs(void) {
+    return tick_count;
 }
 
 void DG_SetWindowTitle(const char* title) {
@@ -37,8 +55,12 @@ void DG_SetWindowTitle(const char* title) {
 }
 
 void run_doom(void) {
+    static char* doom_argv[] = { "doom", NULL };
+    myargc = 1;
+    myargv = doom_argv;
+    M_FindResponseFile();
     DG_Init();
-    D_DoomMain();   // Función principal de DOOM
+    D_DoomMain();
     init_screen();
     clear_screen();
 }

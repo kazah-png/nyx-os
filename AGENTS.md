@@ -17,6 +17,7 @@ Evolve NyxOS into a functional 32-bit x86 kernel with filesystem, networking, sh
 - v1.1.0 — Ramdisk VFS + shell commands
 - v1.2.0 — Real networking (RTL8139, ARP, IP, UDP, ICMP/ping)
 - v2.0.0 — Clean slate: removed all hacking/offensive code, crypto, anonymity, keylogger. Clean general-purpose OS.
+- v2.0.1 — DOOM game integration (VGA mode 13h, doomgeneric adaptations, shell command)
 
 ## Architecture
 ### Boot flow
@@ -95,6 +96,7 @@ kernel/
 | layout     | Switch keyboard layout (us/es) |
 | hexdump    | Dump memory |
 | date/uname | System info |
+| doom       | Run DOOM game (requires doom1.wad) |
 | reboot     | Reboot via 0x64/0xFE |
 
 ## Shell features
@@ -113,9 +115,6 @@ kernel/
 - Single static IP: 10.0.2.15/24 (QEMU user-mode default) or DHCP-assigned
 
 ## Next features to add
-- Preemptive multitasking with proper context switching
-- diff command (compare two files)
-- Pipe `|` support in shell parser
 - Real EXT2 read support
 - TCP (connections, handshake)
-- VGA graphics mode / DOOM renderer
+- Sound support (PC speaker / Sound Blaster)
