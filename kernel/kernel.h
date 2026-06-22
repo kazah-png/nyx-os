@@ -536,6 +536,12 @@ int mouse_get_y(void);
 int mouse_get_buttons(void);
 void mouse_set_pos(int x, int y);
 
+// ===== FONT RENDERING =====
+void font_draw_char(uint32_t x, uint32_t y, unsigned char c, uint32_t fg, uint32_t bg);
+void font_draw_string(uint32_t x, uint32_t y, const char* str, uint32_t fg, uint32_t bg);
+uint32_t font_get_width(void);
+uint32_t font_get_height(void);
+
 // ===== GUI DEMO =====
 void gui_demo(void);
 

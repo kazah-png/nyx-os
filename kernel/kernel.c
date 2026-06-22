@@ -117,6 +117,7 @@ static void cmd_doom(int argc, char** argv);
 void cmd_doomtest(int argc, char** argv);
 static void cmd_mode(int argc, char** argv);
 static void cmd_gui(int argc, char** argv);
+static void cmd_fonttest(int argc, char** argv);
 
 static const command_t commands[] = {
     {"help",      cmd_help,      "Show this help", false},
@@ -164,6 +165,7 @@ static const command_t commands[] = {
     {"doomtest",  cmd_doomtest,  "Test DOOM WAD loading", false},
     {"mode",      cmd_mode,      "Set VBE video mode: mode <width> <height> <bpp>", false},
     {"gui",       cmd_gui,       "Launch GUI demo with mouse", false},
+    {"fonttest",  cmd_fonttest,  "Test font rendering on framebuffer", false},
     {NULL, NULL, NULL, false}
 };
 
@@ -539,6 +541,27 @@ static void cmd_gui(int argc, char** argv) {
     printf("Launching GUI demo...\n");
     printf("Mouse: click to draw, Esc to exit\n");
     gui_demo();
+}
+
+static void cmd_fonttest(int argc, char** argv) {
+    (void)argc; (void)argv;
+    if (!vbe_get_lfb()) {
+        printf("No VBE mode set. Run 'mode' first.\n");
+        return;
+    }
+    printf("Testing font rendering...\n");
+    fb_clear(fb_rgb(0x00, 0x00, 0x40));
+    uint32_t fg = fb_rgb(0xFF, 0xFF, 0xFF);
+    uint32_t bg = fb_rgb(0x00, 0x00, 0x40);
+    font_draw_string(10, 10, "Hello from NyxOS bitmap font!", fg, bg);
+    font_draw_string(10, 30, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", fb_rgb(0xFF, 0xFF, 0x00), bg);
+    font_draw_string(10, 50, "abcdefghijklmnopqrstuvwxyz", fb_rgb(0x00, 0xFF, 0xFF), bg);
+    font_draw_string(10, 70, "0123456789 !@#$%^&*()_+-=[]{}|;:',.<>?/", fb_rgb(0x00, 0xFF, 0x00), bg);
+    font_draw_string(10, 90, "The quick brown fox jumps over the lazy dog.", fb_rgb(0xFF, 0x80, 0x80), bg);
+    printf("Font test complete. Press Esc to return.\n");
+    while (getchar_poll() != 0x1B);
+    init_screen();
+    clear_screen();
 }
 
 static void cmd_doom(int argc, char** argv) {

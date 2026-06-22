@@ -47,3 +47,6 @@ Thumbs.db
 
 # WAD file (large binary, not tracked)
 iso/boot/doom1.wad
+
+# Font generator script
+kernel/genfont.py

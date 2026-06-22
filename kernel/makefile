@@ -24,7 +24,7 @@ OBJS_KERNEL = boot.o kernel.o gdt.o gdt_flush.o idt.o idt_load.o isr.o isr_stubs
        ip.o arp.o ethernet.o rtl8139.o icmp.o timer.o keyboard.o screen.o \
        serial.o umoddi3.o paging.o switch.o dhcp.o \
        vga_graphics.o doom_nyxos.o \
-       vbe.o fb.o mouse.o gui.o
+       vbe.o fb.o mouse.o gui.o font.o
 
 DOOM_OBJS = \
     doom_src/am_map.o \
@@ -130,6 +130,11 @@ doom_src/%.o: doom_src/%.c
 # Special rule for doom_nyxos.c (in kernel root, not doom_src)
 doom_nyxos.o: doom_nyxos.c
 	$(CC) $(DOOM_CFLAGS) -c $< -o $@
+
+# Generate WAD object file
+doom1_wad.o: doom1.wad
+	$(TARGET)-objcopy -I binary -O elf32-i386 -B i386 \
+		--rename-section .data=.rodata,alloc,load,readonly,data,contents $< $@
 
 clean:
 	rm -f *.o *.bin doom_src/*.o
