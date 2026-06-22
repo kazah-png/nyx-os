@@ -2,6 +2,7 @@
 // kernel.c - Núcleo principal de NyxOS v2.0.0
 // ============================================================
 #include "kernel.h"
+#include "compositor.h"
 
 // Variables globales del kernel
 process_t* process_table[MAX_PROCESSES];
@@ -118,6 +119,7 @@ void cmd_doomtest(int argc, char** argv);
 static void cmd_mode(int argc, char** argv);
 static void cmd_gui(int argc, char** argv);
 static void cmd_fonttest(int argc, char** argv);
+static void cmd_desktop(int argc, char** argv);
 
 static const command_t commands[] = {
     {"help",      cmd_help,      "Show this help", false},
@@ -166,6 +168,7 @@ static const command_t commands[] = {
     {"mode",      cmd_mode,      "Set VBE video mode: mode <width> <height> <bpp>", false},
     {"gui",       cmd_gui,       "Launch GUI demo with mouse", false},
     {"fonttest",  cmd_fonttest,  "Test font rendering on framebuffer", false},
+    {"desktop",   cmd_desktop,   "Launch window compositor desktop", false},
     {NULL, NULL, NULL, false}
 };
 
@@ -562,6 +565,21 @@ static void cmd_fonttest(int argc, char** argv) {
     while (getchar_poll() != 0x1B);
     init_screen();
     clear_screen();
+}
+
+static void cmd_desktop(int argc, char** argv) {
+    (void)argc; (void)argv;
+    if (!vbe_get_lfb()) {
+        printf("No VBE mode set. Run 'mode' first.\n");
+        return;
+    }
+    printf("Launching window compositor...\n");
+    printf("Esc to exit\n");
+    compositor_init();
+    window_create(40, 40, 300, 200, "Window 1");
+    window_create(80, 80, 300, 200, "Window 2");
+    window_create(120, 120, 300, 200, "Window 3");
+    compositor_run();
 }
 
 static void cmd_doom(int argc, char** argv) {

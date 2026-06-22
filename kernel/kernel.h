@@ -545,4 +545,8 @@ uint32_t font_get_height(void);
 // ===== GUI DEMO =====
 void gui_demo(void);
 
+// ===== COMPOSITOR =====
+int compositor_init(void);
+void compositor_run(void);
+
 #endif // KERNEL_H
