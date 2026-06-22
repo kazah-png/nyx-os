@@ -204,20 +204,24 @@ char* itoa(int value, char* str, int base) {
     char* rc;
     char* ptr;
     char* low;
+    unsigned int uvalue;
     if (base < 2 || base > 36) {
-        *str = '\0';
+        if (str) *str = '\0';
         return str;
     }
+    if (!str) return "";
     rc = ptr = str;
     if (value < 0 && base == 10) {
         *ptr++ = '-';
-        value = -value;
+        uvalue = (unsigned int)(-value);
+    } else {
+        uvalue = (unsigned int)value;
     }
     low = ptr;
     do {
-        *ptr++ = "zyxwvutsrqponmlkjihgfedcba9876543210123456789abcdefghijklmnopqrstuvwxyz"[35 + value % base];
-        value /= base;
-    } while (value);
+        *ptr++ = "0123456789abcdefghijklmnopqrstuvwxyz"[uvalue % base];
+        uvalue /= base;
+    } while (uvalue);
     *ptr-- = '\0';
     while (low < ptr) {
         char tmp = *low;

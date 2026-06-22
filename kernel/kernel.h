@@ -50,7 +50,7 @@ typedef __builtin_va_list va_list;
 #define PAGE_ALIGN(addr) (((addr) + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1))
 #define KERNEL_BASE      0xC0000000
 #define KERNEL_HEAP_START 0xD0000000
-#define KERNEL_HEAP_SIZE  0x10000000
+#define KERNEL_HEAP_SIZE  (16 * 1024 * 1024)  // 16 MB (matches heap.c)
 
 #define MAX_PROCESSES    512
 #define MAX_THREADS      1024
@@ -508,5 +508,24 @@ void run_doom(void);
 // DOOM WAD direct memory access
 extern uint8_t* doom_wad_data;
 extern uint32_t doom_wad_size;
+
+// ===== VBE / FRAMEBUFFER =====
+int vbe_init(void);
+int vbe_set_mode(uint32_t width, uint32_t height, uint32_t bpp);
+uint32_t vbe_get_width(void);
+uint32_t vbe_get_height(void);
+uint32_t vbe_get_bpp(void);
+void* vbe_get_lfb(void);
+
+void fb_init(uint32_t width, uint32_t height, uint32_t bpp, void* addr);
+void fb_put_pixel(uint32_t x, uint32_t y, uint32_t color);
+void fb_fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color);
+void fb_blit(const void* src, uint32_t sx, uint32_t sy, uint32_t w, uint32_t h,
+             uint32_t dx, uint32_t dy);
+void fb_clear(uint32_t color);
+uint32_t fb_get_width(void);
+uint32_t fb_get_height(void);
+void* fb_get_addr(void);
+uint32_t fb_rgb(uint8_t r, uint8_t g, uint8_t b);
 
 #endif // KERNEL_H

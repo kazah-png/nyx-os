@@ -23,7 +23,8 @@ OBJS_KERNEL = boot.o kernel.o gdt.o gdt_flush.o idt.o idt_load.o isr.o isr_stubs
        memory.o heap.o process.o syscall.o vfs.o ext2.o net.o udp.o \
        ip.o arp.o ethernet.o rtl8139.o icmp.o timer.o keyboard.o screen.o \
        serial.o umoddi3.o paging.o switch.o dhcp.o \
-       vga_graphics.o doom_nyxos.o
+       vga_graphics.o doom_nyxos.o \
+       vbe.o fb.o
 
 DOOM_OBJS = \
     doom_src/am_map.o \
@@ -107,7 +108,7 @@ DOOM_OBJS = \
     doom_src/wi_stuff.o \
     doom_src/z_zone.o
 
-OBJS = $(OBJS_KERNEL) $(DOOM_OBJS)
+OBJS = $(OBJS_KERNEL) $(DOOM_OBJS) doom1_wad.o
 
 all: nyx-kernel.bin
 

@@ -1,7 +1,7 @@
 #include "kernel.h"
 
-// Small heap within the identity-mapped 4MB region
-#define HEAP_SIZE (8 * 1024 * 1024)  // 8MB heap (needed for DOOM zone allocator)
+// Heap within the identity-mapped 64MB region
+#define HEAP_SIZE (16 * 1024 * 1024)  // 16MB heap (DOOM zone allocator needs ~6MB)
 
 typedef struct heap_block {
     size_t size;

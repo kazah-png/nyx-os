@@ -1,6 +1,6 @@
 #include "kernel.h"
 
-#define IDENTITY_MAP_MB 32
+#define IDENTITY_MAP_MB 64
 
 static uint32_t* current_page_directory = NULL;
 static uint32_t* kernel_page_directory = NULL;

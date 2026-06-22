@@ -115,6 +115,7 @@ static void cmd_history(int argc, char** argv);
 static void cmd_diff(int argc, char** argv);
 static void cmd_doom(int argc, char** argv);
 void cmd_doomtest(int argc, char** argv);
+static void cmd_mode(int argc, char** argv);
 
 static const command_t commands[] = {
     {"help",      cmd_help,      "Show this help", false},
@@ -160,6 +161,7 @@ static const command_t commands[] = {
     {"diff",      cmd_diff,      "Compare two files: diff <file1> <file2>", false},
     {"doom",      cmd_doom,      "Launch DOOM game", false},
     {"doomtest",  cmd_doomtest,  "Test DOOM WAD loading", false},
+    {"mode",      cmd_mode,      "Set VBE video mode: mode <width> <height> <bpp>", false},
     {NULL, NULL, NULL, false}
 };
 
@@ -508,6 +510,24 @@ static void cmd_diff(int argc, char** argv) {
     printf("---\n%d line(s) differ\n", diffs);
 }
 
+static void cmd_mode(int argc, char** argv) {
+    uint32_t w = 1024, h = 768, bpp = 32;
+    if (argc >= 4) { w = atoi(argv[1]); h = atoi(argv[2]); bpp = atoi(argv[3]); }
+    else if (argc >= 2) { printf("Usage: mode <width> <height> <bpp>\n"); return; }
+    if (vbe_set_mode(w, h, bpp) < 0) {
+        printf("Failed to set VBE mode\n");
+        return;
+    }
+    fb_init(vbe_get_width(), vbe_get_height(), vbe_get_bpp(), vbe_get_lfb());
+    fb_clear(fb_rgb(0x00, 0x40, 0x80));
+    for (int i = 0; i < 256; i++) {
+        uint32_t c = fb_rgb(i & 0xE0, (i & 0x1C) << 3, (i & 0x03) << 6);
+        fb_fill_rect((i % 16) * (w / 16), (i / 16) * (h / 16),
+                     w / 16 + 1, h / 16 + 1, c);
+    }
+    printf("VBE mode %dx%dx%d set\n", w, h, bpp);
+}
+
 static void cmd_doom(int argc, char** argv) {
     (void)argc; (void)argv;
     printf("Launching DOOM...\n");
@@ -805,6 +825,7 @@ void kernel_main(uint32_t magic, void* mboot_ptr) {
 
     printf("[INIT] Paging...\n"); init_paging();
     printf("[INIT] Kernel Heap...\n"); init_heap();
+    printf("[INIT] VBE (Bochs)...\n"); vbe_init();
     printf("[INIT] Timer (1000 Hz, interrupt-driven)...\n"); init_timer(1000);
     printf("[INIT] Keyboard (interrupt-driven)...\n"); 
     init_keyboard();
@@ -1205,16 +1226,20 @@ char *strstr(const char *haystack, const char *needle) {
     return NULL;
 }
 
+extern uint8_t _binary_doom1_wad_start[];
+extern uint8_t _binary_doom1_wad_end[];
+extern uint32_t _binary_doom1_wad_size;
+
 void init_load_modules(void) {
-    if (!saved_mboot_ptr) {
-        printf("[MODULES] No multiboot info available.\n");
-        return;
-    }
+    // Embedded DOOM WAD
+    doom_wad_data = _binary_doom1_wad_start;
+    doom_wad_size = (uint32_t)&_binary_doom1_wad_size;
+    printf("[MODULES] Embedded DOOM WAD at %x (%d bytes)\n",
+           (uint32_t)doom_wad_data, doom_wad_size);
+    
+    if (!saved_mboot_ptr) return;
     uint32_t* mb = (uint32_t*)saved_mboot_ptr;
-    if (!(mb[0] & 8)) {
-        printf("[MODULES] No modules present in multiboot info.\n");
-        return;
-    }
+    if (!(mb[0] & 8)) return;
     uint32_t mods_count = mb[5];
     uint32_t mods_addr = mb[6];
     printf("[MODULES] %d module(s) at %x\n", mods_count, mods_addr);
@@ -1225,24 +1250,13 @@ void init_load_modules(void) {
         uint32_t mod_str = mod_entry[2];
         uint32_t mod_size = mod_end - mod_start;
         const char* name = (const char*)mod_str;
-        printf("[MODULES] Module %d: start=%x end=%x size=%d name=%s\n",
-               i, mod_start, mod_end, mod_size, name ? name : "(null)");
         char path[64];
         if (name && *name) {
             snprintf(path, sizeof(path), "/%s", name);
         } else {
             snprintf(path, sizeof(path), "/boot/module%d", i);
         }
-        printf("[MODULES] DEBUG: name='%s' path='%s'\n", name, path);
-        int ret = vfs_create_from_mem(path, (uint8_t*)(uint32_t)mod_start, mod_size);
-        printf("[MODULES] Loaded '%s' (%d bytes) into VFS via mem ref: ret=%d\n", path, mod_size, ret);
-        
-        // Store DOOM WAD data for direct access
-        if (name && strcmp(name, "doom1.wad") == 0) {
-            doom_wad_data = (uint8_t*)(uint32_t)mod_start;
-            doom_wad_size = mod_size;
-            printf("[MODULES] DOOM WAD stored at %x (%d bytes)\n", (uint32_t)doom_wad_data, doom_wad_size);
-        }
+        vfs_create_from_mem(path, (uint8_t*)(uint32_t)mod_start, mod_size);
         mod_entry += 4;
     }
 }
