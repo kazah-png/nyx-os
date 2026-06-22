@@ -880,7 +880,7 @@ static void cmd_ifconfig(int argc, char** argv) {
     printf("Network interfaces:\n");
     for (int i = 0; i < 8; i++) {
         if (net_interfaces[i].name[0]) {
-            printf("%s  HWaddr %02x:%02x:%02x:%02x:%02x:%02x  IP %d.%d.%d.%d\n",
+            printf("%s  HWaddr %x:%x:%x:%x:%x:%x  IP %d.%d.%d.%d\n",
                 net_interfaces[i].name,
                 net_interfaces[i].mac[0], net_interfaces[i].mac[1],
                 net_interfaces[i].mac[2], net_interfaces[i].mac[3],
