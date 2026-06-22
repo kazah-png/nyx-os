@@ -33,6 +33,13 @@ static uint8_t arp_broadcast[6] = {0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF};
 
 void arp_init(void) {
     memset_asm(arp_cache, 0, sizeof(arp_cache));
+    // Static ARP entry for QEMU user-mode gateway (10.0.2.2)
+    int idx = 0;
+    arp_cache[idx].ip = 0x0A000202;
+    arp_cache[idx].mac[0] = 0x52; arp_cache[idx].mac[1] = 0x54;
+    arp_cache[idx].mac[2] = 0x00; arp_cache[idx].mac[3] = 0x12;
+    arp_cache[idx].mac[4] = 0x34; arp_cache[idx].mac[5] = 0x56;
+    arp_cache[idx].valid = 1;
 }
 
 static int arp_cache_lookup(uint32_t ip, uint8_t* mac) {
@@ -115,12 +122,26 @@ void arp_handle_packet(uint8_t* packet, uint32_t len) {
 }
 
 int arp_resolve(uint32_t ip, uint8_t* mac, int iface_idx) {
-    if (arp_cache_lookup(ip, mac)) return 1;
-    arp_send_request(ip, iface_idx);
-    for (int retry = 0; retry < 3; retry++) {
-        for (volatile int d = 0; d < 5000000; d++);
-        if (arp_cache_lookup(ip, mac)) return 1;
-        arp_send_request(ip, iface_idx);
+    if (arp_cache_lookup(ip, mac)) {
+        printf("[ARP] Cache hit for %d.%d.%d.%d\n",
+               (ip>>24)&0xFF, (ip>>16)&0xFF, (ip>>8)&0xFF, ip&0xFF);
+        return 1;
     }
+    arp_send_request(ip, iface_idx);
+    printf("[ARP] Resolving %d.%d.%d.%d...\n",
+           (ip>>24)&0xFF, (ip>>16)&0xFF, (ip>>8)&0xFF, ip&0xFF);
+    for (int retry = 0; retry < 20; retry++) {
+        sleep(50);
+        kernel_poll_net();
+        if (arp_cache_lookup(ip, mac)) {
+            printf("[ARP] Resolved\n");
+            return 1;
+        }
+        if (retry == 3 || retry == 10) {
+            printf("[ARP] Retry %d...\n", retry);
+            arp_send_request(ip, iface_idx);
+        }
+    }
+    printf("[ARP] Failed to resolve\n");
     return 0;
 }

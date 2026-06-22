@@ -266,6 +266,16 @@ static inline void *memcpy(void *dest, const void *src, size_t n) {
     memcpy_asm(dest, src, n);
     return dest;
 }
+static inline void *memmove(void *dest, const void *src, size_t n) {
+    if (dest == src) return dest;
+    // Simple byte-by-byte copy (forward/backward as needed)
+    if ((uintptr_t)dest < (uintptr_t)src) {
+        for (size_t i = 0; i < n; i++) ((uint8_t*)dest)[i] = ((const uint8_t*)src)[i];
+    } else {
+        for (size_t i = n; i > 0; i--) ((uint8_t*)dest)[i-1] = ((const uint8_t*)src)[i-1];
+    }
+    return dest;
+}
 static inline char *strcpy(char *dest, const char *src) {
     char *orig = dest;
     while ((*dest++ = *src++) != '\0');
@@ -472,6 +482,11 @@ void udp_register_listener(uint16_t port, void (*handler)(uint8_t*, uint32_t, ui
 int dhcp_request(int iface_idx);
 void cmd_dhcp(int argc, char** argv);
 int icmp_ping(uint32_t dst_ip, int count, int iface_idx);
+int tcp_init(void);
+int tcp_connect(uint32_t dst_ip, uint16_t dst_port, uint16_t src_port);
+int tcp_send(int conn_id, const uint8_t* data, uint32_t len);
+int tcp_recv(int conn_id, uint8_t* buf, uint32_t max_len);
+int tcp_close(int conn_id);
 void init_background_tasks(void);
 void run_background_tasks(void);
 void irq_scheduler_tick(void);

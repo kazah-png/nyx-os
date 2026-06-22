@@ -64,6 +64,16 @@ static void rtl_writel(uint16_t reg, uint32_t val) {
     outl(rtl_io_base + reg, val);
 }
 
+static void rtl_writew(uint16_t reg, uint16_t val) {
+    outw(rtl_io_base + reg, val);
+}
+
+// ISR bits
+#define RTL_ISR_ROK  0x0001
+#define RTL_ISR_RER  0x0002
+#define RTL_ISR_TOK  0x0004
+#define RTL_ISR_TER  0x0008
+
 int rtl8139_init(void) {
     printf("[RTL8139] Probing PCI...\n");
     uint32_t vid_did = pci_read_config(0, 0, 0, 0);
@@ -86,13 +96,21 @@ int rtl8139_init(void) {
                 cmd |= 0x07;
                 pci_write_config(bus, slot, 0, 0x04, cmd);
 
+                // Wake up from power saving mode (CONFIG1, offset 0x52)
+                uint8_t config1 = rtl_readb(RTL_REG_CONFIG1);
+                config1 &= ~0x08;  // Clear PM_Enable
+                rtl_writeb(RTL_REG_CONFIG1, config1);
+
                 // Read MAC address
                 for (int i = 0; i < 6; i++) {
                     rtl_mac[i] = rtl_readb(RTL_REG_MAC + i);
                 }
-                printf("[RTL8139] MAC: %02x:%02x:%02x:%02x:%02x:%02x\n",
-                    rtl_mac[0], rtl_mac[1], rtl_mac[2],
-                    rtl_mac[3], rtl_mac[4], rtl_mac[5]);
+                printf("[RTL8139] MAC: ");
+                for (int mi = 0; mi < 6; mi++) {
+                    printf("%x", rtl_mac[mi]);
+                    if (mi < 5) printf(":");
+                }
+                printf("\n");
 
                 // Soft reset
                 rtl_writeb(RTL_REG_CR, RTL_CR_RST);
@@ -106,15 +124,22 @@ int rtl8139_init(void) {
                 }
                 printf("[RTL8139] Reset complete\n");
 
-                // Allocate RX buffer
-                rx_buffer = (uint8_t*)kmalloc(RX_BUF_SIZE + 16);
-                if (!rx_buffer) return -1;
+                // Re-read MAC after reset (some variants need this)
+                for (int i = 0; i < 6; i++) {
+                    rtl_mac[i] = rtl_readb(RTL_REG_MAC + i);
+                }
+
+                // Allocate RX buffer (256-byte aligned for RBSTART)
+                uint8_t* rx_raw = (uint8_t*)kmalloc(RX_BUF_SIZE + 256);
+                if (!rx_raw) return -1;
+                rx_buffer = (uint8_t*)(((uint32_t)rx_raw + 255) & ~255);
                 memset_asm(rx_buffer, 0, RX_BUF_SIZE + 16);
 
-                // Allocate TX buffers
+                // Allocate TX buffers (256-byte aligned)
                 for (int i = 0; i < 4; i++) {
-                    tx_buffers[i] = (uint8_t*)kmalloc(TX_BUF_SIZE);
-                    if (!tx_buffers[i]) return -1;
+                    uint8_t* tx_raw = (uint8_t*)kmalloc(TX_BUF_SIZE + 256);
+                    if (!tx_raw) return -1;
+                    tx_buffers[i] = (uint8_t*)(((uint32_t)tx_raw + 255) & ~255);
                     memset_asm(tx_buffers[i], 0, TX_BUF_SIZE);
                 }
 
@@ -129,7 +154,7 @@ int rtl8139_init(void) {
                 }
 
                 // Configure RX: accept broadcast, multicast, physical match
-                rtl_writel(RTL_REG_RCR, RTL_RCR_AB | RTL_RCR_AM | RTL_RCR_APM | RTL_RCR_AAP);
+                rtl_writew(RTL_REG_RCR, RTL_RCR_AB | RTL_RCR_AM | RTL_RCR_APM | RTL_RCR_AAP);
 
                 // Enable transmitter and receiver
                 rtl_writeb(RTL_REG_CR, RTL_CR_TE | RTL_CR_RE);
@@ -171,14 +196,15 @@ int rtl8139_receive_packet(uint8_t* buffer, uint32_t max_len) {
     if (!rtl_initialized) return -1;
     uint16_t capr = rtl_readb(RTL_REG_CAPR) | (rtl_readb(RTL_REG_CAPR + 1) << 8);
     uint16_t rx_read = capr + 16;
-
     if (rx_read >= RX_BUF_SIZE) rx_read -= RX_BUF_SIZE;
-    if ((int)rx_read == (rtl_readb(RTL_REG_CAPR) | (rtl_readb(RTL_REG_CAPR+1) << 8))) return 0;
+    uint16_t capr2 = rtl_readb(RTL_REG_CAPR) | (rtl_readb(RTL_REG_CAPR+1) << 8);
+    if ((int)rx_read == (int)capr2) return 0;
 
     uint16_t packet_len = rx_buffer[rx_read+2] | (rx_buffer[rx_read+3] << 8);
     if (packet_len == 0xFFF0) {
-        rtl_writeb(RTL_REG_CAPR, (uint8_t)(rx_read + 4));
-        rtl_writeb(RTL_REG_CAPR+1, (uint8_t)((rx_read + 4) >> 8));
+        uint16_t val = rx_read + 4;
+        rtl_writeb(RTL_REG_CAPR, (uint8_t)(val & 0xFF));
+        rtl_writeb(RTL_REG_CAPR + 1, (uint8_t)((val >> 8) & 0xFF));
         return 0;
     }
     packet_len -= 4;
@@ -195,6 +221,7 @@ int rtl8139_receive_packet(uint8_t* buffer, uint32_t max_len) {
     uint16_t new_capr = rx_read + packet_len + 4;
     if (new_capr >= RX_BUF_SIZE) new_capr -= RX_BUF_SIZE;
     rtl_writeb(RTL_REG_CAPR, (uint8_t)(new_capr & 0xFF));
-    rtl_writeb(RTL_REG_CAPR+1, (uint8_t)((new_capr >> 8) & 0xFF));
+    rtl_writeb(RTL_REG_CAPR + 1, (uint8_t)((new_capr >> 8) & 0xFF));
+    rtl_writew(RTL_REG_ISR, RTL_ISR_ROK);
     return packet_len;
 }

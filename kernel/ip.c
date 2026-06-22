@@ -21,6 +21,7 @@ extern int eth_send(const uint8_t* dst_mac, uint16_t type, const uint8_t* data, 
 extern int arp_resolve(uint32_t ip, uint8_t* mac, int iface_idx);
 extern void udp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip);
 extern void icmp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip);
+extern void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip);
 
 static uint16_t ip_checksum(const uint8_t* data, uint32_t len) {
     uint32_t sum = 0;
@@ -81,6 +82,7 @@ void ip_handle_packet(uint8_t* packet, uint32_t len) {
             uint32_t src_ip = ip->src_ip;
             if (protocol == IP_PROTO_UDP) udp_handle_packet(payload, payload_len, src_ip);
             else if (protocol == IP_PROTO_ICMP) icmp_handle_packet(payload, payload_len, src_ip);
+            else if (protocol == IP_PROTO_TCP) tcp_handle_packet(payload, payload_len, src_ip);
             return;
         }
     }

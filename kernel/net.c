@@ -23,6 +23,8 @@ static int socket_count = 0;
 
 extern int rtl8139_init(void);
 
+extern void arp_init(void);
+
 void init_net(void) {
     memset_asm(sockets, 0, sizeof(sockets));
     memset_asm(net_interfaces, 0, sizeof(net_interfaces));
@@ -34,6 +36,8 @@ void init_net(void) {
     lo->mtu = 65536;
     lo->flags = 1;
     printf("[NET] Loopback: 127.0.0.1\n");
+
+    arp_init();
 
     int ret = rtl8139_init();
     if (ret == 0) printf("[NET] RTL8139 NIC initialized\n");

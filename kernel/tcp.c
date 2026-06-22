@@ -1,2 +1,277 @@
 #include "kernel.h"
-void init_tcp(void) {}
+#include "tcp.h"
+
+extern int ip_send(uint32_t dst_ip, uint8_t protocol, const uint8_t* data, uint32_t len, int iface_idx);
+
+typedef struct __attribute__((packed)) {
+    uint16_t src_port;
+    uint16_t dst_port;
+    uint32_t seq;
+    uint32_t ack;
+    uint16_t offset_flags;
+    uint16_t window;
+    uint16_t checksum;
+    uint16_t urgent;
+} tcp_header_t;
+
+typedef struct __attribute__((packed)) {
+    uint32_t src_ip;
+    uint32_t dst_ip;
+    uint8_t zero;
+    uint8_t protocol;
+    uint16_t tcp_len;
+} tcp_pseudo_t;
+
+static tcp_conn_t conns[TCP_MAX_CONNS];
+static uint32_t next_isn = 1000;
+
+static int find_slot(void) {
+    for (int i = 0; i < TCP_MAX_CONNS; i++)
+        if (!conns[i].active) return i;
+    return -1;
+}
+
+static tcp_conn_t* find_conn_by_tuple(uint32_t src_ip, uint32_t dst_ip,
+                                       uint16_t src_port, uint16_t dst_port) {
+    (void)src_ip;
+    for (int i = 0; i < TCP_MAX_CONNS; i++) {
+        if (!conns[i].active) continue;
+        if (conns[i].dst_ip == dst_ip && conns[i].src_port == src_port
+            && conns[i].dst_port == dst_port)
+            return &conns[i];
+    }
+    return NULL;
+}
+
+static uint16_t tcp_checksum(tcp_conn_t* conn, const uint8_t* tcp_seg, uint32_t tcp_len) {
+    uint8_t pseudo[12];
+    pseudo[0] = (conn->src_ip >> 24) & 0xFF;
+    pseudo[1] = (conn->src_ip >> 16) & 0xFF;
+    pseudo[2] = (conn->src_ip >> 8) & 0xFF;
+    pseudo[3] = conn->src_ip & 0xFF;
+    pseudo[4] = (conn->dst_ip >> 24) & 0xFF;
+    pseudo[5] = (conn->dst_ip >> 16) & 0xFF;
+    pseudo[6] = (conn->dst_ip >> 8) & 0xFF;
+    pseudo[7] = conn->dst_ip & 0xFF;
+    pseudo[8] = 0;
+    pseudo[9] = 6;
+    pseudo[10] = (tcp_len >> 8) & 0xFF;
+    pseudo[11] = tcp_len & 0xFF;
+
+    uint32_t sum = 0;
+    for (int i = 0; i < 6; i++) {
+        uint16_t w = ((uint16_t)pseudo[i*2] << 8) | pseudo[i*2 + 1];
+        sum += w;
+        if (sum & 0xFFFF0000) sum = (sum & 0xFFFF) + (sum >> 16);
+    }
+    uint32_t words = (tcp_len + 1) / 2;
+    for (uint32_t i = 0; i < words; i++) {
+        uint16_t w;
+        if (i * 2 + 1 < tcp_len)
+            w = ((uint16_t)tcp_seg[i*2] << 8) | tcp_seg[i*2 + 1];
+        else
+            w = (uint16_t)tcp_seg[i*2] << 8;
+        sum += w;
+        if (sum & 0xFFFF0000) sum = (sum & 0xFFFF) + (sum >> 16);
+    }
+    return ~(sum & 0xFFFF);
+}
+
+static int send_segment(tcp_conn_t* conn, uint8_t flags, const uint8_t* data, uint32_t data_len) {
+    uint32_t tcp_len = sizeof(tcp_header_t) + data_len;
+    uint8_t* seg = (uint8_t*)kmalloc(tcp_len);
+    if (!seg) return -1;
+
+    tcp_header_t* hdr = (tcp_header_t*)seg;
+    hdr->src_port = ((conn->src_port << 8) & 0xFF00) | ((conn->src_port >> 8) & 0x00FF);
+    hdr->dst_port = ((conn->dst_port << 8) & 0xFF00) | ((conn->dst_port >> 8) & 0x00FF);
+    hdr->seq = ((conn->seq << 24) & 0xFF000000) | ((conn->seq << 8) & 0x00FF0000)
+             | ((conn->seq >> 8) & 0x0000FF00) | ((conn->seq >> 24) & 0x000000FF);
+    hdr->ack = ((conn->ack << 24) & 0xFF000000) | ((conn->ack << 8) & 0x00FF0000)
+             | ((conn->ack >> 8) & 0x0000FF00) | ((conn->ack >> 24) & 0x000000FF);
+    hdr->offset_flags = ((5 << 12) & 0xF000) | (flags & 0x003F);
+    hdr->window = 0x2000;
+    hdr->checksum = 0;
+    hdr->urgent = 0;
+
+    if (data && data_len > 0)
+        memcpy(seg + sizeof(tcp_header_t), data, data_len);
+
+    hdr->checksum = tcp_checksum(conn, seg, tcp_len);
+
+    int result = ip_send(conn->dst_ip, 6, seg, tcp_len, -1);
+
+    if (flags & TCP_FLAG_SYN) conn->sent_unacked = conn->seq + 1;
+    else if (data_len > 0) conn->sent_unacked = conn->seq + data_len;
+
+    if (!(flags & TCP_FLAG_RST)) {
+        if (data_len > 0) conn->seq += data_len;
+        if (flags & TCP_FLAG_SYN) conn->seq++;
+        if (flags & TCP_FLAG_FIN) conn->seq++;
+    }
+
+    kfree(seg);
+    return result;
+}
+
+int tcp_init(void) {
+    for (int i = 0; i < TCP_MAX_CONNS; i++)
+        conns[i].active = 0;
+    return 0;
+}
+
+int tcp_connect(uint32_t dst_ip, uint16_t dst_port, uint16_t src_port) {
+    int slot = find_slot();
+    if (slot < 0) return -1;
+
+    // Find interface
+    int iface_idx = -1;
+    for (int i = 0; i < 8; i++) {
+        if (net_interfaces[i].name[0]) { iface_idx = i; break; }
+    }
+    if (iface_idx < 0) return -1;
+
+    tcp_conn_t* conn = &conns[slot];
+    conn->active = 1;
+    conn->state = TCP_STATE_SYN_SENT;
+    conn->src_ip = net_interfaces[iface_idx].ip;
+    conn->dst_ip = dst_ip;
+    conn->src_port = src_port;
+    conn->dst_port = dst_port;
+    conn->seq = next_isn;
+    conn->ack = 0;
+    conn->recv_buf = NULL;
+    conn->recv_len = 0;
+    conn->recv_cap = 0;
+    conn->sent_unacked = 0;
+
+    next_isn += 1000;
+
+    // Send SYN
+    send_segment(conn, TCP_FLAG_SYN, NULL, 0);
+    return slot;
+}
+
+int tcp_send(int conn_id, const uint8_t* data, uint32_t len) {
+    if (conn_id < 0 || conn_id >= TCP_MAX_CONNS) return -1;
+    tcp_conn_t* conn = &conns[conn_id];
+    if (!conn->active || conn->state != TCP_STATE_ESTABLISHED) return -1;
+    return send_segment(conn, TCP_FLAG_ACK | TCP_FLAG_PSH, data, len);
+}
+
+int tcp_recv(int conn_id, uint8_t* buf, uint32_t max_len) {
+    if (conn_id < 0 || conn_id >= TCP_MAX_CONNS) return -1;
+    tcp_conn_t* conn = &conns[conn_id];
+    if (!conn->active) return -1;
+    if (conn->recv_len == 0) return 0;
+    uint32_t to_copy = conn->recv_len < max_len ? conn->recv_len : max_len;
+    memcpy(buf, conn->recv_buf, to_copy);
+    if (to_copy < conn->recv_len)
+        memmove(conn->recv_buf, conn->recv_buf + to_copy, conn->recv_len - to_copy);
+    conn->recv_len -= to_copy;
+    if (conn->recv_len == 0) {
+        kfree(conn->recv_buf);
+        conn->recv_buf = NULL;
+        conn->recv_cap = 0;
+    }
+    return (int)to_copy;
+}
+
+int tcp_close(int conn_id) {
+    if (conn_id < 0 || conn_id >= TCP_MAX_CONNS) return -1;
+    tcp_conn_t* conn = &conns[conn_id];
+    if (!conn->active) return -1;
+    if (conn->state == TCP_STATE_ESTABLISHED) {
+        conn->state = TCP_STATE_FIN_WAIT1;
+        send_segment(conn, TCP_FLAG_FIN | TCP_FLAG_ACK, NULL, 0);
+    }
+    if (conn->recv_buf) { kfree(conn->recv_buf); conn->recv_buf = NULL; }
+    conn->active = 0;
+    conn->state = TCP_STATE_CLOSED;
+    return 0;
+}
+
+void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip) {
+    if (len < sizeof(tcp_header_t)) return;
+    tcp_header_t* hdr = (tcp_header_t*)packet;
+
+    uint16_t dst_port = ((hdr->dst_port << 8) & 0xFF00) | ((hdr->dst_port >> 8) & 0x00FF);
+    uint16_t src_port = ((hdr->src_port << 8) & 0xFF00) | ((hdr->src_port >> 8) & 0x00FF);
+    uint32_t seq = ((hdr->seq << 24) & 0xFF000000) | ((hdr->seq << 8) & 0x00FF0000)
+                 | ((hdr->seq >> 8) & 0x0000FF00) | ((hdr->seq >> 24) & 0x000000FF);
+    uint8_t flags = hdr->offset_flags & 0x003F;
+    uint8_t data_offset = (hdr->offset_flags >> 12) & 0x0F;
+    uint32_t header_len = data_offset * 4;
+    if (header_len > len) return;
+    uint8_t* payload = packet + header_len;
+    uint32_t payload_len = len - header_len;
+    uint32_t local_ip = 0;
+    for (int i = 0; i < 8; i++) {
+        if (net_interfaces[i].name[0]) { local_ip = net_interfaces[i].ip; break; }
+    }
+
+    tcp_conn_t* conn = find_conn_by_tuple(local_ip, src_ip, dst_port, src_port);
+
+    if (!conn) {
+        // No matching connection: send RST
+        tcp_conn_t temp;
+        temp.src_ip = local_ip;
+        temp.dst_ip = src_ip;
+        temp.src_port = dst_port;
+        temp.dst_port = src_port;
+        temp.seq = 0;
+        temp.ack = seq + 1;
+        // Build a minimal RST segment
+        uint8_t seg[sizeof(tcp_header_t)];
+        tcp_header_t* rhdr = (tcp_header_t*)seg;
+        rhdr->src_port = ((dst_port << 8) & 0xFF00) | ((dst_port >> 8) & 0x00FF);
+        rhdr->dst_port = ((src_port << 8) & 0xFF00) | ((src_port >> 8) & 0x00FF);
+        rhdr->seq = 0;
+        rhdr->ack = ((temp.ack << 24) & 0xFF000000) | ((temp.ack << 8) & 0x00FF0000)
+                   | ((temp.ack >> 8) & 0x0000FF00) | ((temp.ack >> 24) & 0x000000FF);
+        rhdr->offset_flags = (5 << 12) | (TCP_FLAG_RST | TCP_FLAG_ACK);
+        rhdr->window = 0;
+        rhdr->checksum = 0;
+        rhdr->urgent = 0;
+        rhdr->checksum = tcp_checksum(&temp, seg, sizeof(tcp_header_t));
+        ip_send(src_ip, 6, seg, sizeof(tcp_header_t), -1);
+        return;
+    }
+
+    // Update ack from received segment
+    if (payload_len > 0 && (flags & TCP_FLAG_ACK)) {
+        // Received data - store it
+        conn->ack = seq + payload_len;
+        if (conn->recv_buf == NULL) {
+            conn->recv_cap = payload_len > 4096 ? payload_len : 4096;
+            conn->recv_buf = (uint8_t*)kmalloc(conn->recv_cap);
+            conn->recv_len = 0;
+        }
+        if (conn->recv_len + payload_len > conn->recv_cap) {
+            conn->recv_cap = conn->recv_len + payload_len;
+            uint8_t* new_buf = (uint8_t*)kmalloc(conn->recv_cap);
+            if (conn->recv_len > 0) memcpy(new_buf, conn->recv_buf, conn->recv_len);
+            if (conn->recv_buf) kfree(conn->recv_buf);
+            conn->recv_buf = new_buf;
+        }
+        memcpy(conn->recv_buf + conn->recv_len, payload, payload_len);
+        conn->recv_len += payload_len;
+        send_segment(conn, TCP_FLAG_ACK, NULL, 0);
+    } else if (flags & TCP_FLAG_SYN && flags & TCP_FLAG_ACK) {
+        if (conn->state == TCP_STATE_SYN_SENT) {
+            conn->ack = seq + 1;
+            conn->state = TCP_STATE_ESTABLISHED;
+            send_segment(conn, TCP_FLAG_ACK, NULL, 0);
+        }
+    } else if (flags & TCP_FLAG_FIN) {
+        if (conn->state == TCP_STATE_ESTABLISHED) {
+            conn->ack = seq + 1;
+            conn->state = TCP_STATE_CLOSE_WAIT;
+            send_segment(conn, TCP_FLAG_ACK, NULL, 0);
+        } else if (conn->state == TCP_STATE_FIN_WAIT1) {
+            conn->ack = seq + 1;
+            conn->state = TCP_STATE_TIME_WAIT;
+            send_segment(conn, TCP_FLAG_ACK, NULL, 0);
+        }
+    }
+}

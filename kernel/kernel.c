@@ -4,6 +4,7 @@
 #include "kernel.h"
 #include "compositor.h"
 #include "speaker.h"
+#include "tcp.h"
 
 // Variables globales del kernel
 process_t* process_table[MAX_PROCESSES];
@@ -123,6 +124,8 @@ static void cmd_fonttest(int argc, char** argv);
 static void cmd_desktop(int argc, char** argv);
 static void cmd_beep(int argc, char** argv);
 static void cmd_play(int argc, char** argv);
+static void cmd_tcptest(int argc, char** argv);
+static void cmd_setip(int argc, char** argv);
 
 static const command_t commands[] = {
     {"help",      cmd_help,      "Show this help", false},
@@ -174,6 +177,8 @@ static const command_t commands[] = {
     {"desktop",   cmd_desktop,   "Launch window compositor desktop", false},
     {"beep",      cmd_beep,      "Play a tone: beep [freq] [ms]", false},
     {"play",      cmd_play,      "Play a demo melody", false},
+    {"tcptest",   cmd_tcptest,   "Test TCP: tcptest <ip> <port>", false},
+    {"setip",     cmd_setip,     "Set static IP: setip <ip> <mask> <gw>", false},
     {NULL, NULL, NULL, false}
 };
 
@@ -614,6 +619,82 @@ static void cmd_play(int argc, char** argv) {
     printf("Done.\n");
 }
 
+static uint32_t parse_ip(const char* s) {
+    uint32_t ip = 0;
+    for (int i = 0; i < 4; i++) {
+        uint32_t octet = 0;
+        while (*s >= '0' && *s <= '9') {
+            octet = octet * 10 + (*s - '0');
+            s++;
+        }
+        ip = (ip << 8) | (octet & 0xFF);
+        if (*s == '.') s++;
+    }
+    return ip;
+}
+
+static void cmd_setip(int argc, char** argv) {
+    if (argc < 2) { printf("Usage: setip <ip> [mask] [gw]\n"); return; }
+    uint32_t ip = parse_ip(argv[1]);
+    uint32_t mask = 0x00FFFFFF;
+    uint32_t gw = 0;
+    if (argc >= 3) mask = parse_ip(argv[2]);
+    if (argc >= 4) gw = parse_ip(argv[3]);
+    for (int i = 0; i < 8; i++) {
+        if (net_interfaces[i].name[0] && strcmp(net_interfaces[i].name, "lo") != 0) {
+            net_interfaces[i].ip = ip;
+            net_interfaces[i].netmask = mask;
+            net_interfaces[i].gateway = gw;
+            printf("Set %s IP to %d.%d.%d.%d\n", net_interfaces[i].name,
+                (ip>>24)&0xFF, (ip>>16)&0xFF, (ip>>8)&0xFF, ip&0xFF);
+            return;
+        }
+    }
+    printf("No interface found\n");
+}
+
+static void cmd_tcptest(int argc, char** argv) {
+    uint32_t dst_ip = 0x0A000202; // 10.0.2.2
+    uint16_t dst_port = 80;
+    if (argc >= 3) {
+        dst_ip = parse_ip(argv[1]);
+        dst_port = (uint16_t)atoi(argv[2]);
+    } else if (argc >= 2) {
+        dst_ip = parse_ip(argv[1]);
+    }
+    printf("TCP test: connecting to %d.%d.%d.%d:%d...\n",
+           (dst_ip >> 24) & 0xFF, (dst_ip >> 16) & 0xFF,
+           (dst_ip >> 8) & 0xFF, dst_ip & 0xFF,
+           dst_port);
+    int conn = tcp_connect(dst_ip, dst_port, 12345);
+    if (conn < 0) {
+        printf("TCP connect failed\n");
+        return;
+    }
+    printf("TCP connected (conn_id=%d), sending HTTP GET...\n", conn);
+    const char* req = "GET / HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n";
+    if (tcp_send(conn, (const uint8_t*)req, strlen(req)) < 0) {
+        printf("TCP send failed\n");
+        tcp_close(conn);
+        return;
+    }
+    printf("Sent HTTP request, waiting for response...\n");
+    uint8_t buf[1024];
+    int total = 0;
+    for (int tries = 0; tries < 20; tries++) {
+        int n = tcp_recv(conn, buf, sizeof(buf) - 1);
+        if (n > 0) {
+            buf[n] = '\0';
+            printf("%s", (char*)buf);
+            total += n;
+        } else if (n < 0) break;
+        sleep(100);
+    }
+    if (total == 0) printf("(no data received)\n");
+    printf("\nTCP test done (%d bytes received). Closing...\n", total);
+    tcp_close(conn);
+}
+
 static void cmd_doom(int argc, char** argv) {
     (void)argc; (void)argv;
     printf("Launching DOOM...\n");
@@ -923,6 +1004,7 @@ void kernel_main(uint32_t magic, void* mboot_ptr) {
     printf("[INIT] Loading GRUB modules...\n"); init_load_modules();
     printf("[INIT] EXT2 Filesystem...\n"); init_ext2();
     printf("[INIT] Network Stack...\n"); init_net();
+    printf("[INIT] TCP...\n"); tcp_init();
     init_background_tasks();
 
     printf("[INIT] PS/2 Mouse...\n"); mouse_init();
