@@ -32,9 +32,7 @@ static void mouse_write(uint8_t val) {
     ps2_write(0x60, val);
 }
 
-static uint8_t mouse_read(void) {
-    return ps2_read();
-}
+
 
 int mouse_init(void) {
     // Enable auxiliary device
@@ -94,3 +92,4 @@ void mouse_irq_handler(void* unused) {
 int mouse_get_x(void) { return mouse_x; }
 int mouse_get_y(void) { return mouse_y; }
 int mouse_get_buttons(void) { return mouse_buttons; }
+void mouse_set_pos(int x, int y) { mouse_x = x; mouse_y = y; }

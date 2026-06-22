@@ -528,4 +528,15 @@ uint32_t fb_get_height(void);
 void* fb_get_addr(void);
 uint32_t fb_rgb(uint8_t r, uint8_t g, uint8_t b);
 
+// ===== MOUSE =====
+int mouse_init(void);
+void mouse_irq_handler(void* unused);
+int mouse_get_x(void);
+int mouse_get_y(void);
+int mouse_get_buttons(void);
+void mouse_set_pos(int x, int y);
+
+// ===== GUI DEMO =====
+void gui_demo(void);
+
 #endif // KERNEL_H

@@ -116,6 +116,7 @@ static void cmd_diff(int argc, char** argv);
 static void cmd_doom(int argc, char** argv);
 void cmd_doomtest(int argc, char** argv);
 static void cmd_mode(int argc, char** argv);
+static void cmd_gui(int argc, char** argv);
 
 static const command_t commands[] = {
     {"help",      cmd_help,      "Show this help", false},
@@ -162,6 +163,7 @@ static const command_t commands[] = {
     {"doom",      cmd_doom,      "Launch DOOM game", false},
     {"doomtest",  cmd_doomtest,  "Test DOOM WAD loading", false},
     {"mode",      cmd_mode,      "Set VBE video mode: mode <width> <height> <bpp>", false},
+    {"gui",       cmd_gui,       "Launch GUI demo with mouse", false},
     {NULL, NULL, NULL, false}
 };
 
@@ -528,6 +530,17 @@ static void cmd_mode(int argc, char** argv) {
     printf("VBE mode %dx%dx%d set\n", w, h, bpp);
 }
 
+static void cmd_gui(int argc, char** argv) {
+    (void)argc; (void)argv;
+    if (!vbe_get_lfb()) {
+        printf("No VBE mode set. Run 'mode' first.\n");
+        return;
+    }
+    printf("Launching GUI demo...\n");
+    printf("Mouse: click to draw, Esc to exit\n");
+    gui_demo();
+}
+
 static void cmd_doom(int argc, char** argv) {
     (void)argc; (void)argv;
     printf("Launching DOOM...\n");
@@ -839,11 +852,14 @@ void kernel_main(uint32_t magic, void* mboot_ptr) {
     printf("[INIT] Network Stack...\n"); init_net();
     init_background_tasks();
 
+    printf("[INIT] PS/2 Mouse...\n"); mouse_init();
     printf("[INIT] Registering IRQ handlers...\n");
     irq_install_handler(1, keyboard_irq_handler);
-    printf("[INIT] Unmasking IRQ0 (timer) and IRQ1 (keyboard)...\n");
+    irq_install_handler(12, mouse_irq_handler);
+    printf("[INIT] Unmasking IRQ0 (timer), IRQ1 (kbd), IRQ12 (mouse)...\n");
     irq_unmask(0);
     irq_unmask(1);
+    irq_unmask(12);
     printf("[INIT] Enabling interrupts (sti)...\n");
     enable_interrupts();
     kernel_initialized = true;
