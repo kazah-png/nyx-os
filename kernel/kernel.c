@@ -3,6 +3,7 @@
 // ============================================================
 #include "kernel.h"
 #include "compositor.h"
+#include "speaker.h"
 
 // Variables globales del kernel
 process_t* process_table[MAX_PROCESSES];
@@ -120,6 +121,8 @@ static void cmd_mode(int argc, char** argv);
 static void cmd_gui(int argc, char** argv);
 static void cmd_fonttest(int argc, char** argv);
 static void cmd_desktop(int argc, char** argv);
+static void cmd_beep(int argc, char** argv);
+static void cmd_play(int argc, char** argv);
 
 static const command_t commands[] = {
     {"help",      cmd_help,      "Show this help", false},
@@ -169,6 +172,8 @@ static const command_t commands[] = {
     {"gui",       cmd_gui,       "Launch GUI demo with mouse", false},
     {"fonttest",  cmd_fonttest,  "Test font rendering on framebuffer", false},
     {"desktop",   cmd_desktop,   "Launch window compositor desktop", false},
+    {"beep",      cmd_beep,      "Play a tone: beep [freq] [ms]", false},
+    {"play",      cmd_play,      "Play a demo melody", false},
     {NULL, NULL, NULL, false}
 };
 
@@ -582,6 +587,33 @@ static void cmd_desktop(int argc, char** argv) {
     compositor_run();
 }
 
+static void cmd_beep(int argc, char** argv) {
+    uint32_t freq = 440;
+    uint32_t dur = 500;
+    if (argc >= 4) { freq = (uint32_t)atoi(argv[1]); dur = (uint32_t)atoi(argv[2]); }
+    else if (argc >= 3) { freq = (uint32_t)atoi(argv[1]); dur = (uint32_t)atoi(argv[2]); }
+    else if (argc >= 2) { freq = (uint32_t)atoi(argv[1]); }
+    printf("Beep: %d Hz for %d ms\n", freq, dur);
+    speaker_beep(freq, dur);
+}
+
+static void cmd_play(int argc, char** argv) {
+    (void)argc; (void)argv;
+    struct { uint32_t freq; uint32_t dur; } melody[] = {
+        {NOTE_C4, 200}, {NOTE_D4, 200}, {NOTE_E4, 200}, {NOTE_F4, 200},
+        {NOTE_G4, 200}, {NOTE_A4, 200}, {NOTE_B4, 200}, {NOTE_C5, 400},
+        {NOTE_REST, 50},
+        {NOTE_C5, 100}, {NOTE_C5, 100}, {NOTE_G4, 100}, {NOTE_G4, 100},
+        {NOTE_A4, 100}, {NOTE_A4, 100}, {NOTE_G4, 200},
+        {NOTE_F4, 100}, {NOTE_F4, 100}, {NOTE_E4, 100}, {NOTE_E4, 100},
+        {NOTE_D4, 100}, {NOTE_D4, 100}, {NOTE_C4, 200},
+    };
+    printf("Playing melody...\n");
+    for (int i = 0; i < (int)(sizeof(melody)/sizeof(melody[0])); i++)
+        speaker_play_note(melody[i].freq, melody[i].dur);
+    printf("Done.\n");
+}
+
 static void cmd_doom(int argc, char** argv) {
     (void)argc; (void)argv;
     printf("Launching DOOM...\n");
@@ -894,6 +926,7 @@ void kernel_main(uint32_t magic, void* mboot_ptr) {
     init_background_tasks();
 
     printf("[INIT] PS/2 Mouse...\n"); mouse_init();
+    printf("[INIT] PC Speaker...\n"); speaker_init();
     printf("[INIT] Registering IRQ handlers...\n");
     irq_install_handler(1, keyboard_irq_handler);
     irq_install_handler(12, mouse_irq_handler);

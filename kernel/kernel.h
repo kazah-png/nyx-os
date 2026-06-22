@@ -549,4 +549,10 @@ void gui_demo(void);
 int compositor_init(void);
 void compositor_run(void);
 
+// ===== SPEAKER =====
+void speaker_init(void);
+void speaker_on(uint32_t frequency);
+void speaker_off(void);
+void speaker_beep(uint32_t frequency, uint32_t duration_ms);
+
 #endif // KERNEL_H
