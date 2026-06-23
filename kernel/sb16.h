@@ -45,7 +45,7 @@ typedef struct {
     uint8_t  dma16;
     uint8_t  initialized;
     uint32_t sample_rate;
-    uint16_t dma_buffer_size;
+    uint32_t dma_buffer_size;
     uint8_t* dma_buffer;
     uint32_t dma_buffer_phys;
 } sb16_t;

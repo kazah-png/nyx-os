@@ -24,7 +24,8 @@ OBJS_KERNEL = boot.o kernel.o gdt.o gdt_flush.o idt.o idt_load.o isr.o isr_stubs
        ip.o arp.o ethernet.o rtl8139.o icmp.o timer.o keyboard.o screen.o \
        serial.o umoddi3.o paging.o switch.o dhcp.o \
        vga_graphics.o doom_nyxos.o \
-       vbe.o fb.o mouse.o gui.o font.o compositor.o speaker.o tcp.o
+       vbe.o fb.o mouse.o gui.o font.o compositor.o speaker.o tcp.o \
+       sb16.o doom_nyxos_sound.o
 
 DOOM_OBJS = \
     doom_src/am_map.o \
@@ -129,6 +130,10 @@ doom_src/%.o: doom_src/%.c
 
 # Special rule for doom_nyxos.c (in kernel root, not doom_src)
 doom_nyxos.o: doom_nyxos.c
+	$(CC) $(DOOM_CFLAGS) -c $< -o $@
+
+# Special rule for doom_nyxos_sound.c (SB16 DOOM sound module)
+doom_nyxos_sound.o: doom_nyxos_sound.c
 	$(CC) $(DOOM_CFLAGS) -c $< -o $@
 
 # Generate WAD object file

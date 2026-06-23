@@ -5,6 +5,7 @@
 #include "compositor.h"
 #include "speaker.h"
 #include "tcp.h"
+#include "sb16.h"
 
 // Variables globales del kernel
 process_t* process_table[MAX_PROCESSES];
@@ -125,6 +126,7 @@ static void cmd_desktop(int argc, char** argv);
 static void cmd_beep(int argc, char** argv);
 static void cmd_play(int argc, char** argv);
 static void cmd_tcptest(int argc, char** argv);
+static void cmd_sb16test(int argc, char** argv);
 static void cmd_setip(int argc, char** argv);
 
 static const command_t commands[] = {
@@ -1009,6 +1011,12 @@ void kernel_main(uint32_t magic, void* mboot_ptr) {
 
     printf("[INIT] PS/2 Mouse...\n"); mouse_init();
     printf("[INIT] PC Speaker...\n"); speaker_init();
+    printf("[INIT] Sound Blaster 16...\n");
+    if (sb16_init() == 0) {
+        printf("[INIT] SB16 initialized at 0x%x, IRQ %d\n", SB16_BASE_PORT, SB16_IRQ);
+    } else {
+        printf("[INIT] SB16 not detected (QEMU -soundhw sb16 required)\n");
+    }
     printf("[INIT] Registering IRQ handlers...\n");
     irq_install_handler(1, keyboard_irq_handler);
     irq_install_handler(12, mouse_irq_handler);
