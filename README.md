@@ -11,7 +11,9 @@
   </a>
   <img src="https://img.shields.io/badge/kernel-80%20KB-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/arch-i686-00ff9d?style=flat" />
-  <img src="https://img.shields.io/badge/status-booting-00ff9d?style=flat" />
+  <img src="https://img.shields.io/badge/status-v2.1.1-00ff9d?style=flat" />
+  <img src="https://img.shields.io/badge/TCP-yes-00ff9d?style=flat" />
+  <img src="https://img.shields.io/badge/GUI-window%20compositor-00ff9d?style=flat" />
   <a href="https://github.com/kazah-png/nyx-os/issues/1">
     <img src="https://img.shields.io/badge/status%20report-View-0d1117?style=flat&logo=github" />
   </a>
@@ -46,7 +48,7 @@ ______          \'/
     N Y X O S
     N I G H T F A L L
   -------------------------------------
-  Kernel:     NyxOS 2.0.0 (Clean Slate)
+  Kernel:     NyxOS 2.1.1 (Nightfall)
   Arch:       x86 (32-bit)
   Memory:     256 MB total, 252 MB free
   Heap:       1024 KB
@@ -182,6 +184,19 @@ Hello World
 nyx:root$ ifconfig
 lo:   IP 127.0.0.1    MAC 00:00:00:00:00:00   MTU 65536
 eth0: IP 10.0.2.15    MAC 52:54:00:12:34:56   MTU 1500
+
+nyx:root$ diff /a.txt /b.txt
+< line1 from a
+> line1 from b
+---
+1 line(s) differ
+
+nyx:root$ beep 440 500
+Beep: 440 Hz for 500 ms
+
+nyx:root$ play
+Playing melody...
+Done.
 ```
 
 ---
@@ -193,46 +208,60 @@ eth0: IP 10.0.2.15    MAC 52:54:00:12:34:56   MTU 1500
 - Protected mode 32-bit with GDT setup (code/data segments)
 - Paging with identity mapping (first 4 MB)
 - Full IDT with exception handlers (0-31) and IRQ remapping (32-47)
-- PIT timer at 1000 Hz (polling)
+- PIT timer at 1000 Hz (interrupt-driven)
 - PS/2 keyboard driver (US and ES layouts + AltGr)
+- PS/2 mouse driver (IRQ12, 3-byte packets, absolute positioning)
+- PC speaker driver (PIT channel 2, square wave, beep/melody)
 
 ### Memory management
 - Bitmap-based physical page allocator (supports up to 512 MB)
-- Kernel heap (`kmalloc`/`kfree`) with first-fit + block splitting + coalescing
-- Identity-mapped page tables
+- Kernel heap (`kmalloc`/`kfree`) with first-fit + block splitting + coalescing (16 MB heap)
+- Identity-mapped page tables (4 MB)
 
 ### Process management
 - Static process table (up to 512 processes)
 - PID/PPID tracking, process states, stealth levels
-- Cooperative multitasking via background task callbacks
+- Cooperative multitasking via background task callbacks + IRQ scheduler tick
+- Context switching (`switch_context`/`create_task_stack` assembly)
 
 ### Shell & commands
-Built-in command interpreter with **30+ commands**:
+Built-in command interpreter with **40+ commands**:
 
 | Category | Commands |
 |----------|----------|
 | **System** | `help`, `clear`, `nyxfetch`, `uname`, `date`, `version`, `reboot`, `crash` |
-| **Files** | `ls`, `cd`, `pwd`, `cat`, `touch`, `mkdir`, `rm`, `cp`, `mv`, `head`, `tail`, `grep`, `sort`, `wc`, `find`, `tree`, `write`, `which` |
+| **Files** | `ls`, `cd`, `pwd`, `cat`, `touch`, `mkdir`, `rm`, `cp`, `mv`, `head`, `tail`, `grep`, `sort`, `wc`, `find`, `tree`, `write`, `which`, `diff` |
 | **Process** | `ps`, `kill`, `mem` |
-| **Network** | `ifconfig`, `dhcp`, `ping` |
-| **Misc** | `echo`, `env`, `export`, `history`, `hexdump`, `layout` |
+| **Network** | `ifconfig`, `dhcp`, `ping`, `setip`, `tcptest` |
+| **Graphics** | `mode`, `gui`, `fonttest`, `desktop` |
+| **Sound** | `beep`, `play` |
+| **Misc** | `echo`, `env`, `export`, `history`, `hexdump`, `layout`, `doom` |
 
 **Shell features:**
 - Tab completion for command names
 - Environment variable expansion (`$VARNAME`)
 - Command history (last 10, duplicates filtered)
 - `echo text > file` redirection support
+- Pipe `\|` support (`cmd1 \| cmd2` with temp file)
 
 ### Network stack (real)
-- **RTL8139 NIC driver** — PCI detection, I/O BAR, MMIO, TX/RX ring buffers, link detection
-- **ARP** — Cache with request/reply, periodic cleanup
+- **RTL8139 NIC driver** — PCI detection, I/O BAR, MMIO, TX/RX ring buffers, link detection, CONFIG1 fix
+- **ARP** — Cache with request/reply, static entries, periodic cleanup
 - **IPv4** — Send/receive with header checksum, local delivery
 - **UDP** — Raw datagram send, port-based listener registration
 - **ICMP** — Echo request/reply (ping)
 - **DHCP** — Full client (DISCOVER → OFFER → REQUEST → ACK), auto-configures IP/netmask/gateway
-- **Interface** — `ifconfig` for status, static IP 10.0.2.15/24 or DHCP-assigned
+- **TCP** — Full connection state machine (CLOSED, SYN_SENT, ESTABLISHED, FIN_WAIT, CLOSE_WAIT, TIME_WAIT), 8 concurrent connections, HTTP GET support
+- **Interface** — `ifconfig` for status, static IP via `setip` or DHCP-assigned
 
-
+### GUI subsystem (new in v2.1.1)
+- **Bochs VBE framebuffer** — Up to 1024x768x32, LFB at 0xE0000000
+- **Framebuffer abstraction** — `put_pixel`, `fill_rect`, `blit`, `fb_rgb`
+- **PS/2 mouse** — IRQ12-driven, 3-byte packet decode, absolute cursor positioning
+- **VGA 8x16 bitmap font** — Full 256-glyph set from Linux kernel font data
+- **Window compositor** — 16 windows max, z-ordering, title bars, close buttons, drag-to-move
+- **GUI paint demo** — 6-color mouse-driven drawing with Bresenham lines
+- **PC speaker** — PIT channel 2 tone generation, musical note definitions
 
 ---
 
@@ -242,26 +271,37 @@ Built-in command interpreter with **30+ commands**:
 nyx-os/
 ├── kernel/
 │   ├── boot.asm          # Multiboot header, entry point
-│   ├── kernel.c          # Main kernel, shell, command dispatcher
+│   ├── kernel.c          # Main kernel, shell, 40+ command handlers
 │   ├── kernel.h          # Core header (types, structs, inline funcs)
 │   ├── gdt.c / gdt_flush.asm
 │   ├── idt.c / idt_load.asm
 │   ├── isr.c / isr_stubs.asm
 │   ├── irq.c
 │   ├── memory.c          # Physical memory manager (bitmap allocator)
-│   ├── heap.c            # Kernel heap allocator
+│   ├── heap.c            # 16 MB kernel heap allocator
 │   ├── paging.c          # Page tables, virtual memory
 │   ├── process.c         # Process management + background tasks
 │   ├── switch.asm        # Context switch assembly
 │   ├── syscall.c         # System calls
-│   ├── vfs.c             # Ramdisk virtual file system
+│   ├── vfs.c             # Ramdisk VFS + pipe support
+│   ├── ext2.c            # EXT2 filesystem stub
 │   ├── dhcp.c            # DHCP client
-│   ├── net.c / tcp.c / udp.c / ip.c / ethernet.c
+│   ├── net.c / tcp.c / tcp.h / udp.c / ip.c / ethernet.c
 │   ├── arp.c / icmp.c / rtl8139.c
-│   ├── timer.c           # PIT timer
-│   ├── keyboard.c        # PS/2 driver (US/ES layouts)
-│   ├── screen.c          # VGA text mode
-│   └── serial.c          # COM1 debug stub
+│   ├── timer.c           # PIT timer (1000 Hz, interrupt-driven)
+│   ├── keyboard.c        # PS/2 driver (US/ES layouts, AltGr)
+│   ├── screen.c          # VGA text mode (80x25)
+│   ├── serial.c          # COM1 debug stub
+│   ├── vbe.c             # Bochs VBE framebuffer driver
+│   ├── fb.c              # Framebuffer abstraction
+│   ├── mouse.c           # PS/2 mouse driver (IRQ12)
+│   ├── gui.c             # GUI paint demo with mouse
+│   ├── font.c / font.h   # VGA 8x16 bitmap font (256 glyphs)
+│   ├── compositor.c / compositor.h  # Window compositor
+│   ├── speaker.c / speaker.h        # PC speaker driver
+│   ├── vga_graphics.c    # VGA mode 13h (DOOM)
+│   ├── doom_nyxos.c      # DOOM generic NyxOS port
+│   └── doom_src/         # DOOM engine source
 ├── tools/
 │   ├── build.sh          # ISO builder (grub-mkrescue)
 │   ├── qemu_launch.sh    # QEMU launcher
@@ -314,17 +354,24 @@ See the full **[NyxOS Status Report](https://github.com/kazah-png/nyx-os/issues/
 
 ### What works
 - ✅ Full boot sequence to shell
-- ✅ 30+ shell commands
-- ✅ Ramdisk VFS (files, directories)
-- ✅ Real networking (RTL8139 + ARP/IP/UDP/ICMP/DHCP)
-- ✅ Tab completion, env vars, command history
+- ✅ 40+ shell commands
+- ✅ Ramdisk VFS (files, directories, pipes)
+- ✅ Real networking (RTL8139 + ARP/IP/UDP/ICMP/DHCP/TCP)
+- ✅ Tab completion, env vars, command history, pipe support
+- ✅ Interrupt-driven timer, keyboard, mouse
+- ✅ PC speaker tones and melodies
+- ✅ DOOM game (VGA mode 13h, doomgeneric port)
+- ✅ VBE framebuffer (up to 1024x768x32)
+- ✅ Window compositor with z-order, drag, close
+- ✅ Bitmap font rendering
+- ✅ GUI paint demo with mouse
 
 ### What's being built
-- 🔄 TCP handshake and data transfer
-- 🔄 Interrupt-driven I/O and preemptive multitasking
-- 🔄 Pipe | support in shell parser
-- 🔄 EXT2 filesystem read
-- 🔄 VGA graphics mode
+- 🔄 Sound Blaster 16 audio driver (DMA/IRQ)
+- 🔄 EXT2 filesystem read support
+- 🔄 ELF loader + initramfs for userspace binaries
+- 🔄 Compositor polish (resize, minimize, keyboard routing)
+- 🔄 ATA/IDE disk driver
 
 ---
 

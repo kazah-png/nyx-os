@@ -50,3 +50,10 @@ iso/boot/doom1.wad
 
 # Font generator script
 kernel/genfont.py
+
+# Test logs
+nyxos-test*.log
+
+# wget logs
+wget-log*
+wget-log*.1

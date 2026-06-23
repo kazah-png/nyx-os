@@ -1,5 +1,5 @@
 // ============================================================
-// kernel.c - Núcleo principal de NyxOS v2.0.0
+// kernel.c - Núcleo principal de NyxOS v2.1.1
 // ============================================================
 #include "kernel.h"
 #include "compositor.h"

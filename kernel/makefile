@@ -1,5 +1,5 @@
 # ============================================================
-# kernel/Makefile - Compilación del kernel NyxOS v2.0.0
+# kernel/Makefile - Compilación del kernel NyxOS v2.1.1
 # ============================================================
 
 TARGET = i686-elf
