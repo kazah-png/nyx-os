@@ -27,7 +27,7 @@ typedef struct {
 
 terminal_win_t* terminal_create_ctx(void);
 void terminal_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch);
-void terminal_win_key(window_t* win, char c);
+void terminal_win_key(window_t* win, int key);
 void terminal_capture_putchar(char c);
 
 #endif

@@ -171,18 +171,24 @@ static int window_hit(window_t* win, int mx, int my) {
 
 static int resize_hit(window_t* win, int mx, int my, int* dir) {
     int rx = win->x + win->w, by = win->y + win_total_h(win);
-    if (mx >= rx - RESIZE_MARGIN && mx < rx + RESIZE_MARGIN
-        && my >= by - RESIZE_MARGIN && my < by + RESIZE_MARGIN) {
-        *dir = RESIZE_CORNER; return 1;
-    }
-    if (mx >= rx - RESIZE_MARGIN && mx < rx + RESIZE_MARGIN
-        && my >= win->y + TITLE_H && my < by) {
-        *dir = RESIZE_RIGHT; return 1;
-    }
-    if (my >= by - RESIZE_MARGIN && my < by + RESIZE_MARGIN
-        && mx >= win->x && mx < rx) {
-        *dir = RESIZE_BOTTOM; return 1;
-    }
+    int lx = win->x, ty = win->y;
+    int client_top = win->y + TITLE_H;
+
+    int on_left   = mx >= lx - RESIZE_MARGIN && mx < lx + RESIZE_MARGIN;
+    int on_right  = mx >= rx - RESIZE_MARGIN && mx < rx + RESIZE_MARGIN;
+    int on_top    = my >= ty - RESIZE_MARGIN && my < ty + RESIZE_MARGIN;
+    int on_bottom = my >= by - RESIZE_MARGIN && my < by + RESIZE_MARGIN;
+    int in_client = my >= client_top && my < by;
+    int in_vrange = my >= ty && my < by;
+
+    if (on_top && on_left)    { *dir = RESIZE_LEFT_TOP;     return 1; }
+    if (on_top && on_right)   { *dir = RESIZE_RIGHT_TOP;    return 1; }
+    if (on_bottom && on_left) { *dir = RESIZE_LEFT_BOTTOM;  return 1; }
+    if (on_bottom && on_right){ *dir = RESIZE_CORNER;       return 1; }
+    if (on_left && in_vrange) { *dir = RESIZE_LEFT;         return 1; }
+    if (on_right && in_client){ *dir = RESIZE_RIGHT;        return 1; }
+    if (on_top && in_vrange)  { *dir = RESIZE_TOP;          return 1; }
+    if (on_bottom && in_vrange){ *dir = RESIZE_BOTTOM;      return 1; }
     return 0;
 }
 
@@ -481,6 +487,23 @@ window_t* window_create(int x, int y, uint32_t w, uint32_t h, const char* title,
     return win;
 }
 
+static void focus_next_window(void) {
+    // Find the highest-z-order visible, non-minimized window
+    window_t* best = NULL;
+    for (int i = 0; i < MAX_WINDOWS; i++) {
+        if (!windows[i] || !windows[i]->visible) continue;
+        if (windows[i]->state == WSTATE_MINIMIZED) continue;
+        if (windows[i]->workspace != current_workspace) continue;
+        if (!best || windows[i]->z_order > best->z_order)
+            best = windows[i];
+    }
+    if (best) {
+        window_focus(best->id);
+    } else {
+        focused_id = 0;
+    }
+}
+
 void window_destroy(int id) {
     window_t* win = find_window(id);
     if (!win) return;
@@ -488,7 +511,8 @@ void window_destroy(int id) {
         if (windows[i] == win) { windows[i] = NULL; break; }
     window_count--;
     kfree(win);
-    if (focused_id == id) focused_id = 0;
+    if (focused_id == id)
+        focus_next_window();
 }
 
 void window_focus(int id) {
@@ -506,10 +530,14 @@ void window_move(int id, int x, int y) {
     window_t* win = find_window(id);
     if (!win) return;
     uint32_t fw = fb_get_width(), fh = fb_get_height();
-    if (x < 0) x = 0;
-    if (y < 0) y = 0;
-    if (x + win->w > fw) x = fw - win->w;
-    if (y + win_total_h(win) > fh - TASKBAR_H) y = fh - TASKBAR_H - win_total_h(win);
+    // Allow off-screen during resize (clamp is done in window_resize)
+    if (!win->resizing) {
+        if (x < 0) x = 0;
+        if (y < 0) y = 0;
+        if (x + (int)win->w > (int)fw) x = (int)fw - (int)win->w;
+        if (y + (int)win_total_h(win) > (int)fh - (int)TASKBAR_H)
+            y = (int)fh - (int)TASKBAR_H - (int)win_total_h(win);
+    }
     win->x = x; win->y = y;
 }
 
@@ -693,7 +721,7 @@ void compositor_run(void) {
         kernel_poll_net();
         run_background_tasks();
 
-        char k = getchar_poll();
+        int k = getkey_poll();
         if (k == 0x1B) { quit = 1; break; }
 
         int mx = mouse_get_x();
@@ -727,11 +755,35 @@ void compositor_run(void) {
                 if (win) {
                     int dx = mx - win->resize_start_x;
                     int dy = my - win->resize_start_y;
+                    int nx = win->x, ny = win->y;
                     uint32_t nw = win->resize_start_w, nh = win->resize_start_h;
-                    if (win->resize_dir == RESIZE_RIGHT || win->resize_dir == RESIZE_CORNER)
-                        nw = win->resize_start_w + dx;
-                    if (win->resize_dir == RESIZE_BOTTOM || win->resize_dir == RESIZE_CORNER)
-                        nh = win->resize_start_h + dy;
+                    switch (win->resize_dir) {
+                        case RESIZE_RIGHT:
+                        case RESIZE_RIGHT_TOP:
+                        case RESIZE_CORNER:
+                            nw = win->resize_start_w + dx; break;
+                        case RESIZE_LEFT:
+                        case RESIZE_LEFT_TOP:
+                        case RESIZE_LEFT_BOTTOM:
+                            nw = (int)win->resize_start_w - dx;
+                            nx = win->resize_start_x + dx;
+                            break;
+                    }
+                    switch (win->resize_dir) {
+                        case RESIZE_BOTTOM:
+                        case RESIZE_CORNER:
+                        case RESIZE_LEFT_BOTTOM:
+                            nh = win->resize_start_h + dy; break;
+                        case RESIZE_TOP:
+                        case RESIZE_LEFT_TOP:
+                        case RESIZE_RIGHT_TOP:
+                            nh = (int)win->resize_start_h - dy;
+                            ny = win->resize_start_y + dy;
+                            break;
+                    }
+                    if ((int)nw < MIN_WIN_W) { nw = MIN_WIN_W; nx = win->x; }
+                    if ((int)nh < MIN_WIN_H) { nh = MIN_WIN_H; ny = win->y; }
+                    win->x = nx; win->y = ny;
                     window_resize(resize_id, nw, nh);
                     redraw = 1;
                 }
@@ -834,18 +886,16 @@ void compositor_run(void) {
                 }
             }
         } else {
-            // Keyboard shortcuts (always work)
-            if (k == '1') { current_workspace = 0; redraw = 1; }
-            if (k == '2') { current_workspace = 1; redraw = 1; }
-            if (k == '3') { current_workspace = 2; redraw = 1; }
-            if (k == '4') { current_workspace = 3; redraw = 1; }
-            // Route printable keys to focused window's key handler
-            window_t* fwin = find_window(focused_id);
-            if (fwin && fwin->on_key && k >= 0x20) {
-                fwin->on_key(fwin, k);
+            // Keyboard shortcuts (workspace switching) — NOT routed to windows
+            if (k >= '1' && k <= '4') {
+                current_workspace = k - '1';
                 redraw = 1;
+                goto done_click;
             }
-            if (fwin && fwin->on_key && (k == '\n' || k == '\r' || k == '\b' || k == 0x7F)) {
+
+            // Route all keys to focused window's key handler
+            window_t* fwin = find_window(focused_id);
+            if (fwin && fwin->on_key && k > 0) {
                 fwin->on_key(fwin, k);
                 redraw = 1;
             }

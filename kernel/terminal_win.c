@@ -117,15 +117,43 @@ void terminal_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) 
     }
 }
 
-void terminal_win_key(window_t* win, char c) {
+void terminal_win_key(window_t* win, int key) {
+    char c = (char)(key < 0x80 ? key : 0);
     terminal_win_t* term = (terminal_win_t*)win->reserved;
     if (!term) return;
 
-    if (c == '\b' || c == 0x7F) {
-        if (term->input_len > 0) {
-            term->input_len--;
-            if (term->cursor_pos > term->input_len)
+    // Extended keycodes (arrows, etc.)
+    if (key >= 0x80) {
+        switch (key) {
+            case KEY_LEFT:
+                if (term->cursor_pos > 0) term->cursor_pos--;
+                break;
+            case KEY_RIGHT:
+                if (term->cursor_pos < term->input_len) term->cursor_pos++;
+                break;
+            case KEY_HOME:
+                term->cursor_pos = 0;
+                break;
+            case KEY_END:
                 term->cursor_pos = term->input_len;
+                break;
+            case KEY_DEL:
+                if (term->cursor_pos < term->input_len) {
+                    for (int i = term->cursor_pos; i < term->input_len - 1; i++)
+                        term->input[i] = term->input[i + 1];
+                    term->input_len--;
+                }
+                break;
+        }
+        return;
+    }
+
+    if (c == '\b' || c == 0x7F) {
+        if (term->cursor_pos > 0) {
+            for (int i = term->cursor_pos - 1; i < term->input_len - 1; i++)
+                term->input[i] = term->input[i + 1];
+            term->input_len--;
+            term->cursor_pos--;
         }
         return;
     }
@@ -195,8 +223,11 @@ void terminal_win_key(window_t* win, char c) {
 
     if (c >= 0x20 && c < 0x7F) {
         if (term->input_len < TERM_INPUT_MAX - 1) {
-            term->input[term->input_len++] = c;
-            term->cursor_pos = term->input_len;
+            for (int i = term->input_len; i > term->cursor_pos; i--)
+                term->input[i] = term->input[i - 1];
+            term->input[term->cursor_pos] = c;
+            term->input_len++;
+            term->cursor_pos++;
         }
     }
 }

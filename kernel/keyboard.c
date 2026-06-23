@@ -19,6 +19,10 @@ static volatile char kbd_buffer[KBD_BUFFER_SIZE];
 static volatile int kbd_head = 0;
 static volatile int kbd_tail = 0;
 
+static volatile int kbd_keycodes[KBD_BUFFER_SIZE];
+static volatile int kbd_kc_head = 0;
+static volatile int kbd_kc_tail = 0;
+
 // ------------------------------------------------------------
 // Variable global de layout (definida aquí)
 // ------------------------------------------------------------
@@ -127,12 +131,31 @@ char scancode_to_ascii(uint8_t sc) {
 
     if (e0_prefix) {
         e0_prefix = 0;
-        // Alt derecho (AltGr) extendido
         if (sc == 0x38) {
             altgr_pressed = pressed;
             return 0;
         }
-        // Otras teclas extendidas (ignorar)
+        // Map extended keys (Set 1 scancodes with E0 prefix)
+        int keycode = 0;
+        switch (sc & 0x7F) {
+            case 0x48: keycode = KEY_UP;    break;
+            case 0x50: keycode = KEY_DOWN;  break;
+            case 0x4B: keycode = KEY_LEFT;  break;
+            case 0x4D: keycode = KEY_RIGHT; break;
+            case 0x47: keycode = KEY_HOME;  break;
+            case 0x4F: keycode = KEY_END;   break;
+            case 0x49: keycode = KEY_PGUP;  break;
+            case 0x51: keycode = KEY_PGDN;  break;
+            case 0x52: keycode = KEY_INSERT;break;
+            case 0x53: keycode = KEY_DEL;   break;
+        }
+        if (keycode && pressed) {
+            int next = (kbd_kc_head + 1) % KBD_BUFFER_SIZE;
+            if (next != kbd_kc_tail) {
+                kbd_keycodes[kbd_kc_head] = keycode;
+                kbd_kc_head = next;
+            }
+        }
         return 0;
     }
 
@@ -219,6 +242,19 @@ char getchar(void) {
         if (c) return c;
         __asm__ volatile("hlt");
     }
+}
+
+// Returns extended keycodes (> 0x7F) from the keycode buffer,
+// or ASCII chars from the standard buffer, or 0 if nothing.
+int getkey_poll(void) {
+    if (kbd_kc_tail != kbd_kc_head) {
+        int kc = kbd_keycodes[kbd_kc_tail];
+        kbd_kc_tail = (kbd_kc_tail + 1) % KBD_BUFFER_SIZE;
+        return kc;
+    }
+    char c = getchar_poll();
+    if (c) return c;
+    return 0;
 }
 
 // ============================================================

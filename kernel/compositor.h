@@ -21,6 +21,11 @@ enum {
     RESIZE_RIGHT,
     RESIZE_BOTTOM,
     RESIZE_CORNER,
+    RESIZE_LEFT,
+    RESIZE_TOP,
+    RESIZE_LEFT_TOP,
+    RESIZE_RIGHT_TOP,
+    RESIZE_LEFT_BOTTOM,
 };
 
 enum {
@@ -55,7 +60,7 @@ struct window {
     int has_min;
     int has_max;
     window_draw_fn draw;
-    void (*on_key)(struct window* win, char c);
+    void (*on_key)(struct window* win, int key);
     void (*on_click)(struct window* win, int mx, int my);
     void* reserved;
 };
