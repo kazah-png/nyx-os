@@ -19,6 +19,8 @@ static uint32_t taskbar_bg, taskbar_fg, taskbar_hl;
 static uint32_t desktop_bg, title_active, title_inactive;
 
 static int start_menu_open = 0;
+static int ctx_menu_open = 0;
+static int ctx_menu_x = 0, ctx_menu_y = 0;
 static int mouse_x = 0, mouse_y = 0;
 static uint8_t mouse_btns = 0;
 
@@ -306,6 +308,114 @@ static void draw_start_menu(void) {
     }
 }
 
+#define CTX_MENU_W 160
+#define CTX_MENU_H 100
+static const char* ctx_menu_items[] = {
+    "New Folder", "New File", "Refresh", "Settings"
+};
+
+// Forward declarations
+static void redraw_all(void);
+static void do_start_menu_action(int idx);
+
+static void draw_ctx_menu(void) {
+    if (!ctx_menu_open) return;
+    int x = ctx_menu_x, y = ctx_menu_y;
+    uint32_t fw = fb_get_width(), fh = fb_get_height();
+    if (x + CTX_MENU_W > (int)fw) x = (int)fw - CTX_MENU_W - 2;
+    if (y + CTX_MENU_H > (int)fh - TASKBAR_H) y = (int)fh - TASKBAR_H - CTX_MENU_H - 2;
+    fb_fill_rect(x, y, CTX_MENU_W, CTX_MENU_H, fb_rgb(45,45,50));
+    fb_fill_rect(x, y, CTX_MENU_W, 1, fb_rgb(100,100,100));
+    fb_fill_rect(x, y + CTX_MENU_H - 1, CTX_MENU_W, 1, fb_rgb(100,100,100));
+    fb_fill_rect(x, y, 1, CTX_MENU_H, fb_rgb(100,100,100));
+    fb_fill_rect(x + CTX_MENU_W - 1, y, 1, CTX_MENU_H, fb_rgb(100,100,100));
+    for (int i = 0; i < 4; i++) {
+        int iy = y + 4 + i * 24;
+        fb_fill_rect(x + 4, iy, CTX_MENU_W - 8, 22, fb_rgb(45,45,50));
+        font_draw_string(x + 12, iy + 3, ctx_menu_items[i], fb_rgb(220,220,220), fb_rgb(45,45,50));
+    }
+}
+
+static int ctx_menu_hit(int mx, int my) {
+    if (!ctx_menu_open) return 0;
+    int x = ctx_menu_x, y = ctx_menu_y;
+    uint32_t fw = fb_get_width(), fh = fb_get_height();
+    if (x + CTX_MENU_W > (int)fw) x = (int)fw - CTX_MENU_W - 2;
+    if (y + CTX_MENU_H > (int)fh - TASKBAR_H) y = (int)fh - TASKBAR_H - CTX_MENU_H - 2;
+    return mx >= x && mx < x + CTX_MENU_W && my >= y && my < y + CTX_MENU_H;
+}
+
+static int ctx_menu_item_hit(int mx, int my, int* idx) {
+    if (!ctx_menu_open) return 0;
+    int x = ctx_menu_x, y = ctx_menu_y;
+    uint32_t fw = fb_get_width(), fh = fb_get_height();
+    if (x + CTX_MENU_W > (int)fw) x = (int)fw - CTX_MENU_W - 2;
+    if (y + CTX_MENU_H > (int)fh - TASKBAR_H) y = (int)fh - TASKBAR_H - CTX_MENU_H - 2;
+    if (mx < x || mx >= x + CTX_MENU_W || my < y || my >= y + CTX_MENU_H) return 0;
+    *idx = (my - y - 4) / 24;
+    if (*idx < 0 || *idx >= 4) return 0;
+    return 1;
+}
+
+static void do_ctx_menu_action(int idx) {
+    ctx_menu_open = 0;
+    switch (idx) {
+        case 0: // New Folder
+            {
+                // Find an existing file manager window or create one
+                for (int i = 0; i < MAX_WINDOWS; i++) {
+                    if (windows[i] && strcmp(windows[i]->title, "File Manager") == 0) {
+                        fileman_new_folder((fileman_win_t*)windows[i]->reserved);
+                        redraw_all();
+                        return;
+                    }
+                }
+                // Create File Manager which will show the dialog
+                window_t* fwin = window_create(100, 100, 550, 380, "File Manager", fileman_win_draw);
+                if (fwin) {
+                    fwin->reserved = fileman_create_ctx();
+                    if (fwin->reserved) {
+                        fwin->on_click = fileman_win_click;
+                        fwin->on_key = fileman_win_key;
+                        fileman_new_folder((fileman_win_t*)fwin->reserved);
+                    }
+                }
+            }
+            break;
+        case 1: // New File
+            {
+                for (int i = 0; i < MAX_WINDOWS; i++) {
+                    if (windows[i] && strcmp(windows[i]->title, "File Manager") == 0) {
+                        fileman_new_file((fileman_win_t*)windows[i]->reserved);
+                        redraw_all();
+                        return;
+                    }
+                }
+                window_t* fwin = window_create(100, 100, 550, 380, "File Manager", fileman_win_draw);
+                if (fwin) {
+                    fwin->reserved = fileman_create_ctx();
+                    if (fwin->reserved) {
+                        fwin->on_click = fileman_win_click;
+                        fwin->on_key = fileman_win_key;
+                        fileman_new_file((fileman_win_t*)fwin->reserved);
+                    }
+                }
+            }
+            break;
+        case 2: // Refresh
+            for (int i = 0; i < MAX_WINDOWS; i++) {
+                if (windows[i] && strcmp(windows[i]->title, "File Manager") == 0 && windows[i]->reserved) {
+                    fileman_refresh((fileman_win_t*)windows[i]->reserved);
+                }
+            }
+            break;
+        case 3: // Settings
+            do_start_menu_action(4);
+            break;
+    }
+    redraw_all();
+}
+
 static void draw_workspace_indicator(void) {
     uint32_t fw = fb_get_width(), fh = fb_get_height();
     int y = fh - TASKBAR_H - 10;
@@ -317,28 +427,31 @@ static void draw_workspace_indicator(void) {
 
 static void draw_background(void) {
     uint32_t fw = fb_get_width(), fh = fb_get_height();
-    uint32_t colors[4] = {
-        fb_rgb(30,35,50), fb_rgb(35,40,55), fb_rgb(35,40,55), fb_rgb(30,35,50),
-    };
-    uint32_t band_h = fh / 6;
-    for (uint32_t y = 0; y < fh; y++) {
-        uint32_t c = colors[(y / band_h) % 4];
-        for (uint32_t x = 0; x < fw; x++) {
-            int32_t dx = (int32_t)x - (int32_t)fw / 2;
-            int32_t dy = (int32_t)y - (int32_t)fh / 2;
-            int32_t dist = (int32_t)((dx * dx + dy * dy) / 4000);
-            uint32_t r = (c >> 16) & 0xFF;
-            uint32_t g = (c >> 8) & 0xFF;
-            uint32_t b = c & 0xFF;
-            uint32_t udist = (uint32_t)dist;
-            r = r > udist ? r - udist : 0;
-            g = g > udist ? g + udist/2 : 0;
-            b = b > udist ? b : 0;
-            if (r > 60) r = 60;
-            if (g > 80) g = 80;
-            if (b > 100) b = 100;
-            compositor_draw_pixel(x, y, fb_rgb(r, g, b));
-        }
+    // Fast vertical gradient using fill_rect bands
+    uint32_t steps = 64;
+    uint32_t band_h = fh / steps;
+    for (uint32_t i = 0; i < steps; i++) {
+        uint32_t t = i * 255 / steps;
+        uint8_t r = 20 + t * 1 / 64;
+        uint8_t g = 25 + t * 2 / 64;
+        uint8_t b = 40 + t * 3 / 64;
+        if (r > 60) r = 60;
+        if (g > 80) g = 80;
+        if (b > 120) b = 120;
+        fb_fill_rect(0, i * band_h, fw, band_h + 1, fb_rgb(r, g, b));
+    }
+    // Subtle bottom glow
+    uint32_t glow_h = fh / 8;
+    uint32_t glow_start = fh - glow_h;
+    for (uint32_t i = 0; i < glow_h; i++) {
+        uint32_t a = i * 255 / glow_h;
+        uint8_t r = 20 + a * 10 / 255;
+        uint8_t g = 25 + a * 15 / 255;
+        uint8_t b = 50 + a * 30 / 255;
+        if (r > 60) r = 60;
+        if (g > 80) g = 80;
+        if (b > 140) b = 140;
+        fb_fill_rect(0, glow_start + i, fw, 1, fb_rgb(r, g, b));
     }
 }
 
@@ -376,6 +489,7 @@ static void redraw_all(void) {
     draw_workspace_indicator();
     draw_taskbar();
     draw_start_menu();
+    draw_ctx_menu();
 }
 
 static window_t* find_window(int id) {
@@ -395,6 +509,7 @@ static void do_start_menu_action(int idx) {
                     fwin->reserved = fileman_create_ctx();
                     if (fwin->reserved) {
                         fwin->on_click = fileman_win_click;
+                        fwin->on_key = fileman_win_key;
                     }
                 }
             }
@@ -743,6 +858,38 @@ void compositor_run(void) {
             resize_id = 0; redraw = 1;
         }
 
+        // Right-click: desktop context menu
+        if ((btns & 2) && !(btns & 1)) {
+            // Check if we hit desktop (not on a window, not on taskbar)
+            int on_desktop = 1;
+            uint32_t fh = fb_get_height();
+            if (my >= (int)(fh - TASKBAR_H)) on_desktop = 0; // taskbar
+            window_t* sorted_win[MAX_WINDOWS];
+            int nw = 0;
+            for (int i = 0; i < MAX_WINDOWS; i++)
+                if (windows[i] && windows[i]->visible && windows[i]->state != WSTATE_MINIMIZED
+                    && windows[i]->workspace == current_workspace)
+                    sorted_win[nw++] = windows[i];
+            for (int i = 0; i < nw; i++)
+                if (window_hit(sorted_win[i], mx, my)) { on_desktop = 0; break; }
+            if (on_desktop) {
+                if (ctx_menu_hit(mx, my)) {
+                    int idx;
+                    if (ctx_menu_item_hit(mx, my, &idx)) {
+                        do_ctx_menu_action(idx);
+                        redraw = 1;
+                    }
+                } else {
+                    ctx_menu_open = 1;
+                    ctx_menu_x = mx; ctx_menu_y = my;
+                    redraw = 1;
+                }
+            } else {
+                ctx_menu_open = 0;
+            }
+            goto done_click;
+        }
+
         if (btns & 1) {
             if (drag_id) {
                 window_t* win = find_window(drag_id);
@@ -800,6 +947,18 @@ void compositor_run(void) {
                         if (sorted[i]->z_order < sorted[j]->z_order) {
                             window_t* t = sorted[i]; sorted[i] = sorted[j]; sorted[j] = t;
                         }
+
+                // Close context menu on any left-click
+                if (ctx_menu_open) {
+                    int idx;
+                    if (ctx_menu_item_hit(mx, my, &idx)) {
+                        do_ctx_menu_action(idx);
+                        ctx_menu_open = 0;
+                        redraw = 1;
+                    } else {
+                        ctx_menu_open = 0;
+                    }
+                }
 
                 if (start_menu_open) {
                     int idx;
