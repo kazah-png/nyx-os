@@ -317,6 +317,7 @@ static const char* ctx_menu_items[] = {
 // Forward declarations
 static void redraw_all(void);
 static void do_start_menu_action(int idx);
+static void settings_win_click(window_t* win, int mx, int my);
 
 static void draw_ctx_menu(void) {
     if (!ctx_menu_open) return;
@@ -530,7 +531,14 @@ static void do_start_menu_action(int idx) {
             }
             break;
         case 4: // Settings
-            window_create(160, 100, 500, 400, "Settings", settings_draw_fn);
+            {
+                window_t* swin = window_create(160, 100, 500, 340, "Settings", settings_draw_fn);
+                if (swin) {
+                    int* tab = kmalloc(sizeof(int));
+                    if (tab) { *tab = 0; swin->reserved = tab; }
+                    swin->on_click = settings_win_click;
+                }
+            }
             break;
         case 5: // Package Manager
             window_create(180, 120, 480, 360, "Package Manager", NULL);
@@ -731,29 +739,132 @@ static void about_draw_fn(window_t* win, int cx, int cy, uint32_t cw, uint32_t c
     font_draw_string(cx + 10, cy + 80, "inspired by Linux Mint.", fb_rgb(160,160,160), fb_rgb(35,35,40));
 }
 
+enum { SETTINGS_TAB_INFO, SETTINGS_TAB_DISPLAY, SETTINGS_TAB_KEYBOARD };
+
 static void settings_draw_fn(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
-    (void)win;
+    (void)cw; (void)ch;
+    int* tab = win->reserved ? (int*)win->reserved : NULL;
+    int cur_tab = tab ? *tab : 0;
+    uint32_t char_h = FONT_HEIGHT;
     fb_fill_rect(cx, cy, cw, ch, fb_rgb(30,30,35));
+
+    // Tab bar
+    int tab_h = 28;
+    const char* tabs[] = {"Info", "Display", "Keyboard"};
+    for (int i = 0; i < 3; i++) {
+        int tx = cx + 4 + i * 90;
+        uint32_t tbg = (i == cur_tab) ? fb_rgb(50,60,80) : fb_rgb(45,45,50);
+        fb_fill_rect(tx, cy + 2, 86, tab_h - 2, tbg);
+        font_draw_string(tx + (86 - strlen(tabs[i]) * FONT_WIDTH) / 2,
+                         cy + 2 + (tab_h - 2 - char_h) / 2, tabs[i], fb_rgb(220,220,220), tbg);
+    }
+    fb_fill_rect(cx, cy + tab_h, cw, 1, fb_rgb(70,70,80));
+
+    int y = cy + tab_h + 12;
     char buf[128];
-    int y = cy + 10;
-    font_draw_string(cx + 10, y, "System Settings", fb_rgb(100,200,100), fb_rgb(30,30,35));
-    y += 30;
-    snprintf(buf, sizeof(buf), "Kernel: %s %s (%s)", KERNEL_NAME, KERNEL_VERSION, KERNEL_CODENAME);
-    font_draw_string(cx + 10, y, buf, fb_rgb(200,200,200), fb_rgb(30,30,35));
-    y += 20;
-    snprintf(buf, sizeof(buf), "Memory: %d MB total, %d MB used, %d MB free",
-        memory_total / (1024*1024), memory_used / (1024*1024),
-        (memory_total - memory_used) / (1024*1024));
-    font_draw_string(cx + 10, y, buf, fb_rgb(200,200,200), fb_rgb(30,30,35));
-    y += 20;
-    snprintf(buf, sizeof(buf), "Uptime: %d ticks (%d sec)", tick_count, tick_count / 1000);
-    font_draw_string(cx + 10, y, buf, fb_rgb(200,200,200), fb_rgb(30,30,35));
-    y += 20;
-    snprintf(buf, sizeof(buf), "Heap: %d KB", KERNEL_HEAP_SIZE / 1024);
-    font_draw_string(cx + 10, y, buf, fb_rgb(200,200,200), fb_rgb(30,30,35));
-    y += 20;
-    snprintf(buf, sizeof(buf), "Windows: %d / %d", window_count, MAX_WINDOWS);
-    font_draw_string(cx + 10, y, buf, fb_rgb(200,200,200), fb_rgb(30,30,35));
+
+    if (cur_tab == SETTINGS_TAB_INFO) {
+        font_draw_string(cx + 10, y, "System Information", fb_rgb(100,200,100), fb_rgb(30,30,35));
+        y += 24;
+        snprintf(buf, sizeof(buf), "Kernel: %s %s (%s)", KERNEL_NAME, KERNEL_VERSION, KERNEL_CODENAME);
+        font_draw_string(cx + 10, y, buf, fb_rgb(200,200,200), fb_rgb(30,30,35)); y += 18;
+        snprintf(buf, sizeof(buf), "Memory: %d MB total, %d MB free",
+            memory_total / (1024*1024), (memory_total - memory_used) / (1024*1024));
+        font_draw_string(cx + 10, y, buf, fb_rgb(200,200,200), fb_rgb(30,30,35)); y += 18;
+        snprintf(buf, sizeof(buf), "Uptime: %d sec", tick_count / 1000);
+        font_draw_string(cx + 10, y, buf, fb_rgb(200,200,200), fb_rgb(30,30,35)); y += 18;
+        snprintf(buf, sizeof(buf), "Heap: %d KB", KERNEL_HEAP_SIZE / 1024);
+        font_draw_string(cx + 10, y, buf, fb_rgb(200,200,200), fb_rgb(30,30,35)); y += 18;
+        snprintf(buf, sizeof(buf), "Windows: %d / %d", window_count, MAX_WINDOWS);
+        font_draw_string(cx + 10, y, buf, fb_rgb(200,200,200), fb_rgb(30,30,35)); y += 18;
+        snprintf(buf, sizeof(buf), "Resolution: %u x %u", fb_get_width(), fb_get_height());
+        font_draw_string(cx + 10, y, buf, fb_rgb(200,200,200), fb_rgb(30,30,35));
+    } else if (cur_tab == SETTINGS_TAB_DISPLAY) {
+        font_draw_string(cx + 10, y, "Display Settings", fb_rgb(100,200,100), fb_rgb(30,30,35));
+        y += 24;
+        font_draw_string(cx + 10, y, "Resolution:", fb_rgb(220,220,220), fb_rgb(30,30,35)); y += 20;
+
+        const char* res_buttons[] = {"640x480", "800x600", "1024x768", "1280x720"};
+        int btn_w = 110, btn_h = 26;
+        for (int i = 0; i < 4; i++) {
+            int bx = cx + 10 + i * (btn_w + 8);
+            uint32_t bg = fb_rgb(60,70,80);
+            fb_fill_rect(bx, y, btn_w, btn_h, bg);
+            font_draw_string(bx + (btn_w - strlen(res_buttons[i]) * FONT_WIDTH) / 2,
+                             y + (btn_h - char_h) / 2, res_buttons[i], fb_rgb(220,220,220), bg);
+        }
+        y += btn_h + 12;
+        font_draw_string(cx + 10, y, "Current: 1024x768@32bpp", fb_rgb(160,160,160), fb_rgb(30,30,35));
+    } else if (cur_tab == SETTINGS_TAB_KEYBOARD) {
+        font_draw_string(cx + 10, y, "Keyboard Layout", fb_rgb(100,200,100), fb_rgb(30,30,35));
+        y += 24;
+        const char* layout_name = keyboard_layout == 0 ? "US (QWERTY)" : "Spanish (ES)";
+        snprintf(buf, sizeof(buf), "Current: %s", layout_name);
+        font_draw_string(cx + 10, y, buf, fb_rgb(220,220,220), fb_rgb(30,30,35)); y += 24;
+        // US button
+        uint32_t us_bg = (keyboard_layout == 0) ? fb_rgb(50,90,50) : fb_rgb(60,70,80);
+        fb_fill_rect(cx + 10, y, 120, 26, us_bg);
+        font_draw_string(cx + 10 + (120 - 2 * FONT_WIDTH) / 2, y + (26 - char_h) / 2, "US", fb_rgb(220,220,220), us_bg);
+        // ES button
+        uint32_t es_bg = (keyboard_layout == 1) ? fb_rgb(50,90,50) : fb_rgb(60,70,80);
+        fb_fill_rect(cx + 140, y, 120, 26, es_bg);
+        font_draw_string(cx + 140 + (120 - 2 * FONT_WIDTH) / 2, y + (26 - char_h) / 2, "ES", fb_rgb(220,220,220), es_bg);
+    }
+}
+
+static void settings_win_click(window_t* win, int mx, int my) {
+    int* tab = win->reserved ? (int*)win->reserved : NULL;
+    if (!tab) return;
+    int cx = win->x, cy = win->y + TITLE_H;
+
+    // Tab click
+    if (my >= cy + 2 && my < cy + 28) {
+        int rel = mx - cx;
+        for (int i = 0; i < 3; i++) {
+            if (rel >= 4 + i * 90 && rel < 4 + i * 90 + 86) {
+                *tab = i;
+                return;
+            }
+        }
+    }
+
+    if (*tab == SETTINGS_TAB_DISPLAY) {
+        // Resolution buttons
+        int y = cy + 48;
+        int btn_w = 110, btn_h = 26;
+        struct { uint32_t w, h; } res_modes[] = {{640,480},{800,600},{1024,768},{1280,720}};
+        for (int i = 0; i < 4; i++) {
+            int bx = cx + 10 + i * (btn_w + 8);
+            if (mx >= bx && mx < bx + btn_w && my >= y && my < y + btn_h) {
+                // Set resolution
+                uint32_t old_fw = fb_get_width(), old_fh = fb_get_height();
+                if (res_modes[i].w != old_fw || res_modes[i].h != old_fh) {
+                    printf("[SETTINGS] Switching to %ux%u...\n", res_modes[i].w, res_modes[i].h);
+                    vbe_set_mode(res_modes[i].w, res_modes[i].h, 32);
+                    fb_init(res_modes[i].w, res_modes[i].h, 32, (void*)0xE0000000);
+                }
+                return;
+            }
+        }
+    } else if (*tab == SETTINGS_TAB_KEYBOARD) {
+        int y = cy + 48;
+        // US button
+        if (mx >= cx + 10 && mx < cx + 130 && my >= y && my < y + 26) {
+            if (keyboard_layout != 0) {
+                set_keyboard_layout(0);
+                printf("[SETTINGS] Keyboard layout: US\n");
+            }
+            return;
+        }
+        // ES button
+        if (mx >= cx + 140 && mx < cx + 260 && my >= y && my < y + 26) {
+            if (keyboard_layout != 1) {
+                set_keyboard_layout(1);
+                printf("[SETTINGS] Keyboard layout: ES\n");
+            }
+            return;
+        }
+    }
 }
 
 #define NUM_DESKTOP_ICONS 6
