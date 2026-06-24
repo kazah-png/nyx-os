@@ -166,7 +166,9 @@ kernel/
 - Terminal emulator window (scrollback, Tab completion, command execution)
 - File Manager window (VFS browsing, directory navigation, file preview)
 
+## What's new in this session
+- Compositor polish: keyboard input routing (extended keycodes via getkey_poll), workspace keys 1-4 no longer leak to windows, window destruction auto-focus recovery, resize from all edges and corners, terminal cursor-aware input (arrows/home/end/del insert at cursor)
+- ATA/IDE write support: ata_write_sectors (PIO write + cache flush), ext2 write primitives (write_block, write_inode, alloc_block, alloc_inode, create_file), VFS mount-aware write/cp/touch/cat/ls
+
 ## Next features to add
-- Compositor polish (resize, minimize, keyboard input routing)
-- ATA/IDE disk driver (write support)
 - Real-time clock (RTC) driver
