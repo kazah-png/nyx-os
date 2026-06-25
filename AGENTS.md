@@ -28,6 +28,7 @@ Evolve NyxOS into a functional 32-bit x86 kernel with filesystem, networking, sh
 | v2.3.0 | Real EXT2 read support: VFS mount layer, auto-mount at /mnt, ls/cd/cat on ext2 |
 | v2.4.0 | Sound Blaster 16 DMA/IRQ audio driver (sb16play command, DMA buffer fix, auto-init) |
 | v3.0.0 | ELF userspace loader, initramfs, per-process paging, ring 3 execution, int 0x80 syscalls |
+| v3.1.0 | RTC driver, more syscalls (open/read/close/getpid/sbrk/fsize/exec), libc (printf/malloc/snprintf), initramfs auto-boot, desktop polish (right-click, settings, wallpaper) |
 
 ## Architecture
 ### Boot flow
@@ -167,13 +168,19 @@ kernel/
 - File Manager window (VFS browsing, directory navigation, file preview)
 
 ## What's new in this session
-- Compositor polish: keyboard input routing (extended keycodes via getkey_poll), workspace keys 1-4 no longer leak to windows, window destruction auto-focus recovery, resize from all edges and corners, terminal cursor-aware input (arrows/home/end/del insert at cursor)
-- ATA/IDE write support: ata_write_sectors (PIO write + cache flush), ext2 write primitives (write_block, write_inode, alloc_block, alloc_inode, create_file), VFS mount-aware write/cp/touch/cat/ls
 - RTC driver: CMOS RTC via ports 0x70/0x71, binary/24h init, read_time, real wall-clock time in `date` command and taskbar
+- Desktop polish (Fase 1): fast wallpaper, right-click context menu (New Folder, New File, Refresh, Settings), File Manager toolbar + inline name input, Settings window with Info/Display/Keyboard tabs (resolution buttons, US/ES layout toggle)
+- Extended syscalls: open(3), read(4), close(5), getpid(6), sbrk(7), fsize(8), exec(9)
+- User-space libc: crt0.asm, syscall.h (static inline wrappers), libc.h/libc.c (mem, string, stdio, stdlib)
+- SYS_EXEC: replaces calling process in-place with new ELF via kernel stack frame (popa + iret to ring 3)
+- ELF segment copy fix: non-page-aligned PT_LOAD copies data at correct page offset (dst_off = vaddr & 0xFFF)
+- Syscall popa bugfix: isr_stubs.asm saves EAX to [esp+28] (saved EAX slot) instead of [esp] (saved EDI slot)
+- SYS_EXIT fix: for(;;) hlt instead of sti;hlt to prevent GPF from returning to dead user process
+- hello.elf build fix: linked with ld -e _start -Ttext 0x10000 for proper ET_EXEC with valid program headers
+- init.elf rewritten to use full libc (printf, malloc, snprintf, free) — boots, prints system info, exits cleanly
 
 ## Next features to add
 - Wire DOOM sound module to SB16 output (DOOM has no audio yet)
-- Add `init` as default program (auto-start from initramfs)
-- More syscalls (open, read, sbrk) for realistic userspace
-- ELF dynamic linking (or keep static-only)
-- Clean up boot-time write test (already minimal)
+- Scrollbar in File Manager
+- Drag-reorder desktop icons
+- Right-click context menu in File Manager (rename, copy, paste)
