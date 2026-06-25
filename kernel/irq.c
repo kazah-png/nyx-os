@@ -16,30 +16,29 @@ void init_irq(void) {
     outb(0xA1, 0x02);
     outb(0x21, 0x01);
     outb(0xA1, 0x01);
-    // All IRQs masked by default; unmask timer+kbd later
     outb(0x21, 0xFF);
     outb(0xA1, 0xFF);
 
-    idt_set_gate(32, (uint32_t)irq0,  0x08, 0x8E);
-    idt_set_gate(33, (uint32_t)irq1,  0x08, 0x8E);
-    idt_set_gate(34, (uint32_t)irq2,  0x08, 0x8E);
-    idt_set_gate(35, (uint32_t)irq3,  0x08, 0x8E);
-    idt_set_gate(36, (uint32_t)irq4,  0x08, 0x8E);
-    idt_set_gate(37, (uint32_t)irq5,  0x08, 0x8E);
-    idt_set_gate(38, (uint32_t)irq6,  0x08, 0x8E);
-    idt_set_gate(39, (uint32_t)irq7,  0x08, 0x8E);
-    idt_set_gate(40, (uint32_t)irq8,  0x08, 0x8E);
-    idt_set_gate(41, (uint32_t)irq9,  0x08, 0x8E);
-    idt_set_gate(42, (uint32_t)irq10, 0x08, 0x8E);
-    idt_set_gate(43, (uint32_t)irq11, 0x08, 0x8E);
-    idt_set_gate(44, (uint32_t)irq12, 0x08, 0x8E);
-    idt_set_gate(45, (uint32_t)irq13, 0x08, 0x8E);
-    idt_set_gate(46, (uint32_t)irq14, 0x08, 0x8E);
-    idt_set_gate(47, (uint32_t)irq15, 0x08, 0x8E);
+    idt_set_gate(32, (uint64_t)irq0,  0x08, 0x8E);
+    idt_set_gate(33, (uint64_t)irq1,  0x08, 0x8E);
+    idt_set_gate(34, (uint64_t)irq2,  0x08, 0x8E);
+    idt_set_gate(35, (uint64_t)irq3,  0x08, 0x8E);
+    idt_set_gate(36, (uint64_t)irq4,  0x08, 0x8E);
+    idt_set_gate(37, (uint64_t)irq5,  0x08, 0x8E);
+    idt_set_gate(38, (uint64_t)irq6,  0x08, 0x8E);
+    idt_set_gate(39, (uint64_t)irq7,  0x08, 0x8E);
+    idt_set_gate(40, (uint64_t)irq8,  0x08, 0x8E);
+    idt_set_gate(41, (uint64_t)irq9,  0x08, 0x8E);
+    idt_set_gate(42, (uint64_t)irq10, 0x08, 0x8E);
+    idt_set_gate(43, (uint64_t)irq11, 0x08, 0x8E);
+    idt_set_gate(44, (uint64_t)irq12, 0x08, 0x8E);
+    idt_set_gate(45, (uint64_t)irq13, 0x08, 0x8E);
+    idt_set_gate(46, (uint64_t)irq14, 0x08, 0x8E);
+    idt_set_gate(47, (uint64_t)irq15, 0x08, 0x8E);
 }
 
-void irq_handler(uint32_t int_no) {
-    uint32_t irq_no = int_no - 32;
+void irq_handler(uint64_t int_no) {
+    uint32_t irq_no = (uint32_t)(int_no - 32);
     if (irq_no == 0) tick_count++;
     if (irq_handlers[irq_no] != NULL) {
         irq_handlers[irq_no](NULL);

@@ -116,7 +116,7 @@ static void dma_set_mode(int channel, uint8_t mode) {
 
 int sb16_start_dma(uint8_t* buffer, uint32_t len, uint8_t bits) {
     if (!buffer || len == 0) return -1;
-    uint32_t phys = (uint32_t)buffer;
+    uintptr_t phys = (uintptr_t)buffer;
     if (phys >= ISA_DMA_MAX) return -1;
 
     uint8_t channel = (bits == 16) ? SB16_DMA_CHANNEL_16BIT : SB16_DMA_CHANNEL_8BIT;
@@ -192,7 +192,8 @@ uint32_t sb16_get_buffer_size(void) {
     return sb16.dma_buffer_size;
 }
 
-void sb16_irq_handler(void) {
+void sb16_irq_handler(void* unused) {
+    (void)unused;
     sb16_irq_fired = 1;
     sb16_dma_playing = 0;
     uint8_t status = inb(SB16_DSP_READ_STAT);

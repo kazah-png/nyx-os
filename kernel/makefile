@@ -1,32 +1,38 @@
 # ============================================================
-# kernel/Makefile - Compilación del kernel NyxOS v2.1.1
+# kernel/Makefile - Compilación del kernel NyxOS x86_64
 # ============================================================
 
-TARGET = i686-elf
-CC = $(TARGET)-gcc
+CC = gcc
 AS = nasm
-LD = $(TARGET)-ld
+LD = ld
 
 CFLAGS = -std=gnu99 -ffreestanding -Os -Wall -Wextra \
          -nostdlib -nostartfiles -nodefaultlibs \
-         -fno-stack-protector -fno-pie -m32 \
+         -fno-stack-protector -fno-pie -m64 \
+         -mno-red-zone -mno-sse -mno-mmx -mno-sse2 \
+         -mno-3dnow -mcmodel=large \
          -ffunction-sections -fdata-sections \
          -I.
 
-DOOM_CFLAGS = $(CFLAGS) -I doom_src -D DOOMGENERIC -D CMAP256=1
+DOOM_CFLAGS = -std=gnu99 -ffreestanding -Os -Wall -Wextra \
+              -nostdlib -nostartfiles -nodefaultlibs \
+              -fno-stack-protector -fno-pie -m64 \
+              -mno-red-zone -mcmodel=large \
+              -ffunction-sections -fdata-sections \
+              -I. -I doom_src -D DOOMGENERIC -D CMAP256=1
 
-ASFLAGS = -f elf32
+ASFLAGS = -f elf64
 
-LDFLAGS = -T linker.ld -nostdlib -m elf_i386
+LDFLAGS = -T linker.ld -nostdlib -m elf_x86_64
 
-OBJS_KERNEL = boot.o kernel.o gdt.o gdt_flush.o idt.o idt_load.o isr.o isr_stubs.o irq.o \
-       memory.o heap.o process.o syscall.o vfs.o ext2.o ata.o net.o udp.o \
-       ip.o arp.o ethernet.o rtl8139.o icmp.o timer.o keyboard.o screen.o \
-       serial.o umoddi3.o paging.o switch.o dhcp.o \
+OBJS_KERNEL = boot.o kernel.o gdt.o idt.o isr.o isr_stubs.o irq.o \
+        memory.o heap.o process.o syscall.o vfs.o ext2.o ata.o net.o udp.o \
+        ip.o arp.o ethernet.o rtl8139.o icmp.o timer.o keyboard.o screen.o \
+        serial.o umoddi3.o paging.o switch.o stubs.o dhcp.o \
        vga_graphics.o doom_nyxos.o \
        vbe.o fb.o mouse.o gui.o font.o compositor.o speaker.o tcp.o \
        sb16.o doom_nyxos_sound.o terminal_win.o fileman_win.o \
-        elf.o initramfs.o rtc.o
+       elf.o initramfs.o rtc.o
 
 DOOM_OBJS = \
     doom_src/am_map.o \
@@ -117,52 +123,47 @@ all: $(USER_ELFS) nyx-kernel.bin
 nyx-kernel.bin: $(OBJS)
 	$(LD) $(LDFLAGS) -o $@ $^
 
-# Kernel C files use normal CFLAGS
 %.o: %.c
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# DOOM source files use DOOM_CFLAGS (with -I doom_src)
 doom_src/%.o: doom_src/%.c
 	$(CC) $(DOOM_CFLAGS) -c $< -o $@
 
-# Assembly files
 %.o: %.asm
 	$(AS) $(ASFLAGS) $< -o $@
 
-# Special rule for doom_nyxos.c (in kernel root, not doom_src)
 doom_nyxos.o: doom_nyxos.c
 	$(CC) $(DOOM_CFLAGS) -c $< -o $@
 
-# Special rule for doom_nyxos_sound.c (SB16 DOOM sound module)
 doom_nyxos_sound.o: doom_nyxos_sound.c
 	$(CC) $(DOOM_CFLAGS) -c $< -o $@
 
-# Generate WAD object file
+# Generate WAD object file (raw binary → ELF64 .rodata)
 doom1_wad.o: doom1.wad
-	$(TARGET)-objcopy -I binary -O elf32-i386 -B i386 \
+	objcopy -I binary -O elf64-x86-64 -B i386:x86-64 \
 		--rename-section .data=.rodata,alloc,load,readonly,data,contents $< $@
 
-# User-space programs
+# User-space programs (x86_64 native)
 USER_DIR = ../user
 USER_ELFS = $(USER_DIR)/hello.elf $(USER_DIR)/init.elf
 
 $(USER_DIR)/hello.elf: $(USER_DIR)/hello.asm
-	$(AS) $(ASFLAGS) $< -o $(USER_DIR)/hello.o
-	$(LD) -nostdlib -m elf_i386 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/hello.o
+	nasm -f elf64 $< -o $(USER_DIR)/hello.o
+	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/hello.o
 
 $(USER_DIR)/init.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.o $(USER_DIR)/init.o
-	$(LD) -nostdlib -m elf_i386 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o $(USER_DIR)/libc.o $(USER_DIR)/init.o
+	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o $(USER_DIR)/libc.o $(USER_DIR)/init.o
 
 $(USER_DIR)/crt0.o: $(USER_DIR)/crt0.asm
-	$(AS) $(ASFLAGS) $< -o $@
+	nasm -f elf64 $< -o $@
 
-$(USER_DIR)/libc.o: $(USER_DIR)/libc.c $(USER_DIR)/libc.h
-	$(CC) $(CFLAGS) -ffreestanding -nostdlib -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/libc.o: $(USER_DIR)/libc.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
+	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
-$(USER_DIR)/init.o: $(USER_DIR)/init.c
-	$(CC) $(CFLAGS) -ffreestanding -nostdlib -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/init.o: $(USER_DIR)/init.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
+	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
-# Generate initramfs C header (depends on user ELF files)
+# Generate initramfs C header
 MKINITRAMFS = ../tools/mkinitramfs.py
 initramfs_data.h: $(MKINITRAMFS) $(USER_ELFS)
 	python3 $(MKINITRAMFS) $@ c

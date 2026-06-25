@@ -1,5 +1,5 @@
 // ============================================================
-// kernel.h - Cabecera principal del kernel NyxOS v2.1.1
+// kernel.h - Cabecera principal del kernel NyxOS x86_64
 // ============================================================
 #ifndef KERNEL_H
 #define KERNEL_H
@@ -7,8 +7,8 @@
 // ============================================================
 // Tipos básicos (sin incluir cabeceras estándar)
 // ============================================================
-typedef unsigned int size_t;
-typedef int ssize_t;
+typedef unsigned long size_t;
+typedef long ssize_t;
 typedef signed char int8_t;
 typedef unsigned char uint8_t;
 typedef short int16_t;
@@ -17,12 +17,16 @@ typedef int int32_t;
 typedef unsigned int uint32_t;
 typedef long long int64_t;
 typedef unsigned long long uint64_t;
-typedef int intptr_t;
-typedef unsigned int uintptr_t;
+typedef long intptr_t;
+typedef unsigned long uintptr_t;
 typedef int wchar_t;
 typedef unsigned int mode_t;
 typedef int32_t pid_t;
-typedef int bool;
+#ifndef __bool_true_false_are_defined
+typedef _Bool bool;
+#define true 1
+#define false 0
+#endif
 #define false 0
 #define true 1
 
@@ -44,22 +48,20 @@ typedef __builtin_va_list va_list;
 #define KERNEL_DATE    "2026"
 
 #define ARCH_X86 1
-#define BITS_32  1
+#define BITS_64  1
 
 #define PAGE_SIZE        4096
 #define PAGE_ALIGN(addr) (((addr) + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1))
-#define KERNEL_BASE      0xC0000000
-#define KERNEL_HEAP_START 0xD0000000
-#define KERNEL_HEAP_SIZE  (16 * 1024 * 1024)  // 16 MB (matches heap.c)
+#define KERNEL_BASE      0xFFFFFFFF80000000
+#define KERNEL_HEAP_START 0xFFFFFFFF90000000
+#define KERNEL_HEAP_SIZE  (16 * 1024 * 1024)
 
-// Segment selectors
+// Segment selectors (same as 32-bit)
 #define KERNEL_CS  0x08
 #define KERNEL_DS  0x10
 #define USER_CS   0x1B
 #define USER_DS   0x23
 #define TSS_SEL   0x28
-
-#define SYSCALL_INT 0x80
 
 #define MAX_PROCESSES    512
 #define MAX_THREADS      1024
@@ -94,6 +96,20 @@ typedef __builtin_va_list va_list;
 #define KEY_INSERT  0x88
 #define KEY_DEL     0x89
 
+// CR4 flags
+#define CR4_PAE     (1 << 5)
+
+// EFER MSR (0xC0000080)
+#define MSR_EFER    0xC0000080
+#define EFER_LME    (1 << 8)
+#define EFER_LMA    (1 << 10)
+
+// STAR, LSTAR, SF_MASK MSRs for syscall
+#define MSR_STAR     0xC0000081
+#define MSR_LSTAR    0xC0000082
+#define MSR_CSTAR    0xC0000083
+#define MSR_SF_MASK  0xC0000084
+
 // ============================================================
 // ESTRUCTURAS
 // ============================================================
@@ -111,35 +127,46 @@ typedef struct process {
     void* kernel_stack;
     uint32_t state;
     uint32_t priority;
-    uint32_t capabilities;
-    uint32_t stealth_level;
     uint32_t cpu_time;
     uint32_t start_time;
     void* files[MAX_FILES];
-    uint32_t program_break;
+    uint64_t program_break;
     struct process* next;
     struct process* parent;
     struct process* children;
 } process_t;
 
-typedef struct tss_entry {
-    uint32_t prev_tss;
-    uint32_t esp0;
-    uint32_t ss0;
-    uint32_t esp1;
-    uint32_t ss1;
-    uint32_t esp2;
-    uint32_t ss2;
-    uint32_t cr3;
-    uint32_t eip;
-    uint32_t eflags;
-    uint32_t eax, ecx, edx, ebx;
-    uint32_t esp, ebp, esi, edi;
-    uint32_t es, cs, ss, ds, fs, gs;
-    uint32_t ldt;
-    uint16_t trap;
+// x86_64 TSS (104 bytes)
+typedef struct {
+    uint32_t reserved0;
+    uint64_t rsp0;
+    uint64_t rsp1;
+    uint64_t rsp2;
+    uint64_t reserved1;
+    uint64_t ist1;
+    uint64_t ist2;
+    uint64_t ist3;
+    uint64_t ist4;
+    uint64_t ist5;
+    uint64_t ist6;
+    uint64_t ist7;
+    uint64_t reserved2;
+    uint16_t reserved3;
     uint16_t iomap_base;
 } __attribute__((packed)) tss_entry_t;
+
+// RTC time structure (also in rtc.h)
+#ifndef RTC_TIME_T_DEFINED
+#define RTC_TIME_T_DEFINED
+typedef struct {
+    uint8_t second;
+    uint8_t minute;
+    uint8_t hour;
+    uint8_t day;
+    uint8_t month;
+    uint16_t year;
+} rtc_time_t;
+#endif
 
 typedef struct {
     uint32_t tid;
@@ -238,21 +265,21 @@ enum vga_color {
 // VARIABLES GLOBALES EXTERNAS
 // ============================================================
 extern process_t* process_table[MAX_PROCESSES];
-extern uint32_t memory_total;
-extern uint32_t memory_used;
+extern uint64_t memory_total;
+extern uint64_t memory_used;
 extern uint32_t tick_count;
 extern int process_count;
 extern net_iface_t net_interfaces[8];
-extern uint32_t saved_esp;
-extern uint32_t next_esp;
+extern uint64_t saved_rsp;
+extern uint64_t next_rsp;
 
 // ============================================================
 // DECLARACIONES DE FUNCIONES ENSAMBLADOR
 // ============================================================
 extern void memcpy_asm(void* dest, const void* src, size_t n);
 extern void memset_asm(void* dest, uint8_t val, size_t n);
-extern void idt_load(uint32_t idt_ptr);
-extern void gdt_flush(uint32_t gdt_ptr);
+extern void _gdt_flush(uint64_t gdt_ptr);
+extern void _idt_flush(uint64_t idt_ptr);
 
 // ============================================================
 // FUNCIONES DE E/S INLINE
@@ -284,36 +311,46 @@ static inline uint32_t inl(uint16_t port) {
 static inline void io_wait(void) { outb(0x80, 0); }
 static inline void enable_interrupts(void) { __asm__ volatile ("sti"); }
 static inline void disable_interrupts(void) { __asm__ volatile ("cli"); }
-static inline uint32_t read_cr0(void) {
-    uint32_t val;
+static inline uint64_t read_cr0(void) {
+    uint64_t val;
     __asm__ volatile ("mov %%cr0, %0" : "=r"(val));
     return val;
 }
-static inline void write_cr0(uint32_t val) {
+static inline void write_cr0(uint64_t val) {
     __asm__ volatile ("mov %0, %%cr0" : : "r"(val));
 }
-static inline uint32_t read_cr2(void) {
-    uint32_t val;
+static inline uint64_t read_cr2(void) {
+    uint64_t val;
     __asm__ volatile ("mov %%cr2, %0" : "=r"(val));
     return val;
 }
-static inline uint32_t read_cr3(void) {
-    uint32_t val;
+static inline uint64_t read_cr3(void) {
+    uint64_t val;
     __asm__ volatile ("mov %%cr3, %0" : "=r"(val));
     return val;
 }
-static inline void write_cr3(uint32_t val) {
+static inline void write_cr3(uint64_t val) {
     __asm__ volatile ("mov %0, %%cr3" : : "r"(val));
 }
 static inline void flush_tlb(void) {
-    __asm__ volatile ("mov %%cr3, %%eax; mov %%eax, %%cr3" : : : "eax");
+    uint64_t cr3;
+    __asm__ volatile ("mov %%cr3, %0; mov %0, %%cr3" : "=r"(cr3) :: "memory");
 }
 static inline void invlpg(void *addr) {
-    __asm__ volatile ("invlpg (%0)" : : "r"(addr));
+    __asm__ volatile ("invlpg (%0)" : : "r"(addr) : "memory");
+}
+
+static inline uint64_t read_msr(uint32_t msr) {
+    uint32_t lo, hi;
+    __asm__ volatile ("rdmsr" : "=a"(lo), "=d"(hi) : "c"(msr));
+    return ((uint64_t)hi << 32) | lo;
+}
+static inline void write_msr(uint32_t msr, uint64_t val) {
+    __asm__ volatile ("wrmsr" : : "a"((uint32_t)val), "d"((uint32_t)(val >> 32)), "c"(msr));
 }
 
 // ============================================================
-// FUNCIONES UTILITARIAS (protegidas con DOOMGENERIC)
+// FUNCIONES UTILITARIAS
 // ============================================================
 #ifndef DOOMGENERIC
 static inline void *memcpy(void *dest, const void *src, size_t n) {
@@ -322,7 +359,6 @@ static inline void *memcpy(void *dest, const void *src, size_t n) {
 }
 static inline void *memmove(void *dest, const void *src, size_t n) {
     if (dest == src) return dest;
-    // Simple byte-by-byte copy (forward/backward as needed)
     if ((uintptr_t)dest < (uintptr_t)src) {
         for (size_t i = 0; i < n; i++) ((uint8_t*)dest)[i] = ((const uint8_t*)src)[i];
     } else {
@@ -392,8 +428,7 @@ static inline long strtol(const char *s, char **end, int base) {
     if (*s == '-') { sign = -1; s++; }
     else if (*s == '+') s++;
     if ((base == 0 || base == 16) && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
-        s += 2;
-        base = 16;
+        s += 2; base = 16;
     }
     if (base == 0) base = 10;
     while (*s) {
@@ -414,7 +449,7 @@ static inline long strtol(const char *s, char **end, int base) {
 // ============================================================
 // PROTOTIPOS DE FUNCIONES GLOBALES
 // ============================================================
-void kernel_main(uint32_t magic, void* mboot_ptr);
+void kernel_main(uint64_t magic, void* mboot_ptr);
 void kernel_panic(const char* msg, ...);
 void launch_shell(void);
 void nyxfetch(void);
@@ -423,20 +458,20 @@ void command_complete(const char* partial, char* out, int out_size, int* match_c
 void command_list_matches(const char* partial, char* out, int out_size);
 
 void init_gdt(void);
-void gdt_set_gate(int32_t num, uint32_t base, uint32_t limit, uint8_t access, uint8_t gran);
-void tss_set_stack(uint32_t esp0);
+void gdt_set_gate(int32_t num, uint32_t base, uint32_t limit, uint8_t access, uint8_t flags);
+void tss_set_stack(uint64_t rsp0);
 void load_tss(void);
 void init_idt(void);
-void idt_set_gate(uint8_t num, uint32_t base, uint16_t sel, uint8_t flags);
+void idt_set_gate(uint8_t num, uint64_t base, uint16_t sel, uint8_t flags);
 void init_isr(void);
-void isr_handler(uint32_t int_no, uint32_t err_code);
+void isr_handler(uint64_t int_no);
 void init_irq(void);
-void irq_handler(uint32_t irq_no);
+void irq_handler(uint64_t irq_no);
 void irq_install_handler(int irq, void (*handler)(void*));
 void irq_unmask(int irq);
 void irq_mask(int irq);
 
-void init_memory(uint32_t mem_size);
+void init_memory(uint64_t mem_size);
 void* kmalloc(size_t size);
 void* kmalloc_aligned(size_t size, uint32_t align);
 void kfree(void* ptr);
@@ -449,34 +484,32 @@ void* get_phys_addr(void* virtual_addr);
 void map_page(void* phys_addr, void* virt_addr, uint32_t flags);
 void unmap_page(void* virt_addr);
 void* clone_page_directory(void);
-uint32_t* alloc_page_directory(void);
-uint32_t* get_kernel_page_directory(void);
-void switch_page_directory(uint32_t* pd);
-void map_page_dir(uint32_t* pd, void* phys, void* virt, uint32_t flags);
+uint64_t* alloc_page_directory(void);
+uint64_t* get_kernel_page_directory(void);
+void switch_page_directory(uint64_t* pd);
+void map_page_dir(uint64_t* pd, void* phys, void* virt, uint32_t flags);
 
 void init_heap(void);
 void* heap_alloc(size_t size);
 void heap_free(void* ptr);
 
 void init_process(void);
-process_t* create_process(const char* name, void* entry, uint32_t flags);
-process_t* create_user_process(const char* name, void* entry, void* user_stack, uint32_t* page_dir);
+process_t* create_process(const char* name, void* entry, uint64_t flags);
+process_t* create_user_process(const char* name, void* entry, void* user_stack, uint64_t* page_dir);
 void switch_to_user_process(process_t* proc);
-void destroy_process(uint32_t pid);
-void hide_process(uint32_t pid);
-void unhide_process(uint32_t pid);
-void fake_process_info(uint32_t pid, const char* fake_name, uint32_t fake_ppid);
-process_t* find_process(uint32_t pid);
+void destroy_process(uint64_t pid);
+process_t* find_process(uint64_t pid);
 process_t* get_current_process(void);
 void schedule(void);
-void switch_context(uint32_t* old_esp_ptr, uint32_t new_esp);
-uint32_t create_task_stack(uint32_t stack_top, uint32_t entry_point);
+void switch_context(uint64_t* old_rsp_ptr, uint64_t new_rsp);
+uint64_t create_task_stack(uint64_t stack_top, uint64_t entry_point);
+void ensure_idle_process(void);
 
 void init_syscalls(void);
-uint32_t syscall_handler_c(uint32_t syscall_no, uint32_t arg1, uint32_t arg2, uint32_t arg3, uint32_t arg4, uint32_t arg5);
-extern void syscall_stub(void);
-void* get_syscall_table(void);
-void register_syscall(uint32_t num, void* handler);
+void setup_syscall_msrs(void);
+void set_kernel_rsp(uint64_t rsp);
+uint64_t syscall_handler(uint64_t syscall_no, uint64_t arg1, uint64_t arg2, uint64_t arg3, uint64_t arg4, uint64_t arg5);
+extern void syscall_entry(void);
 
 void init_vfs(void);
 int vfs_open(const char* path, int flags, mode_t mode);
@@ -492,18 +525,10 @@ int vfs_create_from_mem(const char* path, uint8_t* data, uint32_t size);
 void init_load_modules(void);
 
 void init_net(void);
-int net_create_socket(int domain, int type, int protocol);
-int net_bind(int sock, uint32_t ip, uint16_t port);
-int net_listen(int sock, int backlog);
-int net_accept(int sock);
-int net_connect(int sock, uint32_t ip, uint16_t port);
-int net_send(int sock, const void* buf, size_t len);
-int net_recv(int sock, void* buf, size_t len);
-int net_close(int sock);
-
-
-
-
+void kernel_poll_net(void);
+void init_background_tasks(void);
+void run_background_tasks(void);
+void irq_scheduler_tick(void);
 
 void init_timer(uint32_t frequency);
 uint32_t get_ticks(void);
@@ -521,11 +546,10 @@ char getchar_poll(void);
 int  getkey_poll(void);
 void keyboard_irq_handler(void* unused);
 
-
 void init_screen(void);
-void putchar(char c);
+int putchar(int c);
 int puts(const char* str);
-void set_putchar_hook(void (*hook)(char c));
+void set_putchar_hook(int (*hook)(int c));
 int printf(const char* fmt, ...);
 int vprintf(const char* fmt, va_list args);
 void clear_screen(void);
@@ -538,11 +562,9 @@ int pipe_stop(void);
 const char* pipe_get_data(void);
 int pipe_get_len(void);
 
-// ELF loader
 int elf_load(const uint8_t* data, uint32_t size, process_t** out_proc);
 int elf_validate(const uint8_t* data, uint32_t size);
 
-// initramfs
 int initramfs_load(void);
 void initramfs_boot(void);
 
@@ -550,8 +572,6 @@ void init_ext2(void);
 int  ata_init(void);
 int  ata_read_sectors(uint8_t drive, uint32_t lba, uint8_t count, void* buf);
 int  ext2_mount(uint8_t drive, uint32_t part_lba);
-
-// EXT2 VFS driver (struct details in ext2.h)
 uint32_t ext2_resolve(const char* path);
 uint32_t ext2_get_size(const char* path);
 int  ext2_read_file(const char* path, void* buf, uint32_t maxlen);
@@ -559,8 +579,6 @@ int  ext2_write_file(const char* path, const void* buf, uint32_t len);
 int  ext2_create_file(const char* path);
 int  ext2_readdir(const char* path, dirent_t* entries, uint32_t max_entries);
 
-// Network driver and polling
-void kernel_poll_net(void);
 int rtl8139_init(void);
 void eth_poll(int iface_idx);
 void arp_init(void);
@@ -574,20 +592,14 @@ int tcp_connect(uint32_t dst_ip, uint16_t dst_port, uint16_t src_port);
 int tcp_send(int conn_id, const uint8_t* data, uint32_t len);
 int tcp_recv(int conn_id, uint8_t* buf, uint32_t max_len);
 int tcp_close(int conn_id);
-void init_background_tasks(void);
-void run_background_tasks(void);
-void irq_scheduler_tick(void);
-void ensure_idle_process(void);
 
 // VFS mount layer
 #define FS_TYPE_EXT2  1
 #define MAX_MOUNT_POINTS 8
-
 typedef struct {
-    int type;                    // FS_TYPE_EXT2, etc
+    int type;
     char mount_point[MAX_PATH];
-    void* fs_data;              // per-filesystem data
-    // Driver operations
+    void* fs_data;
     uint32_t (*resolve)(const char* path);
     uint32_t (*get_size)(const char* path);
     int (*read_file)(const char* path, void* buf, uint32_t maxlen);
@@ -597,8 +609,6 @@ typedef struct {
 
 int vfs_mount(const char* mount_point, int fs_type, void* fs_data);
 mount_entry_t* vfs_find_mount(const char* path);
-
-// New VFS helpers
 const char* vfs_getcwd(void);
 int vfs_chdir(const char* path);
 void vfs_list_dir(const char* path);
@@ -608,30 +618,18 @@ int vfs_write_file(const char* path, const void* buf, uint32_t len);
 int vfs_cp(const char* src, const char* dst);
 void vfs_rename(const char* old, const char* new);
 
-
-
-// ============================================================
-// DECLARACIONES PARA CAMBIO DE DISTRIBUCIÓN DE TECLADO
-// ============================================================
-extern int keyboard_layout;                 // 0 = US, 1 = ES
+extern int keyboard_layout;
 void set_keyboard_layout(int layout);
 
-// ===== UTILITY FUNCTIONS =====
 int snprintf(char *buf, size_t size, const char *fmt, ...);
 char* strcasestr(const char *haystack, const char *needle);
 
-// ===== SOPORTE PARA MODO GRÁFICO VGA =====
 void vga_set_mode_13h(void);
 void vga_copy_buffer(uint8_t* buffer);
-
-// ===== FUNCIÓN PARA EJECUTAR DOOM =====
 void run_doom(void);
-
-// DOOM WAD direct memory access
 extern uint8_t* doom_wad_data;
 extern uint32_t doom_wad_size;
 
-// ===== VBE / FRAMEBUFFER =====
 int vbe_init(void);
 int vbe_set_mode(uint32_t width, uint32_t height, uint32_t bpp);
 uint32_t vbe_get_width(void);
@@ -642,15 +640,13 @@ void* vbe_get_lfb(void);
 void fb_init(uint32_t width, uint32_t height, uint32_t bpp, void* addr);
 void fb_put_pixel(uint32_t x, uint32_t y, uint32_t color);
 void fb_fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color);
-void fb_blit(const void* src, uint32_t sx, uint32_t sy, uint32_t w, uint32_t h,
-             uint32_t dx, uint32_t dy);
+void fb_blit(const void* src, uint32_t sx, uint32_t sy, uint32_t w, uint32_t h, uint32_t dx, uint32_t dy);
 void fb_clear(uint32_t color);
 uint32_t fb_get_width(void);
 uint32_t fb_get_height(void);
 void* fb_get_addr(void);
 uint32_t fb_rgb(uint8_t r, uint8_t g, uint8_t b);
 
-// ===== MOUSE =====
 int mouse_init(void);
 void mouse_irq_handler(void* unused);
 int mouse_get_x(void);
@@ -658,19 +654,27 @@ int mouse_get_y(void);
 int mouse_get_buttons(void);
 void mouse_set_pos(int x, int y);
 
-// ===== FONT RENDERING =====
 void font_draw_char(uint32_t x, uint32_t y, unsigned char c, uint32_t fg, uint32_t bg);
 void font_draw_string(uint32_t x, uint32_t y, const char* str, uint32_t fg, uint32_t bg);
 uint32_t font_get_width(void);
 uint32_t font_get_height(void);
 
-// ===== GUI DEMO =====
 void gui_demo(void);
-
-// ===== SPEAKER =====
 void speaker_init(void);
 void speaker_on(uint32_t frequency);
 void speaker_off(void);
 void speaker_beep(uint32_t frequency, uint32_t duration_ms);
+
+int sb16_init(void);
+int sb16_play_pcm(const uint8_t* data, uint32_t len, uint32_t sample_rate, int bits, int channels);
+void sb16_stop(void);
+int sb16_is_playing(void);
+
+void rtc_init(void);
+void rtc_read_time(rtc_time_t* time);
+
+// Compositor
+void compositor_init(void);
+void compositor_run(void);
 
 #endif // KERNEL_H

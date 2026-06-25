@@ -428,30 +428,28 @@ static void draw_workspace_indicator(void) {
 
 static void draw_background(void) {
     uint32_t fw = fb_get_width(), fh = fb_get_height();
-    // Fast vertical gradient using fill_rect bands
     uint32_t steps = 64;
     uint32_t band_h = fh / steps;
     for (uint32_t i = 0; i < steps; i++) {
         uint32_t t = i * 255 / steps;
-        uint8_t r = 20 + t * 1 / 64;
-        uint8_t g = 25 + t * 2 / 64;
-        uint8_t b = 40 + t * 3 / 64;
-        if (r > 60) r = 60;
-        if (g > 80) g = 80;
-        if (b > 120) b = 120;
+        uint8_t r = 40 + t * 2 / 64;
+        uint8_t g = 50 + t * 3 / 64;
+        uint8_t b = 90 + t * 4 / 64;
+        if (r > 100) r = 100;
+        if (g > 120) g = 120;
+        if (b > 200) b = 200;
         fb_fill_rect(0, i * band_h, fw, band_h + 1, fb_rgb(r, g, b));
     }
-    // Subtle bottom glow
     uint32_t glow_h = fh / 8;
     uint32_t glow_start = fh - glow_h;
     for (uint32_t i = 0; i < glow_h; i++) {
         uint32_t a = i * 255 / glow_h;
-        uint8_t r = 20 + a * 10 / 255;
-        uint8_t g = 25 + a * 15 / 255;
-        uint8_t b = 50 + a * 30 / 255;
-        if (r > 60) r = 60;
-        if (g > 80) g = 80;
-        if (b > 140) b = 140;
+        uint8_t r = 40 + a * 20 / 255;
+        uint8_t g = 50 + a * 30 / 255;
+        uint8_t b = 100 + a * 60 / 255;
+        if (r > 100) r = 100;
+        if (g > 120) g = 120;
+        if (b > 220) b = 220;
         fb_fill_rect(0, glow_start + i, fw, 1, fb_rgb(r, g, b));
     }
 }
@@ -570,12 +568,12 @@ void compositor_init(void) {
     window_count = 0; next_id = 100; focused_id = 0; drag_id = 0; resize_id = 0; quit = 0;
     current_workspace = 0; start_menu_open = 0; cursor_saved = 0;
 
-    taskbar_bg = fb_rgb(25,25,30);
+    taskbar_bg = fb_rgb(40,45,55);
     taskbar_fg = fb_rgb(220,220,220);
-    taskbar_hl = fb_rgb(50,55,65);
+    taskbar_hl = fb_rgb(65,75,95);
     desktop_bg = fb_rgb(30,35,50);
-    title_active = fb_rgb(40,90,140);
-    title_inactive = fb_rgb(65,65,70);
+    title_active = fb_rgb(60,130,200);
+    title_inactive = fb_rgb(80,85,95);
     init_desktop_icons();
 }
 

@@ -10,7 +10,7 @@ static uint32_t page_bitmap[BITMAP_WORDS];
 static uint32_t total_pages = 0;
 static uint32_t free_pages = 0;
 
-void init_memory(uint32_t mem_size) {
+void init_memory(uint64_t mem_size) {
     memory_total = mem_size;
     memory_used = 0;
     memset_asm(page_bitmap, 0xFF, sizeof(page_bitmap));
@@ -24,17 +24,17 @@ void init_memory(uint32_t mem_size) {
     free_pages--;
 
     // Mark kernel pages as used (from 0x100000 up to end of BSS)
-    extern uint32_t _kernel_end;
-    uint32_t kernel_end = (uint32_t)&_kernel_end;
+    extern uint8_t _kernel_end[];
+    uintptr_t kernel_end = (uintptr_t)_kernel_end;
     uint32_t kernel_start_page = 0x100000 / PAGE_SIZE;
-    uint32_t kernel_end_page = (kernel_end + PAGE_SIZE - 1) / PAGE_SIZE;
+    uint32_t kernel_end_page = (uint32_t)((kernel_end + PAGE_SIZE - 1) / PAGE_SIZE);
     for (uint32_t i = kernel_start_page; i < kernel_end_page && i < total_pages; i++) {
         page_bitmap[i / 32] &= ~(1 << (i % 32));
         free_pages--;
     }
 
-    printf("[MEM] Bitmap at %x, %d pages free (%d KB)\n",
-        (uint32_t)page_bitmap, free_pages, free_pages * 4);
+    printf("[MEM] Bitmap at %p, %d pages free (%d KB)\n",
+        (void*)page_bitmap, free_pages, free_pages * 4);
 }
 
 void* alloc_page(void) {
@@ -46,14 +46,14 @@ void* alloc_page(void) {
             page_bitmap[i] &= ~(1 << bit);
             free_pages--;
             memory_used += PAGE_SIZE;
-            return (void*)(page_idx * PAGE_SIZE);
+            return (void*)(uintptr_t)(page_idx * PAGE_SIZE);
         }
     }
     return NULL;
 }
 
 void free_page(void* addr) {
-    uint32_t page_idx = (uint32_t)addr / PAGE_SIZE;
+    uint32_t page_idx = (uint32_t)(uintptr_t)addr / PAGE_SIZE;
     if (page_idx >= total_pages) return;
     page_bitmap[page_idx / 32] |= 1 << (page_idx % 32);
     free_pages++;

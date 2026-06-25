@@ -27,13 +27,12 @@ static const char* exception_names[32] = {
     "Reserved", "Reserved", "Security Exception", "Reserved"
 };
 
-void isr_handler(uint32_t int_no, uint32_t err_code) {
+void isr_handler(uint64_t int_no) {
     if (int_no < 32) {
-        printf("\n[PANIC] Exception: %s (code %x)\n", exception_names[int_no], err_code);
+        printf("\n[PANIC] Exception: %s\n", exception_names[int_no]);
         if (int_no == 14) {
-            uint32_t cr2;
-            __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
-            printf("[PANIC] Page fault at 0x%x, error=%x\n", cr2, err_code);
+            uint64_t cr2 = read_cr2();
+            printf("[PANIC] Page fault at 0x%lx\n", cr2);
         }
         kernel_panic("Unhandled exception");
     }
@@ -41,6 +40,6 @@ void isr_handler(uint32_t int_no, uint32_t err_code) {
 
 void init_isr(void) {
     for (int i = 0; i < 32; i++) {
-        idt_set_gate(i, (uint32_t)isr_stubs[i], 0x08, 0x8E);
+        idt_set_gate(i, (uint64_t)isr_stubs[i], 0x08, 0x8E);
     }
 }

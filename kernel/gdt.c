@@ -1,40 +1,32 @@
 #include "kernel.h"
 
-struct gdt_entry {
-    uint16_t limit_low;
-    uint16_t base_low;
-    uint8_t base_middle;
-    uint8_t access;
-    uint8_t granularity;
-    uint8_t base_high;
-} __attribute__((packed));
+// AMD64 GDT descriptor format — use raw 64-bit values
+// Standard entries: 8 bytes (1 qword)
+// TSS descriptor: 16 bytes (2 qwords)
+#define GDT_ENTRIES 7
+static uint64_t gdt[GDT_ENTRIES];
 
 struct gdt_ptr {
     uint16_t limit;
-    uint32_t base;
+    uint64_t base;
 } __attribute__((packed));
 
-static struct gdt_entry gdt[6];
 static struct gdt_ptr gp;
 
-// TSS structure
 static tss_entry_t tss;
 
-extern void gdt_flush(uint32_t);
-
-void gdt_set_gate(int32_t num, uint32_t base, uint32_t limit, uint8_t access, uint8_t gran) {
-    gdt[num].base_low    = (base & 0xFFFF);
-    gdt[num].base_middle = (base >> 16) & 0xFF;
-    gdt[num].base_high   = (base >> 24) & 0xFF;
-    gdt[num].limit_low   = (limit & 0xFFFF);
-    gdt[num].granularity = (limit >> 16) & 0x0F;
-    gdt[num].granularity |= (gran & 0xF0);
-    gdt[num].access = access;
+// Build a 64-bit descriptor value:
+//   access = access byte (e.g. 0x9A for kernel code)
+//   flags  = nibble (e.g. 0x20 for long mode, 0x00 for data)
+static uint64_t make_desc(uint8_t access, uint8_t flags) {
+    uint64_t v = 0;
+    v |= (uint64_t)access << 40;
+    v |= (uint64_t)flags  << 52;
+    return v;
 }
 
-void tss_set_stack(uint32_t esp0) {
-    tss.esp0 = esp0;
-    tss.ss0 = KERNEL_DS;
+void tss_set_stack(uint64_t rsp0) {
+    tss.rsp0 = rsp0;
 }
 
 void load_tss(void) {
@@ -42,24 +34,34 @@ void load_tss(void) {
 }
 
 void init_gdt(void) {
-    gp.limit = sizeof(gdt) - 1;
-    gp.base  = (uint32_t)&gdt;
+    gp.limit = (sizeof(uint64_t) * 6 + 16) - 1; // 6 standard + 1 TSS (16 bytes)
+    gp.base  = (uint64_t)&gdt;
 
-    gdt_set_gate(0, 0, 0, 0, 0);                            // null
-    gdt_set_gate(1, 0, 0xFFFFFFFF, 0x9A, 0xCF);            // kernel code
-    gdt_set_gate(2, 0, 0xFFFFFFFF, 0x92, 0xCF);            // kernel data
-    gdt_set_gate(3, 0, 0xFFFFFFFF, 0xFA, 0xCF);            // user code
-    gdt_set_gate(4, 0, 0xFFFFFFFF, 0xF2, 0xCF);            // user data
+    gdt[0] = 0;                                // null
+    gdt[1] = make_desc(0x9A, 0x20);            // kernel code 64 (L-bit)
+    gdt[2] = make_desc(0x92, 0x00);            // kernel data
+    gdt[3] = make_desc(0xFA, 0x20);            // user code 64
+    gdt[4] = make_desc(0xF2, 0x00);            // user data
 
-    // Initialize TSS
     memset_asm(&tss, 0, sizeof(tss));
-    tss.ss0 = KERNEL_DS;
-    tss.iomap_base = sizeof(tss);  // deny all I/O ports from ring 3
+    tss.iomap_base = sizeof(tss);
 
-    uint32_t tss_base = (uint32_t)&tss;
+    uint64_t tss_base = (uint64_t)&tss;
     uint32_t tss_limit = sizeof(tss) - 1;
-    gdt_set_gate(5, tss_base, tss_limit, 0x89, 0x00);      // TSS (present, 32-bit available)
 
-    gdt_flush((uint32_t)&gp);
+    // Build 16-byte TSS descriptor at gdt[5..6]
+    uint64_t desc1 = 0;
+    desc1 |= (tss_limit & 0xFFFF);
+    desc1 |= (tss_base & 0xFFFFFF) << 16;      // base[23:0]
+    desc1 |= (uint64_t)0x89 << 40;             // access
+    desc1 |= (uint64_t)((tss_limit >> 16) & 0x0F) << 48;
+    desc1 |= (uint64_t)((tss_base >> 24) & 0xFF) << 56;
+
+    uint64_t desc2 = (tss_base >> 32) & 0xFFFFFFFF;
+
+    gdt[5] = desc1;
+    gdt[6] = desc2;
+
+    __asm__ volatile("lgdt %0" : : "m"(gp));
     load_tss();
 }

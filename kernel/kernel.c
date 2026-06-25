@@ -15,8 +15,8 @@ process_t* process_table[MAX_PROCESSES];
 void* syscall_table[SYS_TABLE_SIZE];
 net_iface_t net_interfaces[8];
 mount_t mount_points[MAX_MOUNTS];
-uint32_t memory_total = 0;
-uint32_t memory_used = 0;
+uint64_t memory_total = 0;
+uint64_t memory_used = 0;
 uint32_t tick_count = 0;
 bool kernel_initialized = false;
 int process_count = 0;
@@ -735,7 +735,7 @@ static void cmd_exec(int argc, char** argv) {
 
     // Validate and load ELF
     if (!elf_validate(copy, size)) {
-        printf("Not a valid ELF32 executable\n");
+        printf("Not a valid ELF64 executable\n");
         kfree(copy);
         return;
     }
@@ -1103,11 +1103,11 @@ void kernel_panic(const char* msg, ...) {
     vprintf(msg, args);
     printf("\n\nSystem halted.\n");
     va_end(args);
-    uint32_t cr0, cr2, cr3;
+    uint64_t cr0, cr2, cr3;
     __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
     __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
     __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
-    printf("CR0=0x%x CR2=0x%x CR3=0x%x\n", cr0, cr2, cr3);
+    printf("CR0=0x%lx CR2=0x%lx CR3=0x%lx\n", cr0, cr2, cr3);
     while(1) { __asm__ volatile("hlt"); }
 }
 
@@ -1116,7 +1116,7 @@ void kernel_panic(const char* msg, ...) {
 // ============================================================
 static void* saved_mboot_ptr = NULL;
 
-void kernel_main(uint32_t magic, void* mboot_ptr) {
+void kernel_main(uint64_t magic, void* mboot_ptr) {
     (void)magic;
     saved_mboot_ptr = mboot_ptr;
     init_screen();
@@ -1133,17 +1133,38 @@ void kernel_main(uint32_t magic, void* mboot_ptr) {
     printf("[INIT] Interrupt Requests...\n"); init_irq();
     printf("[INIT] Serial Port...\n"); init_serial();
 
-    uint32_t mem_total = 0;
-    if (magic == 0x2BADB002 && mboot_ptr) {
-        uint32_t *mb = (uint32_t*)mboot_ptr;
-        if (mb[0] & 0x1) {
-            mem_total = (mb[2] + 1024) * 1024;
-            printf("[INIT] Memory detected: %d MB\n", mem_total / (1024*1024));
+    uint64_t mem_total = 0;
+    if (mboot_ptr) {
+        if (magic == 0x2BADB002) {
+            // Multiboot v1 info
+            uint32_t *mb = (uint32_t*)mboot_ptr;
+            if (mb[0] & 0x1) {
+                mem_total = (uint64_t)(mb[2] + 1024) * 1024;
+            }
+        } else if (magic == 0x36d76289) {
+            // Multiboot v2 info
+            uint8_t* tag = (uint8_t*)mboot_ptr + 8;
+            for (;;) {
+                uint32_t type = *(uint32_t*)tag;
+                uint32_t size = *(uint32_t*)(tag + 4);
+                if (type == 0) break;
+                if (type == 4) {
+                    // Basic meminfo tag: mem_lower + mem_upper (both in KB)
+                    uint32_t mem_lower = *(uint32_t*)(tag + 8);
+                    uint32_t mem_upper = *(uint32_t*)(tag + 12);
+                    mem_total = (uint64_t)(mem_lower + mem_upper) * 1024;
+                    break;
+                }
+                tag += (size + 7) & ~7;
+            }
+        }
+        if (mem_total > 0) {
+            printf("[INIT] Memory detected: %llu MB\n", mem_total / (1024*1024));
         }
     }
     if (mem_total == 0) {
-        mem_total = 0x10000000;
-        printf("[INIT] Memory detection failed, using %d MB\n", mem_total / (1024*1024));
+        mem_total = 256 * 1024 * 1024;
+        printf("[INIT] Memory detection failed, using %llu MB\n", mem_total / (1024*1024));
     }
     printf("[INIT] Physical Memory Manager...\n"); init_memory(mem_total);
 
@@ -1153,8 +1174,8 @@ void kernel_main(uint32_t magic, void* mboot_ptr) {
     printf("[INIT] VBE mode 1024x768x32...\n");
     if (vbe_set_mode(1024, 768, 32) == 0) {
         fb_init(vbe_get_width(), vbe_get_height(), vbe_get_bpp(), vbe_get_lfb());
-        fb_clear(fb_rgb(30,35,50));
-        printf("[INIT] Framebuffer: %dx%dx%d at 0x%x\n",
+        fb_clear(fb_rgb(60, 100, 180));
+        printf("[INIT] Framebuffer: %dx%dx%d at 0x%llx\n",
                vbe_get_width(), vbe_get_height(), vbe_get_bpp(), vbe_get_lfb());
     } else {
         printf("[INIT] VBE mode set failed, staying in text mode\n");
@@ -1166,8 +1187,8 @@ void kernel_main(uint32_t magic, void* mboot_ptr) {
     printf("[INIT] Process Manager...\n"); init_process();
     printf("[INIT] Creating idle process...\n"); ensure_idle_process();
     printf("[INIT] System Calls...\n"); init_syscalls();
-    // Register syscall interrupt (int 0x80, ring 3 accessible)
-    idt_set_gate(SYSCALL_INT, (uint32_t)syscall_stub, KERNEL_CS, 0xEE);
+    // Setup syscall MSRs for syscall/sysret
+    setup_syscall_msrs();
     printf("[INIT] Virtual File System...\n"); init_vfs();
     printf("[INIT] Loading GRUB modules...\n"); init_load_modules();
     printf("[INIT] EXT2 Filesystem...\n"); init_ext2();
@@ -1311,11 +1332,11 @@ void nyxfetch(void) {
     set_terminal_color(vga_entry_color(VGA_LIGHT_CYAN, VGA_BLACK));
     printf("  -------------------------------------\n");
     printf("  Kernel:     %s %s (%s)\n", KERNEL_NAME, KERNEL_VERSION, KERNEL_CODENAME);
-    printf("  Arch:       x86 (32-bit)\n");
-    printf("  Memory:     %d MB total, %d MB free\n",
+    printf("  Arch:       x86_64 (64-bit)\n");
+    printf("  Memory:     %llu MB total, %llu MB free\n",
            memory_total / (1024*1024),
            (memory_total - memory_used) / (1024*1024));
-    printf("  Heap:       %d KB\n", KERNEL_HEAP_SIZE / 1024);
+    printf("  Heap:       %llu KB\n", KERNEL_HEAP_SIZE / 1024);
     printf("  Paging:     %s\n", (read_cr0() & 0x80000000) ? "Enabled" : "Disabled");
     printf("  Uptime:     %d ticks\n", tick_count);
     printf("  -------------------------------------\n");

@@ -12,23 +12,44 @@
 #define SYS_FSIZE   8
 #define SYS_EXEC    9
 
-static inline int syscall3(int no, int a1, int a2, int a3) {
-    int ret;
+/* x86_64 syscall ABI:
+ *   RAX = syscall number
+ *   RDI = a1, RSI = a2, RDX = a3, R10 = a4, R8 = a5, R9 = a6
+ *   Clobbers: RCX (return RIP), R11 (saved RFLAGS)
+ *   Return: RAX
+ */
+static inline long syscall6(long no, long a1, long a2, long a3, long a4, long a5, long a6) {
+    long ret;
+    register long r10 asm("r10") = a4;
+    register long r8  asm("r8")  = a5;
+    register long r9  asm("r9")  = a6;
     __asm__ volatile (
-        "int $0x80"
+        "syscall"
         : "=a"(ret)
-        : "a"(no), "b"(a1), "c"(a2), "d"(a3)
-        : "memory"
+        : "a"(no), "D"(a1), "S"(a2), "d"(a3), "r"(r10), "r"(r8), "r"(r9)
+        : "rcx", "r11", "memory"
     );
     return ret;
 }
 
-static inline int syscall1(int no, int a1) {
-    return syscall3(no, a1, 0, 0);
+static inline long syscall5(long no, long a1, long a2, long a3, long a4, long a5) {
+    return syscall6(no, a1, a2, a3, a4, a5, 0);
 }
 
-static inline int syscall2(int no, int a1, int a2) {
-    return syscall3(no, a1, a2, 0);
+static inline long syscall4(long no, long a1, long a2, long a3, long a4) {
+    return syscall6(no, a1, a2, a3, a4, 0, 0);
+}
+
+static inline long syscall3(long no, long a1, long a2, long a3) {
+    return syscall6(no, a1, a2, a3, 0, 0, 0);
+}
+
+static inline long syscall2(long no, long a1, long a2) {
+    return syscall6(no, a1, a2, 0, 0, 0, 0);
+}
+
+static inline long syscall1(long no, long a1) {
+    return syscall6(no, a1, 0, 0, 0, 0, 0);
 }
 
 static inline void exit(int status) {
@@ -36,40 +57,40 @@ static inline void exit(int status) {
     for (;;);
 }
 
-static inline int write(int fd, const void* buf, int len) {
-    return syscall3(SYS_WRITE, fd, (int)buf, len);
+static inline long write(int fd, const void* buf, long len) {
+    return syscall3(SYS_WRITE, fd, (long)buf, len);
 }
 
 static inline void print(const char* s) {
-    syscall1(SYS_PRINT, (int)s);
+    syscall1(SYS_PRINT, (long)s);
 }
 
-static inline int open(const char* path, int flags, int mode) {
-    return syscall3(SYS_OPEN, (int)path, flags, mode);
+static inline long open(const char* path, int flags, int mode) {
+    return syscall3(SYS_OPEN, (long)path, flags, mode);
 }
 
-static inline int read(int fd, void* buf, int count) {
-    return syscall3(SYS_READ, fd, (int)buf, count);
+static inline long read(int fd, void* buf, long count) {
+    return syscall3(SYS_READ, fd, (long)buf, count);
 }
 
-static inline int close(int fd) {
+static inline long close(int fd) {
     return syscall1(SYS_CLOSE, fd);
 }
 
-static inline int getpid(void) {
+static inline long getpid(void) {
     return syscall1(SYS_GETPID, 0);
 }
 
-static inline int sbrk(int increment) {
+static inline long sbrk(long increment) {
     return syscall1(SYS_SBRK, increment);
 }
 
-static inline int fsize(int fd) {
+static inline long fsize(int fd) {
     return syscall1(SYS_FSIZE, fd);
 }
 
-static inline int exec(const char* path) {
-    return syscall1(SYS_EXEC, (int)path);
+static inline long exec(const char* path) {
+    return syscall1(SYS_EXEC, (long)path);
 }
 
 #endif

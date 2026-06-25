@@ -1,6 +1,45 @@
-; isr_stubs.asm - ISRs and IRQs for NyxOS
-; Exceptions 0-31, IRQs 0-15 mapped to INT 32-47
+; isr_stubs.asm - x86_64 interrupt stubs for NyxOS
+default rel
+BITS 64
 
+; Save all registers (15 pushes)
+%macro SAVE_REGS 0
+    push rax
+    push rbx
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    push rbp
+    push r8
+    push r9
+    push r10
+    push r11
+    push r12
+    push r13
+    push r14
+    push r15
+%endmacro
+
+%macro RESTORE_REGS 0
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rbp
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rbx
+    pop rax
+%endmacro
+
+; ISR with no error code
 %macro ISR_NOERR 1
 global isr%1
 isr%1:
@@ -51,15 +90,16 @@ ISR_NOERR 31
 
 extern isr_handler
 isr_common:
-    pusha
-    mov eax, [esp+32]
-    push eax
+    SAVE_REGS
+    ; Stack: [RSP+0]=R15, ..., [RSP+112]=RAX
+    ; After error+int: [RSP+120]=error, [RSP+128]=int_no, [RSP+136]=RIP, [RSP+144]=CS, [RSP+152]=RFLAGS, ...
+    mov rdi, [rsp + 128]     ; int_no
     call isr_handler
-    add esp, 4
-    popa
-    add esp, 8
-    iret
+    RESTORE_REGS
+    add rsp, 16               ; pop error code + int number
+    iretq
 
+; IRQ stubs (mapped to INT 32-47)
 %macro IRQ 2
 global irq%1
 irq%1:
@@ -67,35 +107,6 @@ irq%1:
     push %2
     jmp irq_common
 %endmacro
-
-; Syscall interrupt (int 0x80) - ring 3 accessible
-; eax = syscall number, ebx=arg1, ecx=arg2, edx=arg3, esi=arg4, edi=arg5
-global syscall_stub
-extern syscall_handler_c
-syscall_stub:
-    pusha
-    push edi             ; arg5
-    push esi             ; arg4
-    push edx             ; arg3
-    push ecx             ; arg2
-    push ebx             ; arg1
-    push eax             ; syscall number
-    call syscall_handler_c
-    add esp, 24          ; pop 6 args
-    ; After pusha:  [ESP]   = saved EDI (last pusha push = top of stack)
-    ;              [ESP+4] = saved ESI
-    ;              [ESP+8] = saved EBP
-    ;              [ESP+12]= saved old_ESP
-    ;              [ESP+16]= saved EBX
-    ;              [ESP+20]= saved EDX
-    ;              [ESP+24]= saved ECX
-    ;              [ESP+28]= saved EAX (first pusha push)
-    ; POPA reads EDI←[ESP], ESI←[ESP+4], EBP←[ESP+8], skip [ESP+12],
-    ;        EBX←[ESP+16], EDX←[ESP+20], ECX←[ESP+24], EAX←[ESP+28]
-    ; So we must store the return value at [ESP+28] (saved EAX slot).
-    mov [esp+28], eax    ; store return value in saved eax slot (last POPA pop)
-    popa
-    iret
 
 IRQ 0, 32
 IRQ 1, 33
@@ -116,24 +127,58 @@ IRQ 15, 47
 
 extern irq_handler
 extern irq_scheduler_tick
-extern saved_esp
-extern next_esp
+extern saved_rsp
+extern next_rsp
 irq_common:
-    pusha
-    mov eax, [esp+32]
-    push eax
+    SAVE_REGS
+    mov rdi, [rsp + 128]     ; int_no
     call irq_handler
-    add esp, 4
+    ; Send EOI
     mov al, 0x20
-    cmp byte [esp+32], 40
+    cmp byte [rsp + 128], 40
     jb .master_only
     out 0xA0, al
 .master_only:
     out 0x20, al
-    ; Save current ESP, call scheduler, then load new ESP
-    mov [saved_esp], esp
+    ; Scheduler tick
+    mov [saved_rsp], rsp
     call irq_scheduler_tick
-    mov esp, [next_esp]
-    popa
-    add esp, 8
-    iret
+    mov rsp, [next_rsp]
+    RESTORE_REGS
+    add rsp, 16
+    iretq
+
+; Syscall entry via syscall instruction
+; RAX = syscall number, RDI/RSI/RDX/R10/R8/R9 = args (Linux convention)
+; RCX = return RIP (set by syscall), R11 = saved RFLAGS (set by syscall)
+global syscall_entry
+global user_rsp
+global kernel_rsp
+extern syscall_handler
+
+section .data
+user_rsp:  dq 0
+kernel_rsp: dq 0
+
+section .text
+syscall_entry:
+    ; Save user RSP, switch to kernel stack
+    mov [user_rsp], rsp
+    mov rsp, [kernel_rsp]
+    push rcx                     ; return RIP
+    push r11                     ; return RFLAGS
+    SAVE_REGS
+    ; Stack: [RSP+0..112]=regs, [RSP+120]=RFLAGS, [RSP+128]=RIP
+    mov rdi, [rsp + 112]        ; RAX = syscall number
+    mov rsi, [rsp + 72]         ; RDI = arg1
+    mov rdx, [rsp + 80]         ; RSI = arg2
+    mov rcx, [rsp + 88]         ; RDX = arg3
+    mov r8,  [rsp + 40]         ; R10 = arg4
+    mov r9,  [rsp + 56]         ; R8  = arg5
+    call syscall_handler
+    mov [rsp + 112], rax        ; save return value in saved RAX slot
+    RESTORE_REGS
+    pop r11                      ; restore RFLAGS
+    pop rcx                      ; restore return RIP
+    mov rsp, [user_rsp]          ; restore user RSP
+    sysret

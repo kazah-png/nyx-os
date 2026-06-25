@@ -18,14 +18,7 @@
 
 #define RTC_UIP      0x80
 
-typedef struct {
-    uint8_t second;
-    uint8_t minute;
-    uint8_t hour;
-    uint8_t day;
-    uint8_t month;
-    uint16_t year;
-} rtc_time_t;
+// rtc_time_t defined in kernel.h
 
 void rtc_init(void);
 uint8_t rtc_read_register(uint8_t reg);

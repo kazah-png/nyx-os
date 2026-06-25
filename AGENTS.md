@@ -1,10 +1,10 @@
 # NyxOS — Agent Context
 
 ## Goal
-Evolve NyxOS into a functional 32-bit x86 kernel with filesystem, networking, shell, process multitasking, GUI, multimedia, and audio.
+Evolve NyxOS into a functional x86_64 kernel with filesystem, networking, shell, process multitasking, GUI, multimedia, and audio.
 
 ## Build & Test
-- Cross-compiler: `i686-elf-gcc` at `cross/bin/` (WSL)
+- Cross-compiler: host GCC with `-m64` (or `x86_64-elf-gcc` for cross)
 - Build (PowerShell): `.\build.ps1` → `kernel/nyx-kernel.bin`
 - Build (make): `make -C kernel` → `kernel/nyx-kernel.bin`
 - Run (GUI): `.\run.ps1`
@@ -52,7 +52,7 @@ Evolve NyxOS into a functional 32-bit x86 kernel with filesystem, networking, sh
 - Cooperative multitasking via `switch_context`/`create_task_stack` (assembly) + background task callbacks + IRQ scheduler tick.
 - Per-process paging: `alloc_page_directory` clones kernel identity-mapped page tables with supervisor-only PTEs; user pages mapped via `map_page_dir` with PTE `U/S=1` and PDE `U/S=1` for ring-3 access.
 - ELF loader maps code at ELH entry point (e.g. 0x10000), user stack at 0xD0000000 (one page, 4096 bytes).
-- Syscalls via `int 0x80`: eax=number, ebx/ecx/edx/esi/edi=args; handlers in `syscall_handler_c` dispatch table (exit=0, write=1, print=2).
+- Syscalls via `syscall`/`sysret`: rax=number, rdi/rsi/rdx/rcx/r8/r9=args; handlers in `syscall_handler_c` dispatch table (exit=0, write=1, print=2, open=3, read=4, close=5, getpid=6, sbrk=7, fsize=8, exec=9).
 - TSS I/O map base set to full TSS size → all I/O ports denied from ring 3.
 - build.ps1: WSL cross-compilation; QEMU 11.x with `-audiodev dsound,id=audio0 -device sb16,audiodev=audio0`
 
@@ -76,7 +76,7 @@ kernel/
   screen.c        — VGA text mode (80x25) + putchar hook for terminal capture
   serial.c        — Serial stub
   syscall.c       — Syscall handler table
-  elf.c/h         — ELF32 loader (validate, parse PT_LOAD, map pages, create user process)
+  elf.c/h         — ELF64 loader (validate, parse PT_LOAD, map pages, create user process)
   initramfs.c/h   — Initramfs cpio parser (new-style '070701'), creates files in VFS
   initramfs_data.h — Generated C byte array with embedded cpio archive
   net.c           — Network stack init

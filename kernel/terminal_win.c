@@ -35,8 +35,8 @@ terminal_win_t* terminal_create_ctx(void) {
 
 static terminal_win_t* capture_term = NULL;
 
-void terminal_capture_putchar(char c) {
-    if (!capture_term || !capture_term->capturing) return;
+int terminal_capture_putchar(int c) {
+    if (!capture_term || !capture_term->capturing) return c;
     if (c == '\n') {
         capture_term->output_buf[capture_term->output_len] = '\0';
         if (capture_term->output_len > 0)
@@ -45,6 +45,7 @@ void terminal_capture_putchar(char c) {
     } else if (c >= 0x20 && capture_term->output_len < TERM_OUTPUT_MAX - 1) {
         capture_term->output_buf[capture_term->output_len++] = c;
     }
+    return c;
 }
 void terminal_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     terminal_win_t* term = (terminal_win_t*)win->reserved;

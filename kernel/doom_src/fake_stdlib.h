@@ -1,8 +1,12 @@
 #ifndef FAKE_STDLIB_H
 #define FAKE_STDLIB_H
 
-typedef unsigned int size_t;
-typedef int ssize_t;
+#ifndef size_t
+typedef unsigned long size_t;
+#endif
+#ifndef ssize_t
+typedef long ssize_t;
+#endif
 typedef signed char int8_t;
 typedef unsigned char uint8_t;
 typedef short int16_t;
@@ -11,8 +15,12 @@ typedef int int32_t;
 typedef unsigned int uint32_t;
 typedef long long int64_t;
 typedef unsigned long long uint64_t;
-typedef int intptr_t;
-typedef unsigned int uintptr_t;
+#ifndef intptr_t
+typedef long intptr_t;
+#endif
+#ifndef uintptr_t
+typedef unsigned long uintptr_t;
+#endif
 typedef int wchar_t;
 
 #define NULL ((void*)0)
@@ -92,6 +100,7 @@ void abort(void);
 int abs(int j);
 long int labs(long int j);
 int atoi(const char *s);
+double atof(const char *s);
 long int strtol(const char *s, char **end, int base);
 int strcasecmp(const char *s1, const char *s2);
 int strncasecmp(const char *s1, const char *s2, size_t n);
@@ -121,8 +130,10 @@ int vprintf(const char *fmt, va_list args);
 int snprintf(char *str, size_t size, const char *fmt, ...);
 int vsnprintf(char *str, size_t size, const char *fmt, va_list args);
 int fflush(FILE *stream);
+int putchar(int c);
 int puts(const char *s);
 int remove(const char *pathname);
+int system(const char *command);
 int rename(const char *oldpath, const char *newpath);
 
 #endif

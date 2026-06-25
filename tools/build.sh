@@ -5,7 +5,7 @@
 set -e
 
 export NYX_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-export TARGET="i686-elf"
+export TARGET="x86_64-elf"
 export PREFIX="$NYX_ROOT/cross"
 export PATH="$PREFIX/bin:$PATH"
 
@@ -70,7 +70,7 @@ build_initramfs() {
         cp /bin/busybox bin/
     else
         warn "busybox not found, downloading..."
-        wget -q -O bin/busybox https://busybox.net/downloads/binaries/1.35.0-i686-linux-musl/busybox
+        wget -q -O bin/busybox https://busybox.net/downloads/binaries/1.35.0-x86_64-linux-musl/busybox
         chmod +x bin/busybox
     fi
     

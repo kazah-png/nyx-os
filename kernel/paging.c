@@ -1,123 +1,194 @@
 #include "kernel.h"
 
 #define IDENTITY_MAP_MB 64
+#define PAGE_PRESENT    (1 << 0)
+#define PAGE_WRITABLE   (1 << 1)
+#define PAGE_USER       (1 << 2)
+#define PAGE_HUGE       (1 << 7)
 
-static uint32_t* current_page_directory = NULL;
-static uint32_t* kernel_page_directory = NULL;
+// PML4 indices
+#define PML4_IDENTITY 0
+#define PML4_HIGHER   256       // 0xFFFFFF8000000000
 
-void init_paging(void) {
-    printf("[PAGING] Allocating page directory...\n");
-    kernel_page_directory = (uint32_t*)alloc_page();
-    if (!kernel_page_directory) kernel_panic("No page directory");
-    memset_asm(kernel_page_directory, 0, PAGE_SIZE);
-    printf("[PAGING] Page directory at %x\n", kernel_page_directory);
+static uint64_t* current_pml4 = NULL;
+static uint64_t* kernel_pml4 = NULL;
 
-    int num_tables = IDENTITY_MAP_MB / 4;
-    printf("[PAGING] Identity-mapping %d MB (%d page tables)...\n", IDENTITY_MAP_MB, num_tables);
-    for (int t = 0; t < num_tables; t++) {
-        uint32_t* pt = (uint32_t*)alloc_page();
-        if (!pt) kernel_panic("No page table");
-        for (uint32_t i = 0; i < 1024; i++) {
-            pt[i] = ((t * 0x400000) + (i * PAGE_SIZE)) | 3;
-        }
-        kernel_page_directory[t] = (uint32_t)pt | 3;
+// Get physical address (virtual -> physical) using kernel page tables
+void* get_phys_addr(void* virtual_addr) {
+    uint64_t addr = (uint64_t)virtual_addr;
+    int pml4_idx = (addr >> 39) & 0x1FF;
+    int pdpt_idx = (addr >> 30) & 0x1FF;
+    int pd_idx   = (addr >> 21) & 0x1FF;
+    int pt_idx   = (addr >> 12) & 0x1FF;
+    int offset   = addr & 0xFFF;
+
+    if (!kernel_pml4) return NULL;
+    uint64_t pml4e = kernel_pml4[pml4_idx];
+    if (!(pml4e & PAGE_PRESENT)) return NULL;
+
+    uint64_t* pdpt = (uint64_t*)(pml4e & ~0xFFF);
+    uint64_t pdpte = pdpt[pdpt_idx];
+    if (!(pdpte & PAGE_PRESENT)) return NULL;
+
+    // 1GB huge page?
+    if (pdpte & PAGE_HUGE) {
+        return (void*)((pdpte & ~((1ULL << 30) - 1)) + (addr & ((1ULL << 30) - 1)));
     }
 
-    printf("[PAGING] Loading CR3 with %x\n", kernel_page_directory);
-    write_cr3((uint32_t)kernel_page_directory);
+    uint64_t* pd = (uint64_t*)(pdpte & ~0xFFF);
+    uint64_t pde = pd[pd_idx];
+    if (!(pde & PAGE_PRESENT)) return NULL;
 
-    printf("[PAGING] Enabling paging...\n");
-    uint32_t cr0;
-    __asm__ volatile("mov %%cr0, %0" : "=r"(cr0));
-    cr0 |= 0x80000000;
-    __asm__ volatile("mov %0, %%cr0" :: "r"(cr0));
-    __asm__ volatile("jmp 1f\n1:");
+    // 2MB huge page?
+    if (pde & PAGE_HUGE) {
+        return (void*)((pde & ~((1ULL << 21) - 1)) + (addr & ((1ULL << 21) - 1)));
+    }
 
-    current_page_directory = kernel_page_directory;
-    printf("[PAGING] Enabled successfully.\n");
+    uint64_t* pt = (uint64_t*)(pde & ~0xFFF);
+    uint64_t pte = pt[pt_idx];
+    if (!(pte & PAGE_PRESENT)) return NULL;
+
+    return (void*)((pte & ~0xFFF) + offset);
 }
 
-void* get_phys_addr(void* virtual_addr) {
-    uint32_t pd_index = (uint32_t)virtual_addr >> 22;
-    uint32_t pt_index = ((uint32_t)virtual_addr >> 12) & 0x3FF;
-    uint32_t offset = (uint32_t)virtual_addr & 0xFFF;
-    if (!(kernel_page_directory[pd_index] & 1)) return NULL;
-    uint32_t* pt = (uint32_t*)(kernel_page_directory[pd_index] & ~0xFFF);
-    if (!(pt[pt_index] & 1)) return NULL;
-    return (void*)((pt[pt_index] & ~0xFFF) + offset);
+// Map a page in a specific PML4
+static void map_pml4(uint64_t* pml4, void* phys, void* virt, uint32_t flags) {
+    uint64_t vaddr = (uint64_t)virt;
+    int pml4_idx = (vaddr >> 39) & 0x1FF;
+    int pdpt_idx = (vaddr >> 30) & 0x1FF;
+    int pd_idx   = (vaddr >> 21) & 0x1FF;
+    int pt_idx   = (vaddr >> 12) & 0x1FF;
+
+    uint64_t pml4e = pml4[pml4_idx];
+    uint64_t* pdpt;
+    if (!(pml4e & PAGE_PRESENT)) {
+        pdpt = (uint64_t*)alloc_page();
+        if (!pdpt) return;
+        memset_asm(pdpt, 0, 4096);
+        pml4[pml4_idx] = (uint64_t)pdpt | PAGE_PRESENT | PAGE_WRITABLE | (flags & PAGE_USER ? PAGE_USER : 0);
+    } else {
+        pdpt = (uint64_t*)(pml4e & ~0xFFF);
+    }
+
+    uint64_t pdpte = pdpt[pdpt_idx];
+    uint64_t* pd;
+    if (!(pdpte & PAGE_PRESENT)) {
+        pd = (uint64_t*)alloc_page();
+        if (!pd) return;
+        memset_asm(pd, 0, 4096);
+        pdpt[pdpt_idx] = (uint64_t)pd | PAGE_PRESENT | PAGE_WRITABLE | (flags & PAGE_USER ? PAGE_USER : 0);
+    } else {
+        pd = (uint64_t*)(pdpte & ~0xFFF);
+    }
+
+    uint64_t pde = pd[pd_idx];
+    uint64_t* pt;
+    if (!(pde & PAGE_PRESENT)) {
+        pt = (uint64_t*)alloc_page();
+        if (!pt) return;
+        memset_asm(pt, 0, 4096);
+        pd[pd_idx] = (uint64_t)pt | PAGE_PRESENT | PAGE_WRITABLE | (flags & PAGE_USER ? PAGE_USER : 0);
+    } else {
+        pt = (uint64_t*)(pde & ~0xFFF);
+    }
+
+    pt[pt_idx] = (uint64_t)phys | PAGE_PRESENT | PAGE_WRITABLE | (flags & ~0xFFF);
+    __asm__ volatile("invlpg (%0)" :: "r"(virt) : "memory");
 }
 
 void map_page(void* phys, void* virt, uint32_t flags) {
-    (void)phys; (void)virt; (void)flags;
-    map_page_dir(kernel_page_directory, phys, virt, flags);
+    map_pml4(kernel_pml4, phys, virt, flags);
+}
+
+void map_page_dir(uint64_t* pml4, void* phys, void* virt, uint32_t flags) {
+    map_pml4(pml4, phys, virt, flags);
 }
 
 void unmap_page(void* virt) {
-    uint32_t pd_idx = (uint32_t)virt >> 22;
-    uint32_t pt_idx = ((uint32_t)virt >> 12) & 0x3FF;
-    if (!(kernel_page_directory[pd_idx] & 1)) return;
-    uint32_t* pt = (uint32_t*)(kernel_page_directory[pd_idx] & ~0xFFF);
+    uint64_t vaddr = (uint64_t)virt;
+    int pml4_idx = (vaddr >> 39) & 0x1FF;
+    int pdpt_idx = (vaddr >> 30) & 0x1FF;
+    int pd_idx   = (vaddr >> 21) & 0x1FF;
+    int pt_idx   = (vaddr >> 12) & 0x1FF;
+
+    if (!kernel_pml4) return;
+    uint64_t pml4e = kernel_pml4[pml4_idx];
+    if (!(pml4e & PAGE_PRESENT)) return;
+
+    uint64_t* pdpt = (uint64_t*)(pml4e & ~0xFFF);
+    uint64_t pdpte = pdpt[pdpt_idx];
+    if (!(pdpte & PAGE_PRESENT)) return;
+
+    uint64_t* pd = (uint64_t*)(pdpte & ~0xFFF);
+    uint64_t pde = pd[pd_idx];
+    if (!(pde & PAGE_PRESENT)) return;
+
+    uint64_t* pt = (uint64_t*)(pde & ~0xFFF);
     pt[pt_idx] = 0;
-    __asm__ volatile("invlpg (%0)" :: "r"(virt));
+    __asm__ volatile("invlpg (%0)" :: "r"(virt) : "memory");
 }
 
-uint32_t* get_kernel_page_directory(void) {
-    return kernel_page_directory;
+uint64_t* get_kernel_page_directory(void) {
+    return kernel_pml4;
 }
 
-void switch_page_directory(uint32_t* pd) {
-    if (!pd) pd = kernel_page_directory;
-    current_page_directory = pd;
-    write_cr3((uint32_t)pd);
+void switch_page_directory(uint64_t* pml4) {
+    if (!pml4) pml4 = kernel_pml4;
+    current_pml4 = pml4;
+    write_cr3((uint64_t)pml4);
 }
 
-uint32_t* alloc_page_directory(void) {
-    uint32_t* pd = (uint32_t*)alloc_page();
-    if (!pd) return NULL;
-    memset_asm(pd, 0, PAGE_SIZE);
+uint64_t* alloc_page_directory(void) {
+    uint64_t* pml4 = (uint64_t*)alloc_page();
+    if (!pml4) return NULL;
+    memset_asm(pml4, 0, PAGE_SIZE);
 
-    int num_tables = IDENTITY_MAP_MB / 4;
-    for (int t = 0; t < num_tables; t++) {
-        // Clone the page table (kernel-owned pages stay supervisor-only)
-        uint32_t* src_pt = (uint32_t*)(kernel_page_directory[t] & ~0xFFF);
-        if (!src_pt) continue;
-        uint32_t* pt = (uint32_t*)alloc_page();
-        if (!pt) continue;
-        // Copy page table entries, keep supervisor flag (bit 2 = 0)
-        for (uint32_t i = 0; i < 1024; i++) {
-            uint32_t entry = src_pt[i];
-            if (entry & 1) {
-                // Keep present, writable, but clear user bit (bit 2)
-                pt[i] = entry & ~4;
-            } else {
-                pt[i] = 0;
+    // Clone kernel PML4 entries for the higher half (PML4[256..511])
+    // and identity mapping
+    for (int i = 0; i < 512; i++) {
+        if (kernel_pml4[i] & PAGE_PRESENT) {
+            if (i == PML4_IDENTITY || i >= PML4_HIGHER) {
+                // Share kernel-managed page table pages
+                pml4[i] = kernel_pml4[i];
             }
         }
-        pd[t] = (uint32_t)pt | 7;  // present, writable, user (PTEs gate per-page)
     }
-
-    return pd;
+    return pml4;
 }
 
 void* clone_page_directory(void) {
-    return alloc_page_directory();
+    return (void*)alloc_page_directory();
 }
 
-void map_page_dir(uint32_t* pd, void* phys, void* virt, uint32_t flags) {
-    if (!pd) pd = kernel_page_directory;
-    uint32_t pd_idx = (uint32_t)virt >> 22;
-    uint32_t pt_idx = ((uint32_t)virt >> 12) & 0x3FF;
+// Identity map using 2MB huge pages for speed
+void init_paging(void) {
+    printf("[PAGING] Allocating PML4 table...\n");
+    kernel_pml4 = (uint64_t*)alloc_page();
+    if (!kernel_pml4) kernel_panic("No PML4 page");
+    memset_asm(kernel_pml4, 0, PAGE_SIZE);
 
-    if (!(pd[pd_idx] & 1)) {
-        uint32_t* pt = (uint32_t*)alloc_page();
-        if (!pt) return;
-        memset_asm(pt, 0, PAGE_SIZE);
-        uint32_t pde_flags = (pd == kernel_page_directory) ? 3 : 7;
-        pd[pd_idx] = (uint32_t)pt | pde_flags;
+    printf("[PAGING] Identity-mapping %d MB...\n", IDENTITY_MAP_MB);
+    // Allocate one PDP table (covers up to 512 GB)
+    uint64_t* pdpt = (uint64_t*)alloc_page();
+    if (!pdpt) kernel_panic("No PDPT page");
+    memset_asm(pdpt, 0, PAGE_SIZE);
+
+    // Allocate one Page Directory with 2MB huge-page entries
+    uint64_t* pd = (uint64_t*)alloc_page();
+    if (!pd) kernel_panic("No PD page");
+    memset_asm(pd, 0, PAGE_SIZE);
+
+    int num_pages = IDENTITY_MAP_MB / 2; // 2MB per entry
+    for (int i = 0; i < num_pages; i++) {
+        pd[i] = ((uint64_t)i * 0x200000) | PAGE_PRESENT | PAGE_WRITABLE | PAGE_HUGE;
     }
-    uint32_t* pt = (uint32_t*)(pd[pd_idx] & ~0xFFF);
-    pt[pt_idx] = ((uint32_t)phys & ~0xFFF) | (flags & 0xFFF) | 1;
 
-    if (pd == current_page_directory || pd == kernel_page_directory)
-        __asm__ volatile("invlpg (%0)" :: "r"(virt));
+    pdpt[0] = (uint64_t)pd | PAGE_PRESENT | PAGE_WRITABLE;
+    kernel_pml4[PML4_IDENTITY] = (uint64_t)pdpt | PAGE_PRESENT | PAGE_WRITABLE;
+
+    printf("[PAGING] Loading CR3 with %lx\n", (uint64_t)kernel_pml4);
+    write_cr3((uint64_t)kernel_pml4);
+
+    printf("[PAGING] Enabled successfully.\n");
+    current_pml4 = kernel_pml4;
 }

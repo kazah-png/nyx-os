@@ -1,60 +1,76 @@
 #include "libc.h"
 
-// =========== Memory ===========
+/* =========== Memory =========== */
 
-void* memset(void* s, int c, unsigned int n) {
+void* memset(void* s, int c, size_t n) {
     unsigned char* p = (unsigned char*)s;
-    for (unsigned int i = 0; i < n; i++) p[i] = (unsigned char)c;
+    for (size_t i = 0; i < n; i++) p[i] = (unsigned char)c;
     return s;
 }
 
-void* memcpy(void* dest, const void* src, unsigned int n) {
+void* memcpy(void* dest, const void* src, size_t n) {
     unsigned char* d = (unsigned char*)dest;
     const unsigned char* s = (const unsigned char*)src;
-    for (unsigned int i = 0; i < n; i++) d[i] = s[i];
+    for (size_t i = 0; i < n; i++) d[i] = s[i];
     return dest;
 }
 
-int memcmp(const void* s1, const void* s2, unsigned int n) {
+int memcmp(const void* s1, const void* s2, size_t n) {
     const unsigned char* a = (const unsigned char*)s1;
     const unsigned char* b = (const unsigned char*)s2;
-    for (unsigned int i = 0; i < n; i++) {
+    for (size_t i = 0; i < n; i++) {
         if (a[i] != b[i]) return (int)a[i] - (int)b[i];
     }
     return 0;
 }
 
-// Simple free-list allocator
+/* Simple free-list allocator */
 typedef struct heap_block {
-    unsigned int size;
+    size_t size;
     int free;
     struct heap_block* next;
 } heap_block_t;
 
 static heap_block_t* heap_base = 0;
 
-#define HEAP_HEADER_SIZE ((unsigned int)sizeof(heap_block_t))
+#define HEAP_HEADER_SIZE ((size_t)sizeof(heap_block_t))
 
-void* malloc(unsigned int size) {
-    if (size == 0) size = 1;
-    // Align to 4 bytes
-    size = (size + 3) & ~3;
+static void* grow_heap(size_t min_size) {
+    size_t page_size = 4096;
+    if (min_size + HEAP_HEADER_SIZE > page_size) {
+        page_size = min_size + HEAP_HEADER_SIZE + 4096;
+    }
+    page_size = (page_size + 0xFFF) & ~0xFFFULL;
+    void* mem = (void*)sbrk((long)page_size);
+    if ((long)mem < 0) return 0;
+
+    heap_block_t* new_block = (heap_block_t*)mem;
+    new_block->size = page_size - HEAP_HEADER_SIZE;
+    new_block->free = 0;
+    new_block->next = 0;
 
     if (!heap_base) {
-        // First allocation: get 4KB from sbrk
-        void* mem = (void*)sbrk(4096);
-        if ((int)mem < 0) return 0;
-        heap_base = (heap_block_t*)mem;
-        heap_base->size = 4096 - HEAP_HEADER_SIZE;
-        heap_base->free = 1;
-        heap_base->next = 0;
+        heap_base = new_block;
+    } else {
+        heap_block_t* b = heap_base;
+        while (b->next) b = b->next;
+        b->next = new_block;
+    }
+    return new_block;
+}
+
+void* malloc(size_t size) {
+    if (size == 0) size = 1;
+    size = (size + 7) & ~7;
+
+    if (!heap_base) {
+        heap_block_t* hb = (heap_block_t*)grow_heap(size);
+        if (!hb) return 0;
     }
 
-    // Find a free block that fits
     heap_block_t* block = heap_base;
     while (block) {
         if (block->free && block->size >= size) {
-            // Split if leftover is large enough
             if (block->size >= size + HEAP_HEADER_SIZE + 16) {
                 heap_block_t* new_block = (heap_block_t*)((char*)block + HEAP_HEADER_SIZE + size);
                 new_block->size = block->size - size - HEAP_HEADER_SIZE;
@@ -69,25 +85,8 @@ void* malloc(unsigned int size) {
         block = block->next;
     }
 
-    // No free block found: extend heap
-    unsigned int page_size = 4096;
-    if (size + HEAP_HEADER_SIZE > page_size) {
-        page_size = size + HEAP_HEADER_SIZE + 4096;
-    }
-    void* mem = (void*)sbrk((int)page_size);
-    if ((int)mem < 0) return 0;
-
-    heap_block_t* new_block = (heap_block_t*)mem;
-    new_block->size = page_size - HEAP_HEADER_SIZE;
-    new_block->free = 0;
-    new_block->next = 0;
-
-    // Append to end of list
-    block = heap_base;
-    while (block->next) block = block->next;
-    block->next = new_block;
-
-    // Split if too large
+    heap_block_t* new_block = (heap_block_t*)grow_heap(size);
+    if (!new_block) return 0;
     if (new_block->size >= size + HEAP_HEADER_SIZE + 16) {
         heap_block_t* leftover = (heap_block_t*)((char*)new_block + HEAP_HEADER_SIZE + size);
         leftover->size = new_block->size - size - HEAP_HEADER_SIZE;
@@ -96,7 +95,7 @@ void* malloc(unsigned int size) {
         new_block->size = size;
         new_block->next = leftover;
     }
-
+    new_block->free = 0;
     return (void*)((char*)new_block + HEAP_HEADER_SIZE);
 }
 
@@ -105,13 +104,11 @@ void free(void* ptr) {
     heap_block_t* block = (heap_block_t*)((char*)ptr - HEAP_HEADER_SIZE);
     block->free = 1;
 
-    // Coalesce with next block if free
     if (block->next && block->next->free) {
         block->size += HEAP_HEADER_SIZE + block->next->size;
         block->next = block->next->next;
     }
 
-    // Coalesce with previous block
     heap_block_t* prev = heap_base;
     while (prev && prev->next != block) prev = prev->next;
     if (prev && prev->free) {
@@ -120,10 +117,10 @@ void free(void* ptr) {
     }
 }
 
-// =========== String ===========
+/* =========== String =========== */
 
-unsigned int strlen(const char* s) {
-    unsigned int n = 0;
+size_t strlen(const char* s) {
+    size_t n = 0;
     while (s[n]) n++;
     return n;
 }
@@ -134,8 +131,8 @@ char* strcpy(char* dest, const char* src) {
     return dest;
 }
 
-char* strncpy(char* dest, const char* src, unsigned int n) {
-    unsigned int i;
+char* strncpy(char* dest, const char* src, size_t n) {
+    size_t i;
     for (i = 0; i < n && src[i]; i++) dest[i] = src[i];
     for (; i < n; i++) dest[i] = '\0';
     return dest;
@@ -146,7 +143,7 @@ int strcmp(const char* s1, const char* s2) {
     return (unsigned char)*s1 - (unsigned char)*s2;
 }
 
-int strncmp(const char* s1, const char* s2, unsigned int n) {
+int strncmp(const char* s1, const char* s2, size_t n) {
     if (n == 0) return 0;
     while (--n && *s1 && *s1 == *s2) { s1++; s2++; }
     return (unsigned char)*s1 - (unsigned char)*s2;
@@ -177,7 +174,7 @@ char* strstr(const char* haystack, const char* needle) {
     return 0;
 }
 
-// =========== Stdlib ===========
+/* =========== Stdlib =========== */
 
 int atoi(const char* s) {
     int n = 0, sign = 1;
@@ -192,7 +189,7 @@ int abs(int x) {
     return x < 0 ? -x : x;
 }
 
-// =========== Stdio ===========
+/* =========== Stdio =========== */
 
 void putchar(int c) {
     char ch = (char)c;
@@ -211,7 +208,7 @@ static void pchar(char c) {
     write(1, &ch, 1);
 }
 
-static void print_unsigned(unsigned int val, int base, int pad, char padchar) {
+static void print_u64(unsigned long long val, int base, int pad, char padchar) {
     char buf[32];
     int i = 0;
     if (val == 0) { buf[i++] = '0'; }
@@ -224,9 +221,9 @@ static void print_unsigned(unsigned int val, int base, int pad, char padchar) {
     while (i > 0) pchar(buf[--i]);
 }
 
-static void print_int(int val, int pad, char padchar) {
+static void print_int(long long val, int pad, char padchar) {
     if (val < 0) { pchar('-'); val = -val; }
-    print_unsigned((unsigned int)val, 10, pad, padchar);
+    print_u64((unsigned long long)val, 10, pad, padchar);
 }
 
 static void print_string(const char* s, int pad, char padchar) {
@@ -247,10 +244,19 @@ int printf(const char* fmt, ...) {
         if (*fmt == '0') { padchar = '0'; fmt++; }
         while (*fmt >= '0' && *fmt <= '9') { pad = pad * 10 + (*fmt - '0'); fmt++; }
         switch (*fmt) {
-            case 'd': { int v = va_arg(args, int); print_int(v, pad, padchar); break; }
-            case 'u': { unsigned int v = va_arg(args, unsigned int); print_unsigned(v, 10, pad, padchar); break; }
-            case 'x':             case 'X': { unsigned int v = va_arg(args, unsigned int); print_unsigned(v, 16, pad, padchar); break; }
-            case 'p': { unsigned int v = va_arg(args, unsigned int); pchar('0'); pchar('x'); print_unsigned(v, 16, pad - 2, padchar); break; }
+            case 'd':
+            case 'i': { int v = va_arg(args, int); print_int(v, pad, padchar); break; }
+            case 'u': { unsigned int v = va_arg(args, unsigned int); print_u64(v, 10, pad, padchar); break; }
+            case 'x':
+            case 'X': { unsigned int v = va_arg(args, unsigned int); print_u64(v, 16, pad, padchar); break; }
+            case 'l': {
+                fmt++;
+                if (*fmt == 'u') { unsigned long v = va_arg(args, unsigned long); print_u64(v, 10, pad, padchar); }
+                else if (*fmt == 'x' || *fmt == 'X') { unsigned long v = va_arg(args, unsigned long); print_u64(v, 16, pad, padchar); }
+                else if (*fmt == 'd' || *fmt == 'i') { long v = va_arg(args, long); print_int(v, pad, padchar); }
+                break;
+            }
+            case 'p': { unsigned long v = va_arg(args, unsigned long); pchar('0'); pchar('x'); print_u64(v, 16, pad - 2, padchar); break; }
             case 's': { const char* s = va_arg(args, const char*); print_string(s, pad, padchar); break; }
             case 'c': { int c = va_arg(args, int); pchar((char)c); for (int i = 1; i < pad; i++) pchar(padchar); break; }
             case '%': pchar('%'); break;
@@ -262,21 +268,20 @@ int printf(const char* fmt, ...) {
     return 0;
 }
 
-int snprintf(char* buf, unsigned int size, const char* fmt, ...) {
+int snprintf(char* buf, size_t size, const char* fmt, ...) {
     va_list args;
     va_start(args, fmt);
-    unsigned int pos = 0;
+    size_t pos = 0;
     while (*fmt && pos + 1 < size) {
         if (*fmt != '%') { buf[pos++] = *fmt; fmt++; continue; }
         fmt++;
-        // Simplified: no padding for snprintf
         switch (*fmt) {
             case 'd': {
                 int v = va_arg(args, int);
-                char tmp[16]; int ti = 0; int neg = 0;
+                char tmp[32]; int ti = 0; int neg = 0;
                 if (v < 0) { neg = 1; v = -v; }
                 if (v == 0) tmp[ti++] = '0';
-                while (v > 0 && ti < 14) { tmp[ti++] = '0' + (v % 10); v /= 10; }
+                while (v > 0 && ti < 30) { tmp[ti++] = '0' + (v % 10); v /= 10; }
                 if (neg && pos + 1 < size) buf[pos++] = '-';
                 while (ti > 0 && pos + 1 < size) buf[pos++] = tmp[--ti];
                 break;
@@ -289,27 +294,27 @@ int snprintf(char* buf, unsigned int size, const char* fmt, ...) {
             }
             case 'x': case 'X': {
                 unsigned int v = va_arg(args, unsigned int);
-                char tmp[16]; int ti = 0;
+                char tmp[32]; int ti = 0;
                 if (v == 0) tmp[ti++] = '0';
-                while (v > 0 && ti < 14) { int d = v % 16; tmp[ti++] = (d < 10) ? ('0' + d) : ('a' + d - 10); v /= 16; }
+                while (v > 0 && ti < 30) { int d = v % 16; tmp[ti++] = (d < 10) ? ('0' + d) : ('a' + d - 10); v /= 16; }
                 while (ti > 0 && pos + 1 < size) buf[pos++] = tmp[--ti];
                 break;
             }
             case 'p': {
-                unsigned int v = va_arg(args, unsigned int);
+                unsigned long v = va_arg(args, unsigned long);
                 if (pos + 1 < size) buf[pos++] = '0';
                 if (pos + 1 < size) buf[pos++] = 'x';
-                char tmp[16]; int ti = 0;
+                char tmp[32]; int ti = 0;
                 if (v == 0) tmp[ti++] = '0';
-                while (v > 0 && ti < 14) { int d = v % 16; tmp[ti++] = (d < 10) ? ('0' + d) : ('a' + d - 10); v /= 16; }
+                while (v > 0 && ti < 30) { int d = v % 16; tmp[ti++] = (d < 10) ? ('0' + d) : ('a' + d - 10); v /= 16; }
                 while (ti > 0 && pos + 1 < size) buf[pos++] = tmp[--ti];
                 break;
             }
             case 'u': {
                 unsigned int v = va_arg(args, unsigned int);
-                char tmp[16]; int ti = 0;
+                char tmp[32]; int ti = 0;
                 if (v == 0) tmp[ti++] = '0';
-                while (v > 0 && ti < 14) { tmp[ti++] = '0' + (v % 10); v /= 10; }
+                while (v > 0 && ti < 30) { tmp[ti++] = '0' + (v % 10); v /= 10; }
                 while (ti > 0 && pos + 1 < size) buf[pos++] = tmp[--ti];
                 break;
             }
@@ -326,17 +331,17 @@ int snprintf(char* buf, unsigned int size, const char* fmt, ...) {
 int sprintf(char* buf, const char* fmt, ...) {
     va_list args;
     va_start(args, fmt);
-    unsigned int pos = 0;
+    size_t pos = 0;
     while (*fmt) {
         if (*fmt != '%') { buf[pos++] = *fmt; fmt++; continue; }
         fmt++;
         switch (*fmt) {
             case 'd': {
                 int v = va_arg(args, int);
-                char tmp[16]; int ti = 0; int neg = 0;
+                char tmp[32]; int ti = 0; int neg = 0;
                 if (v < 0) { neg = 1; v = -v; }
                 if (v == 0) tmp[ti++] = '0';
-                while (v > 0 && ti < 14) { tmp[ti++] = '0' + (v % 10); v /= 10; }
+                while (v > 0 && ti < 30) { tmp[ti++] = '0' + (v % 10); v /= 10; }
                 if (neg) buf[pos++] = '-';
                 while (ti > 0) buf[pos++] = tmp[--ti];
                 break;
@@ -349,27 +354,27 @@ int sprintf(char* buf, const char* fmt, ...) {
             }
             case 'x': case 'X': {
                 unsigned int v = va_arg(args, unsigned int);
-                char tmp[16]; int ti = 0;
+                char tmp[32]; int ti = 0;
                 if (v == 0) tmp[ti++] = '0';
-                while (v > 0 && ti < 14) { int d = v % 16; tmp[ti++] = (d < 10) ? ('0' + d) : ('a' + d - 10); v /= 16; }
+                while (v > 0 && ti < 30) { int d = v % 16; tmp[ti++] = (d < 10) ? ('0' + d) : ('a' + d - 10); v /= 16; }
                 while (ti > 0) buf[pos++] = tmp[--ti];
                 break;
             }
             case 'p': {
-                unsigned int v = va_arg(args, unsigned int);
+                unsigned long v = va_arg(args, unsigned long);
                 buf[pos++] = '0';
                 buf[pos++] = 'x';
-                char tmp[16]; int ti = 0;
+                char tmp[32]; int ti = 0;
                 if (v == 0) tmp[ti++] = '0';
-                while (v > 0 && ti < 14) { int d = v % 16; tmp[ti++] = (d < 10) ? ('0' + d) : ('a' + d - 10); v /= 16; }
+                while (v > 0 && ti < 30) { int d = v % 16; tmp[ti++] = (d < 10) ? ('0' + d) : ('a' + d - 10); v /= 16; }
                 while (ti > 0) buf[pos++] = tmp[--ti];
                 break;
             }
             case 'u': {
                 unsigned int v = va_arg(args, unsigned int);
-                char tmp[16]; int ti = 0;
+                char tmp[32]; int ti = 0;
                 if (v == 0) tmp[ti++] = '0';
-                while (v > 0 && ti < 14) { tmp[ti++] = '0' + (v % 10); v /= 10; }
+                while (v > 0 && ti < 30) { tmp[ti++] = '0' + (v % 10); v /= 10; }
                 while (ti > 0) buf[pos++] = tmp[--ti];
                 break;
             }

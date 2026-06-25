@@ -18,7 +18,6 @@
 
 #define VBE_DISPI_ID4  0xB0C4
 
-#define LFB_PHYS_BASE 0xFC000000
 #define LFB_VIRT_BASE 0xE0000000
 #define MAX_FB_PAGES  1024
 
@@ -27,6 +26,24 @@ uint32_t vbe_width = 0;
 uint32_t vbe_height = 0;
 uint32_t vbe_bpp = 0;
 void* vbe_lfb = NULL;
+
+// Read PCI config space (bus 0, device 2, function 0 = VGA)
+static uint32_t pci_config_read(uint8_t bus, uint8_t slot, uint8_t func, uint8_t offset) {
+    uint32_t address = ((uint32_t)bus << 16) | ((uint32_t)slot << 11) |
+                       ((uint32_t)func << 8) | (offset & 0xFC) | 0x80000000;
+    outl(0xCF8, address);
+    return inl(0xCFC);
+}
+
+// Get LFB physical address from PCI BAR0 of the VGA controller
+static uint32_t get_lfb_phys(void) {
+    uint32_t bar0 = pci_config_read(0, 2, 0, 0x10);
+    if (bar0 & 1) {
+        // BAR0 is I/O space - not expected for VGA
+        return 0xFC000000;
+    }
+    return bar0 & ~0xF;
+}
 
 static void vbe_write(uint16_t index, uint16_t value) {
     outw(VBE_INDEX, index);
@@ -59,19 +76,22 @@ int vbe_set_mode(uint32_t width, uint32_t height, uint32_t bpp) {
     serial_puts("x"); serial_puts(itoa((int)bpp, buf, 10));
     serial_puts("\n");
 
+    uint32_t lfb_phys = get_lfb_phys();
+    printf("[VBE] LFB physical from PCI BAR0: 0x%x\n", lfb_phys);
+
     vbe_write(VBE_DISPI_ENABLE, VBE_DISPI_DISABLED);
     vbe_write(VBE_DISPI_ID, VBE_DISPI_ID4);
     vbe_write(VBE_DISPI_XRES, width);
     vbe_write(VBE_DISPI_YRES, height);
     vbe_write(VBE_DISPI_BPP, bpp);
     vbe_write(VBE_DISPI_VIRT_WIDTH, width);
-    vbe_write(VBE_DISPI_ENABLE, VBE_DISPI_ENABLED | VBE_DISPI_LFB_ENABLED);
+    vbe_write(VBE_DISPI_ENABLE, VBE_DISPI_ENABLED | VBE_DISPI_LFB_ENABLED | VBE_DISPI_NOCLEARMEM);
 
     vbe_width = width;
     vbe_height = height;
     vbe_bpp = bpp;
 
-    // Map LFB pages
+    // Map LFB pages: identity-map so virtual == physical
     uint32_t fb_size = width * height * (bpp / 8);
     uint32_t fb_pages = (fb_size + 0xFFF) / 0x1000;
     if (fb_pages > MAX_FB_PAGES) fb_pages = MAX_FB_PAGES;
@@ -82,7 +102,7 @@ int vbe_set_mode(uint32_t width, uint32_t height, uint32_t bpp) {
     }
 
     for (uint32_t i = 0; i < fb_pages; i++) {
-        map_page((void*)(LFB_PHYS_BASE + i * 0x1000),
+        map_page((void*)(lfb_phys + i * 0x1000),
                  (void*)(LFB_VIRT_BASE + i * 0x1000), 3);
     }
 

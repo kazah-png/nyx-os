@@ -2,7 +2,7 @@
 
 extern process_t* process_table[MAX_PROCESSES];
 extern int process_count;
-static uint32_t next_pid = 1;
+static uint64_t next_pid = 1;
 
 int current_idx = 0;
 
@@ -15,72 +15,68 @@ void init_process(void) {
         init->ppid = 0;
         init->state = 1;
         strncpy(init->comm, "init", 31);
-        init->page_directory = (void*)get_kernel_page_directory();
+        init->page_directory = (uint64_t*)get_kernel_page_directory();
         process_table[process_count++] = init;
     }
 }
 
-// Set up a kernel stack for a new process so irq_scheduler_tick can
-// switch to it. Stack layout (from low to high addr):
-//   pusha regs (8 dwords), error(0), int_no, EIP, CS, EFLAGS
-// When the ISR stub does popa + add esp,8 + iret on this stack,
-// execution jumps to entry_point.
+// Set up a kernel stack for a new process.
+// Stack layout (from low to high addr) matches switch_context restore:
+//   r15, r14, r13, r12, r11, r10, r9, r8,
+//   rbp, rdi, rsi, rdx, rcx, rbx, rax, rip_old
+// Then after SAVE_REGS (old iret frame):
+//   r15, r14, r13, r12, r11, r10, r9, r8,
+//   rbp, rdi, rsi, rdx, rcx, rbx, rax,
+//   int_no(32), error(0), rip, cs, rflags, rsp, ss
 static void init_task_stack(process_t* proc, void* entry_point) {
     void* stack_mem = kmalloc(4096);
     if (!stack_mem) return;
-    uint32_t* sp = (uint32_t*)((uint32_t)stack_mem + 4096);
+    uint64_t* sp = (uint64_t*)((uintptr_t)stack_mem + 4096);
 
-    // CPU-pushed frame (iret pops these)
-    *--sp = 0x202;          // EFLAGS (IF set)
-    *--sp = 0x08;           // CS = kernel code segment
-    *--sp = (uint32_t)entry_point; // EIP
+    // iretq frame for kernel process (ring 0)
+    *--sp = 0x08;              // ss = kernel data
+    *--sp = (uint64_t)(uintptr_t)stack_mem + 4096; // rsp
+    *--sp = 0x202;             // rflags (IF set)
+    *--sp = 0x08;              // cs = kernel code
+    *--sp = (uint64_t)(uintptr_t)entry_point; // rip
 
-    // ISR stub pushes: error code = 0, int number = 32
-    *--sp = 32;             // int number (irq0)
-    *--sp = 0;              // error code
+    *--sp = 0;                 // error code
+    *--sp = 32;                // int number (irq0)
 
-    // pusha (order: eax, ecx, edx, ebx, old_esp, ebp, esi, edi)
-    *--sp = 0;  // edi
-    *--sp = 0;  // esi
-    *--sp = 0;  // ebp
-    *--sp = 0;  // old_esp (unused)
-    *--sp = 0;  // ebx
-    *--sp = 0;  // ecx
-    *--sp = 0;  // edx
-    *--sp = 0;  // eax
+    // SAVE_REGS: 15 zeros
+    *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0;
+    *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0;
 
-    proc->stack = (void*)sp;
-    proc->kernel_stack = (void*)((uint32_t)stack_mem + 4096);
+    proc->stack = (void*)((uintptr_t)sp + 112);
+    proc->kernel_stack = (void*)((uintptr_t)stack_mem + 4096);
 }
 
-// Set up a stack for a ring-3 user process. When the ISR stub pops this frame
-// and executes iret with CS=USER_CS (ring 3), the CPU will also pop SS and ESP
-// from the stack, transitioning to user mode.
 static void init_user_task_stack(process_t* proc, void* entry_point, void* user_stack_top) {
     void* stack_mem = kmalloc(4096);
     if (!stack_mem) return;
-    uint32_t* sp = (uint32_t*)((uint32_t)stack_mem + 4096);
+    uint64_t* sp = (uint64_t*)((uintptr_t)stack_mem + 4096);
 
-    // iret pops these when switching to ring 3 (SS:ESP are extra for ring transition)
-    *--sp = 0x23;               // SS = user data segment (ring 3)
-    *--sp = (uint32_t)user_stack_top; // ESP (user stack top)
-    *--sp = 0x200;              // EFLAGS (IF set, IOPL=0)
-    *--sp = 0x1B;               // CS = user code segment (ring 3)
-    *--sp = (uint32_t)entry_point; // EIP
+    // iretq frame for user process (ring 3)
+    // When iretq detects CS.DPL != current CPL, it pops SS:RSP too (5 values)
+    *--sp = USER_DS;            // ss = user data (ring 3)
+    *--sp = (uint64_t)(uintptr_t)user_stack_top; // rsp = user stack
+    *--sp = 0x202;              // rflags (IF set)
+    *--sp = USER_CS;            // cs = user code (ring 3, L-bit=1)
+    *--sp = (uint64_t)(uintptr_t)entry_point; // rip
 
-    // ISR stub pushes: error code = 0, int number = 32
-    *--sp = 32;                 // int number (irq0)
     *--sp = 0;                  // error code
+    *--sp = 32;                 // int number (irq0)
 
-    // pusha
-    *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0;
-    *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0;
+    // SAVE_REGS: 15 zeros
+    *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0;
+    *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0;
 
-    proc->stack = (void*)sp;
-    proc->kernel_stack = (void*)((uint32_t)stack_mem + 4096);
+    proc->stack = (void*)((uintptr_t)sp + 112);
+    proc->kernel_stack = (void*)((uintptr_t)stack_mem + 4096);
 }
 
-process_t* create_process(const char* name, void* entry, uint32_t flags) {
+process_t* create_process(const char* name, void* entry, uint64_t flags) {
+    (void)flags;
     if (process_count >= MAX_PROCESSES) return NULL;
     process_t* p = (process_t*)kmalloc(sizeof(process_t));
     if (!p) return NULL;
@@ -88,7 +84,6 @@ process_t* create_process(const char* name, void* entry, uint32_t flags) {
     p->pid = next_pid++;
     p->ppid = 0;
     p->state = 1;
-    p->stealth_level = (flags & 0x1) ? 5 : 0;
     strncpy(p->comm, name, 31);
     p->comm[31] = '\0';
     if (entry) {
@@ -98,7 +93,7 @@ process_t* create_process(const char* name, void* entry, uint32_t flags) {
     return p;
 }
 
-process_t* create_user_process(const char* name, void* entry, void* user_stack, uint32_t* page_dir) {
+process_t* create_user_process(const char* name, void* entry, void* user_stack, uint64_t* page_dir) {
     if (process_count >= MAX_PROCESSES) return NULL;
     process_t* p = (process_t*)kmalloc(sizeof(process_t));
     if (!p) return NULL;
@@ -109,14 +104,12 @@ process_t* create_user_process(const char* name, void* entry, void* user_stack, 
     strncpy(p->comm, name, 31);
     p->comm[31] = '\0';
 
-    // Allocate user stack pages if not provided
     if (!user_stack) {
         void* stack_page = alloc_page();
         if (!stack_page) { kfree(p); return NULL; }
-        // Map user stack at high address (below framebuffer at 0xE0000000)
-        uint32_t stack_virt = 0xD0000000 - 4096;
+        uint64_t stack_virt = 0x00007FFFFFFFE000ULL;
         map_page_dir(page_dir, stack_page, (void*)stack_virt, 0x7);
-        user_stack = (void*)(stack_virt + 4096);  // stack top
+        user_stack = (void*)(stack_virt + 4096);
     }
 
     init_user_task_stack(p, entry, user_stack);
@@ -126,11 +119,11 @@ process_t* create_user_process(const char* name, void* entry, void* user_stack, 
 
 void switch_to_user_process(process_t* proc) {
     if (!proc || !proc->page_directory) return;
-    switch_page_directory((uint32_t*)proc->page_directory);
-    tss_set_stack((uint32_t)proc->kernel_stack);
+    switch_page_directory(proc->page_directory);
+    tss_set_stack((uint64_t)(uintptr_t)proc->kernel_stack);
 }
 
-void destroy_process(uint32_t pid) {
+void destroy_process(uint64_t pid) {
     for (int i = 0; i < process_count; i++) {
         if (process_table[i] && process_table[i]->pid == pid) {
             kfree(process_table[i]);
@@ -140,7 +133,7 @@ void destroy_process(uint32_t pid) {
     }
 }
 
-process_t* find_process(uint32_t pid) {
+process_t* find_process(uint64_t pid) {
     for (int i = 0; i < process_count; i++) {
         if (process_table[i] && process_table[i]->pid == pid)
             return process_table[i];
@@ -154,43 +147,30 @@ process_t* get_current_process(void) {
     return NULL;
 }
 
-void hide_process(uint32_t pid) {
-    process_t* p = find_process(pid);
-    if (p) p->stealth_level = 5;
-}
-
-void unhide_process(uint32_t pid) {
-    process_t* p = find_process(pid);
-    if (p) p->stealth_level = 0;
-}
-
 // Global variables for assembly-level context switching
-uint32_t saved_esp = 0;
-uint32_t next_esp = 0;
+uint64_t saved_rsp = 0;
+uint64_t next_rsp = 0;
 
-// Called from the IRQ stub after EOI, with saved_esp set.
-// Determines the next process to run and sets next_esp.
+// Called from the IRQ stub after EOI, with saved_rsp set.
 void irq_scheduler_tick(void) {
     if (process_count < 2) {
-        next_esp = saved_esp;
+        next_rsp = saved_rsp;
         return;
     }
 
     static int tick_counter = 0;
     tick_counter++;
     if (tick_counter < 5) {
-        next_esp = saved_esp;
+        next_rsp = saved_rsp;
         return;
     }
     tick_counter = 0;
 
-    // Save current process's stack pointer
     process_t* current = process_table[current_idx];
     if (current) {
-        current->stack = (void*)saved_esp;
+        current->stack = (void*)(uintptr_t)saved_rsp;
     }
 
-    // Find next runnable process (round-robin)
     int next = current_idx;
     for (int i = 0; i < process_count; i++) {
         next = (next + 1) % process_count;
@@ -202,22 +182,20 @@ void irq_scheduler_tick(void) {
         current_idx = next;
         process_t* next_proc = process_table[next];
         if (next_proc && next_proc->stack) {
-            // Switch page directory if the process has its own
             if (next_proc->page_directory) {
-                switch_page_directory((uint32_t*)next_proc->page_directory);
-                tss_set_stack((uint32_t)next_proc->kernel_stack);
+                switch_page_directory(next_proc->page_directory);
+                tss_set_stack((uint64_t)(uintptr_t)next_proc->kernel_stack);
             }
-            next_esp = (uint32_t)next_proc->stack;
+            next_rsp = (uint64_t)(uintptr_t)next_proc->stack;
             return;
         }
     }
-    next_esp = saved_esp;
+    next_rsp = saved_rsp;
 }
 
 void schedule(void) {
 }
 
-// Idle task that halts the CPU when nothing else is running
 static void idle_task(void) {
     while (1) {
         __asm__ volatile("hlt");
@@ -229,10 +207,9 @@ static int idle_created = 0;
 void ensure_idle_process(void) {
     if (idle_created) return;
     idle_created = 1;
-    create_process("idle", idle_task, 0);
+    create_process("idle", (void*)idle_task, 0);
 }
 
-// Background tasks
 static void task_blink(void) {
     outb(0x3F8, '.');
 }

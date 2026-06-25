@@ -4,12 +4,12 @@
 #define CMAP256 1
 #define DOOMGENERIC_RESX 320
 #define DOOMGENERIC_RESY 200
-#include "kernel.h"
 #include "doom_src/doom.h"
 #include "doom_src/doomgeneric.h"
 #include "doom_src/doomkeys.h"
 #include "doom_src/m_fixed.h"
 #include "doom_src/m_argv.h"
+#include "kernel.h"
 
 uint8_t screenBuffer[DOOMGENERIC_RESX * DOOMGENERIC_RESY];
 pixel_t* DG_ScreenBuffer = (pixel_t*)screenBuffer;

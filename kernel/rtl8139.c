@@ -132,21 +132,21 @@ int rtl8139_init(void) {
                 // Allocate RX buffer (256-byte aligned for RBSTART)
                 uint8_t* rx_raw = (uint8_t*)kmalloc(RX_BUF_SIZE + 256);
                 if (!rx_raw) return -1;
-                rx_buffer = (uint8_t*)(((uint32_t)rx_raw + 255) & ~255);
+                rx_buffer = (uint8_t*)(((uintptr_t)rx_raw + 255) & ~255);
                 memset_asm(rx_buffer, 0, RX_BUF_SIZE + 16);
 
                 // Allocate TX buffers (256-byte aligned)
                 for (int i = 0; i < 4; i++) {
                     uint8_t* tx_raw = (uint8_t*)kmalloc(TX_BUF_SIZE + 256);
                     if (!tx_raw) return -1;
-                    tx_buffers[i] = (uint8_t*)(((uint32_t)tx_raw + 255) & ~255);
+                    tx_buffers[i] = (uint8_t*)(((uintptr_t)tx_raw + 255) & ~255);
                     memset_asm(tx_buffers[i], 0, TX_BUF_SIZE);
                 }
 
                 // Set RX buffer address
-                uint32_t rx_phys = (uint32_t)rx_buffer;
-                rtl_writel(RTL_REG_RBSTART, rx_phys);
-                printf("[RTL8139] RX buffer at 0x%x\n", rx_phys);
+                uintptr_t rx_phys = (uintptr_t)rx_buffer;
+                rtl_writel(RTL_REG_RBSTART, (uint32_t)rx_phys);
+                printf("[RTL8139] RX buffer at 0x%x\n", (uint32_t)rx_phys);
 
                 // Set TX buffer addresses
                 for (int i = 0; i < 4; i++) {
