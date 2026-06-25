@@ -82,7 +82,18 @@ syscall_stub:
     push eax             ; syscall number
     call syscall_handler_c
     add esp, 24          ; pop 6 args
-    mov [esp], eax       ; store return value in saved eax
+    ; After pusha:  [ESP]   = saved EDI (last pusha push = top of stack)
+    ;              [ESP+4] = saved ESI
+    ;              [ESP+8] = saved EBP
+    ;              [ESP+12]= saved old_ESP
+    ;              [ESP+16]= saved EBX
+    ;              [ESP+20]= saved EDX
+    ;              [ESP+24]= saved ECX
+    ;              [ESP+28]= saved EAX (first pusha push)
+    ; POPA reads EDI←[ESP], ESI←[ESP+4], EBP←[ESP+8], skip [ESP+12],
+    ;        EBX←[ESP+16], EDX←[ESP+20], ECX←[ESP+24], EAX←[ESP+28]
+    ; So we must store the return value at [ESP+28] (saved EAX slot).
+    mov [esp+28], eax    ; store return value in saved eax slot (last POPA pop)
     popa
     iret
 

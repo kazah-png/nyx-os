@@ -53,14 +53,14 @@ int elf_load(const uint8_t* data, uint32_t size, process_t** out_proc) {
             if (!(phdr[i].p_flags & PF_W)) flags = 0x5;
             map_page_dir(pd, phys, (void*)page, flags);
 
-            // Copy from file: phys is identity-mapped so we can write directly
-            uint32_t page_off = (page < vaddr) ? 0 : (page - vaddr);
-            uint32_t file_off = offset + page_off;
-            uint32_t copy_sz = 4096;
-            if (file_off < offset + filesz) {
-                if (copy_sz > offset + filesz - file_off)
-                    copy_sz = offset + filesz - file_off;
-                memcpy_asm(phys, data + file_off, copy_sz);
+            // Copy segment data to correct offset within page
+            uint32_t copy_start = (page > vaddr) ? page : vaddr;
+            uint32_t copy_end = (page + 4096 < vaddr + filesz) ? page + 4096 : vaddr + filesz;
+            if (copy_start < copy_end) {
+                uint32_t copy_sz = copy_end - copy_start;
+                uint32_t file_off = offset + (copy_start - vaddr);
+                uint32_t dst_off = copy_start - page;
+                memcpy_asm((uint8_t*)phys + dst_off, data + file_off, copy_sz);
             }
 
             // Zero-fill BSS (from filesz end to memsz end within this page)

@@ -147,13 +147,17 @@ USER_DIR = ../user
 USER_ELFS = $(USER_DIR)/hello.elf $(USER_DIR)/init.elf
 
 $(USER_DIR)/hello.elf: $(USER_DIR)/hello.asm
-	$(AS) $(ASFLAGS) $< -o $@
+	$(AS) $(ASFLAGS) $< -o $(USER_DIR)/hello.o
+	$(LD) -nostdlib -m elf_i386 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/hello.o
 
-$(USER_DIR)/init.elf: $(USER_DIR)/crt0.o $(USER_DIR)/init.o
-	$(LD) -nostdlib -m elf_i386 -e _start -Ttext 0x10000 -o $@ $^
+$(USER_DIR)/init.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.o $(USER_DIR)/init.o
+	$(LD) -nostdlib -m elf_i386 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o $(USER_DIR)/libc.o $(USER_DIR)/init.o
 
 $(USER_DIR)/crt0.o: $(USER_DIR)/crt0.asm
 	$(AS) $(ASFLAGS) $< -o $@
+
+$(USER_DIR)/libc.o: $(USER_DIR)/libc.c $(USER_DIR)/libc.h
+	$(CC) $(CFLAGS) -ffreestanding -nostdlib -I$(USER_DIR) -c $< -o $@
 
 $(USER_DIR)/init.o: $(USER_DIR)/init.c
 	$(CC) $(CFLAGS) -ffreestanding -nostdlib -I$(USER_DIR) -c $< -o $@
@@ -166,4 +170,4 @@ initramfs_data.h: $(MKINITRAMFS) $(USER_ELFS)
 initramfs.o: initramfs.c initramfs_data.h
 
 clean:
-	rm -f *.o *.bin doom_src/*.o initramfs_data.h $(USER_DIR)/*.o $(USER_DIR)/*.elf
+	rm -f *.o *.bin doom_src/*.o initramfs_data.h $(USER_DIR)/*.o $(USER_DIR)/*.elf $(USER_DIR)/hello.o

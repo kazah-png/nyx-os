@@ -77,6 +77,7 @@ typedef __builtin_va_list va_list;
 #define SYS_GETPID  6
 #define SYS_SBRK    7
 #define SYS_FSIZE   8
+#define SYS_EXEC    9
 
 #define MAX_PATH         256
 #define MAX_FILENAME     128

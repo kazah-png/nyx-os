@@ -10,6 +10,7 @@
 #define SYS_GETPID  6
 #define SYS_SBRK    7
 #define SYS_FSIZE   8
+#define SYS_EXEC    9
 
 static inline int syscall3(int no, int a1, int a2, int a3) {
     int ret;
@@ -65,6 +66,10 @@ static inline int sbrk(int increment) {
 
 static inline int fsize(int fd) {
     return syscall1(SYS_FSIZE, fd);
+}
+
+static inline int exec(const char* path) {
+    return syscall1(SYS_EXEC, (int)path);
 }
 
 #endif
