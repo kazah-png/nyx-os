@@ -6,6 +6,7 @@
 #define TOOLBAR_H 28
 #define BTN_SPACE 6
 #define HEADER_H  18
+#define SCROLL_W  12
 
 fileman_win_t* fileman_create_ctx(void) {
     fileman_win_t* fm = (fileman_win_t*)kmalloc(sizeof(fileman_win_t));
@@ -159,18 +160,35 @@ void fileman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     int avail_h = (int)(cy + ch - list_y - HEADER_H - 4);
     int max_rows = avail_h / (int)char_h;
     if (max_rows < 1) max_rows = 1;
+    int list_w = (int)cw - SCROLL_W;
 
     for (int i = fm->scroll_offset; i < fm->entry_count && (i - fm->scroll_offset) < max_rows; i++) {
         int row = i - fm->scroll_offset;
         int ey = list_y + row * char_h;
         uint32_t bg = (i == fm->sel_index) ? fb_rgb(60,80,120) : fb_rgb(30,30,35);
-        fb_fill_rect(cx + 2, ey, cw - 4, char_h, bg);
+        fb_fill_rect(cx + 2, ey, (uint32_t)(list_w - 4), char_h, bg);
 
         char prefix = fm->entry_types[i] ? '/' : ' ';
         char display[68];
         snprintf(display, sizeof(display), "%c %s", prefix, fm->entries[i]);
         uint32_t fg = fm->entry_types[i] ? fb_rgb(100,200,255) : fb_rgb(220,220,220);
         font_draw_string(cx + 4, ey, display, fg, bg);
+    }
+
+    // Scrollbar
+    int sb_x = cx + list_w;
+    int sb_y = list_y;
+    int sb_h = avail_h;
+    fb_fill_rect(sb_x, sb_y, SCROLL_W, (uint32_t)sb_h, fb_rgb(40,40,45));
+
+    if (fm->entry_count > max_rows) {
+        int thumb_top = (fm->scroll_offset * sb_h) / fm->entry_count;
+        int thumb_h = (max_rows * sb_h) / fm->entry_count;
+        if (thumb_h < 8) thumb_h = 8;
+        if (thumb_top + thumb_h > sb_h) thumb_top = sb_h - thumb_h;
+        fb_fill_rect(sb_x, sb_y + thumb_top, SCROLL_W, (uint32_t)thumb_h, fb_rgb(100,100,110));
+        fb_fill_rect(sb_x, sb_y + thumb_top, SCROLL_W, 1, fb_rgb(140,140,150));
+        fb_fill_rect(sb_x, sb_y + thumb_top + thumb_h - 1, SCROLL_W, 1, fb_rgb(70,70,80));
     }
 
     // Status bar
@@ -213,6 +231,20 @@ void fileman_win_click(window_t* win, int mx, int my) {
     int avail_h = (int)(ch - TOOLBAR_H - HEADER_H - char_h - 4 - HEADER_H - 4);
     int max_rows = avail_h / (int)char_h;
     if (max_rows < 1) max_rows = 1;
+    int list_w = (int)cw - SCROLL_W;
+
+    // Scrollbar click
+    int sb_x = cx + list_w;
+    if (mx >= sb_x && mx < sb_x + SCROLL_W && my >= list_y && my < list_y + avail_h) {
+        if (fm->entry_count > max_rows) {
+            int rel_y = my - list_y;
+            fm->scroll_offset = (rel_y * fm->entry_count) / avail_h;
+            if (fm->scroll_offset > fm->entry_count - max_rows)
+                fm->scroll_offset = fm->entry_count - max_rows;
+            if (fm->scroll_offset < 0) fm->scroll_offset = 0;
+        }
+        return;
+    }
 
     if (my >= list_y && my < list_y + max_rows * (int)char_h) {
         int idx = (my - list_y) / (int)char_h + fm->scroll_offset;
@@ -242,7 +274,81 @@ void fileman_win_click(window_t* win, int mx, int my) {
 
 void fileman_win_key(window_t* win, int key) {
     fileman_win_t* fm = (fileman_win_t*)win->reserved;
-    if (!fm || !fm->input_mode) return;
+    if (!fm) return;
+
+    // Navigation keys when not in input mode
+    if (!fm->input_mode) {
+        if (fm->entry_count == 0) return;
+
+        // Calculate visible rows (same as in draw)
+        int char_h = FONT_HEIGHT;
+        uint32_t ch = win->h;
+        int avail_h = (int)(ch - TOOLBAR_H - HEADER_H - char_h - 4 - HEADER_H - 4);
+        int max_rows = avail_h / char_h;
+        if (max_rows < 1) max_rows = 1;
+
+        if (key == KEY_DOWN) {
+            if (fm->sel_index < 0) fm->sel_index = 0;
+            else if (fm->sel_index < fm->entry_count - 1) fm->sel_index++;
+            if (fm->sel_index >= fm->scroll_offset + max_rows)
+                fm->scroll_offset = fm->sel_index - max_rows + 1;
+            return;
+        }
+        if (key == KEY_UP) {
+            if (fm->sel_index < 0) fm->sel_index = fm->entry_count - 1;
+            else if (fm->sel_index > 0) fm->sel_index--;
+            if (fm->sel_index < fm->scroll_offset)
+                fm->scroll_offset = fm->sel_index;
+            return;
+        }
+        if (key == KEY_PGDN) {
+            fm->scroll_offset += max_rows;
+            if (fm->scroll_offset >= fm->entry_count)
+                fm->scroll_offset = fm->entry_count - 1;
+            if (fm->scroll_offset < 0) fm->scroll_offset = 0;
+            fm->sel_index = fm->scroll_offset;
+            return;
+        }
+        if (key == KEY_PGUP) {
+            fm->scroll_offset -= max_rows;
+            if (fm->scroll_offset < 0) fm->scroll_offset = 0;
+            fm->sel_index = fm->scroll_offset;
+            return;
+        }
+        if (key == KEY_HOME) {
+            fm->scroll_offset = 0;
+            fm->sel_index = 0;
+            return;
+        }
+        if (key == KEY_END) {
+            fm->sel_index = fm->entry_count - 1;
+            fm->scroll_offset = fm->sel_index - max_rows + 1;
+            if (fm->scroll_offset < 0) fm->scroll_offset = 0;
+            return;
+        }
+        if (key == '\n' && fm->sel_index >= 0) {
+            if (fm->entry_types[fm->sel_index]) {
+                fileman_cd(fm, fm->entries[fm->sel_index], win);
+            } else {
+                char path[256];
+                fileman_get_path(fm, fm->entries[fm->sel_index], path, sizeof(path));
+                int fd = vfs_open(path, 0, 0);
+                if (fd >= 0) {
+                    char buf[512];
+                    int n = vfs_read(fd, buf, sizeof(buf)-1);
+                    vfs_close(fd);
+                    if (n > 0) {
+                        buf[n] = '\0';
+                        snprintf(fm->status, sizeof(fm->status), "%s (%d bytes): %.200s", fm->entries[fm->sel_index], n, buf);
+                    } else {
+                        snprintf(fm->status, sizeof(fm->status), "%s (empty)", fm->entries[fm->sel_index]);
+                    }
+                }
+            }
+            return;
+        }
+        return;
+    }
 
     if (key == '\n') {
         // Commit input
