@@ -31,7 +31,7 @@ Evolve NyxOS into a functional x86_64 kernel with filesystem, networking, shell,
 | v3.1.0 | RTC driver, more syscalls (open/read/close/getpid/sbrk/fsize/exec), libc (printf/malloc/snprintf), initramfs auto-boot, desktop polish (right-click, settings, wallpaper) |
 | v4.0.0 | Full x86_64 native (long mode, 4-level paging, syscall/sysret, ELF64, ring 3), clean 32-bit dead code removal, docs corrected |
 | v4.1.0 | Higher-half kernel mapping (PML4[256] mirror), user/kernel page-table isolation (user has no identity mapping), CR3 switching in ISR/IRQ/syscall entries, scheduler uses next_cr3 |
-| v4.2.0 | NX bit (No-Execute) + SMEP (Supervisor Mode Execution Prevention), PAGE_NX added to user stack/heap/data, Local APIC + I/O APIC init, CPUID detection |
+| v4.2.0 | NX bit (No-Execute) + SMEP (Supervisor Mode Execution Prevention), PAGE_NX added to user stack/heap/data, Local APIC + I/O APIC init, CPUID detection, IST (Interrupt Stack Table) for double fault (#8) and NMI (#2), repo cleanup (README x86_64, .gitignore, AGENTS.md) |
 
 ## Architecture
 ### Boot flow
