@@ -103,7 +103,7 @@ int vbe_set_mode(uint32_t width, uint32_t height, uint32_t bpp) {
 
     for (uint32_t i = 0; i < fb_pages; i++) {
         map_page((void*)(lfb_phys + i * 0x1000),
-                 (void*)(LFB_VIRT_BASE + i * 0x1000), 3);
+                 (void*)(LFB_VIRT_BASE + i * 0x1000), 3 | PAGE_NX);
     }
 
     vbe_lfb = (void*)LFB_VIRT_BASE;

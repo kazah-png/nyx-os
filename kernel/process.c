@@ -108,7 +108,7 @@ process_t* create_user_process(const char* name, void* entry, void* user_stack, 
         void* stack_page = alloc_page();
         if (!stack_page) { kfree(p); return NULL; }
         uint64_t stack_virt = 0x00007FFFFFFFE000ULL;
-        map_page_dir(page_dir, stack_page, (void*)stack_virt, 0x7);
+        map_page_dir(page_dir, stack_page, (void*)stack_virt, 0x7 | PAGE_NX);
         user_stack = (void*)(stack_virt + 4096);
     }
 

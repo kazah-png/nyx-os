@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "4.1.0"
+#define KERNEL_VERSION "4.2.0"
 #define KERNEL_CODENAME "Nightfall"
 #define KERNEL_DATE    "2026"
 
@@ -100,11 +100,20 @@ typedef __builtin_va_list va_list;
 
 // CR4 flags
 #define CR4_PAE     (1 << 5)
+#define CR4_SMEP    (1 << 20)
+
+// Page table entry flags
+#define PAGE_PRESENT  (1ULL << 0)
+#define PAGE_WRITABLE (1ULL << 1)
+#define PAGE_USER     (1ULL << 2)
+#define PAGE_HUGE     (1ULL << 7)
+#define PAGE_NX       (1ULL << 63)
 
 // EFER MSR (0xC0000080)
 #define MSR_EFER    0xC0000080
 #define EFER_LME    (1 << 8)
 #define EFER_LMA    (1 << 10)
+#define EFER_NXE    (1 << 11)
 
 // STAR, LSTAR, SF_MASK MSRs for syscall
 #define MSR_STAR     0xC0000081
@@ -336,6 +345,14 @@ static inline uint64_t read_cr3(void) {
 static inline void write_cr3(uint64_t val) {
     __asm__ volatile ("mov %0, %%cr3" : : "r"(val));
 }
+static inline uint64_t read_cr4(void) {
+    uint64_t val;
+    __asm__ volatile ("mov %%cr4, %0" : "=r"(val));
+    return val;
+}
+static inline void write_cr4(uint64_t val) {
+    __asm__ volatile ("mov %0, %%cr4" : : "r"(val));
+}
 static inline void flush_tlb(void) {
     uint64_t cr3;
     __asm__ volatile ("mov %%cr3, %0; mov %0, %%cr3" : "=r"(cr3) :: "memory");
@@ -485,13 +502,13 @@ void free_page(void* addr);
 
 void init_paging(void);
 void* get_phys_addr(void* virtual_addr);
-void map_page(void* phys_addr, void* virt_addr, uint32_t flags);
+void map_page(void* phys_addr, void* virt_addr, uint64_t flags);
 void unmap_page(void* virt_addr);
 void* clone_page_directory(void);
 uint64_t* alloc_page_directory(void);
 uint64_t* get_kernel_page_directory(void);
 void switch_page_directory(uint64_t* pd);
-void map_page_dir(uint64_t* pd, void* phys, void* virt, uint32_t flags);
+void map_page_dir(uint64_t* pd, void* phys, void* virt, uint64_t flags);
 
 void init_heap(void);
 void* heap_alloc(size_t size);

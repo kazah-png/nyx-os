@@ -26,7 +26,7 @@ int elf_load(const uint8_t* data, uint32_t size, process_t** out_proc) {
     if (!stack_phys) return -1;
     uint64_t stack_virt = 0x00007FFFFFFFE000ULL;
     uint64_t stack_top = stack_virt + 4096;
-    map_page_dir(pd, stack_phys, (void*)stack_virt, 0x7);
+    map_page_dir(pd, stack_phys, (void*)stack_virt, 0x7 | PAGE_NX);
 
     uint64_t entry = hdr->e_entry;
     elf64_phdr_t* phdr = (elf64_phdr_t*)(data + hdr->e_phoff);
@@ -45,8 +45,9 @@ int elf_load(const uint8_t* data, uint32_t size, process_t** out_proc) {
         for (uint64_t page = start_page; page < end_page; page += 4096) {
             void* phys = alloc_page();
             if (!phys) return -1;
-            uint32_t flags = 0x7;
+            uint64_t flags = 0x7;
             if (!(phdr[i].p_flags & PF_W)) flags = 0x5;
+            if (!(phdr[i].p_flags & PF_X)) flags |= PAGE_NX;
             map_page_dir(pd, phys, (void*)page, flags);
 
             uint64_t copy_start = (page > vaddr) ? page : vaddr;

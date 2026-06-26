@@ -1,10 +1,6 @@
 #include "kernel.h"
 
 #define IDENTITY_MAP_MB 64
-#define PAGE_PRESENT    (1 << 0)
-#define PAGE_WRITABLE   (1 << 1)
-#define PAGE_USER       (1 << 2)
-#define PAGE_HUGE       (1 << 7)
 
 // PML4 indices
 #define PML4_IDENTITY 0
@@ -52,7 +48,7 @@ void* get_phys_addr(void* virtual_addr) {
 }
 
 // Map a page in a specific PML4
-static void map_pml4(uint64_t* pml4, void* phys, void* virt, uint32_t flags) {
+static void map_pml4(uint64_t* pml4, void* phys, void* virt, uint64_t flags) {
     uint64_t vaddr = (uint64_t)virt;
     int pml4_idx = (vaddr >> 39) & 0x1FF;
     int pdpt_idx = (vaddr >> 30) & 0x1FF;
@@ -96,11 +92,11 @@ static void map_pml4(uint64_t* pml4, void* phys, void* virt, uint32_t flags) {
     __asm__ volatile("invlpg (%0)" :: "r"(virt) : "memory");
 }
 
-void map_page(void* phys, void* virt, uint32_t flags) {
+void map_page(void* phys, void* virt, uint64_t flags) {
     map_pml4(kernel_pml4, phys, virt, flags);
 }
 
-void map_page_dir(uint64_t* pml4, void* phys, void* virt, uint32_t flags) {
+void map_page_dir(uint64_t* pml4, void* phys, void* virt, uint64_t flags) {
     map_pml4(pml4, phys, virt, flags);
 }
 
@@ -194,6 +190,16 @@ void init_paging(void) {
 
     printf("[PAGING] Loading CR3 with %lx\n", (uint64_t)kernel_pml4);
     write_cr3((uint64_t)kernel_pml4);
+
+    // Enable NXE (No-Execute) in EFER
+    uint64_t efer = read_msr(MSR_EFER);
+    write_msr(MSR_EFER, efer | EFER_NXE);
+    printf("[PAGING] NXE enabled.\n");
+
+    // Enable SMEP (Supervisor Mode Execution Prevention)
+    uint64_t cr4 = read_cr4();
+    write_cr4(cr4 | CR4_SMEP);
+    printf("[PAGING] SMEP enabled.\n");
 
     printf("[PAGING] Enabled successfully.\n");
     current_pml4 = kernel_pml4;

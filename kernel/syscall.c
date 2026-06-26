@@ -91,7 +91,7 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3, uin
             for (uint64_t page = start_page; page < end_page; page += 4096) {
                 void* phys = alloc_page();
                 if (!phys) return -1;
-                map_page_dir(pml4, phys, (void*)page, 0x7);
+                map_page_dir(pml4, phys, (void*)page, 0x7 | PAGE_NX);
             }
             cur->program_break = new_brk;
             return old_brk;
