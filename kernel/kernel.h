@@ -54,6 +54,8 @@ typedef __builtin_va_list va_list;
 #define PAGE_ALIGN(addr) (((addr) + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1))
 #define KERNEL_BASE      0xFFFFFFFF80000000
 #define KERNEL_HEAP_START 0xFFFFFFFF90000000
+#define __pa(vaddr)      ((uint64_t)(vaddr) - KERNEL_BASE)
+#define __va(paddr)      ((void*)((uint64_t)(paddr) + KERNEL_BASE))
 #define KERNEL_HEAP_SIZE  (16 * 1024 * 1024)
 
 // Segment selectors (same as 32-bit)
@@ -272,6 +274,8 @@ extern int process_count;
 extern net_iface_t net_interfaces[8];
 extern uint64_t saved_rsp;
 extern uint64_t next_rsp;
+extern uint64_t next_cr3;
+extern uint64_t kernel_pml4_phys;
 
 // ============================================================
 // DECLARACIONES DE FUNCIONES ENSAMBLADOR

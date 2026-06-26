@@ -31,7 +31,7 @@ void idt_set_gate(uint8_t num, uint64_t base, uint16_t sel, uint8_t flags) {
 
 void init_idt(void) {
     idtp.limit = sizeof(idt) - 1;
-    idtp.base  = (uint64_t)&idt;
+    idtp.base  = (uint64_t)&idt + KERNEL_BASE;
 
     memset_asm(&idt, 0, sizeof(idt));
 

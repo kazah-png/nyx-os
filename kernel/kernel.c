@@ -1189,6 +1189,11 @@ void kernel_main(uint64_t magic, void* mboot_ptr) {
     printf("[INIT] System Calls...\n"); init_syscalls();
     // Setup syscall MSRs for syscall/sysret
     setup_syscall_msrs();
+    printf("[INIT] Syscall kernel stack...\n");
+    void* syscall_stack = kmalloc(4096);
+    if (syscall_stack) {
+        set_kernel_rsp((uint64_t)syscall_stack + 4096);
+    }
     printf("[INIT] Virtual File System...\n"); init_vfs();
     printf("[INIT] Loading GRUB modules...\n"); init_load_modules();
     printf("[INIT] EXT2 Filesystem...\n"); init_ext2();

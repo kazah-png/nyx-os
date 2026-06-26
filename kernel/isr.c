@@ -40,6 +40,6 @@ void isr_handler(uint64_t int_no) {
 
 void init_isr(void) {
     for (int i = 0; i < 32; i++) {
-        idt_set_gate(i, (uint64_t)isr_stubs[i], 0x08, 0x8E);
+        idt_set_gate(i, (uint64_t)isr_stubs[i] + KERNEL_BASE, 0x08, 0x8E);
     }
 }

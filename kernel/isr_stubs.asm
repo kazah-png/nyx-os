@@ -2,6 +2,12 @@
 default rel
 BITS 64
 
+; Higher-half kernel offset for accessing variables from user page tables
+%define KERNEL_BASE 0xFFFFFFFF80000000
+
+extern kernel_pml4_phys
+extern next_cr3
+
 ; Save all registers (15 pushes)
 %macro SAVE_REGS 0
     push rax
@@ -90,6 +96,10 @@ ISR_NOERR 31
 
 extern isr_handler
 isr_common:
+    ; Switch to kernel page tables in case we came from user mode
+    mov rax, KERNEL_BASE + kernel_pml4_phys
+    mov rax, [rax]
+    mov cr3, rax
     SAVE_REGS
     ; Stack: [RSP+0]=R15, ..., [RSP+112]=RAX
     ; After error+int: [RSP+120]=error, [RSP+128]=int_no, [RSP+136]=RIP, [RSP+144]=CS, [RSP+152]=RFLAGS, ...
@@ -98,6 +108,61 @@ isr_common:
     RESTORE_REGS
     add rsp, 16               ; pop error code + int number
     iretq
+
+; Syscall entry via syscall instruction
+; RAX = syscall number, RDI/RSI/RDX/R10/R8/R9 = args (Linux convention)
+; RCX = return RIP (set by syscall), R11 = saved RFLAGS (set by syscall)
+global syscall_entry
+global user_rsp
+global kernel_rsp
+global user_cr3
+extern syscall_handler
+
+section .data
+user_rsp:  dq 0
+kernel_rsp: dq 0
+user_cr3:  dq 0
+
+section .text
+syscall_entry:
+    ; Save user CR3 and RSP before switching to kernel page tables
+    ; User CR3 maps higher half via PML4[256], so use higher-half addressing
+
+    mov rax, KERNEL_BASE + user_cr3
+    mov rbx, cr3
+    mov [rax], rbx
+
+    mov rax, KERNEL_BASE + user_rsp
+    mov [rax], rsp
+
+    ; Switch to kernel page tables
+    mov rax, KERNEL_BASE + kernel_pml4_phys
+    mov rax, [rax]
+    mov cr3, rax
+
+    ; Switch to kernel stack (identity address, now accessible)
+    mov rsp, [kernel_rsp]
+    push rcx                     ; return RIP
+    push r11                     ; return RFLAGS
+    SAVE_REGS
+    ; Stack: [RSP+0..112]=regs, [RSP+120]=RFLAGS, [RSP+128]=RIP
+    mov rdi, [rsp + 112]        ; RAX = syscall number
+    mov rsi, [rsp + 72]         ; RDI = arg1
+    mov rdx, [rsp + 80]         ; RSI = arg2
+    mov rcx, [rsp + 88]         ; RDX = arg3
+    mov r8,  [rsp + 40]         ; R10 = arg4
+    mov r9,  [rsp + 56]         ; R8  = arg5
+    call syscall_handler
+    mov [rsp + 112], rax        ; save return value in saved RAX slot
+    RESTORE_REGS
+    pop r11                      ; restore RFLAGS
+    pop rcx                      ; restore return RIP
+    ; Switch back to user page tables
+    mov rax, KERNEL_BASE + user_cr3
+    mov rax, [rax]
+    mov cr3, rax
+    mov rsp, [KERNEL_BASE + user_rsp]
+    sysret
 
 ; IRQ stubs (mapped to INT 32-47)
 %macro IRQ 2
@@ -130,6 +195,13 @@ extern irq_scheduler_tick
 extern saved_rsp
 extern next_rsp
 irq_common:
+    ; Switch to kernel page tables immediately
+    ; CPU already switched to kernel stack (via TSS.RSP0 = higher half addr)
+    ; and pushed iretq frame. We're running from higher half address.
+    mov rax, KERNEL_BASE + kernel_pml4_phys
+    mov rax, [rax]
+    mov cr3, rax
+
     SAVE_REGS
     mov rdi, [rsp + 128]     ; int_no
     call irq_handler
@@ -143,42 +215,11 @@ irq_common:
     ; Scheduler tick
     mov [saved_rsp], rsp
     call irq_scheduler_tick
+    ; Switch to next process page tables
+    mov rax, KERNEL_BASE + next_cr3
+    mov rax, [rax]
+    mov cr3, rax
     mov rsp, [next_rsp]
     RESTORE_REGS
     add rsp, 16
     iretq
-
-; Syscall entry via syscall instruction
-; RAX = syscall number, RDI/RSI/RDX/R10/R8/R9 = args (Linux convention)
-; RCX = return RIP (set by syscall), R11 = saved RFLAGS (set by syscall)
-global syscall_entry
-global user_rsp
-global kernel_rsp
-extern syscall_handler
-
-section .data
-user_rsp:  dq 0
-kernel_rsp: dq 0
-
-section .text
-syscall_entry:
-    ; Save user RSP, switch to kernel stack
-    mov [user_rsp], rsp
-    mov rsp, [kernel_rsp]
-    push rcx                     ; return RIP
-    push r11                     ; return RFLAGS
-    SAVE_REGS
-    ; Stack: [RSP+0..112]=regs, [RSP+120]=RFLAGS, [RSP+128]=RIP
-    mov rdi, [rsp + 112]        ; RAX = syscall number
-    mov rsi, [rsp + 72]         ; RDI = arg1
-    mov rdx, [rsp + 80]         ; RSI = arg2
-    mov rcx, [rsp + 88]         ; RDX = arg3
-    mov r8,  [rsp + 40]         ; R10 = arg4
-    mov r9,  [rsp + 56]         ; R8  = arg5
-    call syscall_handler
-    mov [rsp + 112], rax        ; save return value in saved RAX slot
-    RESTORE_REGS
-    pop r11                      ; restore RFLAGS
-    pop rcx                      ; restore return RIP
-    mov rsp, [user_rsp]          ; restore user RSP
-    sysret

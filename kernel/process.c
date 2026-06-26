@@ -120,7 +120,7 @@ process_t* create_user_process(const char* name, void* entry, void* user_stack, 
 void switch_to_user_process(process_t* proc) {
     if (!proc || !proc->page_directory) return;
     switch_page_directory(proc->page_directory);
-    tss_set_stack((uint64_t)(uintptr_t)proc->kernel_stack);
+    tss_set_stack((uint64_t)(uintptr_t)proc->kernel_stack + KERNEL_BASE);
 }
 
 void destroy_process(uint64_t pid) {
@@ -150,11 +150,13 @@ process_t* get_current_process(void) {
 // Global variables for assembly-level context switching
 uint64_t saved_rsp = 0;
 uint64_t next_rsp = 0;
+uint64_t next_cr3 = 0;
 
 // Called from the IRQ stub after EOI, with saved_rsp set.
 void irq_scheduler_tick(void) {
     if (process_count < 2) {
         next_rsp = saved_rsp;
+        next_cr3 = read_cr3();
         return;
     }
 
@@ -162,6 +164,7 @@ void irq_scheduler_tick(void) {
     tick_counter++;
     if (tick_counter < 5) {
         next_rsp = saved_rsp;
+        next_cr3 = read_cr3();
         return;
     }
     tick_counter = 0;
@@ -183,14 +186,15 @@ void irq_scheduler_tick(void) {
         process_t* next_proc = process_table[next];
         if (next_proc && next_proc->stack) {
             if (next_proc->page_directory) {
-                switch_page_directory(next_proc->page_directory);
-                tss_set_stack((uint64_t)(uintptr_t)next_proc->kernel_stack);
+                tss_set_stack((uint64_t)(uintptr_t)next_proc->kernel_stack + KERNEL_BASE);
+                next_cr3 = (uint64_t)next_proc->page_directory;
             }
             next_rsp = (uint64_t)(uintptr_t)next_proc->stack;
             return;
         }
     }
     next_rsp = saved_rsp;
+    next_cr3 = read_cr3();
 }
 
 void schedule(void) {

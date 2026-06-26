@@ -70,6 +70,10 @@ _start:
     or eax, 3
     mov [pdpt_table], eax
 
+    ; Mirror PML4[0] to PML4[256] for higher-half kernel mapping
+    mov eax, [pml4_table]
+    mov [pml4_table + 256*8], eax
+
     ; Identity map 0–128 MB using 2 MB pages
     mov edi, pd_table
     mov ecx, 64

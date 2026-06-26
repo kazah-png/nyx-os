@@ -35,7 +35,7 @@ void load_tss(void) {
 
 void init_gdt(void) {
     gp.limit = (sizeof(uint64_t) * 6 + 16) - 1; // 6 standard + 1 TSS (16 bytes)
-    gp.base  = (uint64_t)&gdt;
+    gp.base  = (uint64_t)&gdt + KERNEL_BASE;
 
     gdt[0] = 0;                                // null
     gdt[1] = make_desc(0x9A, 0x20);            // kernel code 64 (L-bit)
@@ -46,7 +46,8 @@ void init_gdt(void) {
     memset_asm(&tss, 0, sizeof(tss));
     tss.iomap_base = sizeof(tss);
 
-    uint64_t tss_base = (uint64_t)&tss;
+    // Use higher-half address so TSS is accessible from user CR3
+    uint64_t tss_base = (uint64_t)&tss + KERNEL_BASE;
     uint32_t tss_limit = sizeof(tss) - 1;
 
     // Build 16-byte TSS descriptor at gdt[5..6]

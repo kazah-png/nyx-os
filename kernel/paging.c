@@ -132,6 +132,9 @@ uint64_t* get_kernel_page_directory(void) {
     return kernel_pml4;
 }
 
+// Physical address of kernel PML4 for assembly page-table switching
+uint64_t kernel_pml4_phys = 0;
+
 void switch_page_directory(uint64_t* pml4) {
     if (!pml4) pml4 = kernel_pml4;
     current_pml4 = pml4;
@@ -143,14 +146,11 @@ uint64_t* alloc_page_directory(void) {
     if (!pml4) return NULL;
     memset_asm(pml4, 0, PAGE_SIZE);
 
-    // Clone kernel PML4 entries for the higher half (PML4[256..511])
-    // and identity mapping
-    for (int i = 0; i < 512; i++) {
+    // Clone kernel PML4 entries for the higher half only (PML4[256..511])
+    // Identity mapping (PML4[0]) is NOT shared — user processes use higher half
+    for (int i = PML4_HIGHER; i < 512; i++) {
         if (kernel_pml4[i] & PAGE_PRESENT) {
-            if (i == PML4_IDENTITY || i >= PML4_HIGHER) {
-                // Share kernel-managed page table pages
-                pml4[i] = kernel_pml4[i];
-            }
+            pml4[i] = kernel_pml4[i];
         }
     }
     return pml4;
@@ -185,6 +185,12 @@ void init_paging(void) {
 
     pdpt[0] = (uint64_t)pd | PAGE_PRESENT | PAGE_WRITABLE;
     kernel_pml4[PML4_IDENTITY] = (uint64_t)pdpt | PAGE_PRESENT | PAGE_WRITABLE;
+
+    // Mirror identity mapping in higher half (PML4[256] = PML4[0])
+    kernel_pml4[PML4_HIGHER] = kernel_pml4[PML4_IDENTITY];
+
+    // Expose physical address for assembly page-table switching
+    kernel_pml4_phys = (uint64_t)kernel_pml4;
 
     printf("[PAGING] Loading CR3 with %lx\n", (uint64_t)kernel_pml4);
     write_cr3((uint64_t)kernel_pml4);
