@@ -3,6 +3,7 @@
 #include "font.h"
 #include "terminal_win.h"
 #include "fileman_win.h"
+#include "paint_win.h"
 #include "rtc.h"
 
 static window_t* windows[MAX_WINDOWS];
@@ -297,7 +298,7 @@ static void draw_start_menu(void) {
     const char* items[] = {
         "File Manager", "Text Editor", "Image Viewer", "Terminal",
         "Settings", "Package Manager", "DOOM", "Desktop Demo",
-        "Paint Demo", "Sound Test", "About", "Shutdown",
+        "Paint", "Sound Test", "About", "Shutdown",
     };
     for (int i = 0; i < 12; i++) {
         int iy = sm_y + 28 + i * 28;
@@ -550,8 +551,18 @@ static void do_start_menu_action(int idx) {
         case 7: // Desktop Demo
             window_create(100, 100, 300, 200, "Desktop Demo", NULL);
             break;
-        case 8: // Paint Demo
-            window_create(150, 100, 400, 300, "Paint Demo", NULL);
+        case 8: // Paint
+            {
+                window_t* pwin = window_create(80, 60, 580, 480, "Paint", paint_win_draw);
+                if (pwin) {
+                    pwin->reserved = paint_create_ctx();
+                    if (pwin->reserved) {
+                        pwin->on_click = paint_win_click;
+                        pwin->on_key = paint_win_key;
+                        pwin->on_mousemove = paint_win_mousemove;
+                    }
+                }
+            }
             break;
         case 9: // Sound Test
             window_create(200, 150, 350, 200, "Sound Test", NULL);
