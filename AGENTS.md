@@ -178,12 +178,17 @@ kernel/
 - init.elf rewritten to use full libc (printf, malloc, snprintf, free) — boots, prints system info, exits cleanly
 - DOOM sound: wired DMX sound lump loading → SB16 playback (single-cycle DMA, 64KB buffer, auto-stop on IRQ)
 - Scrollbar in File Manager: vertical scrollbar with proportional thumb, click-to-scroll, arrow key navigation (Up/Down/PgUp/PgDn/Home/End), Enter to open selected file/dir
+- Slab allocator (`slab.c`/`slab.h`) for kmalloc objects ≤512 bytes (caches for 32/64/128/256/512 bytes)
+- `proc->stack = sp + 112` → `proc->stack = sp` in `init_task_stack`/`init_user_task_stack`
 
 ## Session fixes (Jun 2026)
 - Fixed triple fault on `sti`: `ioapic_redirect_irq()` in `apic.c` wrote I/O APIC redirection entries **without** the mask bit, implicitly unmasking ALL hardware IRQs 0-15. The PIT timer fired immediately after STI, and the unregistered IRQ handler chain caused a crash → triple fault. Fix: added `ioapic_mask_irq(i)` after routing each IRQ in `init_apic()`.
-- Fixed kernel crash in `switch_to_user_process()`: the kernel runs at identity-mapped addresses (linked at 0x100000), but user PML4 has **no identity mapping** (`pml4[PML4_IDENTITY] = 0` in `alloc_page_directory()`). Switching CR3 to user PML4 while RIP was in identity-mapped space caused an immediate page fault → triple fault. Fix: removed `switch_to_user_process()` calls from init boot and shell `exec` command; the scheduler picks up new processes via `irq_scheduler_tick` which handles CR3 switching correctly (right before `iretq` to ring 3).
+- Fixed kernel crash in `switch_to_user_process()`: `map_pml4()` at `paging.c:91` stripped the `PAGE_USER` bit from page-table entries (`flags & ~0xFFF` clears lower 12 bits), making all user pages supervisor-only → #PF on first ring-3 instruction. Fix: propagate `PAGE_USER` and `PAGE_NX` from flags explicitly: `(flags & PAGE_USER ? PAGE_USER : 0) | (flags & PAGE_NX)`.
+- Restored `switch_to_user_process()` with higher-half trampoline (`switch_to_user_trampoline` in `isr_stubs.asm`): indirect `call rax` through a higher-half address, switches RSP→CR3→RESTORE_REGS→iretq. Inline assembly fixed to AT&T syntax for GCC default dialect. Verified working (reaches ring 3, no crash). Used in `cmd_exec` for direct user-process launch from shell.
 
 ## Next features to add
-- Drag-reorder desktop icons
-- Right-click context menu in File Manager (rename, copy, paste)
-- Fix `switch_to_user_process` to run from higher-half trampoline for direct user process launching
+- Paint app with variable brush size + color picker
+- Calculator window (basic arithmetic)
+- Task Manager window (process list, CPU/memory stats)
+- Notepad with file save/open
+- EXT2 write support (currently read-only)
