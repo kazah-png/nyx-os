@@ -179,6 +179,11 @@ kernel/
 - DOOM sound: wired DMX sound lump loading → SB16 playback (single-cycle DMA, 64KB buffer, auto-stop on IRQ)
 - Scrollbar in File Manager: vertical scrollbar with proportional thumb, click-to-scroll, arrow key navigation (Up/Down/PgUp/PgDn/Home/End), Enter to open selected file/dir
 
+## Session fixes (Jun 2026)
+- Fixed triple fault on `sti`: `ioapic_redirect_irq()` in `apic.c` wrote I/O APIC redirection entries **without** the mask bit, implicitly unmasking ALL hardware IRQs 0-15. The PIT timer fired immediately after STI, and the unregistered IRQ handler chain caused a crash → triple fault. Fix: added `ioapic_mask_irq(i)` after routing each IRQ in `init_apic()`.
+- Fixed kernel crash in `switch_to_user_process()`: the kernel runs at identity-mapped addresses (linked at 0x100000), but user PML4 has **no identity mapping** (`pml4[PML4_IDENTITY] = 0` in `alloc_page_directory()`). Switching CR3 to user PML4 while RIP was in identity-mapped space caused an immediate page fault → triple fault. Fix: removed `switch_to_user_process()` calls from init boot and shell `exec` command; the scheduler picks up new processes via `irq_scheduler_tick` which handles CR3 switching correctly (right before `iretq` to ring 3).
+
 ## Next features to add
 - Drag-reorder desktop icons
 - Right-click context menu in File Manager (rename, copy, paste)
+- Fix `switch_to_user_process` to run from higher-half trampoline for direct user process launching

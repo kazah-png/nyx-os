@@ -52,7 +52,7 @@ typedef __builtin_va_list va_list;
 
 #define PAGE_SIZE        4096
 #define PAGE_ALIGN(addr) (((addr) + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1))
-#define KERNEL_BASE      0xFFFFFFFF80000000
+#define KERNEL_BASE      0xFFFFFF8000000000
 #define KERNEL_HEAP_START 0xFFFFFFFF90000000
 #define __pa(vaddr)      ((uint64_t)(vaddr) - KERNEL_BASE)
 #define __va(paddr)      ((void*)((uint64_t)(paddr) + KERNEL_BASE))
@@ -506,6 +506,7 @@ void kfree(void* ptr);
 void* krealloc(void* ptr, size_t size);
 void* alloc_page(void);
 void free_page(void* addr);
+void slab_init_all(void);
 
 void init_paging(void);
 void* get_phys_addr(void* virtual_addr);

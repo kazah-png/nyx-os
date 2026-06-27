@@ -749,14 +749,8 @@ static void cmd_exec(int argc, char** argv) {
         return;
     }
 
-    // Switch to the user process
-    switch_to_user_process(proc);
-
     // Process is now in the scheduler. The scheduler will pick it up.
-    // Need to force a context switch to the new process.
-    // Since it interrupts the current execution, we can just return to the shell
-    // and let the timer IRQ handle scheduling.
-    printf("Started ELF process PID=%u\n", proc->pid);
+    printf("Forked ELF process PID=%u\n", proc->pid);
     kfree(copy);
 }
 
@@ -1172,6 +1166,7 @@ void kernel_main(uint64_t magic, void* mboot_ptr) {
     printf("[INIT] Paging...\n"); init_paging();
     printf("[INIT] APIC...\n"); init_apic();
     printf("[INIT] Kernel Heap...\n"); init_heap();
+    printf("[INIT] Slab Allocator...\n"); slab_init_all();
     printf("[INIT] VBE (Bochs)...\n"); vbe_init();
     printf("[INIT] VBE mode 1024x768x32...\n");
     if (vbe_set_mode(1024, 768, 32) == 0) {
@@ -1225,22 +1220,23 @@ void kernel_main(uint64_t magic, void* mboot_ptr) {
     }
     printf("[INIT] RTC...\n"); rtc_init();
     printf("[INIT] Registering IRQ handlers...\n");
+    irq_install_handler(0, NULL); // Timer (handled by irq_scheduler_tick)
     irq_install_handler(1, keyboard_irq_handler);
     irq_install_handler(5, sb16_irq_handler);
     irq_install_handler(12, mouse_irq_handler);
-    printf("[INIT] Unmasking IRQ0 (timer), IRQ1 (kbd), IRQ5 (SB16), IRQ12 (mouse)...\n");
-    irq_unmask(0);
-    irq_unmask(1);
-    irq_unmask(5);
-    irq_unmask(12);
+    printf("[INIT] Unmasking IRQs...\n");
+    irq_unmask(0); // Timer for preemptive multitasking
+    irq_unmask(1); // Keyboard
+    irq_unmask(5); // SB16
+    irq_unmask(12); // Mouse
     printf("[INIT] Enabling interrupts (sti)...\n");
     enable_interrupts();
     kernel_initialized = true;
     printf("\n[READY] NyxOS initialized successfully.\n\n");
-    outb(0x3F8, 'O'); outb(0x3F8, 'K'); outb(0x3F8, '\n');
 
     // Load initramfs and boot init
     printf("[INIT] Loading initramfs...\n");
+    serial_puts("[DEBUG] Before initramfs_load\n");
     if (initramfs_load() == 0) {
         initramfs_boot();
 
@@ -1261,10 +1257,7 @@ void kernel_main(uint64_t magic, void* mboot_ptr) {
                     if (elf_validate(copy, init_size)) {
                         process_t* init_proc = NULL;
                         if (elf_load(copy, init_size, &init_proc) == 0) {
-                            printf("[INIT] Starting init PID=%u\n", init_proc->pid);
-                            switch_to_user_process(init_proc);
-                            // Restore kernel page directory for kernel code to continue
-                            switch_page_directory(get_kernel_page_directory());
+                            printf("[INIT] Registered init PID=%u\n", init_proc->pid);
                         } else {
                             printf("[INIT] ELF load failed\n");
                         }
@@ -1289,7 +1282,6 @@ void kernel_main(uint64_t magic, void* mboot_ptr) {
                ext2_fs.sb.total_blocks, ext2_fs.sb.total_inodes, ext2_fs.block_size);
         if (vfs_mount("/mnt", FS_TYPE_EXT2, NULL) == 0) {
             printf("[EXT2] Mounted at /mnt. Use 'ls /mnt' etc.\n");
-            // Write test: create + readback to verify
             const char* test_data = "Hello from NyxOS EXT2 write!\n";
             if (ext2_write_file("/os-test.txt", test_data, strlen(test_data)) > 0) {
                 char readbuf[64];

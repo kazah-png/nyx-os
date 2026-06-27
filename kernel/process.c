@@ -15,7 +15,7 @@ void init_process(void) {
         init->ppid = 0;
         init->state = 1;
         strncpy(init->comm, "init", 31);
-        init->page_directory = (uint64_t*)get_kernel_page_directory();
+        // page_directory left NULL -- scheduler uses kernel_pml4_phys (physical addr)
         process_table[process_count++] = init;
     }
 }
@@ -156,7 +156,7 @@ uint64_t next_cr3 = 0;
 void irq_scheduler_tick(void) {
     if (process_count < 2) {
         next_rsp = saved_rsp;
-        next_cr3 = read_cr3();
+        next_cr3 = (uint64_t)kernel_pml4_phys;
         return;
     }
 
@@ -164,7 +164,7 @@ void irq_scheduler_tick(void) {
     tick_counter++;
     if (tick_counter < 5) {
         next_rsp = saved_rsp;
-        next_cr3 = read_cr3();
+        next_cr3 = (uint64_t)kernel_pml4_phys;
         return;
     }
     tick_counter = 0;
@@ -185,16 +185,16 @@ void irq_scheduler_tick(void) {
         current_idx = next;
         process_t* next_proc = process_table[next];
         if (next_proc && next_proc->stack) {
-            if (next_proc->page_directory) {
-                tss_set_stack((uint64_t)(uintptr_t)next_proc->kernel_stack + KERNEL_BASE);
-                next_cr3 = (uint64_t)next_proc->page_directory;
-            }
+            tss_set_stack((uint64_t)(uintptr_t)next_proc->kernel_stack + KERNEL_BASE);
+            next_cr3 = next_proc->page_directory
+                ? (uint64_t)next_proc->page_directory
+                : (uint64_t)kernel_pml4_phys;
             next_rsp = (uint64_t)(uintptr_t)next_proc->stack;
             return;
         }
     }
     next_rsp = saved_rsp;
-    next_cr3 = read_cr3();
+    next_cr3 = (uint64_t)kernel_pml4_phys;
 }
 
 void schedule(void) {

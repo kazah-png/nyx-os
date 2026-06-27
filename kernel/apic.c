@@ -122,9 +122,10 @@ void init_apic(void) {
 
     printf("[APIC] I/O APIC initialized.\n");
 
-    // Route legacy IRQs through I/O APIC
+    // Route legacy IRQs through I/O APIC (all masked, unmask individually)
     for (int i = 0; i < 16; i++) {
         ioapic_redirect_irq(i, 32 + i, apic_id);
+        ioapic_mask_irq(i);
     }
 
     // Mask the legacy 8259 PIC

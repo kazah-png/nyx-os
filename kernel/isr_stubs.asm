@@ -3,7 +3,7 @@ default rel
 BITS 64
 
 ; Higher-half kernel offset for accessing variables from user page tables
-%define KERNEL_BASE 0xFFFFFFFF80000000
+%define KERNEL_BASE 0xFFFFFF8000000000
 
 extern kernel_pml4_phys
 extern next_cr3
@@ -131,15 +131,21 @@ syscall_entry:
     ; Save user CR3 and RSP before switching to kernel page tables
     ; User CR3 maps higher half via PML4[256], so use higher-half addressing
 
-    mov rax, KERNEL_BASE + user_cr3
+    mov rax, user_cr3
+    mov rbx, KERNEL_BASE
+    add rax, rbx
     mov rbx, cr3
     mov [rax], rbx
 
-    mov rax, KERNEL_BASE + user_rsp
+    mov rax, user_rsp
+    mov rbx, KERNEL_BASE
+    add rax, rbx
     mov [rax], rsp
 
     ; Switch to kernel page tables
-    mov rax, KERNEL_BASE + kernel_pml4_phys
+    mov rax, kernel_pml4_phys
+    mov rbx, KERNEL_BASE
+    add rax, rbx
     mov rax, [rax]
     mov cr3, rax
 
@@ -161,10 +167,15 @@ syscall_entry:
     pop r11                      ; restore RFLAGS
     pop rcx                      ; restore return RIP
     ; Switch back to user page tables
-    mov rax, KERNEL_BASE + user_cr3
+    mov rax, user_cr3
+    mov rbx, KERNEL_BASE
+    add rax, rbx
     mov rax, [rax]
     mov cr3, rax
-    mov rsp, [KERNEL_BASE + user_rsp]
+    mov rax, user_rsp
+    mov rbx, KERNEL_BASE
+    add rax, rbx
+    mov rsp, [rax]
     sysret
 
 ; IRQ stubs (mapped to INT 32-47)
@@ -195,11 +206,14 @@ IRQ 15, 47
 
 extern irq_handler
 extern irq_scheduler_tick
+
 irq_common:
     ; Switch to kernel page tables immediately
     ; CPU already switched to kernel stack (via TSS.RSP0 = higher half addr)
     ; and pushed iretq frame. We're running from higher half address.
-    mov rax, KERNEL_BASE + kernel_pml4_phys
+    mov rax, kernel_pml4_phys
+    mov rbx, KERNEL_BASE
+    add rax, rbx
     mov rax, [rax]
     mov cr3, rax
 
@@ -213,7 +227,9 @@ irq_common:
     mov [saved_rsp], rsp
     call irq_scheduler_tick
     ; Switch to next process page tables
-    mov rax, KERNEL_BASE + next_cr3
+    mov rax, next_cr3
+    mov rbx, KERNEL_BASE
+    add rax, rbx
     mov rax, [rax]
     mov cr3, rax
     mov rsp, [next_rsp]

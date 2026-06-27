@@ -4,7 +4,7 @@
 
 // PML4 indices
 #define PML4_IDENTITY 0
-#define PML4_HIGHER   256       // 0xFFFFFF8000000000
+#define PML4_HIGHER   511       // 0xFFFFFF8000000000 — matches KERNEL_BASE
 
 static uint64_t* current_pml4 = NULL;
 static uint64_t* kernel_pml4 = NULL;
@@ -196,10 +196,10 @@ void init_paging(void) {
     write_msr(MSR_EFER, efer | EFER_NXE);
     printf("[PAGING] NXE enabled.\n");
 
-    // Enable SMEP (Supervisor Mode Execution Prevention)
-    uint64_t cr4 = read_cr4();
-    write_cr4(cr4 | CR4_SMEP);
-    printf("[PAGING] SMEP enabled.\n");
+    // SMEP disabled for -cpu qemu64 compatibility
+    // uint64_t cr4_save = read_cr4();
+    // write_cr4(cr4_save | CR4_SMEP);
+    // printf("[PAGING] SMEP enabled.\n");
 
     printf("[PAGING] Enabled successfully.\n");
     current_pml4 = kernel_pml4;

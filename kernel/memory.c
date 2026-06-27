@@ -1,4 +1,5 @@
 #include "kernel.h"
+#include "slab.h"
 
 // Bitmap-based physical page allocator
 // Each bit represents one 4KB page (1 = free, 0 = used)
@@ -60,10 +61,36 @@ void free_page(void* addr) {
     memory_used -= PAGE_SIZE;
 }
 
-// heap.c uses these for kmalloc
+// Small allocation header for slab/heap routing
+typedef struct alloc_hdr {
+    uint32_t magic;
+    uint32_t size;
+} alloc_hdr_t;
+
+#define ALLOC_MAGIC 0x4E79584F // "NyXO"
+
+void slab_init_all(void) {
+    slab_init();
+}
+
+// kmalloc: use slab for small objects (<=512 bytes), heap for larger
 void* kmalloc(size_t size) {
+    void* ptr;
+    if (size <= SLAB_MAX_OBJ) {
+        ptr = slab_alloc((uint32_t)size + sizeof(alloc_hdr_t));
+        if (!ptr) return NULL;
+        alloc_hdr_t* hdr = (alloc_hdr_t*)ptr;
+        hdr->magic = ALLOC_MAGIC;
+        hdr->size = (uint32_t)size;
+        return (void*)(hdr + 1);
+    }
     extern void* heap_alloc(size_t);
-    return heap_alloc(size);
+    ptr = heap_alloc(size + sizeof(alloc_hdr_t));
+    if (!ptr) return NULL;
+    alloc_hdr_t* hdr = (alloc_hdr_t*)ptr;
+    hdr->magic = ALLOC_MAGIC;
+    hdr->size = (uint32_t)size;
+    return (void*)(hdr + 1);
 }
 
 void* kmalloc_aligned(size_t size, uint32_t align) {
@@ -72,15 +99,30 @@ void* kmalloc_aligned(size_t size, uint32_t align) {
 }
 
 void kfree(void* ptr) {
-    extern void heap_free(void*);
-    heap_free(ptr);
+    if (!ptr) return;
+    alloc_hdr_t* hdr = ((alloc_hdr_t*)ptr) - 1;
+    if (hdr->magic != ALLOC_MAGIC) {
+        extern void heap_free(void*);
+        heap_free(hdr);
+        return;
+    }
+    if (hdr->size <= SLAB_MAX_OBJ) {
+        slab_free(hdr, hdr->size + sizeof(alloc_hdr_t));
+    } else {
+        extern void heap_free(void*);
+        heap_free(hdr);
+    }
 }
 
 void* krealloc(void* ptr, size_t size) {
     if (!ptr) return kmalloc(size);
     if (!size) { kfree(ptr); return NULL; }
     void* newp = kmalloc(size);
-    if (newp) memcpy_asm(newp, ptr, size);
+    if (newp) {
+        alloc_hdr_t* hdr = ((alloc_hdr_t*)ptr) - 1;
+        size_t old_size = hdr->size;
+        memcpy_asm(newp, ptr, old_size < size ? old_size : size);
+    }
     kfree(ptr);
     return newp;
 }
