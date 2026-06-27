@@ -412,6 +412,22 @@ void fileman_win_click(window_t* win, int mx, int my, int btn) {
     }
 }
 
+void fileman_win_mousemove(window_t* win, int mx, int my) {
+    fileman_win_t* fm = (fileman_win_t*)win->reserved;
+    if (!fm || !fm->ctx_open) return;
+    int cmx = fm->ctx_x, cmy = fm->ctx_y;
+    int cmw = CTX_W, cmh = CTX_ITEM_H * CTX_ITEMS_COUNT + 4;
+    if (mx >= cmx && mx < cmx + cmw && my >= cmy && my < cmy + cmh) {
+        int idx = (my - cmy - 2) / CTX_ITEM_H;
+        if (idx >= 0 && idx < (int)CTX_ITEMS_COUNT)
+            fm->ctx_hover = idx;
+        else
+            fm->ctx_hover = -1;
+    } else {
+        fm->ctx_hover = -1;
+    }
+}
+
 void fileman_win_key(window_t* win, int key) {
     fileman_win_t* fm = (fileman_win_t*)win->reserved;
     if (!fm) return;

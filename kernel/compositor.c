@@ -378,6 +378,7 @@ static void do_ctx_menu_action(int idx) {
                     if (fwin->reserved) {
                         fwin->on_click = fileman_win_click;
                         fwin->on_key = fileman_win_key;
+                        fwin->on_mousemove = fileman_win_mousemove;
                         fileman_new_folder((fileman_win_t*)fwin->reserved);
                     }
                 }
@@ -398,6 +399,7 @@ static void do_ctx_menu_action(int idx) {
                     if (fwin->reserved) {
                         fwin->on_click = fileman_win_click;
                         fwin->on_key = fileman_win_key;
+                        fwin->on_mousemove = fileman_win_mousemove;
                         fileman_new_file((fileman_win_t*)fwin->reserved);
                     }
                 }
@@ -509,6 +511,7 @@ static void do_start_menu_action(int idx) {
                     if (fwin->reserved) {
                         fwin->on_click = fileman_win_click;
                         fwin->on_key = fileman_win_key;
+                        fwin->on_mousemove = fileman_win_mousemove;
                     }
                 }
             }
@@ -970,6 +973,19 @@ void compositor_run(void) {
         if (mx >= (int)fw) mx = fw - 1;
         if (my < 0) my = 0;
         if (my >= (int)fh) my = fh - 1;
+
+        // Dispatch mouse-move to focused window
+        if (mx != mouse_x || my != mouse_y) {
+            window_t* fwin = NULL;
+            for (int i = 0; i < MAX_WINDOWS; i++) {
+                if (windows[i] && windows[i]->id == focused_id) {
+                    fwin = windows[i];
+                    break;
+                }
+            }
+            if (fwin && fwin->on_mousemove)
+                fwin->on_mousemove(fwin, mx, my);
+        }
 
         if (drag_id && !(btns & 1)) {
             drag_id = 0; redraw = 1;

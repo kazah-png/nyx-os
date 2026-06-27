@@ -31,6 +31,7 @@ fileman_win_t* fileman_create_ctx(void);
 void fileman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch);
 void fileman_win_click(window_t* win, int mx, int my, int btn);
 void fileman_win_key(window_t* win, int key);
+void fileman_win_mousemove(window_t* win, int mx, int my);
 void fileman_refresh(fileman_win_t* fm);
 void fileman_new_folder(fileman_win_t* fm);
 void fileman_new_file(fileman_win_t* fm);
