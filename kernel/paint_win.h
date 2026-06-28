@@ -25,6 +25,6 @@ paint_win_t* paint_create_ctx(void);
 void paint_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch);
 void paint_win_click(window_t* win, int mx, int my, int btn);
 void paint_win_key(window_t* win, int key);
-void paint_win_mousemove(window_t* win, int mx, int my);
+void paint_win_mousemove(window_t* win, int mx, int my, int btns);
 
 #endif

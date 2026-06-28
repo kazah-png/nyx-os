@@ -574,6 +574,7 @@ char getchar(void);
 char getchar_poll(void);
 int  getkey_poll(void);
 void keyboard_irq_handler(void* unused);
+int is_ctrl_pressed(void);
 
 void init_screen(void);
 int putchar(int c);

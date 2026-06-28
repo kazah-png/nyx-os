@@ -213,7 +213,8 @@ void paint_win_key(window_t* win, int key) {
     }
 }
 
-void paint_win_mousemove(window_t* win, int mx, int my) {
+void paint_win_mousemove(window_t* win, int mx, int my, int btns) {
+    (void)btns;
     paint_win_t* pw = (paint_win_t*)win->reserved;
     if (!pw || !pw->drawing) return;
     int cx = win->x, cy = win->y;

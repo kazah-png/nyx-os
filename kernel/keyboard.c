@@ -9,6 +9,7 @@
 static int shift_pressed = 0;
 static int altgr_pressed = 0;      // Alt derecho (AltGr)
 static int caps_lock = 0;
+static int ctrl_pressed = 0;
 static int e0_prefix = 0;          // Flag para el prefijo 0xE0
 
 // ------------------------------------------------------------
@@ -135,6 +136,10 @@ char scancode_to_ascii(uint8_t sc) {
             altgr_pressed = pressed;
             return 0;
         }
+        if (sc == 0x1D) {
+            ctrl_pressed = pressed;
+            return 0;
+        }
         // Map extended keys (Set 1 scancodes with E0 prefix)
         int keycode = 0;
         switch (sc & 0x7F) {
@@ -169,6 +174,10 @@ char scancode_to_ascii(uint8_t sc) {
         return 0;
     }
     if (sc == 0x38) { // Alt izquierdo (no AltGr)
+        return 0;
+    }
+    if (sc == 0x1D) { // Left Ctrl
+        ctrl_pressed = pressed;
         return 0;
     }
 
@@ -264,4 +273,8 @@ void set_keyboard_layout(int layout) {
     if (layout == 0 || layout == 1) {
         keyboard_layout = layout;
     }
+}
+
+int is_ctrl_pressed(void) {
+    return ctrl_pressed;
 }

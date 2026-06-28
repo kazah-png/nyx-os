@@ -1063,7 +1063,7 @@ void compositor_run(void) {
                 }
             }
             if (fwin && fwin->on_mousemove)
-                fwin->on_mousemove(fwin, mx, my);
+                fwin->on_mousemove(fwin, mx, my, btns);
         }
 
         if (drag_id && !(btns & 1)) {

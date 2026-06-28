@@ -18,6 +18,10 @@ fileman_win_t* fileman_create_ctx(void) {
     fm->sel_index = -1;
     fm->input_mode = 0;
     fm->input_cursor_tick = get_ticks();
+    fm->mouse_down = 0;
+    fm->drag_active = 0;
+    fm->drag_file_idx = -1;
+    fm->drag_mode = 0;
     snprintf(fm->status, sizeof(fm->status), "Ready");
     return fm;
 }
@@ -275,6 +279,26 @@ void fileman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
         font_draw_string(cx + 4, status_y + (HEADER_H - char_h) / 2, fm->status, fb_rgb(180,180,180), fb_rgb(40,45,55));
     }
 
+    // Drag ghost
+    if (fm->drag_active && fm->drag_file_idx >= 0 && fm->drag_file_idx < fm->entry_count) {
+        int gx = fm->drag_cur_x + 8;
+        int gy = fm->drag_cur_y + 8;
+        int gw = 180, gh = FONT_HEIGHT + 6;
+        if (gx + gw > (int)fb_get_width()) gx = (int)fb_get_width() - gw;
+        if (gy + gh > (int)fb_get_height()) gy = (int)fb_get_height() - gh;
+        fb_fill_rect(gx, gy, (uint32_t)gw, (uint32_t)gh, fb_rgb(60,80,120));
+        fb_fill_rect(gx, gy, (uint32_t)gw, 1, fb_rgb(140,180,255));
+        fb_fill_rect(gx, gy + gh - 1, (uint32_t)gw, 1, fb_rgb(140,180,255));
+        fb_fill_rect(gx, gy, 1, (uint32_t)gh, fb_rgb(140,180,255));
+        fb_fill_rect(gx + gw - 1, gy, 1, (uint32_t)gh, fb_rgb(140,180,255));
+        char label[72];
+        snprintf(label, sizeof(label), "%c %s  [%s]",
+            fm->entry_types[fm->drag_file_idx] ? '/' : ' ',
+            fm->entries[fm->drag_file_idx],
+            fm->drag_mode == 2 ? "COPY" : "MOVE");
+        font_draw_string(gx + 4, gy + 3, label, fb_rgb(255,255,255), fb_rgb(60,80,120));
+    }
+
     // Context menu
     if (fm->ctx_open) {
         int cmx = fm->ctx_x, cmy = fm->ctx_y;
@@ -308,6 +332,11 @@ void fileman_win_click(window_t* win, int mx, int my, int btn) {
     int cx = win->x, cy = win->y + TITLE_H;
     uint32_t cw = win->w, ch = win->h;
     uint32_t char_h = FONT_HEIGHT;
+
+    // During drag, ignore click events (drop handled in mousemove on button release)
+    if (fm->drag_active) {
+        return;
+    }
 
     if (fm->entry_count == 0) fileman_refresh(fm);
 
@@ -412,25 +441,133 @@ void fileman_win_click(window_t* win, int mx, int my, int btn) {
     }
 }
 
-void fileman_win_mousemove(window_t* win, int mx, int my) {
+void fileman_win_mousemove(window_t* win, int mx, int my, int btns) {
     fileman_win_t* fm = (fileman_win_t*)win->reserved;
-    if (!fm || !fm->ctx_open) return;
-    int cmx = fm->ctx_x, cmy = fm->ctx_y;
-    int cmw = CTX_W, cmh = CTX_ITEM_H * CTX_ITEMS_COUNT + 4;
-    if (mx >= cmx && mx < cmx + cmw && my >= cmy && my < cmy + cmh) {
-        int idx = (my - cmy - 2) / CTX_ITEM_H;
-        if (idx >= 0 && idx < (int)CTX_ITEMS_COUNT)
-            fm->ctx_hover = idx;
-        else
-            fm->ctx_hover = -1;
+    if (!fm) return;
+
+    // Track button state
+    if (btns & 1) {
+        if (!fm->mouse_down) {
+            // Left button just pressed (first mousemove with btn down)
+            fm->mouse_down = 1;
+            fm->drag_start_x = mx;
+            fm->drag_start_y = my;
+            // Determine which file was under cursor at press time
+            int cx = win->x, cy = win->y + TITLE_H;
+            uint32_t char_h = FONT_HEIGHT;
+            int list_header_y = cy + TOOLBAR_H + HEADER_H;
+            int list_y = list_header_y + char_h + 4;
+            int avail_h = (int)(win->h - TOOLBAR_H - HEADER_H - char_h - 4 - HEADER_H - 4);
+            int max_rows = avail_h / (int)char_h;
+            if (max_rows < 1) max_rows = 1;
+            if (my >= list_y && my < list_y + max_rows * (int)char_h) {
+                int idx = (my - list_y) / (int)char_h + fm->scroll_offset;
+                if (idx >= 0 && idx < fm->entry_count)
+                    fm->drag_file_idx = idx;
+                else
+                    fm->drag_file_idx = -1;
+            } else {
+                fm->drag_file_idx = -1;
+            }
+        }
+        // Check for drag activation (distance threshold)
+        if (fm->mouse_down && !fm->drag_active && fm->drag_file_idx >= 0) {
+            int dx = mx - fm->drag_start_x;
+            int dy = my - fm->drag_start_y;
+            if (dx * dx + dy * dy > 36) { // 6px threshold
+                fm->drag_active = 1;
+                fm->drag_mode = 2; // copy by default
+                fm->drag_cur_x = mx;
+                fm->drag_cur_y = my;
+            }
+        }
     } else {
-        fm->ctx_hover = -1;
+        // Button released
+        if (fm->drag_active) {
+            // Drop: perform copy
+            char src[256];
+            fileman_get_path(fm, fm->entries[fm->drag_file_idx], src, sizeof(src));
+            const char* basename = src;
+            for (int i = 0; src[i]; i++)
+                if (src[i] == '/') basename = &src[i] + 1;
+            char dst[256];
+            if (strcmp(fm->cwd, "/") == 0)
+                snprintf(dst, sizeof(dst), "/%s", basename);
+            else
+                snprintf(dst, sizeof(dst), "%s/%s", fm->cwd, basename);
+            if (fm->drag_mode == 2) {
+                if (vfs_cp(src, dst) == 0)
+                    snprintf(fm->status, sizeof(fm->status), "Drag copied: %s", basename);
+                else
+                    snprintf(fm->status, sizeof(fm->status), "Drag copy failed");
+            } else {
+                vfs_rename(src, dst);
+                snprintf(fm->status, sizeof(fm->status), "Drag moved: %s", basename);
+            }
+            fileman_refresh(fm);
+        }
+        fm->mouse_down = 0;
+        fm->drag_active = 0;
+        fm->drag_file_idx = -1;
+    }
+
+    if (fm->drag_active) {
+        fm->drag_cur_x = mx;
+        fm->drag_cur_y = my;
+    }
+
+    // Context menu hover
+    if (fm->ctx_open) {
+        int cmx = fm->ctx_x, cmy = fm->ctx_y;
+        int cmw = CTX_W, cmh = CTX_ITEM_H * CTX_ITEMS_COUNT + 4;
+        if (mx >= cmx && mx < cmx + cmw && my >= cmy && my < cmy + cmh) {
+            int idx = (my - cmy - 2) / CTX_ITEM_H;
+            if (idx >= 0 && idx < (int)CTX_ITEMS_COUNT)
+                fm->ctx_hover = idx;
+            else
+                fm->ctx_hover = -1;
+        } else {
+            fm->ctx_hover = -1;
+        }
     }
 }
 
 void fileman_win_key(window_t* win, int key) {
     fileman_win_t* fm = (fileman_win_t*)win->reserved;
     if (!fm) return;
+
+    // Ctrl shortcuts (when not in input mode)
+    if (!fm->input_mode && is_ctrl_pressed()) {
+        if (key == 'c' || key == 'C') {
+            if (fm->sel_index >= 0) {
+                fileman_get_path(fm, fm->entries[fm->sel_index], fm->clipboard_path, sizeof(fm->clipboard_path));
+                fm->clipboard_mode = 1;
+                snprintf(fm->status, sizeof(fm->status), "Copied: %s", fm->entries[fm->sel_index]);
+            }
+            return;
+        }
+        if (key == 'x' || key == 'X') {
+            if (fm->sel_index >= 0) {
+                fileman_get_path(fm, fm->entries[fm->sel_index], fm->clipboard_path, sizeof(fm->clipboard_path));
+                fm->clipboard_mode = 2;
+                snprintf(fm->status, sizeof(fm->status), "Cut: %s", fm->entries[fm->sel_index]);
+            }
+            return;
+        }
+        if (key == 'v' || key == 'V') {
+            ctx_paste(fm);
+            return;
+        }
+        if (key == 'a' || key == 'A') {
+            // Select all — just select first, user can navigate
+            if (fm->entry_count > 0) {
+                fm->sel_index = 0;
+                fm->scroll_offset = 0;
+                snprintf(fm->status, sizeof(fm->status), "%d entries", fm->entry_count);
+            }
+            return;
+        }
+    }
 
     // Navigation keys when not in input mode
     if (!fm->input_mode) {
