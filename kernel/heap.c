@@ -9,7 +9,7 @@ typedef struct heap_block {
     struct heap_block* next;
 } heap_block_t;
 
-static uint8_t heap[HEAP_SIZE];
+uint8_t heap[HEAP_SIZE] __attribute__((section(".bss.heap")));
 static heap_block_t* free_list = (heap_block_t*)heap;
 
 void init_heap(void) {

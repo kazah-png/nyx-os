@@ -227,13 +227,18 @@ irq_common:
     ; Scheduler tick
     mov [saved_rsp], rsp
     call irq_scheduler_tick
+    ; Read next RSP *before* switching to user page tables (no identity mapping)
+    mov rax, next_rsp
+    mov rbx, KERNEL_BASE
+    add rax, rbx
+    mov rdx, [rax]               ; rdx = next_rsp (user kernel stack, higher-half address)
     ; Switch to next process page tables
     mov rax, next_cr3
     mov rbx, KERNEL_BASE
     add rax, rbx
     mov rax, [rax]
     mov cr3, rax
-    mov rsp, [next_rsp]
+    mov rsp, rdx                 ; Use the value we saved before the CR3 switch
     RESTORE_REGS
     add rsp, 16
     iretq
