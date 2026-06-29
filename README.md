@@ -67,7 +67,7 @@ ______          \'/
 The project implements core kernel primitives, a custom network stack (RTL8139 NIC + ARP/IP/UDP/ICMP/DHCP + TCP), a window compositor GUI, and a Sound Blaster 16 audio driver — all written in C and x86_64 Assembly with no external libraries.
 
 <div align="center">
-  <img src="gui.png" alt="NyxOS Desktop" width="700" />
+  <img src="gui.png?v=2" alt="NyxOS Desktop v5.1.0" width="700" />
   <p><em>NyxOS Desktop — 8 app icons, sky-blue wallpaper, taskbar</em></p>
 </div>
 
