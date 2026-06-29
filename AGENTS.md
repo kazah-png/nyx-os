@@ -33,6 +33,7 @@ Evolve NyxOS into a functional x86_64 kernel with filesystem, networking, shell,
 | v4.1.0 | Higher-half kernel mapping (PML4[256] mirror), user/kernel page-table isolation (user has no identity mapping), CR3 switching in ISR/IRQ/syscall entries, scheduler uses next_cr3 |
 | v4.2.0 | NX bit (No-Execute) + SMEP (Supervisor Mode Execution Prevention), PAGE_NX added to user stack/heap/data, Local APIC + I/O APIC init, CPUID detection, IST (Interrupt Stack Table) for double fault (#8) and NMI (#2), repo cleanup (README x86_64, .gitignore, AGENTS.md) |
 | v5.0.0 | Full GUI application suite: Text Editor (file open/save, cursor nav), Image Viewer (test pattern, zoom/pan), Sound Test (PC speaker + SB16 sine/square/sweep). Brighter wallpaper gradient (sky-blue + grass). 8 desktop icons. **All placeholders replaced with real apps.** No crashes, zero warnings in build. |
+| v5.1.0 | Stability and bugfix release: TSS struct alignment fix (IST pointers shifted 4 bytes early → triple fault on double fault/NMI), GDT limit correction, APIC/PIC IRQ masking fix (PIC left fully masked when APIC active), switch_to_user_process inline asm operand reversal fix, VGA 8x16 font data corruption fix (marker bytes inserted in each glyph → garbage text in GUI). QEMU display changed to sdl for Windows compatibility. |
 
 ## Architecture
 ### Boot flow
@@ -172,14 +173,13 @@ kernel/
 - Image Viewer window (color-bar test pattern with zoom/pan, grid overlay)
 - Sound Test window (PC Speaker beep/melody/alarm + SB16 sine/square/sweep) 
 
-## What's new in this session
-- **Text Editor window** (`editor_win.c/h`): full keyboard-driven text editor with cursor navigation (arrows, Home/End, PgUp/PgDn), click-to-position, scroll, Open/Save buttons in toolbar, line numbers, cursor blink, status bar (line/col). File access via VFS (vfs_open/vfs_write_file). Ctrl+S to save, Ctrl+O to open.
-- **Image Viewer window** (`imageview_win.c/h`): 512×384 color-bar test pattern with checkerboard grid overlay, zoom (+, -) from 25% to 400%, pan with arrow keys, reset with R. Nearest-neighbor scaling. Border frame.
-- **Sound Test window** (`soundtest_win.c/h`): PC Speaker section (440Hz beep, C major scale melody, alternating alarm), Sound Blaster 16 section (sine 440Hz, square 220Hz, sweep 200–3000Hz via fixed-point sine table). Status bar feedback.
-- **Brighter wallpaper**: sky-blue gradient (50→160, 100→200, 180→240) with green grass strip, replacing previous extremely dark navy gradient.
-- **Desktop icons expanded to 8**: Files, Terminal, Editor, Viewer, DOOM, Settings, Paint, Sounds. More vibrant colors + solid label backgrounds.
-- **All Start menu placeholders replaced**: Text Editor, Image Viewer, and Sound Test are now real GUI apps with draw/key/click handlers.
-- **switch_to_user_process** fixed (PAGE_USER bit), trampoline verified working in `cmd_exec`.
+## v5.1.0 — Stability and bugfix release
+- **TSS struct alignment fix**: `kernel/kernel.h` — three reserved `uint32_t` fields (SS0/SS1/SS2 at offsets 28-39) were incorrectly merged into a single `uint64_t`, shifting all IST pointers 4 bytes early. Any exception using an IST (double fault, NMI) read a garbage stack pointer → triple fault.
+- **GDT limit correction**: `kernel/gdt.c` — limit was `(6*8+16)-1=63` (too large), corrected to `(5*8+16)-1=55`.
+- **APIC/PIC IRQ masking fix**: `kernel/irq.c` — when APIC is active, the legacy PIC stays fully masked. Prevents duplicate interrupt delivery.
+- **switch_to_user_process inline asm fix**: `kernel/switch.asm` — AT&T operand order was reversed (source/destination swapped in `mov`), causing exec'd user processes to crash.
+- **QEMU display fix**: `run.ps1` — changed from `-display gtk` to `-display sdl` (gtk is broken on Windows).
+- **VGA 8x16 font data corruption fix**: `kernel/font.c` — font_data array had marker bytes (the glyph's own index) inserted at position `(index % 16)`, shifting all pixel data. Replaced with correct IBM VGA 8x16 ROM font. GUI text now renders legibly.
 - Build: zero errors, zero warnings.
 
 ## Next features to add

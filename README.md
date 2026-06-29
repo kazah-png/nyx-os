@@ -6,12 +6,12 @@
   <strong>Custom x86_64 kernel · C and Assembly · General-purpose OS</strong>
   <br/><br/>
   <!-- Badges -->
-  <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.0.0">
-    <img src="https://img.shields.io/badge/release-v5.0.0-00ff9d?style=flat" />
+  <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.1.0">
+    <img src="https://img.shields.io/badge/release-v5.1.0-00ff9d?style=flat" />
   </a>
   <img src="https://img.shields.io/badge/kernel-120%20KB-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/arch-x86__64-00ff9d?style=flat" />
-    <img src="https://img.shields.io/badge/status-v5.0.0-00ff9d?style=flat" />
+    <img src="https://img.shields.io/badge/status-v5.1.0-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/TCP-yes-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/GUI-window%20compositor-00ff9d?style=flat" />
   <a href="https://github.com/kazah-png/nyx-os/issues/1">
