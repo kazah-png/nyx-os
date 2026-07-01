@@ -36,16 +36,9 @@ wget-log*
 # === Initramfs ===
 initramfs/
 
-# === DOOM submodule ===
-DOOM/
-
 # === OS files ===
 Thumbs.db
 .DS_Store
-
-# === WAD file ===
-iso/boot/doom1.wad
-kernel/doom1.wad
 
 # === EXT2 disk image ===
 ext2-test.img

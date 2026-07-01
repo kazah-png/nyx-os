@@ -308,10 +308,10 @@ static void draw_start_menu(void) {
 
     const char* items[] = {
         "File Manager", "Text Editor", "Image Viewer", "Terminal",
-        "Settings", "Task Manager", "DOOM", "Desktop Demo",
+        "Settings", "Task Manager", "Desktop Demo",
         "Paint", "Sound Test", "About", "Shutdown",
     };
-    for (int i = 0; i < 12; i++) {
+    for (int i = 0; i < 11; i++) {
         int iy = sm_y + 28 + i * 28;
         if ((uint32_t)(iy + 28) > fh - TASKBAR_H) break;
         fb_fill_rect(sm_x + 4, iy, START_W - 8, 26, fb_rgb(45,45,50));
@@ -589,13 +589,10 @@ static void do_start_menu_action(int idx) {
                 }
             }
             break;
-        case 6: // DOOM
-            window_create(0, 0, 320, 200, "DOOM", NULL);
-            break;
-        case 7: // Desktop Demo
+        case 6: // Desktop Demo
             window_create(100, 100, 300, 200, "Desktop Demo", NULL);
             break;
-        case 8: // Paint
+        case 7: // Paint
             {
                 window_t* pwin = window_create(80, 60, 580, 480, "Paint", paint_win_draw);
                 if (pwin) {
@@ -608,7 +605,7 @@ static void do_start_menu_action(int idx) {
                 }
             }
             break;
-        case 9: // Sound Test
+        case 8: // Sound Test
             {
                 window_t* sndwin = window_create(200, 150, 220, 340, "Sound Test", soundtest_win_draw);
                 if (sndwin) {
@@ -619,13 +616,13 @@ static void do_start_menu_action(int idx) {
                 }
             }
             break;
-        case 10: // About
+        case 9: // About
             window_create(fb_get_width()/2-150, fb_get_height()/2-100, 300, 200, "About NyxOS", NULL);
             break;
-        case 11: // Shutdown
+        case 10: // Shutdown
             quit = 1;
             break;
-        case 12: // Calculator
+        case 11: // Calculator
             {
                 window_t* cwin = window_create(300, 200, CALC_WIN_W, CALC_WIN_H,
                                                "Calculator", calc_win_draw);
@@ -945,13 +942,13 @@ static void settings_win_click(window_t* win, int mx, int my, int btn) {
     }
 }
 
-#define NUM_DESKTOP_ICONS 9
+#define NUM_DESKTOP_ICONS 8
 #define ICON_SIZE 64
 #define ICON_PAD 12
 static const char* desktop_icon_names[] = {
-    "Files", "Terminal", "Editor", "Viewer", "DOOM", "Settings", "Paint", "Sounds", "Calc"
+    "Files", "Terminal", "Editor", "Viewer", "Settings", "Paint", "Sounds", "Calc"
 };
-static int desktop_icon_actions[] = {0, 3, 1, 2, 6, 4, 8, 9, 12};
+static int desktop_icon_actions[] = {0, 3, 1, 2, 4, 7, 8, 11};
 static int desktop_icon_x[NUM_DESKTOP_ICONS];
 static int desktop_icon_y[NUM_DESKTOP_ICONS];
 

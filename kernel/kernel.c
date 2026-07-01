@@ -23,10 +23,6 @@ volatile uint32_t tick_count = 0;
 bool kernel_initialized = false;
 int process_count = 0;
 
-// DOOM WAD direct memory access
-uint8_t* doom_wad_data = NULL;
-uint32_t doom_wad_size = 0;
-
 // ============================================================
 // Conversión de hexadecimal a bytes
 // ============================================================
@@ -83,8 +79,6 @@ extern void cmd_dhcp(int argc, char** argv);
 static void cmd_dns(int argc, char** argv);
 static void cmd_history(int argc, char** argv);
 static void cmd_diff(int argc, char** argv);
-static void cmd_doom(int argc, char** argv);
-void cmd_doomtest(int argc, char** argv);
 static void cmd_mode(int argc, char** argv);
 static void cmd_gui(int argc, char** argv);
 static void cmd_fonttest(int argc, char** argv);
@@ -140,8 +134,6 @@ static const command_t commands[] = {
     {"dhcp",      cmd_dhcp,      "Request IP via DHCP", false},
     {"history",   cmd_history,   "Show command history", false},
     {"diff",      cmd_diff,      "Compare two files: diff <file1> <file2>", false},
-    {"doom",      cmd_doom,      "Launch DOOM game", false},
-    {"doomtest",  cmd_doomtest,  "Test DOOM WAD loading", false},
     {"mode",      cmd_mode,      "Set VBE video mode: mode <width> <height> <bpp>", false},
     {"gui",       cmd_gui,       "Launch GUI demo with mouse", false},
     {"fonttest",  cmd_fonttest,  "Test font rendering on framebuffer", false},
@@ -881,13 +873,6 @@ static void cmd_tcptest(int argc, char** argv) {
     if (total == 0) printf("(no data received)\n");
     printf("\nTCP test done (%d bytes received). Closing...\n", total);
     tcp_close(conn);
-}
-
-static void cmd_doom(int argc, char** argv) {
-    (void)argc; (void)argv;
-    printf("Launching DOOM...\n");
-    printf("Controls: WASD=move, Space=fire, Enter=menu, Esc=quit\n");
-    run_doom();
 }
 
 // Add history entry (called from shell loop)
@@ -1740,17 +1725,7 @@ char *strstr(const char *haystack, const char *needle) {
     return NULL;
 }
 
-extern uint8_t _binary_doom1_wad_start[];
-extern uint8_t _binary_doom1_wad_end[];
-extern uint32_t _binary_doom1_wad_size;
-
 void init_load_modules(void) {
-    // Embedded DOOM WAD
-    doom_wad_data = _binary_doom1_wad_start;
-    doom_wad_size = (uint32_t)&_binary_doom1_wad_size;
-    printf("[MODULES] Embedded DOOM WAD at %x (%d bytes)\n",
-           (uint32_t)doom_wad_data, doom_wad_size);
-    
     if (!saved_mboot_ptr) return;
     uint32_t* mb = (uint32_t*)saved_mboot_ptr;
     if (!(mb[0] & 8)) return;

@@ -118,37 +118,15 @@ set default=0
 menuentry "NyxOS 1.0.1" {
     multiboot /boot/nyx-kernel.bin
     module /boot/initramfs.cpio.gz
-    module /boot/doom1.wad doom1.wad
     boot
 }
 
 menuentry "NyxOS (safe mode)" {
     multiboot /boot/nyx-kernel.bin safe_mode=1
     module /boot/initramfs.cpio.gz
-    module /boot/doom1.wad doom1.wad
     boot
 }
 EOF
-
-    # Download or copy WAD file
-    if [ -f "$NYX_ROOT/doom1.wad" ]; then
-        cp "$NYX_ROOT/doom1.wad" iso/boot/doom1.wad
-        log "WAD file copied (doom1.wad)"
-    elif command -v wget &> /dev/null; then
-        log "Downloading shareware doom1.wad..."
-        wget -q -O iso/boot/doom1.wad "https://www.jbserver.com/doom/doom1.zip" 2>/dev/null || \
-        wget -q -O iso/boot/doom1.wad "https://distro.ibiblio.org/slitaz/sources/packages/d/doom1.wad" 2>/dev/null || \
-        wget -q -O iso/boot/doom1.wad "https://files.kapsi.fi/doom/doom1.zip" 2>/dev/null || \
-        true
-        if [ -f "iso/boot/doom1.wad" ] && [ -s "iso/boot/doom1.wad" ]; then
-            log "WAD downloaded"
-        else
-            rm -f iso/boot/doom1.wad
-            warn "Could not download doom1.wad. DOOM will not work."
-        fi
-    else
-        warn "doom1.wad not found and wget not available. DOOM will not work."
-    fi
 
     # Generar ISO con xorriso o grub-mkrescue
     if command -v xorriso &> /dev/null; then

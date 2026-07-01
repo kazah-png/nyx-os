@@ -376,7 +376,6 @@ static inline void write_msr(uint32_t msr, uint64_t val) {
 // ============================================================
 // FUNCIONES UTILITARIAS
 // ============================================================
-#ifndef DOOMGENERIC
 static inline void *memcpy(void *dest, const void *src, size_t n) {
     memcpy_asm(dest, src, n);
     return dest;
@@ -468,7 +467,6 @@ static inline long strtol(const char *s, char **end, int base) {
     if (end) *end = (char*)s;
     return sign * result;
 }
-#endif // DOOMGENERIC
 
 // ============================================================
 // PROTOTIPOS DE FUNCIONES GLOBALES
@@ -661,12 +659,6 @@ void set_keyboard_layout(int layout);
 
 int snprintf(char *buf, size_t size, const char *fmt, ...);
 char* strcasestr(const char *haystack, const char *needle);
-
-void vga_set_mode_13h(void);
-void vga_copy_buffer(uint8_t* buffer);
-void run_doom(void);
-extern uint8_t* doom_wad_data;
-extern uint32_t doom_wad_size;
 
 int vbe_init(void);
 int vbe_set_mode(uint32_t width, uint32_t height, uint32_t bpp);
