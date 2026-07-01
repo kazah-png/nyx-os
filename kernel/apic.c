@@ -1,10 +1,9 @@
 #include "kernel.h"
 #include "apic.h"
 
-static volatile uint32_t* lapic = NULL;
+volatile uint32_t* lapic = NULL;
 static volatile uint32_t* ioapic = NULL;
 static uint32_t ioapic_nr_irqs = 24;
-static uint32_t cpu_count = 1;
 int apic_initialized = 0;
 
 // Read from a Local APIC register
@@ -133,11 +132,6 @@ void init_apic(void) {
 
     printf("[APIC] Legacy PIC disabled, IRQs routed through I/O APIC.\n");
 
-    // Determine if we're on SMP (check number of CPU entries via MADT)
-    // For now, just report 1 CPU (BSP). SMP boot is a future feature.
-    cpu_count = 1;
-    printf("[APIC] CPU count: %d\n", cpu_count);
-
     apic_initialized = 1;
 }
 
@@ -181,4 +175,37 @@ uint32_t apic_get_id(void) {
 
 uint32_t apic_get_cpu_count(void) {
     return cpu_count;
+}
+
+uint32_t apic_wait_delivery(void) {
+    if (!lapic) return 1;
+    int timeout = 1000000;
+    while (lapic_read(LAPIC_ICR0) & (1 << 12)) {
+        __asm__ volatile("pause");
+        if (--timeout == 0) return 1;
+    }
+    return 0;
+}
+
+void apic_send_ipi(uint32_t apic_id, uint32_t icr_low) {
+    if (!lapic) return;
+    if (apic_wait_delivery()) {
+        printf("[APIC] WARNING: ICR delivery timeout (stuck busy?)\n");
+    }
+    lapic_write(LAPIC_ICR1, apic_id << 24);
+    __asm__ volatile("mfence");
+    lapic_write(LAPIC_ICR0, icr_low);
+}
+
+void apic_send_init_ipi(uint32_t apic_id) {
+    // Level-assert INIT
+    apic_send_ipi(apic_id, ICR_INIT | ICR_PHYSICAL | ICR_LEVEL | ICR_ASSERT);
+    // Small delay
+    for (volatile int d = 0; d < 10000; d++) __asm__ volatile("nop");
+    // Level-de-assert to complete the level-triggered message
+    apic_send_ipi(apic_id, ICR_INIT | ICR_PHYSICAL | ICR_LEVEL);
+}
+
+void apic_send_sipi(uint32_t apic_id, uint8_t vector) {
+    apic_send_ipi(apic_id, ICR_STARTUP | ICR_PHYSICAL | (vector & 0xFF));
 }

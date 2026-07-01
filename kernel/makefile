@@ -27,7 +27,7 @@ OBJS_KERNEL = boot.o kernel.o gdt.o idt.o isr.o isr_stubs.o irq.o \
         vbe.o fb.o mouse.o gui.o font.o compositor.o speaker.o tcp.o \
         sb16.o terminal_win.o fileman_win.o paint_win.o taskman_win.o \
         editor_win.o imageview_win.o soundtest_win.o calc_win.o \
-        elf.o initramfs.o rtc.o apic.o dns.o http.o
+        elf.o initramfs.o rtc.o apic.o dns.o http.o smp.o trampoline.o
 
 OBJS = $(OBJS_KERNEL)
 
@@ -69,5 +69,12 @@ initramfs_data.h: $(MKINITRAMFS) $(USER_ELFS)
 
 initramfs.o: initramfs.c initramfs_data.h
 
+# SMP trampoline — flat binary embedded as ELF object
+trampoline.bin: trampoline.asm
+	$(AS) -f bin -o $@ $<
+
+trampoline.o: trampoline.bin
+	$(LD) -r -b binary -m elf_x86_64 -o $@ $<
+
 clean:
-	rm -f *.o *.bin initramfs_data.h $(USER_DIR)/*.o $(USER_DIR)/*.elf $(USER_DIR)/hello.o
+	rm -f *.o *.bin initramfs_data.h trampoline.bin $(USER_DIR)/*.o $(USER_DIR)/*.elf $(USER_DIR)/hello.o

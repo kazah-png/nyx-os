@@ -11,6 +11,7 @@
 #include "ext2.h"
 #include "dns.h"
 #include "http.h"
+#include "smp.h"
 #include "initramfs.h"
 
 // Variables globales del kernel
@@ -1236,12 +1237,11 @@ void kernel_main(uint64_t magic, void* mboot_ptr) {
                 uint32_t size = *(uint32_t*)(tag + 4);
                 if (type == 0) break;
                 if (type == 4) {
-                    // Basic meminfo tag: mem_lower + mem_upper (both in KB)
                     uint32_t mem_lower = *(uint32_t*)(tag + 8);
                     uint32_t mem_upper = *(uint32_t*)(tag + 12);
                     mem_total = (uint64_t)(mem_lower + mem_upper) * 1024;
-                    break;
                 }
+
                 tag += (size + 7) & ~7;
             }
         }
@@ -1263,6 +1263,7 @@ void kernel_main(uint64_t magic, void* mboot_ptr) {
     printf("[INIT] APIC...\n"); init_apic();
     printf("[INIT] Kernel Heap...\n"); init_heap();
     printf("[INIT] Slab Allocator...\n"); slab_init_all();
+    printf("[INIT] SMP...\n"); smp_init();
     printf("[INIT] VBE (Bochs)...\n"); vbe_init();
     printf("[INIT] VBE mode 1024x768x32...\n");
     if (vbe_set_mode(1024, 768, 32) == 0) {

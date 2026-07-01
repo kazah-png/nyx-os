@@ -627,6 +627,10 @@ int tcp_send(int conn_id, const uint8_t* data, uint32_t len);
 int tcp_recv(int conn_id, uint8_t* buf, uint32_t max_len);
 int tcp_close(int conn_id);
 
+// SMP
+extern uint32_t cpu_count;
+void smp_init(void);
+
 // VFS mount layer
 #define FS_TYPE_EXT2  1
 #define MAX_MOUNT_POINTS 8

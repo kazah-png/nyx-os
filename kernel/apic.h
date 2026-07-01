@@ -68,6 +68,17 @@
 // Default I/O APIC base (QEMU)
 #define IOAPIC_BASE   0xFEC00000
 
+// ICR delivery modes
+#define ICR_INIT         (5 << 8)
+#define ICR_STARTUP      (6 << 8)
+#define ICR_PHYSICAL     0
+#define ICR_LOGICAL      (1 << 11)
+#define ICR_ASSERT       (1 << 14)
+#define ICR_EDGE         0
+#define ICR_LEVEL        (1 << 15)
+#define ICR_NO_SHOOTDOWN 0
+#define ICR_FIXED        0
+
 void init_apic(void);
 void apic_eoi(void);
 void ioapic_redirect_irq(uint8_t irq, uint8_t vector, uint8_t apic_id);
@@ -75,6 +86,11 @@ void ioapic_mask_irq(uint8_t irq);
 void ioapic_unmask_irq(uint8_t irq);
 uint32_t apic_get_id(void);
 uint32_t apic_get_cpu_count(void);
+void apic_send_ipi(uint32_t apic_id, uint32_t icr_low);
+void apic_send_init_ipi(uint32_t apic_id);
+void apic_send_sipi(uint32_t apic_id, uint8_t vector);
+uint32_t apic_wait_delivery(void);
 extern int apic_initialized;
+extern volatile uint32_t* lapic;
 
 #endif

@@ -13,7 +13,10 @@ void init_serial(void) {
 }
 
 void serial_putchar(char c) {
-    while (!(inb(SERIAL_PORT + 5) & 0x20));
+    // NOTE: No THRE busy-wait! In QEMU TCG with SMP, inb+outb across VCPU
+    // switches can deadlock (BSP reads THRE=ready, gets preempted by AP,
+    // then outb to a potentially different state). Raw outb is safe because
+    // QEMU's 16550 emulation always accepts writes into the transmit FIFO.
     outb(SERIAL_PORT, c);
 }
 
