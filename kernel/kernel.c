@@ -10,6 +10,7 @@
 #include "sb16.h"
 #include "ext2.h"
 #include "dns.h"
+#include "http.h"
 #include "initramfs.h"
 
 // Variables globales del kernel
@@ -88,6 +89,7 @@ static void cmd_play(int argc, char** argv);
 static void cmd_sb16play(int argc, char** argv);
 static void cmd_exec(int argc, char** argv);
 static void cmd_tcptest(int argc, char** argv);
+static void cmd_httpget(int argc, char** argv);
 static void cmd_setip(int argc, char** argv);
 static void cmd_mount(int argc, char** argv);
 
@@ -143,6 +145,7 @@ static const command_t commands[] = {
     {"sb16play",  cmd_sb16play,  "Test SB16 playback: sb16play [freq] [ms]", false},
     {"exec",      cmd_exec,      "Execute ELF binary: exec <file>", false},
     {"tcptest",   cmd_tcptest,   "Test TCP: tcptest <ip> <port>", false},
+    {"httpget",   cmd_httpget,   "HTTP GET: httpget <url>", false},
     {"setip",     cmd_setip,     "Set static IP: setip <ip> <mask> <gw>", false},
     {"mount",     cmd_mount,     "Mount EXT2: mount [drive] [part_lba]", false},
     {"ext2ls",    cmd_mount,     "Alias for mount", false},
@@ -873,6 +876,63 @@ static void cmd_tcptest(int argc, char** argv) {
     if (total == 0) printf("(no data received)\n");
     printf("\nTCP test done (%d bytes received). Closing...\n", total);
     tcp_close(conn);
+}
+
+static void cmd_httpget(int argc, char** argv) {
+    if (argc < 2) { printf("Usage: httpget <url>\n"); return; }
+    const char* url = argv[1];
+    char host[128] = {0};
+    char path[256] = {0};
+    uint16_t port = 80;
+
+    // Parse URL: http://host:port/path
+    const char* p = url;
+    if (strncmp(p, "http://", 7) == 0) p += 7;
+    const char* host_start = p;
+    while (*p && *p != ':' && *p != '/') p++;
+    int host_len = (int)(p - host_start);
+    if (host_len > 127) host_len = 127;
+    __builtin_memcpy(host, host_start, host_len);
+    host[host_len] = '\0';
+    if (*p == ':') {
+        p++;
+        port = 0;
+        while (*p >= '0' && *p <= '9') {
+            port = port * 10 + (*p - '0');
+            p++;
+        }
+    }
+    if (!*p || *p == '/') {
+        const char* path_start = p;
+        if (!*path_start) path_start = "/";
+        strncpy(path, path_start, 255);
+        path[255] = '\0';
+    } else {
+        path[0] = '/';
+        path[1] = '\0';
+    }
+
+    printf("HTTP GET http://%s:%d%s ...\n", host, port, path);
+
+    int iface_idx = -1;
+    for (int i = 0; i < 8; i++) {
+        if (net_interfaces[i].name[0] && strcmp(net_interfaces[i].name, "lo") != 0) {
+            iface_idx = i; break;
+        }
+    }
+
+    http_response_t resp;
+    if (http_get(host, port, path, &resp, iface_idx) < 0) {
+        printf("HTTP GET failed\n");
+        return;
+    }
+
+    printf("Status: %d %s\n", resp.status_code, resp.status_text);
+    printf("Body (%d bytes):\n", resp.body_len);
+    printf("%s", resp.body ? (char*)resp.body : "(empty)");
+    if (resp.body && resp.body_len > 0 && resp.body[resp.body_len-1] != '\n')
+        printf("\n");
+    http_free(&resp);
 }
 
 // Add history entry (called from shell loop)
