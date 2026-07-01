@@ -1,0 +1,224 @@
+QEMU 11.0.50 monitor - type 'help' for more information
+(qemu) c[?7l[2J[0mSeaBIOS (version rel-1.17.0-0-gb52ca86e094d-prebuilt.qemu.org)
+
+
+iPXE (http://ipxe.org) 00:03.0 CA00 PCI2.10 PnP PMM+0EFD1F90+0EF31F90 CA00
+Press Ctrl-B to configure iPXE (PCI 00:03.0)...                                                                               
+
+
+Booting from Hard Disk...
+Boot failed: could not read the boot disk
+
+Booting from Floppy...
+Boot failed: could not read the boot disk
+
+Booting from DVD/CD...
+[01;01H[2J[02;30HG[02;30H[02;31HNU GRUB  version 2.14[04;02H┌[04;02H[04;03H────────────────────────────────────────────────────────────────────────────┐[05;02H│[05;79H│[06;02H│[06;79H│[07;02H│[07;79H│[08;02H│[08;79H│[09;02H│[09;79H│[10;02H│[10;79H│[11;02H│[11;79H│[11;79H[12;02H│[12;79H│[13;02H│[13;79H│[14;02H│[14;79H│[15;02H│[15;79H│[16;02H│[16;79H│[17;02H│[17;79H│[18;02H└────────────────────────────────────────────[18;46H[18;47H────────────────────────────────┘[20;02H     Use the ↑ and ↓ keys to select which entry is highlighted.          
+      Press enter to boot the selected OS, `e' to edit the commands       
+      before booting or `c' for a command-line.                           [05;80H [05;03H[0;30;47m*NyxOS                       [05;31H[05;32H                                               [06;03H[0m                                                 [06;51H[06;52H                           [07;03H                                                                        [07;74H[07;75H    [08;03H                                                                            [09;03H                                                                            [10;03H                                         [10;43H[10;44H                                   [11;03H                                                                            [12;03H                                                                            [13;03H                                                                            [14;03H                                                                            [15;03H                                                                            [16;03H                                                                            [17;03H [17;03H[17;04H                                                                           [17;80H 
+
+
+
+
+
+   The highlighted entry will be executed automatically in 5s.                 [05;78H
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   The highlighted entry will be executed automatically in 4s.                 [05;78H
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   The highlighted entry will be executed automatically in 3s.     [23;67H[23;68H            [05;78H
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   The highlighted entry will be executed automatica[23;52H[23;53Hlly in 2s.                 [05;78H
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+   The highlighted entry wil[23;28H[23;29Hl be executed automatically in 1s.                 [05;78H
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+ [23;02H  The highlighted entry will be executed automatically in 0s.                 [01;01H[2J[INIT] Global Descriptor Table...
+[INIT] Interrupt Descriptor Table...
+[INIT] Interrupt Service Routines...
+[INIT] Interrupt Requests...
+[INIT] Serial Port...
+[INIT] Memory detected: 255 MB
+[INIT] Physical Memory Manager...
+[MEM] Bitmap at 0x133060, 61218 pages free (244872 KB)
+[INIT] Paging...
+[PAGING] Allocating PML4 table...
+[PAGING] Identity-mapping 64 MB...
+[PAGING] Loading CR3 with 0x1000
+[PAGING] NXE enabled.
+[PAGING] Enabled successfully.
+______          \'/
+      .-'` .    `'-.    -= * =-
+    .'  '    .---.  '.    /|\
+   /  '    .'     `'. \
+  ;  '    /          \|
+ :  '  _ ;            `
+;  :  /(\ \
+|  .       '.
+|  ' /     --'
+|  .   '.__\
+;  :       /
+ ;  .     |            ,
+  ;  .    \           /|
+   \  .    '.       .'/
+    '.  '  . `'---'`. `'
+      `'-..._____.-'
+    N Y X O S
+    N I G H T F A L L
+  -------------------------------------
+  Kernel:     NyxOS 5.1.0 (GUI Suite)
+  Arch:       x86_64 (64-bit)
+  Memory:     255 MB total, 255 MB free
+  Heap:       16384 KB
+  Paging:     Enabled
+  Uptime:     0 ticks
+  -------------------------------------
+[INIT] APIC...
+[APIC] Initializing...
+[APIC] Version: 0x0x14, Max LVT: 5
+[APIC] BSP APIC ID: 0
+[APIC] Local APIC initialized.
+[APIC] I/O APIC ID: 0, Version: 0x0x20, Max IRQs: 24
+[APIC] I/O APIC initialized.
+[APIC] Legacy PIC disabled, IRQs routed through I/O APIC.
+[APIC] CPU count: 1
+[INIT] Kernel Heap...
+[INIT] Slab Allocator...
+[INIT] VBE (Bochs)...
+[VBE] Bochs VBE detected
+[INIT] VBE mode 1024x768x32...
+[VBE] Setting mode: 1024x768x32
+[VBE] LFB physical from PCI BAR0: 0x0xfd000000
+[VBE] LFB mapped at e0000000 (768 pages)
+[INIT] Framebuffer: 1024x768x32 at 0x0xe0000000
+[INIT] IST stacks...
+[INIT] IST1 (double fault) at 0x0xffffff8000139080, IST2 (NMI) at 0x0xffffff800013b080
+[INIT] Timer (1000 Hz, interrupt-driven)...
+[TIMER] 1000 Hz (interrupt-driven)
+[INIT] Keyboard (interrupt-driven)...
+[INIT] Process Manager...
+[INIT] Creating idle process...
+[INIT] System Calls...
+[INIT] Syscall kernel stack...
+[INIT] Virtual File System...
+[INIT] Loading GRUB modules...
+[MODULES] 0 module(s) at 0x1
+[INIT] EXT2 Filesystem...
+[INIT] Network Stack...
+[NET] Loopback: 127.0.0.1
+[RTL8139] Probing PCI...
+[RTL8139] Vendor:Device at bus0 = 0x0x12378086
+[RTL8139] Found at 0:3.0
+[RTL8139] I/O base: 0x0xc000
+[RTL8139] MAC: 0x52:0x54:0x0:0x12:0x34:0x56
+[RTL8139] Reset complete
+[RTL8139] RX buffer at 0x0x13e500
+[RTL8139] Initialized successfully
+[NET] RTL8139 NIC initialized
+[NET] Stack ready
+[INIT] TCP...
+[INIT] PS/2 Mouse...
+[MOUSE] Initialized
+[INIT] PC Speaker...
+[INIT] Sound Blaster 16...
+[SB16] DSP reset failed
+[INIT] SB16 not detected (QEMU -soundhw sb16 required)
+[INIT] RTC...
+[INIT] Registering IRQ handlers...
+[INIT] Unmasking IRQs...
+[INIT] Enabling interrupts (sti)...
+
+[READY] NyxOS initialized successfully.
+
+[INIT] Loading initramfs...
+[DEBUG] Before initramfs_load
+[INITRAMFS] Data at 0x11fca0, 24284 bytes
+[INITRAMFS] Loading...
+[INITRAMFS] Loaded 2 files
+[INIT] initramfs ready. Use 'exec <file>' to run an ELF binary.
+[INIT] Looking for /init.elf...
+[INIT] Loading /init.elf (14944 bytes)...
+[INIT] Registered init PID=3 (scheduler will start it)
+[EXT2] Probing ATA drive for EXT2 filesystem...
+[EXT2] No EXT2 filesystem found.
+[DESKTOP] Launching NyxOS Desktop...
+[COMP] calling compositor_run
+.
