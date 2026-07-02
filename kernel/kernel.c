@@ -13,6 +13,7 @@
 #include "http.h"
 #include "smp.h"
 #include "initramfs.h"
+#include "bootsplash.h"
 
 // Variables globales del kernel
 process_t* process_table[MAX_PROCESSES];
@@ -1268,12 +1269,13 @@ void kernel_main(uint64_t magic, void* mboot_ptr) {
     printf("[INIT] VBE mode 1024x768x32...\n");
     if (vbe_set_mode(1024, 768, 32) == 0) {
         fb_init(vbe_get_width(), vbe_get_height(), vbe_get_bpp(), vbe_get_lfb());
-        fb_clear(fb_rgb(60, 100, 180));
+        bootsplash_init();
         printf("[INIT] Framebuffer: %dx%dx%d at 0x%llx\n",
                vbe_get_width(), vbe_get_height(), vbe_get_bpp(), vbe_get_lfb());
     } else {
         printf("[INIT] VBE mode set failed, staying in text mode\n");
     }
+    bootsplash_update(1, 23, "Setting up exception stacks...");
     printf("[INIT] IST stacks...\n");
     void* ist_pages = kmalloc(IST_STACK_SIZE * 2);
     if (ist_pages) {
@@ -1285,28 +1287,41 @@ void kernel_main(uint64_t magic, void* mboot_ptr) {
                df_stack + KERNEL_BASE, nmi_stack + KERNEL_BASE);
     }
     printf("[INIT] Timer (1000 Hz, interrupt-driven)...\n"); init_timer(1000);
-    printf("[INIT] Keyboard (interrupt-driven)...\n"); 
+    bootsplash_update(2, 23, "Initializing timer...");
+    printf("[INIT] Keyboard (interrupt-driven)...\n");
+    bootsplash_update(3, 23, "Initializing keyboard...");
     init_keyboard();
     set_keyboard_layout(1);
     printf("[INIT] Process Manager...\n"); init_process();
+    bootsplash_update(4, 23, "Starting process manager...");
     printf("[INIT] Creating idle process...\n"); ensure_idle_process();
+    bootsplash_update(5, 23, "Creating idle process...");
     printf("[INIT] System Calls...\n"); init_syscalls();
-    // Setup syscall MSRs for syscall/sysret
+    bootsplash_update(6, 23, "Initializing system calls...");
     setup_syscall_msrs();
     printf("[INIT] Syscall kernel stack...\n");
+    bootsplash_update(7, 23, "Allocating syscall stack...");
     void* syscall_stack = kmalloc(4096);
     if (syscall_stack) {
         set_kernel_rsp((uint64_t)syscall_stack + 4096);
     }
     printf("[INIT] Virtual File System...\n"); init_vfs();
+    bootsplash_update(8, 23, "Mounting virtual file system...");
     printf("[INIT] Loading GRUB modules...\n"); init_load_modules();
+    bootsplash_update(9, 23, "Loading kernel modules...");
     printf("[INIT] EXT2 Filesystem...\n"); init_ext2();
+    bootsplash_update(10, 23, "Initializing EXT2 filesystem...");
     printf("[INIT] Network Stack...\n"); init_net();
+    bootsplash_update(11, 23, "Starting network stack...");
     printf("[INIT] TCP...\n"); tcp_init();
+    bootsplash_update(12, 23, "Initializing TCP...");
     init_background_tasks();
+    bootsplash_update(13, 23, "Registering background tasks...");
 
     printf("[INIT] PS/2 Mouse...\n"); mouse_init();
+    bootsplash_update(14, 23, "Initializing PS/2 mouse...");
     printf("[INIT] PC Speaker...\n"); speaker_init();
+    bootsplash_update(15, 23, "Initializing PC speaker...");
     printf("[INIT] Sound Blaster 16...\n");
     if (sb16_init() == 0) {
         printf("[INIT] SB16 initialized at 0x%x, IRQ %d\n", SB16_BASE_PORT, SB16_IRQ);
@@ -1315,24 +1330,30 @@ void kernel_main(uint64_t magic, void* mboot_ptr) {
     } else {
         printf("[INIT] SB16 not detected (QEMU -soundhw sb16 required)\n");
     }
+    bootsplash_update(16, 23, "Sound subsystem ready");
     printf("[INIT] RTC...\n"); rtc_init();
+    bootsplash_update(17, 23, "Reading real-time clock...");
     printf("[INIT] Registering IRQ handlers...\n");
+    bootsplash_update(18, 23, "Installing interrupt handlers...");
     irq_install_handler(0, NULL); // Timer (handled by irq_scheduler_tick)
     irq_install_handler(1, keyboard_irq_handler);
     irq_install_handler(5, sb16_irq_handler);
     irq_install_handler(12, mouse_irq_handler);
     printf("[INIT] Unmasking IRQs...\n");
+    bootsplash_update(19, 23, "Unmasking interrupts...");
     irq_unmask(0); // Timer for preemptive multitasking
     irq_unmask(1); // Keyboard
     irq_unmask(5); // SB16
     irq_unmask(12); // Mouse
     printf("[INIT] Enabling interrupts (sti)...\n");
+    bootsplash_update(20, 23, "Enabling interrupts...");
     enable_interrupts();
     kernel_initialized = true;
     printf("\n[READY] NyxOS initialized successfully.\n\n");
 
     // Load initramfs and boot init
     printf("[INIT] Loading initramfs...\n");
+    bootsplash_update(21, 23, "Loading initramfs...");
     serial_puts("[DEBUG] Before initramfs_load\n");
     if (initramfs_load() == 0) {
         initramfs_boot();
@@ -1373,6 +1394,7 @@ void kernel_main(uint64_t magic, void* mboot_ptr) {
     }
 
     // Auto-mount EXT2 if available
+    bootsplash_update(22, 23, "Probing for EXT2 filesystem...");
     printf("[EXT2] Probing ATA drive for EXT2 filesystem...\n");
     if (ata_init() == 0 && ext2_mount(0, 0) == 0) {
         printf("[EXT2] Found: %u blocks, %u inodes, block size %u\n",
@@ -1392,7 +1414,9 @@ void kernel_main(uint64_t magic, void* mboot_ptr) {
         printf("[EXT2] No EXT2 filesystem found.\n");
     }
 
+    bootsplash_update(23, 23, "Launching desktop...");
     if (vbe_get_lfb()) {
+        bootsplash_clear();
         printf("[DESKTOP] Launching NyxOS Desktop...\n");
         // Register compositor as scheduler process so scheduler manages it correctly
         process_t* comp_proc = create_process("compositor", compositor_run, 0);
