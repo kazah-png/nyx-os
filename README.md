@@ -6,12 +6,11 @@
   <strong>Custom x86_64 kernel · C and Assembly · General-purpose OS</strong>
   <br/><br/>
   <!-- Badges -->
-  <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.3.0">
-    <img src="https://img.shields.io/badge/release-v5.3.0-00ff9d?style=flat" />
+  <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.7.0">
+    <img src="https://img.shields.io/badge/release-v5.7.0-00ff9d?style=flat" />
   </a>
-  <img src="https://img.shields.io/badge/kernel-120%20KB-00ff9d?style=flat" />
-  <img src="https://img.shields.io/badge/arch-x86__64-00ff9d?style=flat" />
-    <img src="https://img.shields.io/badge/status-v5.3.0-00ff9d?style=flat" />
+  <a href="...">
+    <img src="https://img.shields.io/badge/status-v5.7.0-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/TCP-yes-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/GUI-window%20compositor-00ff9d?style=flat" />
   <a href="https://github.com/kazah-png/nyx-os/issues/1">
@@ -67,7 +66,7 @@ ______          \'/
 The project implements core kernel primitives, a custom network stack (RTL8139 NIC + ARP/IP/UDP/ICMP/DHCP + TCP), a window compositor GUI, and a Sound Blaster 16 audio driver — all written in C and x86_64 Assembly with no external libraries.
 
 <div align="center">
-  <img src="gui.png?v=2" alt="NyxOS Desktop v5.3.0" width="700" />
+  <img src="gui.png?v=2" alt="NyxOS Desktop v5.7.0" width="700" />
   <p><em>NyxOS Desktop — 8 app icons, sky-blue wallpaper, taskbar</em></p>
 </div>
 

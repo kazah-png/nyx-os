@@ -35,17 +35,24 @@ int main(void) {
     long bad = open("/no/such/file", 0, 0);
     printf("open(missing) -> %ld (expected < 0)\n", bad);
 
-    /* Create + write + read-back a file entirely from ring 3. */
+    /* Create a file and write it in two chunks — offsets must advance so the
+     * second write appends rather than overwriting. */
     long wfd = open("/tmp/hello.txt", 1, 0644);   /* flags=1 -> O_CREAT */
     if (wfd >= 0) {
-        const char* msg = "written from userspace\n";
-        long wn = write(wfd, msg, 23);
+        write(wfd, "Hello, ", 7);
+        write(wfd, "userspace file I/O!\n", 20);   /* appends at offset 7 */
         close(wfd);
+
+        /* Read it back in two streaming reads — offsets advance across calls. */
         long rfd = open("/tmp/hello.txt", 0, 0);
-        char rb[64];
-        long rn = (rfd >= 0) ? read(rfd, rb, sizeof(rb) - 1) : -1;
-        if (rn > 0) { rb[rn] = '\0'; printf("wrote %ld, read back %ld: %s", wn, rn, rb); }
-        if (rfd >= 0) close(rfd);
+        if (rfd >= 0) {
+            char rb[64];
+            long a = read(rfd, rb, 7);              /* first 7 bytes */
+            long b = read(rfd, rb + a, sizeof(rb) - 1 - a); /* the rest */
+            rb[a + b] = '\0';
+            printf("streamed %ld+%ld bytes: %s", a, b, rb);
+            close(rfd);
+        }
     }
 
     printf("Init complete, exiting.\n");

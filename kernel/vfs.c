@@ -196,6 +196,37 @@ int vfs_write(int fd, const void* buf, size_t count) {
     return count;
 }
 
+// Offset-aware read: copy up to `count` bytes starting at `offset`. Returns the
+// number of bytes read (0 at/after EOF), or -1 on a bad handle.
+int vfs_pread(int fd, void* buf, uint32_t count, uint32_t offset) {
+    vfs_node_t* ino = (vfs_node_t*)(uintptr_t)(uint32_t)fd;
+    if (!ino || ino->type != 0) return -1;
+    if (offset >= ino->size) return 0;
+    uint32_t avail = ino->size - offset;
+    if (count > avail) count = avail;
+    if (ino->data && count) memcpy(buf, ino->data + offset, count);
+    return (int)count;
+}
+
+// Offset-aware write: write `count` bytes at `offset`, growing the file (and
+// zero-filling any gap) as needed without discarding existing content.
+int vfs_pwrite(int fd, const void* buf, uint32_t count, uint32_t offset) {
+    vfs_node_t* ino = (vfs_node_t*)(uintptr_t)(uint32_t)fd;
+    if (!ino || ino->type != 0) return -1;
+    uint32_t end = offset + count;
+    if (end < offset) return -1;                 // overflow
+    if (!ino->data || end > ino->size) {
+        uint8_t* nd = (uint8_t*)kmalloc(end + BLOCK_SIZE);
+        if (!nd) return -1;
+        memset_asm(nd, 0, end + BLOCK_SIZE);     // zero-fill gaps beyond old data
+        if (ino->data) { memcpy(nd, ino->data, ino->size); kfree(ino->data); }
+        ino->data = nd;
+    }
+    if (count) memcpy(ino->data + offset, buf, count);
+    if (end > ino->size) ino->size = end;
+    return (int)count;
+}
+
 int vfs_close(int fd) {
     (void)fd;
     return 0;

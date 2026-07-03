@@ -223,9 +223,13 @@ uint64_t saved_rsp = 0;
 uint64_t next_rsp = 0;
 uint64_t next_cr3 = 0;
 
-// Called from the IRQ stub after EOI, with saved_rsp set.
+// Preemptive scheduling is DISABLED. The mechanism is wired (irq_common saves
+// the context, calls this, then switches RSP+CR3), and init_task_stack builds a
+// compatible frame — but the timer IRQ0 never actually fires (see kernel.c), and
+// forcing it to fire exposes a latent #UD in the irq_common restore path. Until
+// that is fixed interactively, multitasking stays cooperative and this keeps the
+// current context every tick.
 void irq_scheduler_tick(void) {
-    // DISABLED: always stay in current context
     next_rsp = saved_rsp;
     next_cr3 = (uint64_t)kernel_pml4_phys;
 }

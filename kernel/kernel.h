@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.3.0"
+#define KERNEL_VERSION "5.7.0"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -547,6 +547,8 @@ void init_vfs(void);
 int vfs_open(const char* path, int flags, mode_t mode);
 int vfs_read(int fd, void* buf, size_t count);
 int vfs_write(int fd, const void* buf, size_t count);
+int vfs_pread(int fd, void* buf, uint32_t count, uint32_t offset);
+int vfs_pwrite(int fd, const void* buf, uint32_t count, uint32_t offset);
 int vfs_close(int fd);
 int vfs_mkdir(const char* path, mode_t mode);
 int vfs_unlink(const char* path);

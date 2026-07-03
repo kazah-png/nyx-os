@@ -72,12 +72,16 @@ static int user_str_ok(uint64_t ptr) {
  * (or can forge) a raw kernel VFS handle. 0-2 are the standard streams. */
 #define UFD_BASE 3
 #define UFD_MAX  32
-static int  ufd_handle[UFD_MAX];    /* internal VFS handle for each slot */
-static char ufd_inuse[UFD_MAX];
+static int      ufd_handle[UFD_MAX];    /* internal VFS handle for each slot */
+static uint32_t ufd_offset[UFD_MAX];    /* current read/write position */
+static char     ufd_inuse[UFD_MAX];
 
 static int ufd_alloc(int internal) {
     for (int i = 0; i < UFD_MAX; i++) {
-        if (!ufd_inuse[i]) { ufd_inuse[i] = 1; ufd_handle[i] = internal; return UFD_BASE + i; }
+        if (!ufd_inuse[i]) {
+            ufd_inuse[i] = 1; ufd_handle[i] = internal; ufd_offset[i] = 0;
+            return UFD_BASE + i;
+        }
     }
     return -1;
 }
@@ -86,6 +90,12 @@ static int ufd_lookup(int ufd, int* internal) {
     if (i < 0 || i >= UFD_MAX || !ufd_inuse[i]) return -1;
     *internal = ufd_handle[i];
     return 0;
+}
+/* Pointer to a live fd's byte offset (advanced by read/write), or NULL. */
+static uint32_t* ufd_offset_of(int ufd) {
+    int i = ufd - UFD_BASE;
+    if (i < 0 || i >= UFD_MAX || !ufd_inuse[i]) return 0;
+    return &ufd_offset[i];
 }
 static void ufd_release(int ufd) {
     int i = ufd - UFD_BASE;
@@ -191,15 +201,17 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3, uin
                 }
                 return len;
             }
-            /* A real file descriptor -> VFS. (vfs_write replaces content; no
-             * offset tracking yet — see AGENTS.md roadmap.) */
+            /* A real file descriptor -> VFS, writing at the fd's current offset. */
             int internal;
             if (ufd_lookup(fd, &internal) != 0) return -1;
+            uint32_t* off = ufd_offset_of(fd);
             if (len > 4096) len = 4096;
             char* kbuf = (char*)kmalloc(len);
             if (!kbuf) return -1;
-            int n = (copy_from_user(kbuf, a2, len) == 0) ? vfs_write(internal, kbuf, len) : -1;
+            int n = (copy_from_user(kbuf, a2, len) == 0)
+                        ? vfs_pwrite(internal, kbuf, len, off ? *off : 0) : -1;
             kfree(kbuf);
+            if (n > 0 && off) *off += n;
             return n;
         }
         case SYS_PRINT: {
@@ -224,13 +236,15 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3, uin
         case SYS_READ: {
             int internal;
             if (ufd_lookup((int)a1, &internal) != 0) return -1;
+            uint32_t* off = ufd_offset_of((int)a1);
             int count = (int)a3;
             if (count < 0 || !user_ptr_ok(a2, (uint64_t)count)) return -1;
             if (count > 4096) count = 4096;
             char* kbuf = (char*)kmalloc(count);
             if (!kbuf) return -1;
-            int n = vfs_read(internal, kbuf, count);
+            int n = vfs_pread(internal, kbuf, count, off ? *off : 0);
             if (n > 0 && copy_to_user(a2, kbuf, n) != 0) n = -1;
+            if (n > 0 && off) *off += n;      /* advance for streaming reads */
             kfree(kbuf);
             return n;
         }

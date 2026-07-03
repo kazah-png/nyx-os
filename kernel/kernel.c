@@ -1346,7 +1346,13 @@ void kernel_main(uint64_t magic, void* mboot_ptr) {
     irq_install_handler(12, mouse_irq_handler);
     printf("[INIT] Unmasking IRQs...\n");
     bootsplash_update(19, 23, "Unmasking interrupts...");
-    irq_unmask(0); // Timer for preemptive multitasking
+    // NOTE: the PIT timer (IRQ0) does not currently fire — QEMU routes it to
+    // I/O APIC pin 2 (ACPI interrupt-source override), not pin 0, so this
+    // unmask is a no-op and tick_count never advances. Routing pin 2→vector 32
+    // *does* deliver ticks, but that exposes a latent #UD in the irq_common
+    // restore path (crashes on the first tick). Left as-is pending an
+    // interactive fix — see AGENTS.md. Multitasking remains cooperative.
+    irq_unmask(0); // Timer (see note above)
     irq_unmask(1); // Keyboard
     irq_unmask(5); // SB16
     irq_unmask(12); // Mouse
