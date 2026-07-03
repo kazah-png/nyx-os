@@ -179,7 +179,7 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3, uin
             int fd = (int)a1;
             int len = (int)a3;
             if (len < 0 || !user_ptr_ok(a2, (uint64_t)len)) return -1;
-            if (fd == 1 || fd == 2) {
+            if (fd == 1 || fd == 2) {           /* stdout / stderr -> console */
                 char kbuf[128];
                 int done = 0;
                 while (done < len) {
@@ -189,8 +189,18 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3, uin
                     for (int i = 0; i < chunk; i++) putchar(kbuf[i]);
                     done += chunk;
                 }
+                return len;
             }
-            return len;
+            /* A real file descriptor -> VFS. (vfs_write replaces content; no
+             * offset tracking yet — see AGENTS.md roadmap.) */
+            int internal;
+            if (ufd_lookup(fd, &internal) != 0) return -1;
+            if (len > 4096) len = 4096;
+            char* kbuf = (char*)kmalloc(len);
+            if (!kbuf) return -1;
+            int n = (copy_from_user(kbuf, a2, len) == 0) ? vfs_write(internal, kbuf, len) : -1;
+            kfree(kbuf);
+            return n;
         }
         case SYS_PRINT: {
             if (!user_str_ok(a1)) return -1;

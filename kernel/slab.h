@@ -6,7 +6,7 @@
 #define SLAB_PAGE_SIZE 4096
 #define SLAB_MIN_OBJ   32
 #define SLAB_MAX_OBJ   1024
-#define SLAB_CACHE_MAX 5
+#define SLAB_CACHE_MAX 6
 
 typedef struct slab_slot {
     struct slab_slot* next;

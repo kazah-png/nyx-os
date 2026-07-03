@@ -145,14 +145,6 @@ void init_vfs(void) {
     vfs_write(fd, "Welcome to NyxOS v1.0.0\n", 24);
     vfs_write(fd, "Type 'help' for commands.\n", 26);
     vfs_close(fd);
-    
-    // Debug: print VFS tree
-    serial_puts("[VFS] Root children:\n");
-    for (uint32_t i = 0; i < root->child_count; i++) {
-        serial_puts("  ");
-        serial_puts(root->children[i]->name);
-        serial_puts(root->children[i]->type ? " (dir)\n" : " (file)\n");
-    }
 }
 
 int vfs_open(const char* path, int flags, mode_t mode) {

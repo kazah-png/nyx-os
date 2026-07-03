@@ -67,7 +67,12 @@ typedef struct alloc_hdr {
     uint32_t size;
 } alloc_hdr_t;
 
-#define ALLOC_MAGIC 0x4E79584F // "NyXO"
+// Two magics so kfree knows the true origin. The slab can't serve every size
+// <= SLAB_MAX_OBJ (its cache classes may not cover a size, and the header pushes
+// some requests over), so kmalloc falls back to the heap — kfree must route to
+// the matching allocator regardless of size.
+#define ALLOC_MAGIC_SLAB 0x4E79584F // "NyXO"
+#define ALLOC_MAGIC_HEAP 0x4E795848 // "NyXH"
 
 void slab_init_all(void) {
     slab_init();
@@ -75,20 +80,24 @@ void slab_init_all(void) {
 
 // kmalloc: use slab for small objects (<=512 bytes), heap for larger
 void* kmalloc(size_t size) {
-    void* ptr;
-    if (size <= SLAB_MAX_OBJ) {
-        ptr = slab_alloc((uint32_t)size + sizeof(alloc_hdr_t));
-        if (!ptr) return NULL;
-        alloc_hdr_t* hdr = (alloc_hdr_t*)ptr;
-        hdr->magic = ALLOC_MAGIC;
-        hdr->size = (uint32_t)size;
-        return (void*)(hdr + 1);
+    // Try the slab for small objects. slab_alloc returns NULL when no cache
+    // class covers (size + header); in that case fall through to the heap
+    // rather than failing the allocation (the old code returned NULL here,
+    // so every 505..1016-byte kmalloc — e.g. VFS file writes — failed).
+    if (size + sizeof(alloc_hdr_t) <= SLAB_MAX_OBJ) {
+        void* ptr = slab_alloc((uint32_t)size + sizeof(alloc_hdr_t));
+        if (ptr) {
+            alloc_hdr_t* hdr = (alloc_hdr_t*)ptr;
+            hdr->magic = ALLOC_MAGIC_SLAB;
+            hdr->size = (uint32_t)size;
+            return (void*)(hdr + 1);
+        }
     }
     extern void* heap_alloc(size_t);
-    ptr = heap_alloc(size + sizeof(alloc_hdr_t));
+    void* ptr = heap_alloc(size + sizeof(alloc_hdr_t));
     if (!ptr) return NULL;
     alloc_hdr_t* hdr = (alloc_hdr_t*)ptr;
-    hdr->magic = ALLOC_MAGIC;
+    hdr->magic = ALLOC_MAGIC_HEAP;
     hdr->size = (uint32_t)size;
     return (void*)(hdr + 1);
 }
@@ -101,15 +110,11 @@ void* kmalloc_aligned(size_t size, uint32_t align) {
 void kfree(void* ptr) {
     if (!ptr) return;
     alloc_hdr_t* hdr = ((alloc_hdr_t*)ptr) - 1;
-    if (hdr->magic != ALLOC_MAGIC) {
-        extern void heap_free(void*);
-        heap_free(hdr);
-        return;
-    }
-    if (hdr->size <= SLAB_MAX_OBJ) {
+    extern void heap_free(void*);
+    if (hdr->magic == ALLOC_MAGIC_SLAB) {
         slab_free(hdr, hdr->size + sizeof(alloc_hdr_t));
     } else {
-        extern void heap_free(void*);
+        // ALLOC_MAGIC_HEAP, or a raw heap block allocated without our header.
         heap_free(hdr);
     }
 }

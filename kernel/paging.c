@@ -156,6 +156,35 @@ void* clone_page_directory(void) {
     return (void*)alloc_page_directory();
 }
 
+// Free a user page directory created by alloc_page_directory: releases every
+// leaf frame and intermediate table for the user half (PML4[0..510]) and the
+// PML4 page itself. PML4[511] is the shared kernel mirror and is left untouched.
+// Physical addresses are masked to bits 51:12 to drop the NX bit and flags.
+#define PT_PHYS_MASK 0x000FFFFFFFFFF000ULL
+void free_page_directory(uint64_t* pml4) {
+    if (!pml4) return;
+    for (int i = 0; i < PML4_HIGHER; i++) {
+        if (!(pml4[i] & PAGE_PRESENT)) continue;
+        uint64_t* pdpt = (uint64_t*)(pml4[i] & PT_PHYS_MASK);
+        for (int j = 0; j < 512; j++) {
+            if (!(pdpt[j] & PAGE_PRESENT) || (pdpt[j] & PAGE_HUGE)) continue;
+            uint64_t* pd = (uint64_t*)(pdpt[j] & PT_PHYS_MASK);
+            for (int k = 0; k < 512; k++) {
+                if (!(pd[k] & PAGE_PRESENT) || (pd[k] & PAGE_HUGE)) continue;
+                uint64_t* pt = (uint64_t*)(pd[k] & PT_PHYS_MASK);
+                for (int l = 0; l < 512; l++) {
+                    if (pt[l] & PAGE_PRESENT)
+                        free_page((void*)(pt[l] & PT_PHYS_MASK));
+                }
+                free_page(pt);
+            }
+            free_page(pd);
+        }
+        free_page(pdpt);
+    }
+    free_page(pml4);
+}
+
 // Identity map using 2MB huge pages for speed
 void init_paging(void) {
     printf("[PAGING] Allocating PML4 table...\n");

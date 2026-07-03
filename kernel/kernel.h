@@ -528,6 +528,7 @@ void init_process(void);
 process_t* create_process(const char* name, void* entry, uint64_t flags);
 process_t* create_user_process(const char* name, void* entry, void* user_stack, uint64_t* page_dir);
 void switch_to_user_process(process_t* proc);
+void reap_user_process(process_t* proc);
 void destroy_process(uint64_t pid);
 process_t* find_process(uint64_t pid);
 process_t* get_current_process(void);

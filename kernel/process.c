@@ -172,12 +172,33 @@ void switch_to_user_process(process_t* proc) {
     for (;;) __asm__ volatile("hlt");
 }
 
+// Free everything owned by an exited user process: its page directory (all user
+// pages + tables), the kernel/context stack (init_user_task_stack kmalloc'd
+// kernel_stack-4096 as the base), the process_t, and its process-table slot.
+// Only call once the process is no longer executing (e.g. after
+// switch_to_user_process returns via the exit longjmp).
+void reap_user_process(process_t* proc) {
+    if (!proc) return;
+    extern void free_page_directory(uint64_t* pml4);
+    if (proc == g_user_proc) g_user_proc = NULL;
+    for (int i = 0; i < process_count; i++) {
+        if (process_table[i] == proc) {
+            process_table[i] = process_table[--process_count];
+            break;
+        }
+    }
+    if (proc->page_directory) free_page_directory((uint64_t*)proc->page_directory);
+    if (proc->kernel_stack) kfree((void*)((uintptr_t)proc->kernel_stack - 4096));
+    kfree(proc);
+}
+
 void destroy_process(uint64_t pid) {
     for (int i = 0; i < process_count; i++) {
         if (process_table[i] && process_table[i]->pid == pid) {
-            kfree(process_table[i]->stack);
-            kfree(process_table[i]);
-            process_table[i] = process_table[--process_count];
+            // reap_user_process removes the slot and frees the page directory and
+            // the stack via its kmalloc base (proc->stack is a *middle* pointer, so
+            // the old kfree(proc->stack) here corrupted the heap).
+            reap_user_process(process_table[i]);
             return;
         }
     }

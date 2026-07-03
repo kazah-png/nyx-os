@@ -751,11 +751,12 @@ static void cmd_exec(int argc, char** argv) {
         return;
     }
 
-    // Directly switch to the user process (bypass scheduler wait)
+    // Directly switch to the user process (bypass scheduler wait). This returns
+    // when the process calls exit() (via the exit longjmp in switch_to_user_process).
     printf("Switching to user process PID=%u...\n", proc->pid);
     kfree(copy);
     switch_to_user_process(proc);
-    // Not reached
+    reap_user_process(proc);   // process exited — free its address space + stacks
 }
 
 static uint32_t parse_ip(const char* s) {

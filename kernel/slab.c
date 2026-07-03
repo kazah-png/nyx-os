@@ -1,6 +1,6 @@
 #include "slab.h"
 
-#define SLAB_CACHE_SIZES {32, 64, 128, 256, 512}
+#define SLAB_CACHE_SIZES {32, 64, 128, 256, 512, 1024}
 
 static slab_cache_t slab_caches[SLAB_CACHE_MAX];
 static int slab_cache_count = 0;

@@ -37,6 +37,7 @@ Evolve NyxOS into a functional x86_64 kernel with filesystem, networking, shell,
 | v5.3.0 | Login system: boot animation (~5s, NyxOS-themed, 23-step progress bar), credential storage on EXT2 (/etc/passwd), framebuffer login screen with keyboard input, default user nyx/nyx, fallback when no EXT2 disk, login failure → reboot, success → launch desktop. |
 | v5.4.0 | Audit/hardening pass: fixed clean-build break (`sha256.h` pulled host `<stdint.h>`, conflicting with kernel int types); build is warning-free again (0 warnings from ~160 — pointer-truncation casts routed through `uintptr_t`, keyboard keymap over-initializers trimmed, dead code removed). **Security:** ring-3 syscall boundary hardened — user pointers validated against the canonical user half, and userspace now gets small integer fds via a translation table instead of raw (forgeable) kernel VFS handles (closed an info-leak + arbitrary-kernel-r/w reachable via `exec`). Panic handler now prints faulting RIP/CS/ring/error. |
 | v5.5.0 | **Ring-3 userspace now actually runs.** `exec <elf>` loads an ELF64, enters ring 3, services syscalls, and returns to the shell on exit. Fixed the full chain: (1) EFER.SCE was never enabled → `syscall` #UD'd; (2) LSTAR pointed at the low link address, unmapped under the user CR3 → set it to the PML4[511] higher-half alias; (3) `syscall_entry` clobbered RAX/RBX (and truncated user RSP) *before* SAVE_REGS — rewrote it to save all user GPRs first using RIP-relative ops (no scratch reg), with `kernel_rsp` stored as a higher-half alias; (4) added `copy_from_user`/`copy_to_user` that walk the user page tables to physical (masking bits 51:12 — `~0xFFF` alone kept the NX bit and produced non-canonical → #GP); (5) return via `iretq` (NASM's bare `sysret` is the 32-bit form and truncates RSP); (6) `switch_to_user_process` uses a small setjmp/longjmp (`ku_setjmp`/`ku_longjmp`) so exit() unwinds to the caller instead of halting. Verified: init.elf prints, getpid/malloc(sbrk)/snprintf/write/exit all work, control returns to boot. |
+| v5.6.0 | **Userspace cleanup + heap bug.** (1) `exec` now reaps the process on exit: `free_page_directory` (paging.c) walks the user half (PML4[0..510], skips the 511 kernel mirror) freeing every leaf frame + table; `reap_user_process` (process.c) also frees the kernel/context stack (`kernel_stack-4096` is the kmalloc base — `proc->stack` is a *middle* pointer, so the old `destroy_process` `kfree(proc->stack)` corrupted the heap; fixed). Verified clean over repeated execs. (2) **Heap bug:** `kmalloc` sent every request ≤ `SLAB_MAX_OBJ` (1024) to the slab, but the slab caches only went up to 512, so `slab_alloc` returned NULL for 505..1016 B and kmalloc returned NULL *instead of falling back to the heap* — every mid-size allocation failed (e.g. VFS file writes: `/home/user/welcome.txt` was silently empty). Fixed: kmalloc falls back to heap on slab miss; two header magics (`_SLAB`/`_HEAP`) so kfree routes correctly regardless of size; added the missing 1024 slab class. (3) `SYS_WRITE` now routes file fds (≥3) through the ufd table to `vfs_write`, so userspace can create/write files (not just stdout/stderr). init.elf exercises the full file-I/O path (open/create/write/read/close) as a regression test. |
 
 ## Architecture
 ### Boot flow
@@ -195,13 +196,11 @@ kernel/
 - **Keyboard buffer exposed**: `kbd_buffer`, `kbd_head`, `kbd_tail` made non-static in `keyboard.c` for direct polling from login.c.
 
 ## Next features to add
-- **Userspace polish** (ring-3 now works as of v5.5.0):
-  - `exec` leaks the `process_t`/page-dir/stack on exit — add `destroy_process`
-    cleanup after `return_from_user_process` returns (careful: don't free the
-    stack still in use during the longjmp; free from the caller after return).
-  - `vfs_read` ignores file offset (re-reads from start each call); the syscall
-    layer caps reads at one 4 KB `kmalloc` bounce. Add per-fd offsets for real
-    streaming reads.
+- **Userspace polish** (ring-3 works as of v5.5.0; exec reaps on exit + file
+  read/write from ring 3, v5.6.0):
+  - `vfs_read`/`vfs_write` ignore file offset (each read starts at 0; each write
+    replaces content). The syscall layer caps a read/write at one ≤4 KB `kmalloc`
+    bounce. Add per-fd offsets for real streaming + append.
   - `copy_from_user`/`copy_to_user` assume user physical pages fall in the 64 MB
     identity map; fine for small programs, revisit if RAM use grows.
   - Only one user process runs at a time (`switch_to_user_process` is blocking).
