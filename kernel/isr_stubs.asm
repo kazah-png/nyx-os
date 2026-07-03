@@ -99,7 +99,13 @@ ISR_NOERR 31
 
 extern isr_handler
 isr_common:
-    ; Switch to kernel page tables in case we came from user mode
+    ; Save interrupted registers FIRST — the CR3 switch below clobbers rax, and a
+    ; handler that returns (e.g. demand paging) would otherwise resume with a
+    ; corrupted rax (same class of bug as the old irq_common). Exceptions that
+    ; panic don't care, but this keeps the path correct for recoverable faults.
+    SAVE_REGS
+    ; Switch to kernel page tables in case we came from user mode (rax is now
+    ; saved scratch, restored by RESTORE_REGS).
     mov rax, KERNEL_BASE + kernel_pml4_phys
     mov rax, [rax]
     test rax, rax
@@ -120,7 +126,6 @@ isr_common:
     mov dx, 0x3F8; mov al, '3'; out dx, al
 .isr_halt: cli; hlt; jmp .isr_halt
 .isr_done:
-    SAVE_REGS
     ; Stack: [RSP+0]=R15, ..., [RSP+112]=RAX
     ; After SAVE_REGS: [RSP+120]=int_no, [RSP+128]=error, [RSP+136]=RIP, [RSP+144]=CS, [RSP+152]=RFLAGS, ...
     mov rdi, [rsp + 120]     ; int_no
@@ -226,7 +231,14 @@ extern irq_handler
 extern irq_scheduler_tick
 
 irq_common:
-    ; Switch to kernel page tables for C code (uses identity-mapped addresses)
+    ; Save ALL interrupted registers FIRST, before touching rax/rbx. The CR3
+    ; switch below used rax/rbx as scratch *before* SAVE_REGS, so on return the
+    ; interrupted code got a corrupted RBX (= KERNEL_BASE) / RAX and, if it then
+    ; computed a call/jump from them, jumped to KERNEL_BASE+3 → #UD. This was the
+    ; intermittent GUI/keyboard crash and the timer/scheduler blocker.
+    SAVE_REGS
+    ; Switch to kernel page tables for C code. rax/rbx are now free scratch — they
+    ; are saved on the stack and restored by RESTORE_REGS before iretq.
     mov rax, kernel_pml4_phys
     mov rbx, KERNEL_BASE
     add rax, rbx
@@ -246,7 +258,6 @@ irq_common:
     mov dx, 0x3F8; mov al, '3'; out dx, al
 .irq_halt: cli; hlt; jmp .irq_halt
 .irq_done:
-    SAVE_REGS
     ; Stack: [RSP+0]=R15..[RSP+112]=RAX, [RSP+120]=int_no, [RSP+128]=error, [RSP+136]=RIP
     mov rdi, [rsp + 120]     ; int_no
     call irq_handler

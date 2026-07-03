@@ -25,15 +25,20 @@ mb2_end:
 
 section .bss
 align 4096
+; Kernel stack FIRST, and large: the GUI compositor runs on it with deep redraw
+; call chains plus interrupt frames. It was 16 KB and sat directly below the page
+; tables, so an overflow silently corrupted them (→ crashes at bad addresses).
+; 128 KB + the page tables placed *after* it keeps overflow away from the tables.
+stack_bottom:
+    resb 131072           ; 128 KB kernel stack
+stack_top:
+align 4096
 pml4_table:
     resb 4096
 pdpt_table:
     resb 4096
 pd_table:
-    resb 8192              ; 2 PDs for 128 MB (64 2MB-pages per PD)
-stack_bottom:
-    resb 16384
-stack_top:
+    resb 8192             ; 2 PDs for 128 MB (64 2MB-pages per PD)
 
 section .text
 global _start

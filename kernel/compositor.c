@@ -1343,19 +1343,6 @@ done_click:
         mouse_x = mx; mouse_y = my;
         mouse_btns = btns;
 
-        // Debug: print mouse position to serial every ~50 iterations
-        {
-            static int debug_cnt = 0;
-            debug_cnt++;
-            if ((debug_cnt % 50) == 0) {
-                char dbg[96];
-                snprintf(dbg, sizeof(dbg), "mpos=%d,%d gx=%d gy=%d fw=%u fh=%u fb=0x%lx\n",
-                    mouse_x, mouse_y, mouse_get_x(), mouse_get_y(),
-                    fb_get_width(), fb_get_height(), (uint64_t)fb_get_addr());
-                serial_puts(dbg);
-            }
-        }
-
         uint32_t now = get_ticks();
         if (now - clock_tick > 1000) {
             clock_tick = now;

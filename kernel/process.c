@@ -252,7 +252,7 @@ void ensure_idle_process(void) {
 }
 
 static void task_blink(void) {
-    outb(0x3F8, '.');
+    // (was a serial heartbeat that spammed '.' — removed)
 }
 
 static int task_uptime_counter = 0;
