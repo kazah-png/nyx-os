@@ -20,18 +20,36 @@ typedef struct vfs_node {
     struct vfs_node* children[MAX_CHILDREN];
     uint32_t child_count;
     uint32_t readdir_idx;  // per-directory readdir cursor
+    uint8_t  mount_backed; // 1 = transient node mirroring a mounted-FS file
+    char     mpath[MAX_NAME]; // path within the mount (e.g. "/foo.txt")
+    void*    mount_ent;    // mount_entry_t* to flush writes through
 } vfs_node_t;
 
 static vfs_node_t nodes[MAX_INODES];
 static uint32_t node_count = 0;
 static vfs_node_t* current_dir = NULL;
 
+// Free list so transient mount-backed nodes (allocated per open, freed on close)
+// don't exhaust the fixed pool. Ramdisk tree nodes are never freed.
+static vfs_node_t* free_nodes[MAX_INODES];
+static int free_node_count = 0;
+
 static vfs_node_t* alloc_node(void) {
-    if (node_count >= MAX_INODES) return NULL;
-    vfs_node_t* node = &nodes[node_count++];
+    vfs_node_t* node;
+    if (free_node_count > 0) {
+        node = free_nodes[--free_node_count];
+    } else {
+        if (node_count >= MAX_INODES) return NULL;
+        node = &nodes[node_count++];
+    }
     memset_asm(node, 0, sizeof(vfs_node_t));
-    node->node_id = node_count - 1;
+    node->node_id = (uint32_t)(node - nodes);
     return node;
+}
+
+static void free_node(vfs_node_t* n) {
+    if (!n || free_node_count >= MAX_INODES) return;
+    free_nodes[free_node_count++] = n;
 }
 
 static vfs_node_t* find_child(vfs_node_t* dir, const char* name) {
@@ -149,6 +167,37 @@ void init_vfs(void) {
 
 int vfs_open(const char* path, int flags, mode_t mode) {
     (void)mode;
+
+    // Mount paths (e.g. /mnt/...) are backed by a real filesystem, not the
+    // ramdisk tree. Create a transient node that mirrors the FS file so that
+    // fd-based read/write/close work and writes flush back to disk.
+    mount_entry_t* me = vfs_find_mount(path);
+    if (me) {
+        const char* sub = path + strlen(me->mount_point);
+        if (!*sub) sub = "/";
+        uint32_t exists = me->resolve ? me->resolve(sub) : 0;
+        if (!exists && !(flags & 1)) return -1;        // read of a missing file
+        vfs_node_t* n = alloc_node();
+        if (!n) return -1;
+        n->type = 0;
+        n->mount_backed = 1;
+        n->mount_ent = me;
+        strncpy(n->mpath, sub, MAX_NAME - 1);
+        if (!exists && (flags & 1)) {
+            if (me->write_file) me->write_file(sub, "", 0);   // create empty
+        } else if (exists && me->read_file) {
+            uint32_t sz = me->get_size ? me->get_size(sub) : 0;
+            if (sz > 0) {
+                n->data = (uint8_t*)kmalloc(sz);
+                if (n->data) {
+                    int r = me->read_file(sub, n->data, sz);
+                    n->size = (r > 0) ? (uint32_t)r : 0;
+                }
+            }
+        }
+        return (int)(uintptr_t)n;
+    }
+
     vfs_node_t* ino = resolve_path(path);
 
     if (flags & 1) { // O_CREAT — create a file
@@ -179,6 +228,13 @@ int vfs_read(int fd, void* buf, size_t count) {
     return count;
 }
 
+// Flush a mount-backed node's full contents back to its filesystem.
+static void flush_mount_node(vfs_node_t* ino) {
+    if (!ino->mount_backed || !ino->mount_ent) return;
+    mount_entry_t* me = (mount_entry_t*)ino->mount_ent;
+    if (me->write_file) me->write_file(ino->mpath, ino->data ? ino->data : (uint8_t*)"", ino->size);
+}
+
 int vfs_write(int fd, const void* buf, size_t count) {
     vfs_node_t* ino = (vfs_node_t*)(uintptr_t)(uint32_t)fd;
     if (!ino || ino->type != 0) return -1;
@@ -193,6 +249,7 @@ int vfs_write(int fd, const void* buf, size_t count) {
     }
     memcpy(ino->data, buf, count);
     ino->size = count;
+    flush_mount_node(ino);            // persist to disk if this is a mount file
     return count;
 }
 
@@ -224,11 +281,17 @@ int vfs_pwrite(int fd, const void* buf, uint32_t count, uint32_t offset) {
     }
     if (count) memcpy(ino->data + offset, buf, count);
     if (end > ino->size) ino->size = end;
+    flush_mount_node(ino);            // persist to disk if this is a mount file
     return (int)count;
 }
 
 int vfs_close(int fd) {
-    (void)fd;
+    if (fd <= 0) return 0;
+    vfs_node_t* ino = (vfs_node_t*)(uintptr_t)(uint32_t)fd;
+    if (ino->mount_backed) {          // transient mirror — release it
+        if (ino->data) kfree(ino->data);
+        free_node(ino);
+    }
     return 0;
 }
 
