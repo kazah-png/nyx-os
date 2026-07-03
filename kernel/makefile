@@ -44,11 +44,15 @@ nyx-kernel.bin: $(OBJS)
 
 # User-space programs (x86_64 native)
 USER_DIR = ../user
-USER_ELFS = $(USER_DIR)/hello.elf $(USER_DIR)/init.elf
+USER_ELFS = $(USER_DIR)/hello.elf $(USER_DIR)/init.elf $(USER_DIR)/spin.elf
 
 $(USER_DIR)/hello.elf: $(USER_DIR)/hello.asm
 	nasm -f elf64 $< -o $(USER_DIR)/hello.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/hello.o
+
+$(USER_DIR)/spin.elf: $(USER_DIR)/spin.asm
+	nasm -f elf64 $< -o $(USER_DIR)/spin.o
+	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/spin.o
 
 $(USER_DIR)/init.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.o $(USER_DIR)/init.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o $(USER_DIR)/libc.o $(USER_DIR)/init.o

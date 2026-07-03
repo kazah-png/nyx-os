@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.7.6"
+#define KERNEL_VERSION "5.7.7"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -137,16 +137,23 @@ typedef struct process {
     void* page_directory;
     void* stack;
     void* kernel_stack;
-    uint32_t state;
+    uint32_t state;         // PROC_PARKED / PROC_RUN / PROC_ZOMBIE
     uint32_t priority;
     uint32_t cpu_time;
     uint32_t start_time;
     void* files[MAX_FILES];
     uint64_t program_break;
+    uint32_t sched_managed;  // 1 = round-robined by the preemptive scheduler (spawn_user_path);
+                             // blocking-exec and unstarted procs leave this 0 so they're skipped
     struct process* next;
     struct process* parent;
     struct process* children;
 } process_t;
+
+// Process states (kept numeric-compatible with the existing 0/1 usage).
+#define PROC_PARKED  0   // not runnable (retired kernel thread / blocked); scheduler skips
+#define PROC_RUN     1   // runnable or running
+#define PROC_ZOMBIE  2   // scheduled user proc that exited; awaiting reap_zombies()
 
 // x86_64 TSS (102 bytes)
 // Layout per Intel Vol 3, Figure 7-9
@@ -571,6 +578,15 @@ void sched_disable(void);
 int  sched_is_enabled(void);
 int  mtdemo_start(void);
 extern volatile uint64_t mtdemo_a_count, mtdemo_b_count;
+
+// Preemption critical sections: while the disable-count is nonzero the scheduler
+// keeps the current thread (protects non-reentrant shared state — the heap).
+void preempt_disable(void);
+void preempt_enable(void);
+// Preemptive user (ring-3) processes: spawn one from an ELF path into the
+// scheduler (non-blocking), and reap the ones that have exited.
+int  spawn_user_path(const char* path);
+void reap_zombies(void);
 
 void init_timer(uint32_t frequency);
 uint32_t get_ticks(void);

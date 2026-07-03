@@ -93,6 +93,7 @@ static void cmd_beep(int argc, char** argv);
 static void cmd_play(int argc, char** argv);
 static void cmd_sb16play(int argc, char** argv);
 static void cmd_exec(int argc, char** argv);
+static void cmd_usertest(int argc, char** argv);
 static void cmd_tcptest(int argc, char** argv);
 static void cmd_httpget(int argc, char** argv);
 static void cmd_setip(int argc, char** argv);
@@ -150,6 +151,7 @@ static const command_t commands[] = {
     {"play",      cmd_play,      "Play a demo melody", false},
     {"sb16play",  cmd_sb16play,  "Test SB16 playback: sb16play [freq] [ms]", false},
     {"exec",      cmd_exec,      "Execute ELF binary: exec <file>", false},
+    {"usertest",  cmd_usertest,  "Spawn preemptive ring-3 test processes", false},
     {"tcptest",   cmd_tcptest,   "Test TCP: tcptest <ip> <port>", false},
     {"httpget",   cmd_httpget,   "HTTP GET: httpget <url>", false},
     {"setip",     cmd_setip,     "Set static IP: setip <ip> <mask> <gw>", false},
@@ -775,6 +777,46 @@ static void cmd_exec(int argc, char** argv) {
     kfree(copy);
     switch_to_user_process(proc);
     reap_user_process(proc);   // process exited — free its address space + stacks
+}
+
+// Load an ELF from `path` and hand it to the preemptive scheduler as a background
+// ring-3 process (non-blocking — unlike exec, which blocks the caller until the
+// process exits). Marked sched_managed so irq_scheduler_tick round-robins it; it
+// leaves via the SYS_EXIT zombie path and reap_zombies() frees it. Returns the new
+// PID, or a negative error code.
+int spawn_user_path(const char* path) {
+    int fd = vfs_open(path, 0, 0);
+    if (fd < 0) return -1;
+    uint32_t size = vfs_fsize(fd);
+    uint8_t* data = vfs_fdata(fd);
+    if (!data || size == 0) { vfs_close(fd); return -2; }
+    uint8_t* copy = (uint8_t*)kmalloc(size);
+    if (!copy) { vfs_close(fd); return -3; }
+    memcpy_asm(copy, data, size);
+    vfs_close(fd);
+    if (!elf_validate(copy, size)) { kfree(copy); return -4; }
+    process_t* proc = NULL;
+    int r = elf_load(copy, size, &proc);
+    kfree(copy);
+    if (r != 0 || !proc) return -5;
+    proc->sched_managed = 1;   // scheduler now round-robins this ring-3 process
+    sched_enable();
+    return (int)proc->pid;
+}
+
+static void cmd_usertest(int argc, char** argv) {
+    (void)argc; (void)argv;
+    const char* path = "/spin.elf";
+    printf("Spawning preemptive ring-3 processes from %s ...\n", path);
+    int p1 = spawn_user_path(path);
+    int p2 = spawn_user_path(path);
+    if (p1 < 0 || p2 < 0) {
+        printf("spawn failed (p1=%d p2=%d) — is %s in the initramfs?\n", p1, p2, path);
+        return;
+    }
+    printf("Spawned PID %d and PID %d in ring 3, time-sliced with this desktop.\n", p1, p2);
+    printf("The GUI stays responsive while they run (proof of ring-3 preemption);\n");
+    printf("they print to the serial log, then exit. 'ps' lists them, then reaped.\n");
 }
 
 static uint32_t parse_ip(const char* s) {

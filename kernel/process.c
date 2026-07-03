@@ -77,7 +77,13 @@ static int init_user_task_stack(process_t* proc, void* entry_point, void* user_s
     *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0;
     *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0;
 
-    proc->stack = (void*)(uintptr_t)sp;
+    // Store the saved kernel-stack RSP as its HIGHER-HALF alias. When we iretq into
+    // this process we first switch CR3 to its user page directory, where the only
+    // mapping of kernel memory is the PML4[511] higher-half mirror — the low
+    // identity address would #PF on the first stack access (RESTORE_REGS). This
+    // keeps user procs consistent with the value the scheduler later saves (the
+    // TSS RSP0 is also a higher-half alias). Kernel threads stay low (init_task_stack).
+    proc->stack = (void*)((uintptr_t)sp + KERNEL_BASE);
     proc->kernel_stack = (void*)((uintptr_t)stack_mem + 4096);
     return 0;
 }
@@ -245,44 +251,100 @@ void sched_enable(void)     { sched_enabled = 1; }
 void sched_disable(void)    { sched_enabled = 0; }
 int  sched_is_enabled(void) { return sched_enabled; }
 
-void irq_scheduler_tick(void) {
-    // Default: resume the thread we interrupted.
-    next_rsp = saved_rsp;
-    next_cr3 = (uint64_t)kernel_pml4_phys;
+// Preemption critical sections. While nonzero, the scheduler keeps the current
+// thread — used to make the heap (kmalloc/kfree) safe against being preempted
+// mid-update by another thread that also touches it.
+static volatile int preempt_count = 0;
+void preempt_disable(void) { preempt_count++; }
+void preempt_enable(void)  { if (preempt_count > 0) preempt_count--; }
 
-    // Dormant, nothing to schedule, or a cooperative ring-3 process owns the main
-    // thread (switch_to_user_process is blocking) — never preempt in those cases.
-    if (!sched_enabled || process_count == 0 || g_user_proc != NULL) return;
-    if (current_idx < 0 || current_idx >= process_count || !process_table[current_idx])
+// Point next_rsp/next_cr3 at process p (about to be resumed). Kernel threads run
+// in the kernel address space; user processes get their own CR3, and the TSS
+// RSP0 must be their kernel stack so their next ring3→ring0 entry lands safely.
+static void sched_target(process_t* p) {
+    next_rsp = (uint64_t)p->stack;
+    if (p->page_directory) {
+        next_cr3 = (uint64_t)p->page_directory;
+        tss_set_stack((uint64_t)(uintptr_t)p->kernel_stack + KERNEL_BASE);
+    } else {
+        next_cr3 = (uint64_t)kernel_pml4_phys;
+    }
+}
+
+void irq_scheduler_tick(void) {
+    // A blocking switch_to_user_process owns the CPU in ring 3 (g_user_proc set).
+    // It's launched outside the scheduler and isn't tracked by current_idx, so we
+    // must resume it in ITS OWN address space — dropping to the kernel CR3 here
+    // would iretq back to ring 3 with the user code unmapped (#PF). Handle this
+    // before anything else, regardless of whether preemption is otherwise enabled.
+    if (g_user_proc != NULL) {
+        next_rsp = saved_rsp;
+        next_cr3 = (uint64_t)g_user_proc->page_directory;
         return;
+    }
+
+    // Default: resume the thread we interrupted, preserving its address space (a
+    // ring-3 process keeps its own CR3 if it's the only thing runnable).
+    process_t* cur = (current_idx >= 0 && current_idx < process_count)
+                         ? process_table[current_idx] : NULL;
+    next_rsp = saved_rsp;
+    next_cr3 = (cur && cur->page_directory) ? (uint64_t)cur->page_directory
+                                            : (uint64_t)kernel_pml4_phys;
+
+    // Dormant, in a heap/critical section, or nothing else to schedule.
+    if (!sched_enabled || preempt_count > 0 || process_count == 0) return;
+    if (!cur) return;
 
     // Remember where to resume the outgoing thread.
-    process_table[current_idx]->stack = (void*)saved_rsp;
+    cur->stack = (void*)saved_rsp;
 
-    // Pick the next runnable kernel thread, round-robin. Skip user processes (not
-    // our job here) and the idle thread (only run it if nothing else can).
+    // Round-robin to the next runnable thread. We schedule kernel threads and
+    // spawned (sched_managed) user processes; we skip idle unless nothing else
+    // runs, NULL-stack placeholders (e.g. `init` — switching to it would iretq off
+    // a null RSP), unmanaged user procs (init.elf, the blocking-exec target), and
+    // non-RUN states (parked/zombie).
     for (int i = 1; i <= process_count; i++) {
         int idx = (current_idx + i) % process_count;
         process_t* p = process_table[idx];
-        if (!p || p->state != 1) continue;
-        if (p->page_directory != NULL) continue;   // user process — not our job here
-        if (p == idle_proc) continue;               // idle only if nothing else runs
-        if (p->stack == NULL) continue;             // no saved context yet — e.g. the
-                                                    // "init" placeholder (init_process
-                                                    // never builds a stack frame); a
-                                                    // real thread only gets a NULL stack
-                                                    // if it has never run and was never
-                                                    // given an init_task_stack frame, so
-                                                    // switching to it would iretq off a
-                                                    // null RSP. Skip until it has one.
+        if (!p || p->state != PROC_RUN) continue;
+        if (p == idle_proc) continue;
+        if (p->stack == NULL) continue;
+        if (p->page_directory != NULL && !p->sched_managed) continue;
         current_idx = idx;
-        next_rsp = (uint64_t)p->stack;
-        return;                 // next_cr3 already = kernel PML4
+        sched_target(p);
+        return;
     }
-    // No other runnable kernel thread — stay on the current one (already set).
+    // No other runnable thread — stay on the current one (defaults above).
 }
 
 void schedule(void) {
+}
+
+// Free every ZOMBIE process (a spawned user proc that exited): its user address
+// space, kernel stack, process_t, and table slot. MUST run in a normal kernel
+// thread (the compositor's background-task slot), never in the IRQ path — it
+// calls kfree/free_page_directory. preempt_disable keeps the scheduler from
+// switching mid-free, and a zombie is never the current thread (it yielded on
+// exit), so freeing its stack/CR3 is safe.
+void reap_zombies(void) {
+    extern void free_page_directory(uint64_t* pml4);
+    preempt_disable();
+    for (int i = 0; i < process_count; i++) {
+        process_t* p = process_table[i];
+        if (!p || p->state != PROC_ZOMBIE) continue;
+        if (i == current_idx) continue;                 // never free the running proc
+        if (p->page_directory) free_page_directory((uint64_t*)p->page_directory);
+        if (p->kernel_stack) kfree((void*)((uintptr_t)p->kernel_stack - 4096));
+        // Swap-remove, keeping current_idx pointing at the same live proc if the
+        // one we moved happened to be the current thread.
+        int last = --process_count;
+        process_table[i] = process_table[last];
+        process_table[last] = NULL;
+        if (current_idx == last) current_idx = i;
+        kfree(p);
+        i--;                                            // re-examine the swapped-in slot
+    }
+    preempt_enable();
 }
 
 static void idle_task(void) {
@@ -339,6 +401,7 @@ void run_background_tasks(void) {
 void init_background_tasks(void) {
     register_background_task("blink", task_blink);
     register_background_task("uptime", task_uptime);
+    register_background_task("reap", reap_zombies);   // frees exited spawned procs
 }
 
 // --- Multitasking self-test (the `mtdemo` shell command) --------------------

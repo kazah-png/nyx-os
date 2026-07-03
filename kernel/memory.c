@@ -80,6 +80,11 @@ void slab_init_all(void) {
 
 // kmalloc: use slab for small objects (<=512 bytes), heap for larger
 void* kmalloc(size_t size) {
+    // preempt_disable: the slab/heap freelists are not reentrant, so a preemptive
+    // context switch mid-update (to another thread that also allocates) would
+    // corrupt them. Keep the whole allocation atomic w.r.t. the scheduler.
+    preempt_disable();
+    void* result = NULL;
     // Try the slab for small objects. slab_alloc returns NULL when no cache
     // class covers (size + header); in that case fall through to the heap
     // rather than failing the allocation (the old code returned NULL here,
@@ -90,16 +95,21 @@ void* kmalloc(size_t size) {
             alloc_hdr_t* hdr = (alloc_hdr_t*)ptr;
             hdr->magic = ALLOC_MAGIC_SLAB;
             hdr->size = (uint32_t)size;
-            return (void*)(hdr + 1);
+            result = (void*)(hdr + 1);
         }
     }
-    extern void* heap_alloc(size_t);
-    void* ptr = heap_alloc(size + sizeof(alloc_hdr_t));
-    if (!ptr) return NULL;
-    alloc_hdr_t* hdr = (alloc_hdr_t*)ptr;
-    hdr->magic = ALLOC_MAGIC_HEAP;
-    hdr->size = (uint32_t)size;
-    return (void*)(hdr + 1);
+    if (!result) {
+        extern void* heap_alloc(size_t);
+        void* ptr = heap_alloc(size + sizeof(alloc_hdr_t));
+        if (ptr) {
+            alloc_hdr_t* hdr = (alloc_hdr_t*)ptr;
+            hdr->magic = ALLOC_MAGIC_HEAP;
+            hdr->size = (uint32_t)size;
+            result = (void*)(hdr + 1);
+        }
+    }
+    preempt_enable();
+    return result;
 }
 
 void* kmalloc_aligned(size_t size, uint32_t align) {
@@ -109,6 +119,7 @@ void* kmalloc_aligned(size_t size, uint32_t align) {
 
 void kfree(void* ptr) {
     if (!ptr) return;
+    preempt_disable();
     alloc_hdr_t* hdr = ((alloc_hdr_t*)ptr) - 1;
     extern void heap_free(void*);
     if (hdr->magic == ALLOC_MAGIC_SLAB) {
@@ -117,6 +128,7 @@ void kfree(void* ptr) {
         // ALLOC_MAGIC_HEAP, or a raw heap block allocated without our header.
         heap_free(hdr);
     }
+    preempt_enable();
 }
 
 void* krealloc(void* ptr, size_t size) {

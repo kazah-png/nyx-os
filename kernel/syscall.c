@@ -177,9 +177,20 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3, uin
         case SYS_EXIT: {
             printf("[USER] exit(%lu)\n", a1);
             process_t* cur = get_cur_proc();
-            if (cur) cur->state = 0;
-            // Unwind back to whoever launched this process (e.g. the shell's exec),
+            if (cur && cur->sched_managed) {
+                // Preemptively-scheduled process: become a zombie and yield forever.
+                // The scheduler skips non-RUN states, so the next tick switches to
+                // another thread and never comes back here; reap_zombies() (a
+                // compositor background task) frees the address space + stacks. We
+                // can't free them here — we're still executing on this proc's kernel
+                // stack in its CR3.
+                cur->state = PROC_ZOMBIE;
+                __asm__ volatile("sti");            // let the timer preempt us away
+                for (;;) __asm__ volatile("hlt");
+            }
+            // Cooperative (blocking exec) process: unwind back to the shell's exec,
             // re-enabling interrupts there, instead of halting the whole system.
+            if (cur) cur->state = PROC_PARKED;
             extern void return_from_user_process(void);
             return_from_user_process();
             for (;;) __asm__ volatile("hlt");   // unreachable
