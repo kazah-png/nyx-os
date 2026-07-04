@@ -3,6 +3,26 @@
 #include "tcp.h"
 #include "dns.h"
 
+// True once we've received the full header block plus a Content-Length worth of
+// body (when the server declares one), so a completed response can finish
+// immediately instead of waiting out the silence timeout. `buf` must be
+// NUL-terminated at `total` by the caller.
+static int http_body_complete(const uint8_t* buf, uint32_t total) {
+    const char* b = (const char*)buf;
+    char* hdr_end = strstr(b, "\r\n\r\n");
+    if (!hdr_end) return 0;                       // headers not fully in yet
+    uint32_t header_len = (uint32_t)(hdr_end - b) + 4;
+    char* cl = strstr(b, "Content-Length:");
+    if (!cl) cl = strstr(b, "Content-length:");
+    if (!cl) cl = strstr(b, "content-length:");
+    if (!cl || cl >= hdr_end) return 0;           // no length -> wait for FIN
+    cl += 15;
+    while (*cl == ' ') cl++;
+    uint32_t content_length = 0;
+    while (*cl >= '0' && *cl <= '9') { content_length = content_length * 10 + (*cl - '0'); cl++; }
+    return (total - header_len) >= content_length;
+}
+
 int http_get(const char* host, uint16_t port, const char* path,
              http_response_t* resp, int iface_idx)
 {
@@ -16,11 +36,13 @@ int http_get(const char* host, uint16_t port, const char* path,
 
     // Drive the 3-way handshake to completion before sending (tcp_connect only
     // fires the SYN; the SYN-ACK is processed in tcp_handle_packet on poll).
+    // Time-based (the timer is live), so a lost SYN gets retransmitted (tcp_tick
+    // runs inside kernel_poll_net) and still connects within the window.
+    uint32_t hs_deadline = get_ticks() + 4000;
     int established = 0;
-    for (int i = 0; i < 400 && !established; i++) {
+    while ((int32_t)(get_ticks() - hs_deadline) < 0) {
         kernel_poll_net();
-        for (volatile int d = 0; d < 40000; d++) __asm__ volatile("pause");
-        if (tcp_state(conn) == TCP_STATE_ESTABLISHED) established = 1;
+        if (tcp_state(conn) == TCP_STATE_ESTABLISHED) { established = 1; break; }
     }
     if (!established) { tcp_close(conn); return -1; }
 
@@ -40,22 +62,33 @@ int http_get(const char* host, uint16_t port, const char* path,
     if (!buf) { tcp_close(conn); return -1; }
     uint32_t total = 0;
 
-    // Poll for the response. Give a remote server time to reply (the timer is
-    // dead, so this is a bounded busy-poll). Stop once we have the full response
-    // (headers + Content-Length worth of body) or the peer closes.
-    int idle = 0;
-    for (int tries = 0; tries < 800; tries++) {
+    // Receive until the peer closes (Connection: close -> FIN), the full
+    // Content-Length body is in, or a timeout. Everything is time-based off
+    // get_ticks() so a slow multi-segment response isn't truncated: the old code
+    // used a fixed iteration count, and a normal gap between TCP segments tripped
+    // it after a single partial segment (that's why large replies came back
+    // empty). ACKs we send on each inbound segment keep the server streaming.
+    uint32_t start   = get_ticks();
+    uint32_t last_rx = start;
+    for (;;) {
         kernel_poll_net();
         int n = tcp_recv(conn, buf + total, HTTP_MAX_RESPONSE - total - 1);
         if (n > 0) {
-            total += n; idle = 0;
+            total += n;
+            last_rx = get_ticks();
             if (total >= HTTP_MAX_RESPONSE - 1) break;
         } else if (n < 0) {
-            break;                       // peer closed the connection
-        } else if (total > 0 && ++idle > 200) {
-            break;                       // have data and it went quiet
+            break;                       // peer closed the connection (complete)
         }
-        for (volatile int d = 0; d < 20000; d++) __asm__ volatile("pause");
+        buf[total] = '\0';
+        if (total > 0 && http_body_complete(buf, total)) break;
+        uint32_t now = get_ticks();
+        if (total == 0) {
+            if ((int32_t)(now - (start + 5000)) >= 0) break;    // nothing arrived
+        } else if ((int32_t)(now - (last_rx + 1500)) >= 0) {
+            break;                                              // stream went quiet
+        }
+        if ((int32_t)(now - (start + 15000)) >= 0) break;       // hard 15 s cap
     }
     buf[total] = '\0';
     tcp_close(conn);

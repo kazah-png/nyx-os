@@ -2,6 +2,12 @@
 #include "tcp.h"
 
 extern int ip_send(uint32_t dst_ip, uint8_t protocol, const uint8_t* data, uint32_t len, int iface_idx);
+extern uint32_t get_ticks(void);
+
+// Testing hook: number of upcoming sequence-consuming TX segments to silently
+// drop (still armed for retransmit) so the RTO path can be exercised in-guest.
+static int g_tcp_drop_tx = 0;
+void tcp_debug_drop(int n) { g_tcp_drop_tx = n; }
 
 typedef struct __attribute__((packed)) {
     uint16_t src_port;
@@ -109,7 +115,38 @@ static int send_segment(tcp_conn_t* conn, uint8_t flags, const uint8_t* data, ui
     uint16_t ck = tcp_checksum(conn, seg, tcp_len);
     hdr->checksum = (uint16_t)((ck >> 8) | (ck << 8));
 
-    int result = ip_send(conn->dst_ip, 6, seg, tcp_len, -1);
+    // Arm retransmission for segments that consume sequence space (SYN / FIN /
+    // data): buffer the exact bytes and record the ack that will clear them,
+    // computed from conn->seq BEFORE it advances below. Pure ACKs/RST carry no
+    // sequence space, so a lost one is harmless and isn't tracked.
+    int seq_consuming = (flags & TCP_FLAG_SYN) || (flags & TCP_FLAG_FIN) || data_len > 0;
+    if (seq_consuming) {
+        if (conn->rt_seg) kfree(conn->rt_seg);
+        conn->rt_seg = (uint8_t*)kmalloc(tcp_len);
+        if (conn->rt_seg) {
+            memcpy(conn->rt_seg, seg, tcp_len);
+            conn->rt_len = tcp_len;
+            conn->rt_ack_seq = conn->seq
+                             + ((flags & TCP_FLAG_SYN) ? 1 : 0)
+                             + ((flags & TCP_FLAG_FIN) ? 1 : 0)
+                             + data_len;
+            conn->rt_sent_tick = get_ticks();
+            conn->rt_rto = TCP_RTO_INITIAL;
+            conn->rt_retries = 0;
+        }
+    }
+
+    // Testing hook: silently drop this transmission (it stays armed above, so the
+    // RTO timer has to recover it) — this is how retransmission is exercised.
+    int result;
+    if (g_tcp_drop_tx > 0 && seq_consuming) {
+        g_tcp_drop_tx--;
+        printf("[TCP] TX dropped (test): seq=%u len=%u — awaiting retransmit\n",
+               conn->seq, data_len);
+        result = (int)tcp_len;
+    } else {
+        result = ip_send(conn->dst_ip, 6, seg, tcp_len, -1);
+    }
 
     if (flags & TCP_FLAG_SYN) conn->sent_unacked = conn->seq + 1;
     else if (data_len > 0) conn->sent_unacked = conn->seq + data_len;
@@ -122,6 +159,36 @@ static int send_segment(tcp_conn_t* conn, uint8_t flags, const uint8_t* data, ui
 
     kfree(seg);
     return result;
+}
+
+// Resend the buffered segment when its ACK hasn't arrived within the RTO, with
+// exponential backoff; after TCP_MAX_RETRIES give up and tear the conn down.
+// Called from the network poll loop (never an IRQ — it does ip_send/kmalloc).
+void tcp_tick(void) {
+    uint32_t now = get_ticks();
+    for (int i = 0; i < TCP_MAX_CONNS; i++) {
+        tcp_conn_t* conn = &conns[i];
+        if (!conn->active || !conn->rt_seg) continue;
+        if ((int32_t)(now - (conn->rt_sent_tick + conn->rt_rto)) < 0) continue;
+
+        if (conn->rt_retries >= TCP_MAX_RETRIES) {
+            printf("[TCP] conn %d unresponsive after %d retransmits — resetting\n",
+                   i, conn->rt_retries);
+            kfree(conn->rt_seg); conn->rt_seg = NULL; conn->rt_len = 0;
+            if (conn->recv_buf) { kfree(conn->recv_buf); conn->recv_buf = NULL; }
+            conn->active = 0;
+            conn->state = TCP_STATE_CLOSED;
+            continue;
+        }
+
+        conn->rt_retries++;
+        conn->rt_rto *= 2;
+        if (conn->rt_rto > TCP_RTO_MAX) conn->rt_rto = TCP_RTO_MAX;
+        conn->rt_sent_tick = now;
+        printf("[TCP] retransmit conn %d (retry %d, next rto %u ms)\n",
+               i, conn->rt_retries, conn->rt_rto);
+        ip_send(conn->dst_ip, 6, conn->rt_seg, conn->rt_len, -1);
+    }
 }
 
 int tcp_init(void) {
@@ -157,6 +224,9 @@ int tcp_connect(uint32_t dst_ip, uint16_t dst_port, uint16_t src_port) {
     conn->recv_len = 0;
     conn->recv_cap = 0;
     conn->sent_unacked = 0;
+    conn->rt_seg = NULL;
+    conn->rt_len = 0;
+    conn->rt_retries = 0;
 
     next_isn += 1000;
 
@@ -204,6 +274,7 @@ int tcp_close(int conn_id) {
         send_segment(conn, TCP_FLAG_FIN | TCP_FLAG_ACK, NULL, 0);
     }
     if (conn->recv_buf) { kfree(conn->recv_buf); conn->recv_buf = NULL; }
+    if (conn->rt_seg) { kfree(conn->rt_seg); conn->rt_seg = NULL; conn->rt_len = 0; }
     conn->active = 0;
     conn->state = TCP_STATE_CLOSED;
     return 0;
@@ -217,6 +288,8 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip) {
     uint16_t src_port = ((hdr->src_port << 8) & 0xFF00) | ((hdr->src_port >> 8) & 0x00FF);
     uint32_t seq = ((hdr->seq << 24) & 0xFF000000) | ((hdr->seq << 8) & 0x00FF0000)
                  | ((hdr->seq >> 8) & 0x0000FF00) | ((hdr->seq >> 24) & 0x000000FF);
+    uint32_t ackno = ((hdr->ack << 24) & 0xFF000000) | ((hdr->ack << 8) & 0x00FF0000)
+                   | ((hdr->ack >> 8) & 0x0000FF00) | ((hdr->ack >> 24) & 0x000000FF);
     uint16_t off_flags = (uint16_t)((hdr->offset_flags >> 8) | (hdr->offset_flags << 8));
     uint8_t flags = off_flags & 0x003F;
     uint8_t data_offset = (off_flags >> 12) & 0x0F;
@@ -255,6 +328,16 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip) {
         rhdr->checksum = tcp_checksum(&temp, seg, sizeof(tcp_header_t));
         ip_send(src_ip, 6, seg, sizeof(tcp_header_t), -1);
         return;
+    }
+
+    // Cumulative ACK: once the peer acks past our outstanding (buffered) segment,
+    // it's delivered — stop the retransmit timer for it. This also finally
+    // consumes a bare ACK of our data, which the state machine below ignores.
+    if ((flags & TCP_FLAG_ACK) && conn->rt_seg &&
+        (int32_t)(ackno - conn->rt_ack_seq) >= 0) {
+        kfree(conn->rt_seg);
+        conn->rt_seg = NULL;
+        conn->rt_len = 0;
     }
 
     // Update ack from received segment

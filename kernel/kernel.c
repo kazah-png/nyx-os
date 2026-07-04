@@ -100,6 +100,7 @@ static void cmd_nice(int argc, char** argv);
 static void cmd_renice(int argc, char** argv);
 static void cmd_usertest(int argc, char** argv);
 static void cmd_tcptest(int argc, char** argv);
+static void cmd_tcpdrop(int argc, char** argv);
 static void cmd_httpget(int argc, char** argv);
 static void cmd_setip(int argc, char** argv);
 static void cmd_mount(int argc, char** argv);
@@ -163,6 +164,7 @@ static const command_t commands[] = {
     {"renice",    cmd_renice,    "Change a process's weight: renice <pid> <weight>", false},
     {"usertest",  cmd_usertest,  "Spawn preemptive ring-3 test processes", false},
     {"tcptest",   cmd_tcptest,   "Test TCP: tcptest <ip> <port>", false},
+    {"tcpdrop",   cmd_tcpdrop,   "Test: drop next N TCP TX segs (force retransmit)", false},
     {"httpget",   cmd_httpget,   "HTTP GET: httpget <url>", false},
     {"setip",     cmd_setip,     "Set static IP: setip <ip> <mask> <gw>", false},
     {"mount",     cmd_mount,     "Mount EXT2: mount [drive] [part_lba]", false},
@@ -980,28 +982,68 @@ static void cmd_tcptest(int argc, char** argv) {
         printf("TCP connect failed\n");
         return;
     }
-    printf("TCP connected (conn_id=%d), sending HTTP GET...\n", conn);
-    const char* req = "GET / HTTP/1.1\r\nHost: test\r\nConnection: close\r\n\r\n";
-    if (tcp_send(conn, (const uint8_t*)req, strlen(req)) < 0) {
+
+    // Wait for the 3-way handshake (tcp_connect only fires the SYN; the SYN-ACK
+    // is processed in tcp_handle_packet on poll). A lost SYN is retransmitted by
+    // tcp_tick() inside kernel_poll_net(), so this still connects.
+    uint32_t deadline = get_ticks() + 4000;
+    while ((int32_t)(get_ticks() - deadline) < 0) {
+        kernel_poll_net();
+        if (tcp_state(conn) == TCP_STATE_ESTABLISHED) break;
+    }
+    if (tcp_state(conn) != TCP_STATE_ESTABLISHED) {
+        printf("TCP handshake did not complete (state=%d)\n", tcp_state(conn));
+        tcp_close(conn);
+        return;
+    }
+    printf("TCP established (conn_id=%d), sending HTTP GET...\n", conn);
+
+    char req[256];
+    int rl = snprintf(req, sizeof(req),
+        "GET / HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n",
+        (argc >= 2) ? argv[1] : "test");
+    if (tcp_send(conn, (const uint8_t*)req, rl) < 0) {
         printf("TCP send failed\n");
         tcp_close(conn);
         return;
     }
-    printf("Sent HTTP request, waiting for response...\n");
-    uint8_t buf[1024];
+    printf("Sent request, waiting for response...\n");
+
+    uint8_t buf[2048];
     int total = 0;
-    for (int tries = 0; tries < 20; tries++) {
+    uint32_t start = get_ticks(), last = start;
+    for (;;) {
+        kernel_poll_net();
         int n = tcp_recv(conn, buf, sizeof(buf) - 1);
         if (n > 0) {
+            if (total == 0) {
+                int hn = n < 16 ? n : 16;
+                printf("First %d bytes:", hn);
+                for (int i = 0; i < hn; i++) printf(" %x", buf[i]);
+                printf("\n");
+            }
             buf[n] = '\0';
             printf("%s", (char*)buf);
-            total += n;
-        } else if (n < 0) break;
-        sleep(100);
+            total += n; last = get_ticks();
+        } else if (n < 0) {
+            printf("\n[peer closed]\n");
+            break;
+        }
+        uint32_t now = get_ticks();
+        if (total > 0 && (int32_t)(now - (last + 1500)) >= 0) break;
+        if ((int32_t)(now - (start + 8000)) >= 0) break;
     }
     if (total == 0) printf("(no data received)\n");
     printf("\nTCP test done (%d bytes received). Closing...\n", total);
     tcp_close(conn);
+}
+
+static void cmd_tcpdrop(int argc, char** argv) {
+    int n = (argc >= 2) ? atoi(argv[1]) : 1;
+    if (n < 0) n = 0;
+    tcp_debug_drop(n);
+    printf("TCP: will silently drop the next %d outbound segment(s).\n", n);
+    printf("Run e.g. 'httpget example.com' — the RTO timer must retransmit to recover.\n");
 }
 
 static void cmd_httpget(int argc, char** argv) {

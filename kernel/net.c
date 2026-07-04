@@ -49,12 +49,14 @@ void init_net(void) {
 void kernel_poll_net(void) {
     extern void eth_poll(int iface_idx);
     extern void ip_loopback_poll(void);
+    extern void tcp_tick(void);
     ip_loopback_poll();   // deliver any self-addressed (loopback) packets
     for (int i = 0; i < 8; i++) {
         if (net_interfaces[i].name[0] && strcmp(net_interfaces[i].name, "lo") != 0) {
             eth_poll(i);
         }
     }
+    tcp_tick();           // drive TCP retransmit timers
 }
 
 int net_create_socket(int domain, int type, int protocol) {
