@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.7.13"
+#define KERNEL_VERSION "5.7.14"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -68,6 +68,7 @@ typedef __builtin_va_list va_list;
 #define MAX_PROCESSES    512
 #define MAX_THREADS      1024
 #define MAX_FILES        256
+#define PROC_MAX_FDS     32     // per-process open file descriptors (UFD_BASE..)
 #define MAX_MOUNTS       16
 #define SYS_TABLE_SIZE   256
 
@@ -150,6 +151,12 @@ typedef struct process {
     uint32_t sched_weight;   // ticks per turn in the weighted round-robin (0 => 1)
     uint32_t sched_quantum;  // ticks left in the current turn (scheduler-internal)
     int      exit_code;      // status passed to SYS_EXIT, collected by kwait()
+    // Per-process file-descriptor table: opaque small ints (UFD_BASE + slot) each
+    // mapping to an internal VFS handle + byte offset. Isolated per process and
+    // closed when the process is reaped, so fds neither leak nor cross processes.
+    int      ufd_handle[PROC_MAX_FDS];
+    uint32_t ufd_offset[PROC_MAX_FDS];
+    uint8_t  ufd_inuse[PROC_MAX_FDS];
     struct process* next;
     struct process* parent;
     struct process* children;

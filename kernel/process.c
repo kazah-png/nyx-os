@@ -147,9 +147,28 @@ process_t* create_user_process(const char* name, void* entry, void* user_stack, 
 // kernel_stack-4096 as the base), the process_t, and its process-table slot.
 // Only call once the process is no longer executing (e.g. a zombie reaped from a
 // kernel thread, or a killed process).
+// Close any file descriptors a process left open (frees the internal VFS handles
+// and flushes mount-backed writes). Called when a process is reaped so fds don't
+// leak across exec/spawn cycles — a well-behaved process closes its own, but a
+// crashed or careless one shouldn't exhaust the VFS.
+static void close_proc_fds(process_t* proc) {
+    if (!proc) return;
+    extern int vfs_close(int fd);
+    int n = 0;
+    for (int i = 0; i < PROC_MAX_FDS; i++) {
+        if (proc->ufd_inuse[i]) {
+            vfs_close(proc->ufd_handle[i]);
+            proc->ufd_inuse[i] = 0;
+            n++;
+        }
+    }
+    if (n > 0) serial_puts("[reap] force-closed leaked fd(s) from an exited process\n");
+}
+
 void reap_user_process(process_t* proc) {
     if (!proc) return;
     extern void free_page_directory(uint64_t* pml4);
+    close_proc_fds(proc);
     for (int i = 0; i < process_count; i++) {
         if (process_table[i] == proc) {
             process_table[i] = process_table[--process_count];
@@ -316,6 +335,7 @@ void reap_zombies(void) {
         process_t* p = process_table[i];
         if (!p || p->state != PROC_ZOMBIE) continue;
         if (i == current_idx) continue;                 // never free the running proc
+        close_proc_fds(p);                              // close any fds it left open
         if (p->page_directory) free_page_directory((uint64_t*)p->page_directory);
         if (p->kernel_stack) kfree((void*)((uintptr_t)p->kernel_stack - 4096));
         // Swap-remove, keeping current_idx pointing at the same live proc if the

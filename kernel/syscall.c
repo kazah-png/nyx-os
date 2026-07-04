@@ -70,36 +70,40 @@ static int user_str_ok(uint64_t ptr) {
 
 /* Per-process-agnostic fd table: ring 3 gets small integer fds and never sees
  * (or can forge) a raw kernel VFS handle. 0-2 are the standard streams. */
+/* The fd table now lives in process_t (see kernel.h) — one per process, so fds
+ * are isolated per process and reaped with it (reap closes any still open). All
+ * of these run inside a syscall (interrupts masked), so current_idx is stable. */
 #define UFD_BASE 3
-#define UFD_MAX  32
-static int      ufd_handle[UFD_MAX];    /* internal VFS handle for each slot */
-static uint32_t ufd_offset[UFD_MAX];    /* current read/write position */
-static char     ufd_inuse[UFD_MAX];
 
 static int ufd_alloc(int internal) {
-    for (int i = 0; i < UFD_MAX; i++) {
-        if (!ufd_inuse[i]) {
-            ufd_inuse[i] = 1; ufd_handle[i] = internal; ufd_offset[i] = 0;
+    process_t* p = get_cur_proc();
+    if (!p) return -1;
+    for (int i = 0; i < PROC_MAX_FDS; i++) {
+        if (!p->ufd_inuse[i]) {
+            p->ufd_inuse[i] = 1; p->ufd_handle[i] = internal; p->ufd_offset[i] = 0;
             return UFD_BASE + i;
         }
     }
     return -1;
 }
 static int ufd_lookup(int ufd, int* internal) {
+    process_t* p = get_cur_proc();
     int i = ufd - UFD_BASE;
-    if (i < 0 || i >= UFD_MAX || !ufd_inuse[i]) return -1;
-    *internal = ufd_handle[i];
+    if (!p || i < 0 || i >= PROC_MAX_FDS || !p->ufd_inuse[i]) return -1;
+    *internal = p->ufd_handle[i];
     return 0;
 }
 /* Pointer to a live fd's byte offset (advanced by read/write), or NULL. */
 static uint32_t* ufd_offset_of(int ufd) {
+    process_t* p = get_cur_proc();
     int i = ufd - UFD_BASE;
-    if (i < 0 || i >= UFD_MAX || !ufd_inuse[i]) return 0;
-    return &ufd_offset[i];
+    if (!p || i < 0 || i >= PROC_MAX_FDS || !p->ufd_inuse[i]) return 0;
+    return &p->ufd_offset[i];
 }
 static void ufd_release(int ufd) {
+    process_t* p = get_cur_proc();
     int i = ufd - UFD_BASE;
-    if (i >= 0 && i < UFD_MAX) ufd_inuse[i] = 0;
+    if (p && i >= 0 && i < PROC_MAX_FDS) p->ufd_inuse[i] = 0;
 }
 
 /* ------------------------------------------------------------------ */
