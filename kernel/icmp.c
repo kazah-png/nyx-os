@@ -40,27 +40,106 @@ int icmp_send_echo(uint32_t dst_ip, uint16_t id, uint16_t seq, int iface_idx) {
     return result;
 }
 
-static volatile int ping_reply_received = 0;
+extern uint32_t get_ticks(void);
+extern void kernel_poll_net(void);
+extern uint8_t ip_last_rx_ttl(void);
+
+// Reply-matching state, shared with icmp_ping (same translation unit). The
+// client arms (ident, wait_seq); the handler records the receipt on a match.
+static volatile uint16_t ping_ident      = 0;
+static volatile int      ping_wait_seq    = -1;
+static volatile int      ping_got_reply   = 0;
+static volatile uint32_t ping_reply_tick  = 0;
+static volatile uint8_t  ping_reply_ttl   = 0;
+static volatile uint32_t ping_reply_len   = 0;
 
 void icmp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip) {
-    (void)src_ip;
     if (len < sizeof(icmp_header_t)) return;
     icmp_header_t* icmp = (icmp_header_t*)packet;
+
+    if (icmp->type == ICMP_TYPE_ECHO_REQUEST) {
+        // Answer like a real host: bounce the payload back as an echo reply.
+        // The id/seq/data are reused verbatim; only type and checksum change.
+        // ip_send(-1) loops back automatically when src_ip is one of our own.
+        uint8_t* reply = (uint8_t*)kmalloc(len);
+        if (!reply) return;
+        memcpy(reply, packet, len);
+        icmp_header_t* r = (icmp_header_t*)reply;
+        r->type = ICMP_TYPE_ECHO_REPLY;
+        r->code = 0;
+        r->checksum = 0;
+        r->checksum = icmp_checksum(reply, len);
+        ip_send(src_ip, 1, reply, len, -1);
+        kfree(reply);
+        return;
+    }
+
     if (icmp->type == ICMP_TYPE_ECHO_REPLY) {
-        ping_reply_received = 1;
-        uint16_t id = ((icmp->id << 8) & 0xFF00) | ((icmp->id >> 8) & 0x00FF);
+        uint16_t id  = ((icmp->id  << 8) & 0xFF00) | ((icmp->id  >> 8) & 0x00FF);
         uint16_t seq = ((icmp->seq << 8) & 0xFF00) | ((icmp->seq >> 8) & 0x00FF);
-        printf("[ICMP] Echo reply from %d.%d.%d.%d: id=%d seq=%d\n",
-            src_ip&0xFF, (src_ip>>8)&0xFF, (src_ip>>16)&0xFF, (src_ip>>24)&0xFF, id, seq);
+        if (id == ping_ident && (int)seq == ping_wait_seq) {
+            ping_reply_tick = get_ticks();
+            ping_reply_ttl  = ip_last_rx_ttl();
+            ping_reply_len  = len;
+            ping_got_reply  = 1;
+        }
+    }
+}
+
+// Poll the receive path (NIC + loopback ring) until `deadline` or a reply.
+static void ping_wait(uint32_t deadline) {
+    while ((int32_t)(get_ticks() - deadline) < 0) {
+        kernel_poll_net();
+        if (ping_got_reply) return;
     }
 }
 
 int icmp_ping(uint32_t dst_ip, int count, int iface_idx) {
-    ping_reply_received = 0;
+    ping_ident = (uint16_t)(0xBEEF ^ (get_ticks() & 0xFFFF));
+    int received = 0;
+    uint32_t rtt_min = 0xFFFFFFFF, rtt_max = 0, rtt_sum = 0;
+
     for (int i = 0; i < count; i++) {
-        icmp_send_echo(dst_ip, 1, i + 1, iface_idx);
-        for (volatile int d = 0; d < 10000000; d++);
-        if (ping_reply_received) return 1;
+        int seq = i + 1;
+        ping_wait_seq  = seq;
+        ping_got_reply = 0;
+
+        uint32_t t0 = get_ticks();
+        if (icmp_send_echo(dst_ip, ping_ident, (uint16_t)seq, iface_idx) < 0) {
+            printf("ping: send failed for icmp_seq=%d\n", seq);
+            ping_wait_seq = -1;
+            continue;
+        }
+
+        ping_wait(t0 + 1000);   // 1 s timeout, draining RX meanwhile
+
+        if (ping_got_reply) {
+            uint32_t rtt = ping_reply_tick - t0;
+            received++;
+            rtt_sum += rtt;
+            if (rtt < rtt_min) rtt_min = rtt;
+            if (rtt > rtt_max) rtt_max = rtt;
+            printf("%d bytes from %d.%d.%d.%d: icmp_seq=%d ttl=%d time=%d ms\n",
+                   ping_reply_len,
+                   dst_ip&0xFF, (dst_ip>>8)&0xFF, (dst_ip>>16)&0xFF, (dst_ip>>24)&0xFF,
+                   seq, ping_reply_ttl, rtt);
+        } else {
+            printf("Request timeout for icmp_seq=%d\n", seq);
+        }
+        ping_wait_seq  = -1;
+        ping_got_reply = 0;   // so the cadence wait below runs to its deadline
+
+        // ~300 ms cadence between probes (keep draining RX so nothing stalls).
+        if (i + 1 < count) ping_wait(get_ticks() + 300);
     }
-    return 0;
+
+    int loss = count > 0 ? ((count - received) * 100) / count : 0;
+    printf("--- %d.%d.%d.%d ping statistics ---\n",
+           dst_ip&0xFF, (dst_ip>>8)&0xFF, (dst_ip>>16)&0xFF, (dst_ip>>24)&0xFF);
+    printf("%d packets transmitted, %d received, %d%% packet loss\n",
+           count, received, loss);
+    if (received > 0)
+        printf("rtt min/avg/max = %d/%d/%d ms\n",
+               rtt_min, rtt_sum / received, rtt_max);
+    return received;
 }

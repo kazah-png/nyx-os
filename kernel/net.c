@@ -31,8 +31,8 @@ void init_net(void) {
 
     net_iface_t* lo = &net_interfaces[0];
     strcpy(lo->name, "lo");
-    lo->ip = 0x7F000001;
-    lo->netmask = 0xFF000000;
+    lo->ip = 0x0100007F;        // 127.0.0.1 in network order (first octet = low byte)
+    lo->netmask = 0x000000FF;   // 255.0.0.0
     lo->mtu = 65536;
     lo->flags = 1;
     printf("[NET] Loopback: 127.0.0.1\n");
@@ -48,6 +48,8 @@ void init_net(void) {
 
 void kernel_poll_net(void) {
     extern void eth_poll(int iface_idx);
+    extern void ip_loopback_poll(void);
+    ip_loopback_poll();   // deliver any self-addressed (loopback) packets
     for (int i = 0; i < 8; i++) {
         if (net_interfaces[i].name[0] && strcmp(net_interfaces[i].name, "lo") != 0) {
             eth_poll(i);

@@ -1265,10 +1265,14 @@ static void cmd_ping(int argc, char** argv) {
         else if (*p >= '0' && *p <= '9') {
             uint8_t val = 0;
             while (*p >= '0' && *p <= '9') { val = val * 10 + (*p - '0'); p++; }
-            if (seg == 0) ip |= (uint32_t)val << 24;
-            else if (seg == 1) ip |= (uint32_t)val << 16;
-            else if (seg == 2) ip |= (uint32_t)val << 8;
-            else if (seg == 3) ip |= val;
+            // IPs are stored in network order (first octet = low byte), matching
+            // net_interfaces[].ip / DHCP / ip_send. A numeric literal parsed the
+            // other way sent packets to a byte-reversed address and printed the
+            // dotted quad backwards (127.0.0.1 shown as 1.0.0.127).
+            if (seg == 0) ip |= (uint32_t)val;
+            else if (seg == 1) ip |= (uint32_t)val << 8;
+            else if (seg == 2) ip |= (uint32_t)val << 16;
+            else if (seg == 3) ip |= (uint32_t)val << 24;
             continue;
         }
         p++;
@@ -1283,16 +1287,19 @@ static void cmd_ping(int argc, char** argv) {
         if (iface_idx >= 0) ip = dns_resolve(argv[1], iface_idx);
         if (!ip) { printf("ping: failed to resolve %s\n", argv[1]); return; }
     }
-    printf("PING %d.%d.%d.%d...\n", ip&0xFF, (ip>>8)&0xFF, (ip>>16)&0xFF, (ip>>24)&0xFF);
+    printf("PING %d.%d.%d.%d: 56 data bytes\n", ip&0xFF, (ip>>8)&0xFF, (ip>>16)&0xFF, (ip>>24)&0xFF);
+
+    // Loopback / our-own-address pings need no NIC — they never touch the wire.
+    int is_loopback = ((ip & 0xFF) == 0x7F);   // 127.0.0.0/8 (net order: low byte)
     int iface_idx = -1;
     for (int i = 0; i < 8; i++) {
-        if (net_interfaces[i].name[0] && strcmp(net_interfaces[i].name, "lo") != 0) {
-            iface_idx = i; break;
-        }
+        if (!net_interfaces[i].name[0]) continue;
+        if (net_interfaces[i].ip == ip) is_loopback = 1;
+        if (iface_idx < 0 && strcmp(net_interfaces[i].name, "lo") != 0) iface_idx = i;
     }
-    if (iface_idx < 0) { printf("No network interface available\n"); return; }
-    if (icmp_ping(ip, 3, iface_idx)) printf("Reply received!\n");
-    else printf("No reply (host unreachable or timeout)\n");
+    if (iface_idx < 0 && !is_loopback) { printf("No network interface available\n"); return; }
+
+    icmp_ping(ip, 4, iface_idx);
 }
 
 static void cmd_kill(int argc, char** argv) {
