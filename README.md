@@ -18,6 +18,9 @@
   <a href="https://dsc.gg/nyxos">
     <img src="https://img.shields.io/badge/Discord-NyxOS-5865F2?style=flat&logo=discord&logoColor=white" />
   </a>
+  <a href="https://kazah-png.github.io/nyx-os/">
+    <img src="https://img.shields.io/badge/website-up-00ff9d?style=flat&logo=githubpages&logoColor=white" />
+  </a>
 </div>
 
 ---
