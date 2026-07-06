@@ -489,7 +489,7 @@ This project is free software: you can redistribute it and/or modify it under th
 
 The kernel links against doomgeneric (Chocolate Doom-derived), which is GPL-2.0+. All original kernel code is also distributed under GPL-2.0+.
 
-See the [LICENSE](LICENSE) file for the full license text.
+See the [LICENSE](LICENSE) file for the full license text
 
 ---
 
