@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.8.3"
+#define KERNEL_VERSION "5.8.4"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -86,6 +86,7 @@ typedef __builtin_va_list va_list;
 #define SYS_FORK    10
 #define SYS_WAITPID 11
 #define SYS_PIPE    12
+#define SYS_EXECVE  13
 
 // Pipe fds are stored in the per-process fd table (ufd_handle) with this flag set,
 // so SYS_READ/WRITE/CLOSE route to the pipe layer instead of the VFS. The low bits
@@ -579,6 +580,10 @@ process_t* create_process(const char* name, void* entry, uint64_t flags);
 process_t* create_user_process(const char* name, void* entry, void* user_stack, uint64_t* page_dir);
 int do_fork(void);   // SYS_FORK: COW-clone the caller; returns child pid to parent, 0 in child
 int do_waitpid(int pid, int* out_code); // SYS_WAITPID: reap a child; -1 none, -2 running, >0 pid
+int do_execve(const uint8_t* data, uint32_t size); // SYS_EXECVE: replace caller's image; -1 on failure
+void free_page_directory(uint64_t* pml4);           // free a user address space (COW-refcount aware)
+int elf_load_image(const uint8_t* data, uint32_t size, uint64_t** out_pd,
+                   uint64_t* out_entry, uint64_t* out_stack_top, uint64_t* out_brk);
 
 // Anonymous pipes (pipe.c)
 int  pipe_new(void);                    // alloc a pipe (1 read ref + 1 write ref) -> id, or -1

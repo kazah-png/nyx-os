@@ -374,6 +374,27 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3, uin
             }
             return 0;
         }
+        case SYS_EXECVE: {
+            // execve(path, argv, envp): replace the caller's image with the ELF at
+            // `path`. argv/envp (a2/a3) are accepted but not yet threaded onto the
+            // new stack (crt0 hardcodes argc=0). On success the syscall returns into
+            // the new program; on failure the caller is intact and gets -1.
+            if (!user_str_ok(a1)) return -1;
+            char path[128];
+            if (copy_str_from_user(path, a1, sizeof(path)) != 0) return -1;
+            int fd = vfs_open(path, 0, 0);
+            if (fd < 0) return -1;
+            uint32_t sz = vfs_fsize(fd);
+            uint8_t* fdata = vfs_fdata(fd);
+            if (!fdata || sz == 0) { vfs_close(fd); return -1; }
+            uint8_t* copy = (uint8_t*)kmalloc(sz);
+            if (!copy) { vfs_close(fd); return -1; }
+            memcpy_asm(copy, fdata, sz);
+            vfs_close(fd);
+            int r = do_execve(copy, sz);   // success -> rewrites the frame, returns into new image
+            kfree(copy);
+            return (uint64_t)(int64_t)r;
+        }
         default:
             printf("[SYSCALL] Unknown syscall %lu\n", no);
             return -1;

@@ -14,6 +14,7 @@
 #define SYS_FORK    10
 #define SYS_WAITPID 11
 #define SYS_PIPE    12
+#define SYS_EXECVE  13
 
 /* x86_64 syscall ABI:
  *   RAX = syscall number
@@ -114,6 +115,14 @@ static inline long waitpid(int pid, int* status) {
  * which yields EOF = 0). Survives fork(), so it connects a parent and child. */
 static inline long pipe(int fds[2]) {
     return syscall1(SYS_PIPE, (long)fds);
+}
+
+/* Replace the current process image with the program at `path`. On success it does
+ * not return (the new program runs with the same pid and open fds); returns -1 only
+ * on failure. argv/envp are accepted for signature compatibility but not yet passed
+ * to the new program (crt0 uses argc=0). */
+static inline long execve(const char* path, char* const argv[], char* const envp[]) {
+    return syscall3(SYS_EXECVE, (long)path, (long)argv, (long)envp);
 }
 
 #endif

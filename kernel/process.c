@@ -241,6 +241,41 @@ int do_fork(void) {
     return (int)child->pid;
 }
 
+// SYS_EXECVE core: replace the calling process's image with the ELF in [data,size).
+// Loads the program into a fresh address space and swaps it in for the current
+// process — same pid, same fds — then rewrites this syscall's saved user frame so
+// the syscall "returns" into the new program's entry with a fresh stack and zeroed
+// registers; the caller's old code never runs again. Returns -1 on failure (the
+// caller is left intact and gets -1 back from execve); on success it "returns" into
+// the new image. Runs inside the syscall (interrupts masked, kernel CR3).
+int do_execve(const uint8_t* data, uint32_t size) {
+    extern uint64_t syscall_frame_ptr, user_rsp, user_cr3;
+    process_t* self = get_current_process();
+    if (!self || !self->page_directory) return -1;
+
+    uint64_t* pd; uint64_t entry, stack_top, brk;
+    if (elf_load_image(data, size, &pd, &entry, &stack_top, &brk) != 0) return -1;
+
+    // Commit: swap in the new address space and free the old one. We run on the
+    // kernel CR3, so freeing the old user pd is safe (its COW pages' refcounts drop;
+    // anything still shared with a relative survives).
+    uint64_t* old_pd = (uint64_t*)self->page_directory;
+    self->page_directory = pd;
+    self->program_break = brk;
+    if (old_pd) free_page_directory(old_pd);
+
+    // Rewrite the saved syscall frame: [0..14]=GPRs (r15..rax), [15]=RFLAGS, [16]=RIP.
+    // Zero the GPRs, install the new entry + a clean RFLAGS; user_rsp/user_cr3 (read
+    // by the asm return path) point at the new stack and address space.
+    uint64_t* frame = (uint64_t*)syscall_frame_ptr;
+    for (int i = 0; i < 15; i++) frame[i] = 0;
+    frame[15] = 0x202;            // RFLAGS: IF + reserved bit 1
+    frame[16] = entry;            // new RIP
+    user_rsp  = stack_top;        // new ring-3 stack
+    user_cr3  = (uint64_t)pd;     // syscall return switches CR3 to the new image
+    return 0;
+}
+
 // The setjmp/longjmp blocking-exec launcher (`switch_to_user_process`,
 // `g_user_proc`, `return_from_user_process`, the `switch_to_user_trampoline`
 // trampoline, and `ku_setjmp`/`ku_longjmp`) was removed in v5.7.9: `exec` now runs

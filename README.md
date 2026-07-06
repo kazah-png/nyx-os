@@ -6,10 +6,10 @@
   <strong>Custom x86_64 kernel · C and Assembly · General-purpose OS</strong>
   <br/><br/>
   <!-- Badges -->
-  <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.8.3">
-    <img src="https://img.shields.io/badge/release-v5.8.3-00ff9d?style=flat" />
+  <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.8.4">
+    <img src="https://img.shields.io/badge/release-v5.8.4-00ff9d?style=flat" />
   </a>
-  <img src="https://img.shields.io/badge/status-v5.8.3-00ff9d?style=flat" />
+  <img src="https://img.shields.io/badge/status-v5.8.4-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/TCP-yes-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/GUI-window%20compositor-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/%F0%9F%8C%99%20NyxC-runtime-8b5cf6?style=flat" />
@@ -53,7 +53,7 @@ ______          \'/
     N Y X O S
     G U I   S U I T E
   -------------------------------------
-  Kernel:     NyxOS 5.8.3
+  Kernel:     NyxOS 5.8.4
   Arch:       x86_64 (long mode)
   Memory:     256 MB total, 240 MB free
   Heap:       16384 KB
@@ -161,7 +161,7 @@ nyx:root$ ls /
 bin/   dev/   etc/   home/  mnt/   root/  tmp/   usr/   var/
 
 nyx:root$ uname
-NyxOS 5.8.3 (Scheduler) x86_64
+NyxOS 5.8.4 (Scheduler) x86_64
 
 nyx:root$ mem
 Physical memory: 256 MB total, 252 MB free
@@ -471,7 +471,8 @@ See the full **[NyxOS Status Report](https://github.com/kazah-png/nyx-os/issues/
 - ✅ Copy-on-write `fork()` (`SYS_FORK`): physical page refcounting + COW address-space clone; child resumes with `fork()==0`, both round-robin (verified in `/init.elf` — parent/child diverge on a shared variable)
 - ✅ `waitpid()` (`SYS_WAITPID`): a parent reaps a child and collects its exit code from ring 3 (verified: child `exit(123)` → parent `waitpid` → code 123, no leaked zombie)
 - ✅ Per-process syscall stacks: each process's `syscall` uses its own kernel stack, so a syscall can truly **block** (`waitpid` sleeps instead of polling) without another process corrupting its parked frame — foundation for blocking I/O
-- ✅ Anonymous pipes (`SYS_PIPE`) + blocking `read()`: `pipe()` + `fork()` gives a real cross-process byte channel (verified: parent `write`s → child `read`s `"hello from parent via pipe!"`); reference-counted ends, EOF on last-writer close — enables shell pipelines — next: lazy `sbrk` heap, page-out to disk
+- ✅ Anonymous pipes (`SYS_PIPE`) + blocking `read()`: `pipe()` + `fork()` gives a real cross-process byte channel (verified: parent `write`s → child `read`s `"hello from parent via pipe!"`); reference-counted ends, EOF on last-writer close — enables shell pipelines
+- ✅ `execve()` (`SYS_EXECVE`): replaces the caller's process image in place (same pid/fds) — completes `fork`→`exec`→`wait` (verified: child `fork`s then `execve`s `/hello.elf`, which runs + `exit(42)`, parent `waitpid`s the 42) — next: lazy `sbrk` heap, page-out to disk
 - ✅ NIC-side TCP listen (inbound connections — NyxOS serves HTTP to a host `curl` via `hostfwd`)
 - ✅ **Nyx C language runtime** (`nyxrt.h`/`nyxrt.c`): typed subset of C with string interpolation, transpiles to C, first `.nyx` program (`hello_nyx.elf`) prints "hola desde nyx c! pid=5"
 

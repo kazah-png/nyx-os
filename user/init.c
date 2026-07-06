@@ -115,6 +115,23 @@ int main(void) {
         printf("  pipe() failed\n");
     }
 
+    /* execve(): replace a process image. The child forks, then execve()s /hello.elf
+     * — its own code is discarded and hello.elf runs in its place (same pid),
+     * printing its banner and exit(42); the parent collects that via waitpid. */
+    printf("Testing execve() (replace process image)...\n");
+    long ecpid = fork();
+    if (ecpid == 0) {
+        execve("/hello.elf", 0, 0);              /* on success this never returns */
+        printf("  execve failed\n");
+        exit(1);
+    } else if (ecpid > 0) {
+        int st = -1;
+        waitpid((int)ecpid, &st);
+        printf("  [parent] execve'd child exited with code %d (expected 42)\n", st);
+    } else {
+        printf("  fork() failed\n");
+    }
+
     printf("Init complete, exiting.\n");
     return 0;
 }

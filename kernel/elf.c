@@ -13,7 +13,14 @@ int elf_validate(const uint8_t* data, uint32_t size) {
     return 1;
 }
 
-int elf_load(const uint8_t* data, uint32_t size, process_t** out_proc) {
+// Load an ELF into a FRESH address space: allocate a page directory, map every
+// PT_LOAD segment (with W^X page flags), and set up a one-page user stack. On
+// success returns 0 and hands back the page directory, entry point, initial user
+// stack top, and program break; on failure frees the partial page directory and
+// returns -1. Shared by elf_load (spawn a new process_t) and do_execve (replace
+// the caller's image in place).
+int elf_load_image(const uint8_t* data, uint32_t size, uint64_t** out_pd,
+                   uint64_t* out_entry, uint64_t* out_stack_top, uint64_t* out_brk) {
     if (!elf_validate(data, size)) return -1;
 
     elf64_hdr_t* hdr = (elf64_hdr_t*)data;
@@ -23,9 +30,8 @@ int elf_load(const uint8_t* data, uint32_t size, process_t** out_proc) {
     if (!pd) return -1;
 
     void* stack_phys = alloc_page();
-    if (!stack_phys) return -1;
+    if (!stack_phys) { free_page_directory(pd); return -1; }
     uint64_t stack_virt = 0x00007FFFFFFFE000ULL;
-    uint64_t stack_top = stack_virt + 4096;
     map_page_dir(pd, stack_phys, (void*)stack_virt, 0x7 | PAGE_NX);
 
     uint64_t entry = hdr->e_entry;
@@ -38,13 +44,13 @@ int elf_load(const uint8_t* data, uint32_t size, process_t** out_proc) {
         uint64_t filesz = phdr[i].p_filesz;
         uint64_t offset = phdr[i].p_offset;
 
-        if (offset + filesz > size) return -1;
+        if (offset + filesz > size) { free_page_directory(pd); return -1; }
         uint64_t start_page = vaddr & ~0xFFFULL;
         uint64_t end_page = (vaddr + memsz + 0xFFF) & ~0xFFFULL;
 
         for (uint64_t page = start_page; page < end_page; page += 4096) {
             void* phys = alloc_page();
-            if (!phys) return -1;
+            if (!phys) { free_page_directory(pd); return -1; }
             uint64_t flags = 0x7;
             if (!(phdr[i].p_flags & PF_W)) flags = 0x5;
             if (!(phdr[i].p_flags & PF_X)) flags |= PAGE_NX;
@@ -79,9 +85,20 @@ int elf_load(const uint8_t* data, uint32_t size, process_t** out_proc) {
         if (end > max_addr) max_addr = end;
     }
 
+    *out_pd = pd;
+    *out_entry = entry;
+    *out_stack_top = stack_virt + 4096;
+    *out_brk = (max_addr + 0xFFF) & ~0xFFFULL;
+    return 0;
+}
+
+int elf_load(const uint8_t* data, uint32_t size, process_t** out_proc) {
+    uint64_t* pd; uint64_t entry, stack_top, brk;
+    if (elf_load_image(data, size, &pd, &entry, &stack_top, &brk) != 0) return -1;
+
     process_t* proc = create_user_process("elf", (void*)entry, (void*)stack_top, pd);
-    if (!proc) return -1;
-    proc->program_break = (max_addr + 0xFFF) & ~0xFFFULL;
+    if (!proc) { free_page_directory(pd); return -1; }
+    proc->program_break = brk;
 
     *out_proc = proc;
     return 0;
