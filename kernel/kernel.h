@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.8.0"
+#define KERNEL_VERSION "5.8.1"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -84,6 +84,7 @@ typedef __builtin_va_list va_list;
 #define SYS_FSIZE   8
 #define SYS_EXEC    9
 #define SYS_FORK    10
+#define SYS_WAITPID 11
 
 #define MAX_PATH         256
 #define MAX_FILENAME     128
@@ -564,6 +565,7 @@ void init_process(void);
 process_t* create_process(const char* name, void* entry, uint64_t flags);
 process_t* create_user_process(const char* name, void* entry, void* user_stack, uint64_t* page_dir);
 int do_fork(void);   // SYS_FORK: COW-clone the caller; returns child pid to parent, 0 in child
+int do_waitpid(int pid, int* out_code); // SYS_WAITPID: reap a child; -1 none, -2 running, >0 pid
 void reap_user_process(process_t* proc);
 void destroy_process(uint64_t pid);
 process_t* find_process(uint64_t pid);

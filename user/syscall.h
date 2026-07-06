@@ -12,6 +12,7 @@
 #define SYS_FSIZE   8
 #define SYS_EXEC    9
 #define SYS_FORK    10
+#define SYS_WAITPID 11
 
 /* x86_64 syscall ABI:
  *   RAX = syscall number
@@ -98,6 +99,17 @@ static inline long exec(const char* path) {
  * -1 on failure. Both processes then run preemptively, time-sliced by the kernel. */
 static inline long fork(void) {
     return syscall1(SYS_FORK, 0);
+}
+
+/* Wait for a child to exit and collect its status. Returns the child's pid (with
+ * its exit code written to *status) or -1 if there is no such child. The kernel
+ * side is non-blocking (returns -2 while the child still runs), so we spin until
+ * it exits — the scheduler time-slices the child in between our calls. pid <= 0
+ * waits for any child. */
+static inline long waitpid(int pid, int* status) {
+    long r;
+    while ((r = syscall2(SYS_WAITPID, pid, (long)status)) == -2) { }
+    return r;
 }
 
 #endif

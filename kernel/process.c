@@ -431,6 +431,12 @@ void reap_zombies(void) {
         process_t* p = process_table[i];
         if (!p || p->state != PROC_ZOMBIE) continue;
         if (i == current_idx) continue;                 // never free the running proc
+        // Leave a zombie whose parent is a live user process: that parent will
+        // waitpid() it and collect the exit status (do_waitpid reaps it there).
+        // Only orphans (parent gone) and background jobs (kernel-thread parent,
+        // page_directory==NULL — the shell's `spawn`) are auto-reaped here.
+        process_t* par = find_process(p->ppid);
+        if (par && par->page_directory && par->state != PROC_ZOMBIE) continue;
         close_proc_fds(p);                              // close any fds it left open
         if (p->page_directory) free_page_directory((uint64_t*)p->page_directory);
         if (p->kernel_stack) kfree((void*)((uintptr_t)p->kernel_stack - 4096));
@@ -444,6 +450,42 @@ void reap_zombies(void) {
         i--;                                            // re-examine the swapped-in slot
     }
     preempt_enable();
+}
+
+// SYS_WAITPID core. Look for a child of the caller (`wpid > 0`: that exact pid;
+// `wpid <= 0`: any child). Returns:
+//   -1  no such child (ECHILD),
+//   -2  a matching child exists but hasn't exited yet (EAGAIN — userspace spins),
+//   >0  the reaped child's pid, with its exit code written to *out_code.
+// On a hit it collects the zombie and frees it here (address space + kernel stack
+// + process_t + table slot), so the child is reaped by whoever waits for it — the
+// reap_zombies() guard deliberately leaves user-parented zombies for this path.
+// Runs inside a syscall (interrupts masked), so process_table is stable and the
+// child (a zombie, never the current thread) is safe to free.
+int do_waitpid(int wpid, int* out_code) {
+    extern void free_page_directory(uint64_t* pml4);
+    process_t* self = get_current_process();
+    if (!self) return -1;
+    int found = 0;
+    for (int i = 0; i < process_count; i++) {
+        process_t* p = process_table[i];
+        if (!p || p->ppid != self->pid) continue;       // only our own children
+        if (wpid > 0 && (int)p->pid != wpid) continue;   // a specific child was asked for
+        found = 1;
+        if (p->state != PROC_ZOMBIE) continue;           // not done — keep scanning (wait-any)
+        int cpid = (int)p->pid;
+        if (out_code) *out_code = p->exit_code;
+        close_proc_fds(p);
+        if (p->page_directory) free_page_directory((uint64_t*)p->page_directory);
+        if (p->kernel_stack) kfree((void*)((uintptr_t)p->kernel_stack - 4096));
+        int last = --process_count;                      // swap-remove, fixing current_idx
+        process_table[i] = process_table[last];
+        process_table[last] = NULL;
+        if (current_idx == last) current_idx = i;
+        kfree(p);
+        return cpid;
+    }
+    return found ? -2 : -1;                              // exists-but-running vs no-such-child
 }
 
 // Block the calling thread until child `pid` becomes a zombie, then return its

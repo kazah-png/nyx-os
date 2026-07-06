@@ -320,6 +320,19 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3, uin
             // COW-clone the caller. Returns the child's pid to the parent and 0 in
             // the child (baked into the child's resume frame by do_fork), -1 on error.
             return (uint64_t)(int64_t)do_fork();
+        case SYS_WAITPID: {
+            // waitpid(pid, status). Non-blocking core: -1 no such child, -2 child
+            // still running (userspace spins on it), else the reaped child's pid with
+            // its exit code copied to *status. A true sleeping wait would need
+            // per-process syscall stacks (blocking mid-syscall corrupts the shared one).
+            int code = 0;
+            int r = do_waitpid((int)a1, &code);
+            if (r > 0 && a2) {
+                if (!user_ptr_ok(a2, sizeof(int))) return -1;
+                copy_to_user(a2, &code, sizeof(int));
+            }
+            return (uint64_t)(int64_t)r;
+        }
         default:
             printf("[SYSCALL] Unknown syscall %lu\n", no);
             return -1;
