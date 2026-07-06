@@ -84,6 +84,7 @@
     <section class="stats reveal" aria-label="At a glance">
       <div class="stat"><b>x86_64</b><span>long mode · 4-level paging</span></div>
       <div class="stat"><b>C + NASM</b><span>zero external libraries</span></div>
+      <div class="stat"><b>🌙 Nyx C</b><span>native language runtime</span></div>
       <div class="stat"><b>40+</b><span>shell commands</span></div>
       <div class="stat"><b>TCP/IP</b><span>DHCP · DNS · HTTP</span></div>
       <div class="stat"><b>32 windows</b><span>compositor + taskbar</span></div>
@@ -136,7 +137,7 @@
         <article class="card reveal">
           <div class="card-ic">◈</div>
           <h3>ELF userspace</h3>
-          <p>An ELF64 loader, an embedded initramfs, 10 syscalls via <span class="mono">syscall/sysret</span>, a minimal libc, and isolated per-process file descriptors.</p>
+          <p>An ELF64 loader, an embedded initramfs, <span class="mono">fork()</span> with copy-on-write, 10 syscalls via <span class="mono">syscall/sysret</span>, a minimal libc, isolated per-process file descriptors, and the <b>🌙 Nyx C</b> language runtime for first-class userspace programming.</p>
         </article>
         <article class="card reveal">
           <div class="card-ic">❯</div>
@@ -311,7 +312,8 @@ qemu-system-x86_64 -cdrom NyxOS.iso -m 256M -no-reboot \
         <div class="tl reveal"><span class="tl-v">v3.x</span><div><h3>Userspace</h3><p>ELF loader, initramfs, per-process paging, ring-3 execution, syscalls, an RTC driver and a minimal libc.</p></div></div>
         <div class="tl reveal"><span class="tl-v">v4.x</span><div><h3>64-bit &amp; hardening</h3><p>Full x86_64 long mode, higher-half kernel, user/kernel page-table isolation, and <span class="mono">NX</span> + <span class="mono">SMEP</span> with APIC init.</p></div></div>
         <div class="tl reveal"><span class="tl-v">v5.0–5.6</span><div><h3>Apps, login &amp; ring-3</h3><p>A full GUI app suite, a boot animation + login screen, security hardening of the syscall boundary, and ring-3 userspace that actually runs.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.7.x</span><div><h3>Scheduler &amp; the network arc</h3><p>Preemptive scheduling with job control &amp; <span class="mono">nice</span>, per-process fds, drag-and-drop in the File Manager, and a networking sprint: loopback + ICMP, TCP retransmission, multi-segment receive, passive open, and an HTTP server that answers real clients. <b>Current: v5.7.20.</b></p></div></div>
+        <div class="tl reveal accent"><span class="tl-v">v5.7.x</span><div><h3>Scheduler &amp; the network arc</h3><p>Preemptive scheduling with job control &amp; <span class="mono">nice</span>, per-process fds, drag-and-drop in the File Manager, and a networking sprint: loopback + ICMP, TCP retransmission, multi-segment receive, passive open, and an HTTP server that answers real clients.</p></div></div>
+        <div class="tl reveal accent"><span class="tl-v">v5.8.0</span><div><h3>🌙 Nyx C language runtime</h3><p>Nyx C — a Go/Zig-inspired typed subset of C that transpiles to C and links against the <span class="mono">nyxrt</span> runtime. The first <span class="mono">.nyx</span> program prints <span class="mono">"hola desde nyx c! pid=5"</span> via string interpolation and direct syscalls. <b>Current: v5.8.0.</b></p></div></div>
       </div>
     </section>
 
