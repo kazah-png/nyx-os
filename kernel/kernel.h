@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.8.4"
+#define KERNEL_VERSION "5.8.5"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -87,6 +87,7 @@ typedef __builtin_va_list va_list;
 #define SYS_WAITPID 11
 #define SYS_PIPE    12
 #define SYS_EXECVE  13
+#define SYS_DUP2    14
 
 // Pipe fds are stored in the per-process fd table (ufd_handle) with this flag set,
 // so SYS_READ/WRITE/CLOSE route to the pipe layer instead of the VFS. The low bits

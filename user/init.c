@@ -132,6 +132,36 @@ int main(void) {
         printf("  fork() failed\n");
     }
 
+    /* dup2(): redirect stdout into a pipe — the shell-pipeline primitive. The
+     * child dup2()s the pipe's write end onto fd 1, so its write(1, ...) lands in
+     * the pipe instead of the console; the parent reads the child's stdout back.
+     * This is exactly how `a | b` wires processes together. */
+    printf("Testing dup2() (stdout -> pipe redirection)...\n");
+    int rfd2[2];
+    if (pipe(rfd2) == 0) {
+        long dpid = fork();
+        if (dpid == 0) {
+            dup2(rfd2[1], 1);                    /* stdout now writes into the pipe */
+            close(rfd2[0]);                      /* drop our copies of the raw ends */
+            close(rfd2[1]);
+            write(1, "stdout was redirected!", 22);   /* -> pipe, NOT the console */
+            exit(0);
+        } else if (dpid > 0) {
+            close(rfd2[1]);                      /* parent only reads */
+            char rb[64];
+            long n = read(rfd2[0], rb, sizeof(rb) - 1);  /* blocks for the child */
+            if (n >= 0) rb[n] = '\0';
+            printf("  [parent] read child's stdout from the pipe: \"%s\" (%ld bytes)\n", rb, n);
+            close(rfd2[0]);
+            int st;
+            waitpid((int)dpid, &st);
+        } else {
+            printf("  fork() failed\n");
+        }
+    } else {
+        printf("  pipe() failed\n");
+    }
+
     printf("Init complete, exiting.\n");
     return 0;
 }

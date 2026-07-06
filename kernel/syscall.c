@@ -69,41 +69,42 @@ static int user_str_ok(uint64_t ptr) {
 }
 
 /* Per-process-agnostic fd table: ring 3 gets small integer fds and never sees
- * (or can forge) a raw kernel VFS handle. 0-2 are the standard streams. */
-/* The fd table now lives in process_t (see kernel.h) — one per process, so fds
- * are isolated per process and reaped with it (reap closes any still open). All
- * of these run inside a syscall (interrupts masked), so current_idx is stable. */
+ * (or can forge) a raw kernel VFS handle. */
+/* The fd table lives in process_t (see kernel.h) — one per process, so fds are
+ * isolated per process and reaped with it (reap closes any still open). All of
+ * these run inside a syscall (interrupts masked), so current_idx is stable.
+ * The table is indexed by the fd itself (slots 0..PROC_MAX_FDS-1). Slots 0-2 are
+ * the standard streams: normally NOT in use — writes to 1/2 fall back to the
+ * console — but dup2() can install a pipe end there, which is how a pipeline
+ * redirects a child's stdin/stdout. open()/pipe() allocate from UFD_BASE up. */
 #define UFD_BASE 3
 
 static int ufd_alloc(int internal) {
     process_t* p = get_cur_proc();
     if (!p) return -1;
-    for (int i = 0; i < PROC_MAX_FDS; i++) {
+    for (int i = UFD_BASE; i < PROC_MAX_FDS; i++) {
         if (!p->ufd_inuse[i]) {
             p->ufd_inuse[i] = 1; p->ufd_handle[i] = internal; p->ufd_offset[i] = 0;
-            return UFD_BASE + i;
+            return i;
         }
     }
     return -1;
 }
 static int ufd_lookup(int ufd, int* internal) {
     process_t* p = get_cur_proc();
-    int i = ufd - UFD_BASE;
-    if (!p || i < 0 || i >= PROC_MAX_FDS || !p->ufd_inuse[i]) return -1;
-    *internal = p->ufd_handle[i];
+    if (!p || ufd < 0 || ufd >= PROC_MAX_FDS || !p->ufd_inuse[ufd]) return -1;
+    *internal = p->ufd_handle[ufd];
     return 0;
 }
 /* Pointer to a live fd's byte offset (advanced by read/write), or NULL. */
 static uint32_t* ufd_offset_of(int ufd) {
     process_t* p = get_cur_proc();
-    int i = ufd - UFD_BASE;
-    if (!p || i < 0 || i >= PROC_MAX_FDS || !p->ufd_inuse[i]) return 0;
-    return &p->ufd_offset[i];
+    if (!p || ufd < 0 || ufd >= PROC_MAX_FDS || !p->ufd_inuse[ufd]) return 0;
+    return &p->ufd_offset[ufd];
 }
 static void ufd_release(int ufd) {
     process_t* p = get_cur_proc();
-    int i = ufd - UFD_BASE;
-    if (p && i >= 0 && i < PROC_MAX_FDS) p->ufd_inuse[i] = 0;
+    if (p && ufd >= 0 && ufd < PROC_MAX_FDS) p->ufd_inuse[ufd] = 0;
 }
 
 /* ------------------------------------------------------------------ */
@@ -201,6 +202,31 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3, uin
             int fd = (int)a1;
             int len = (int)a3;
             if (len < 0 || !user_ptr_ok(a2, (uint64_t)len)) return -1;
+            /* The fd table wins over the console: dup2() can install a pipe end
+             * at fd 1/2 (redirected stdout/stderr), which must route to the pipe.
+             * Only an EMPTY 1/2 slot falls back to the console below. */
+            int internal;
+            if (ufd_lookup(fd, &internal) == 0) {
+                if (internal & UFD_PIPE_FLAG) {                 /* pipe write */
+                    if (!UFD_PIPE_IS_WRITE(internal)) return -1; /* read end isn't writable */
+                    if (len > 4096) len = 4096;
+                    char* pbuf = (char*)kmalloc(len);
+                    if (!pbuf) return -1;
+                    int n = (copy_from_user(pbuf, a2, len) == 0)
+                                ? pipe_write(UFD_PIPE_ID(internal), pbuf, len) : -1;
+                    kfree(pbuf);
+                    return n;
+                }
+                uint32_t* off = ufd_offset_of(fd);              /* VFS file write */
+                if (len > 4096) len = 4096;
+                char* kbuf = (char*)kmalloc(len);
+                if (!kbuf) return -1;
+                int n = (copy_from_user(kbuf, a2, len) == 0)
+                            ? vfs_pwrite(internal, kbuf, len, off ? *off : 0) : -1;
+                kfree(kbuf);
+                if (n > 0 && off) *off += n;
+                return n;
+            }
             if (fd == 1 || fd == 2) {           /* stdout / stderr -> console */
                 char kbuf[128];
                 int done = 0;
@@ -213,28 +239,7 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3, uin
                 }
                 return len;
             }
-            /* A real file descriptor -> VFS (or a pipe), writing at the fd's offset. */
-            int internal;
-            if (ufd_lookup(fd, &internal) != 0) return -1;
-            if (internal & UFD_PIPE_FLAG) {                 /* pipe write */
-                if (!UFD_PIPE_IS_WRITE(internal)) return -1; /* the read end isn't writable */
-                if (len > 4096) len = 4096;
-                char* pbuf = (char*)kmalloc(len);
-                if (!pbuf) return -1;
-                int n = (copy_from_user(pbuf, a2, len) == 0)
-                            ? pipe_write(UFD_PIPE_ID(internal), pbuf, len) : -1;
-                kfree(pbuf);
-                return n;
-            }
-            uint32_t* off = ufd_offset_of(fd);
-            if (len > 4096) len = 4096;
-            char* kbuf = (char*)kmalloc(len);
-            if (!kbuf) return -1;
-            int n = (copy_from_user(kbuf, a2, len) == 0)
-                        ? vfs_pwrite(internal, kbuf, len, off ? *off : 0) : -1;
-            kfree(kbuf);
-            if (n > 0 && off) *off += n;
-            return n;
+            return -1;
         }
         case SYS_PRINT: {
             if (!user_str_ok(a1)) return -1;
@@ -394,6 +399,31 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3, uin
             int r = do_execve(copy, sz);   // success -> rewrites the frame, returns into new image
             kfree(copy);
             return (uint64_t)(int64_t)r;
+        }
+        case SYS_DUP2: {
+            // dup2(oldfd, newfd): make newfd refer to the same pipe end as oldfd,
+            // closing whatever newfd held. This is the redirection primitive — e.g.
+            // dup2(pipefd[1], 1) sends a child's stdout into a pipe. PIPE fds only:
+            // their ends are reference-counted, so two fds can share one safely; VFS
+            // handles aren't refcounted (two fds would double-close on reap) -> -1.
+            int oldfd = (int)a1, newfd = (int)a2;
+            process_t* p = get_cur_proc();
+            int internal;
+            if (!p || ufd_lookup(oldfd, &internal) != 0) return -1;
+            if (!(internal & UFD_PIPE_FLAG)) return -1;      /* pipes only (see above) */
+            if (newfd < 0 || newfd >= PROC_MAX_FDS) return -1;
+            if (newfd == oldfd) return newfd;
+            if (p->ufd_inuse[newfd]) {                        /* implicitly close newfd */
+                int old = p->ufd_handle[newfd];
+                if (old & UFD_PIPE_FLAG) pipe_close_end(UFD_PIPE_ID(old), UFD_PIPE_IS_WRITE(old));
+                else                     vfs_close(old);
+                p->ufd_inuse[newfd] = 0;
+            }
+            pipe_incref(UFD_PIPE_ID(internal), UFD_PIPE_IS_WRITE(internal));
+            p->ufd_inuse[newfd]  = 1;
+            p->ufd_handle[newfd] = internal;
+            p->ufd_offset[newfd] = 0;
+            return newfd;
         }
         default:
             printf("[SYSCALL] Unknown syscall %lu\n", no);

@@ -15,6 +15,7 @@
 #define SYS_WAITPID 11
 #define SYS_PIPE    12
 #define SYS_EXECVE  13
+#define SYS_DUP2    14
 
 /* x86_64 syscall ABI:
  *   RAX = syscall number
@@ -123,6 +124,13 @@ static inline long pipe(int fds[2]) {
  * to the new program (crt0 uses argc=0). */
 static inline long execve(const char* path, char* const argv[], char* const envp[]) {
     return syscall3(SYS_EXECVE, (long)path, (long)argv, (long)envp);
+}
+
+/* Duplicate oldfd onto newfd (closing newfd first if open) — the redirection
+ * primitive: dup2(pipefd[1], 1) makes a process's stdout flow into the pipe.
+ * Pipe fds only for now (their ends are reference-counted). Returns newfd or -1. */
+static inline long dup2(int oldfd, int newfd) {
+    return syscall2(SYS_DUP2, oldfd, newfd);
 }
 
 #endif
