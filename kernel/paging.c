@@ -215,7 +215,14 @@ static uint64_t* pte_ptr(uint64_t* pml4, uint64_t virt, int create) {
             uint64_t* nt = (uint64_t*)alloc_page();
             if (!nt) return NULL;
             memset_asm(nt, 0, PAGE_SIZE);
-            tbl[idx[lvl]] = (uint64_t)nt | PAGE_PRESENT | PAGE_WRITABLE;
+            // Intermediate tables must be USER-accessible: a ring-3 translation
+            // requires PAGE_USER at EVERY level, and the leaf PTE gates the actual
+            // permission. Without USER here, a forked child's user pages (whose
+            // tables are built through this walker) sit behind supervisor-only
+            // intermediate entries, so ring 3 can't even fetch its own code
+            // (#PF present+user+instr-fetch). Kernel leaves stay supervisor via
+            // their own missing USER bit. Mirrors map_pml4's user mapping path.
+            tbl[idx[lvl]] = (uint64_t)nt | PAGE_PRESENT | PAGE_WRITABLE | PAGE_USER;
             tbl = nt;
         } else {
             tbl = (uint64_t*)(e & ~0xFFFULL);
@@ -227,8 +234,17 @@ static uint64_t* pte_ptr(uint64_t* pml4, uint64_t virt, int create) {
 // Called from the #PF handler. Returns 1 if the fault was a demand/COW page it
 // resolved (retry the instruction), 0 for a genuine fault (let it panic).
 int vm_handle_fault(uint64_t cr2, uint64_t err) {
-    if (!current_pml4) return 0;
-    uint64_t* pte = pte_ptr(current_pml4, cr2, 0);
+    // Pick the faulting address space. A user-mode fault (err bit2 == 1) belongs
+    // to the running process — the scheduler tracks that by current_idx, not the
+    // global current_pml4 (which only follows explicit switch_page_directory
+    // calls, so it lags behind ring-3 processes the scheduler dispatched via
+    // next_cr3). Kernel-mode faults (the cowtest self-test) use current_pml4.
+    // This is what makes COW work for a forked child running in its own CR3.
+    process_t* p = get_current_process();
+    uint64_t* pml4 = ((err & 0x4) && p && p->page_directory)
+                     ? (uint64_t*)p->page_directory : current_pml4;
+    if (!pml4) return 0;
+    uint64_t* pte = pte_ptr(pml4, cr2, 0);
     if (!pte) return 0;
     uint64_t e = *pte;
 
@@ -245,19 +261,72 @@ int vm_handle_fault(uint64_t cr2, uint64_t err) {
     }
 
     // Copy-on-write: a write (err bit1) protection fault (err bit0 == 1) on a
-    // present, COW-marked page — give the writer a private, writable copy.
+    // present, COW-marked page — give the writer a private, writable copy. If we
+    // are the sole remaining owner (refcount 1, the other side already copied or
+    // exited) there is nothing to protect: just clear COW and re-enable writes in
+    // place, saving an allocation and a page copy.
     if ((err & 0x1) && (err & 0x2) && (e & PAGE_PRESENT) && (e & PTE_COW)) {
-        void* newp = alloc_page();
-        if (!newp) return 0;
         uint64_t old = e & PTE_ADDR_MASK;
-        memcpy((void*)(uint64_t)newp, (void*)old, PAGE_SIZE);
-        *pte = ((uint64_t)newp & PTE_ADDR_MASK) | PAGE_PRESENT | PAGE_WRITABLE
-             | (e & PAGE_USER) | (e & PAGE_NX);
+        if (page_get_refcount((void*)old) <= 1) {
+            *pte = old | PAGE_PRESENT | PAGE_WRITABLE | (e & PAGE_USER) | (e & PAGE_NX);
+        } else {
+            void* newp = alloc_page();
+            if (!newp) return 0;
+            memcpy((void*)(uint64_t)newp, (void*)old, PAGE_SIZE);
+            free_page((void*)old);          // drop our reference to the shared page
+            *pte = ((uint64_t)newp & PTE_ADDR_MASK) | PAGE_PRESENT | PAGE_WRITABLE
+                 | (e & PAGE_USER) | (e & PAGE_NX);
+        }
         invlpg((void*)cr2);
         vm_cow_faults++;
         return 1;
     }
     return 0;
+}
+
+// fork(): build a new address space that shares the caller's user pages
+// copy-on-write. alloc_page_directory() already shares the higher-half kernel
+// mapping (PML4[511]); here we walk the parent's user half (PML4[0..510]) and,
+// for every present leaf page, bump its refcount and install the same mapping in
+// the child. Writable pages are downgraded to read-only + PTE_COW in BOTH the
+// parent and the child, so the first writer on either side takes a private copy
+// via vm_handle_fault; read-only pages (code/rodata) are shared as-is. The
+// parent's live TLB is refreshed by the CR3 reload on syscall return. Returns the
+// child PML4 (physical), or NULL on allocation failure.
+uint64_t* clone_page_directory_cow(uint64_t* parent) {
+    if (!parent) return NULL;
+    uint64_t* child = alloc_page_directory();
+    if (!child) return NULL;
+
+    for (int i = 0; i < PML4_HIGHER; i++) {
+        if (!(parent[i] & PAGE_PRESENT)) continue;
+        uint64_t* pdpt = (uint64_t*)(parent[i] & PTE_ADDR_MASK);
+        for (int j = 0; j < 512; j++) {
+            if (!(pdpt[j] & PAGE_PRESENT) || (pdpt[j] & PAGE_HUGE)) continue;
+            uint64_t* pd = (uint64_t*)(pdpt[j] & PTE_ADDR_MASK);
+            for (int k = 0; k < 512; k++) {
+                if (!(pd[k] & PAGE_PRESENT) || (pd[k] & PAGE_HUGE)) continue;
+                uint64_t* pt = (uint64_t*)(pd[k] & PTE_ADDR_MASK);
+                for (int l = 0; l < 512; l++) {
+                    uint64_t e = pt[l];
+                    if (!(e & PAGE_PRESENT)) continue;
+                    uint64_t virt = ((uint64_t)i << 39) | ((uint64_t)j << 30)
+                                  | ((uint64_t)k << 21) | ((uint64_t)l << 12);
+                    uint64_t* cpte = pte_ptr(child, virt, 1);
+                    if (!cpte) { free_page_directory(child); return NULL; }
+                    if (e & PAGE_WRITABLE) {
+                        uint64_t cow = (e & ~PAGE_WRITABLE) | PTE_COW;
+                        pt[l] = cow;        // parent: RO + COW
+                        *cpte = cow;        // child:  RO + COW (same frame)
+                    } else {
+                        *cpte = e;          // read-only page: shared as-is
+                    }
+                    page_incref((void*)(e & PTE_ADDR_MASK));
+                }
+            }
+        }
+    }
+    return child;
 }
 
 // --- setup helpers (used by the `cowtest` self-test) ---
@@ -272,6 +341,11 @@ int vm_map_cow(uint64_t virt, uint64_t phys) {
     uint64_t* pte = pte_ptr(current_pml4, virt, 1);
     if (!pte) return -1;
     *pte = (phys & PTE_ADDR_MASK) | PAGE_PRESENT | PTE_COW;  // present, read-only
+    // Mapping a page COW adds a reference to it: the writer's copy-out drops this
+    // one (refcount>1 -> private copy), leaving the frame valid for its other
+    // holder. Without this a COW page with a single alloc reference would be seen
+    // as sole-owner and written in place, corrupting the shared original.
+    page_incref((void*)(phys & PTE_ADDR_MASK));
     invlpg((void*)virt);
     return 0;
 }

@@ -104,6 +104,13 @@ isr_common:
     ; corrupted rax (same class of bug as the old irq_common). Exceptions that
     ; panic don't care, but this keeps the path correct for recoverable faults.
     SAVE_REGS
+    ; Remember the FAULTING CR3. r15 is callee-saved, so the C isr_handler
+    ; preserves it across the call. A recoverable fault (demand paging / COW)
+    ; must iretq back on the address space that faulted — for a ring-3 fault
+    ; that's the process's own CR3, not the kernel CR3 we switch to just below.
+    ; Restored right before RESTORE_REGS/iretq (RESTORE_REGS then reloads the
+    ; user's saved r15 off the stack).
+    mov r15, cr3
     ; Switch to kernel page tables in case we came from user mode (rax is now
     ; saved scratch, restored by RESTORE_REGS).
     mov rax, KERNEL_BASE + kernel_pml4_phys
@@ -133,6 +140,7 @@ isr_common:
     mov rdx, [rsp + 128]     ; error code
     mov rcx, [rsp + 144]     ; CS (ring is CS & 3)
     call isr_handler
+    mov cr3, r15             ; restore the faulting address space before returning
     RESTORE_REGS
     add rsp, 16               ; pop error code + int number
     iretq
@@ -144,12 +152,17 @@ global syscall_entry
 global user_rsp
 global kernel_rsp
 global user_cr3
+global syscall_frame_ptr
 extern syscall_handler
 
 section .data
 user_rsp:  dq 0
 kernel_rsp: dq 0
 user_cr3:  dq 0
+; Base of the saved user register frame on the kernel stack during a syscall:
+; [+0..112]=GPRs (r15..rax), [+120]=RFLAGS, [+128]=RIP. do_fork() reads it to
+; clone the caller's ring-3 context into the child (with rax=0 for the child).
+syscall_frame_ptr: dq 0
 
 section .text
 ; Entry: rax=syscall#, rdi/rsi/rdx/r10/r8/r9=args, rcx=user RIP, r11=user RFLAGS,
@@ -181,6 +194,7 @@ syscall_entry:
     mov rcx, [rsp + 88]          ; RDX = arg3
     mov r8,  [rsp + 40]          ; R10 = arg4
     mov r9,  [rsp + 56]          ; R8  = arg5
+    mov [syscall_frame_ptr], rsp ; expose the saved user frame to do_fork()
     call syscall_handler
     mov [rsp + 112], rax         ; return value -> saved RAX slot
 

@@ -136,6 +136,102 @@ process_t* create_user_process(const char* name, void* entry, void* user_stack, 
     return p;
 }
 
+// Build the child's kernel stack for fork(): a scheduler-resumable frame that
+// iretq's straight back to ring 3 at the parent's post-syscall RIP, carrying the
+// parent's register state — except rax = 0, so fork() returns 0 in the child.
+// `frame` is the parent's saved syscall register frame (isr_stubs' syscall_frame_ptr):
+// 15 GPRs r15..rax at frame[0..14], then RFLAGS at frame[15], RIP at frame[16].
+// The layout mirrors init_user_task_stack (SAVE_REGS block below an iretq frame),
+// so the scheduler resumes it through the same irq_common RESTORE_REGS/iretq path.
+static int init_forked_task_stack(process_t* proc, uint64_t* frame, uint64_t user_rsp) {
+    void* stack_mem = kmalloc(4096);
+    if (!stack_mem) return -1;
+    uint64_t* sp = (uint64_t*)((uintptr_t)stack_mem + 4096);
+
+    // iretq frame back to ring 3 (identical shape to init_user_task_stack).
+    *--sp = USER_DS;                 // ss
+    *--sp = user_rsp;                // rsp = parent's user stack (COW-shared)
+    *--sp = frame[15] | 0x202;       // rflags (parent's, IF + reserved bit forced on)
+    *--sp = USER_CS;                 // cs
+    *--sp = frame[16];               // rip = the instruction after the parent's syscall
+
+    *--sp = 0;                       // error code
+    *--sp = 32;                      // int number (irq0)
+
+    // SAVE_REGS block. RESTORE_REGS pops r15 first (lowest addr) and rax last
+    // (highest), so push rax first, r15 last. The child's fork() return value is 0.
+    *--sp = 0;                       // rax = 0  (fork returns 0 in the child)
+    *--sp = frame[13];               // rbx
+    *--sp = frame[12];               // rcx
+    *--sp = frame[11];               // rdx
+    *--sp = frame[10];               // rsi
+    *--sp = frame[9];                // rdi
+    *--sp = frame[8];                // rbp
+    *--sp = frame[7];                // r8
+    *--sp = frame[6];                // r9
+    *--sp = frame[5];                // r10
+    *--sp = frame[4];                // r11
+    *--sp = frame[3];                // r12
+    *--sp = frame[2];                // r13
+    *--sp = frame[1];                // r14
+    *--sp = frame[0];                // r15
+
+    // Saved kernel RSP as a higher-half alias (see init_user_task_stack's note).
+    proc->stack = (void*)((uintptr_t)sp + KERNEL_BASE);
+    proc->kernel_stack = (void*)((uintptr_t)stack_mem + 4096);
+    return 0;
+}
+
+// SYS_FORK. Clone the calling ring-3 process: a COW copy of its address space and
+// a child that resumes at the same point with fork()==0, while the parent gets the
+// child's pid back. Runs inside the syscall (interrupts masked, kernel CR3), so
+// current_idx and the parent's page tables are stable. Returns the child pid, or
+// -1 on failure (out of memory / process slots / called from a kernel thread).
+int do_fork(void) {
+    extern uint64_t syscall_frame_ptr;      // parent's saved user frame (isr_stubs.asm)
+    extern uint64_t user_rsp;               // parent's ring-3 RSP at syscall entry
+    extern void free_page_directory(uint64_t* pml4);
+
+    process_t* parent = get_current_process();
+    if (!parent || !parent->page_directory) return -1;   // only a ring-3 proc can fork
+    if (process_count >= MAX_PROCESSES) return -1;
+    uint64_t* frame = (uint64_t*)syscall_frame_ptr;
+    if (!frame) return -1;
+
+    uint64_t* child_pml4 = clone_page_directory_cow((uint64_t*)parent->page_directory);
+    if (!child_pml4) return -1;
+
+    process_t* child = (process_t*)kmalloc(sizeof(process_t));
+    if (!child) { free_page_directory(child_pml4); return -1; }
+    memset_asm(child, 0, sizeof(process_t));
+    child->pid = next_pid++;
+    child->ppid = parent->pid;
+    child->state = PROC_RUN;
+    child->page_directory = child_pml4;
+    child->program_break = parent->program_break;   // heap inherited (COW-shared)
+    strncpy(child->comm, parent->comm, 31);
+    child->comm[31] = '\0';
+    // File descriptors are deliberately NOT inherited: the VFS handles behind them
+    // aren't reference-counted, so sharing would risk a double close on reap. The
+    // child starts with an empty fd table; stdio still works (SYS_WRITE goes to the
+    // console, not through a fd).
+
+    if (init_forked_task_stack(child, frame, user_rsp) < 0) {
+        free_page_directory(child_pml4);
+        kfree(child);
+        return -1;
+    }
+
+    // Both are now real scheduled processes. The parent may have been the unmanaged
+    // blocking-exec / auto-exec target; once it forks it must round-robin as well.
+    parent->sched_managed = 1;
+    child->sched_managed = 1;
+    child->sched_weight = parent->sched_weight;
+    process_table[process_count++] = child;
+    sched_enable();
+    return (int)child->pid;
+}
+
 // The setjmp/longjmp blocking-exec launcher (`switch_to_user_process`,
 // `g_user_proc`, `return_from_user_process`, the `switch_to_user_trampoline`
 // trampoline, and `ku_setjmp`/`ku_longjmp`) was removed in v5.7.9: `exec` now runs

@@ -11,6 +11,15 @@ static uint32_t page_bitmap[BITMAP_WORDS];
 static uint32_t total_pages = 0;
 static uint32_t free_pages = 0;
 
+// Per-page reference count, indexed by physical page number. Copy-on-write
+// (fork) shares one physical page between several address spaces; the refcount
+// is how many PTEs point at it. alloc_page() sets it to 1; page_incref() bumps
+// it when a page is shared (COW clone); free_page() decrements and only returns
+// the frame to the bitmap when the last reference drops. A refcount of 0 for a
+// page that was never tracked (reserved at init, or pre-refcount allocations)
+// simply means "unconditional free", so legacy callers keep working.
+static uint8_t page_refcount[MAX_PAGES];
+
 void init_memory(uint64_t mem_size) {
     memory_total = mem_size;
     memory_used = 0;
@@ -47,15 +56,33 @@ void* alloc_page(void) {
             page_bitmap[i] &= ~(1 << bit);
             free_pages--;
             memory_used += PAGE_SIZE;
+            page_refcount[page_idx] = 1;       // one owner until COW-shared
             return (void*)(uintptr_t)(page_idx * PAGE_SIZE);
         }
     }
     return NULL;
 }
 
+// Add a reference to an already-allocated physical page (used by the COW clone
+// in fork: the child maps the parent's page instead of copying it).
+void page_incref(void* addr) {
+    uint32_t page_idx = (uint32_t)(uintptr_t)addr / PAGE_SIZE;
+    if (page_idx >= total_pages) return;
+    if (page_refcount[page_idx] < 0xFF) page_refcount[page_idx]++;
+}
+
+uint32_t page_get_refcount(void* addr) {
+    uint32_t page_idx = (uint32_t)(uintptr_t)addr / PAGE_SIZE;
+    if (page_idx >= total_pages) return 0;
+    return page_refcount[page_idx];
+}
+
 void free_page(void* addr) {
     uint32_t page_idx = (uint32_t)(uintptr_t)addr / PAGE_SIZE;
     if (page_idx >= total_pages) return;
+    // Shared page (COW): drop one reference, keep the frame for the others.
+    if (page_refcount[page_idx] > 1) { page_refcount[page_idx]--; return; }
+    page_refcount[page_idx] = 0;
     page_bitmap[page_idx / 32] |= 1 << (page_idx % 32);
     free_pages++;
     memory_used -= PAGE_SIZE;

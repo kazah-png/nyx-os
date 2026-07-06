@@ -6,10 +6,10 @@
   <strong>Custom x86_64 kernel · C and Assembly · General-purpose OS</strong>
   <br/><br/>
   <!-- Badges -->
-  <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.7.23">
-    <img src="https://img.shields.io/badge/release-v5.7.23-00ff9d?style=flat" />
+  <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.7.25">
+    <img src="https://img.shields.io/badge/release-v5.7.25-00ff9d?style=flat" />
   </a>
-  <img src="https://img.shields.io/badge/status-v5.7.23-00ff9d?style=flat" />
+  <img src="https://img.shields.io/badge/status-v5.7.25-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/TCP-yes-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/GUI-window%20compositor-00ff9d?style=flat" />
   <a href="https://github.com/kazah-png/nyx-os/issues/1">
@@ -52,7 +52,7 @@ ______          \'/
     N Y X O S
     G U I   S U I T E
   -------------------------------------
-  Kernel:     NyxOS 5.7.23
+  Kernel:     NyxOS 5.7.25
   Arch:       x86_64 (long mode)
   Memory:     256 MB total, 240 MB free
   Heap:       16384 KB
@@ -160,7 +160,7 @@ nyx:root$ ls /
 bin/   dev/   etc/   home/  mnt/   root/  tmp/   usr/   var/
 
 nyx:root$ uname
-NyxOS 5.7.23 (Scheduler) x86_64
+NyxOS 5.7.25 (Scheduler) x86_64
 
 nyx:root$ mem
 Physical memory: 256 MB total, 252 MB free
@@ -466,7 +466,8 @@ See the full **[NyxOS Status Report](https://github.com/kazah-png/nyx-os/issues/
 
 ### What's being built
 - ✅ SMP multi-core bringup (INIT-SIPI-SIPI + trampoline → long mode; verified with `-smp 4`, `cpus` command) — next: per-CPU scheduling to run threads on the APs
-- ✅ Demand paging + copy-on-write via the #PF handler (verified with the `cowtest` self-test; CR0.WP enabled) — next: lazy `sbrk` heap / COW `fork`, page-out to disk
+- ✅ Demand paging + copy-on-write via the #PF handler (verified with the `cowtest` self-test; CR0.WP enabled)
+- ✅ Copy-on-write `fork()` (`SYS_FORK`): physical page refcounting + COW address-space clone; child resumes with `fork()==0`, both round-robin (verified in `/init.elf` — parent/child diverge on a shared variable) — next: lazy `sbrk` heap, page-out to disk
 - ✅ NIC-side TCP listen (inbound connections — NyxOS serves HTTP to a host `curl` via `hostfwd`)
 
 ---

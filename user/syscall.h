@@ -11,6 +11,7 @@
 #define SYS_SBRK    7
 #define SYS_FSIZE   8
 #define SYS_EXEC    9
+#define SYS_FORK    10
 
 /* x86_64 syscall ABI:
  *   RAX = syscall number
@@ -91,6 +92,12 @@ static inline long fsize(int fd) {
 
 static inline long exec(const char* path) {
     return syscall1(SYS_EXEC, (long)path);
+}
+
+/* Copy-on-write fork: returns the child's pid in the parent, 0 in the child, and
+ * -1 on failure. Both processes then run preemptively, time-sliced by the kernel. */
+static inline long fork(void) {
+    return syscall1(SYS_FORK, 0);
 }
 
 #endif

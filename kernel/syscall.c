@@ -316,6 +316,10 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3, uin
             printf("[EXEC] Loaded %s as PID %lu\n", path, new_proc->pid);
             return (uint64_t)new_proc->pid;
         }
+        case SYS_FORK:
+            // COW-clone the caller. Returns the child's pid to the parent and 0 in
+            // the child (baked into the child's resume frame by do_fork), -1 on error.
+            return (uint64_t)(int64_t)do_fork();
         default:
             printf("[SYSCALL] Unknown syscall %lu\n", no);
             return -1;

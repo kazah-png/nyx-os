@@ -55,6 +55,25 @@ int main(void) {
         }
     }
 
+    /* fork(): copy-on-write address-space clone. The child gets an independent
+     * copy of memory — writing `cow_test` in the child faults in a private page
+     * and leaves the parent's value untouched, proving the two address spaces are
+     * isolated (same virtual address, different physical page after the COW). */
+    printf("Testing fork() (copy-on-write)...\n");
+    volatile int cow_test = 100;
+    long pid = fork();
+    if (pid == 0) {
+        cow_test = 200;                         /* private copy — parent won't see this */
+        printf("  [child]  fork()=0, getpid=%ld, cow_test=%d (own copy)\n",
+               getpid(), cow_test);
+        exit(0);
+    } else if (pid > 0) {
+        printf("  [parent] fork()=%ld (child pid), getpid=%ld, cow_test=%d (unchanged)\n",
+               pid, getpid(), cow_test);
+    } else {
+        printf("  fork() failed: %ld\n", pid);
+    }
+
     printf("Init complete, exiting.\n");
     return 0;
 }

@@ -52,6 +52,7 @@ kernel/genfont.py
 
 # === Test / debug artifacts ===
 qemu_serial.txt
+qemu_err.txt
 screen.png
 screen.ppm
 

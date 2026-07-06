@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.7.23"
+#define KERNEL_VERSION "5.7.25"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -83,6 +83,7 @@ typedef __builtin_va_list va_list;
 #define SYS_SBRK    7
 #define SYS_FSIZE   8
 #define SYS_EXEC    9
+#define SYS_FORK    10
 
 #define MAX_PATH         256
 #define MAX_FILENAME     128
@@ -532,6 +533,8 @@ void kfree(void* ptr);
 void* krealloc(void* ptr, size_t size);
 void* alloc_page(void);
 void free_page(void* addr);
+void page_incref(void* addr);           // COW: share an allocated page (fork)
+uint32_t page_get_refcount(void* addr); // COW: how many PTEs point at this page
 void slab_init_all(void);
 
 void init_paging(void);
@@ -539,6 +542,7 @@ void* get_phys_addr(void* virtual_addr);
 void map_page(void* phys_addr, void* virt_addr, uint64_t flags);
 void unmap_page(void* virt_addr);
 void* clone_page_directory(void);
+uint64_t* clone_page_directory_cow(uint64_t* parent_pml4); // fork: COW-share the user half
 uint64_t* alloc_page_directory(void);
 uint64_t* get_kernel_page_directory(void);
 void switch_page_directory(uint64_t* pd);
@@ -559,6 +563,7 @@ void heap_free(void* ptr);
 void init_process(void);
 process_t* create_process(const char* name, void* entry, uint64_t flags);
 process_t* create_user_process(const char* name, void* entry, void* user_stack, uint64_t* page_dir);
+int do_fork(void);   // SYS_FORK: COW-clone the caller; returns child pid to parent, 0 in child
 void reap_user_process(process_t* proc);
 void destroy_process(uint64_t pid);
 process_t* find_process(uint64_t pid);
