@@ -346,10 +346,25 @@ void preempt_enable(void)  { if (preempt_count > 0) preempt_count--; }
 // in the kernel address space; user processes get their own CR3, and the TSS
 // RSP0 must be their kernel stack so their next ring3→ring0 entry lands safely.
 static void sched_target(process_t* p) {
+    extern uint64_t kernel_rsp;                     // syscall-entry stack (isr_stubs.asm)
     next_rsp = (uint64_t)p->stack;
     if (p->page_directory) {
-        next_cr3 = (uint64_t)p->page_directory;
-        tss_set_stack((uint64_t)(uintptr_t)p->kernel_stack + KERNEL_BASE);
+        // A process parked mid-syscall (blocked_in_kernel) resumes in ring 0, whose
+        // -mcmodel=large code lives at low link addresses only mapped in the kernel
+        // CR3 — so resume it there, not on its user CR3 (its own kernel stack, a
+        // higher-half alias, is mapped in both). It switches back to user CR3 itself
+        // when the syscall returns.
+        next_cr3 = p->blocked_in_kernel ? (uint64_t)kernel_pml4_phys
+                                        : (uint64_t)p->page_directory;
+        // Per-process syscall stack: point BOTH the TSS RSP0 (ring3→ring0 faults)
+        // and kernel_rsp (the `syscall` instruction's stack) at this process's own
+        // kernel stack. That makes a syscall re-entrant across a context switch — a
+        // process blocked mid-syscall keeps its frame on its own stack instead of
+        // the old single shared syscall stack that another process's syscall would
+        // clobber. This is what lets waitpid() and friends truly block.
+        uint64_t kstk = (uint64_t)(uintptr_t)p->kernel_stack + KERNEL_BASE;
+        tss_set_stack(kstk);
+        kernel_rsp = kstk;
     } else {
         next_cr3 = (uint64_t)kernel_pml4_phys;
     }
@@ -373,8 +388,9 @@ void irq_scheduler_tick(void) {
     process_t* cur = (current_idx >= 0 && current_idx < process_count)
                          ? process_table[current_idx] : NULL;
     next_rsp = saved_rsp;
-    next_cr3 = (cur && cur->page_directory) ? (uint64_t)cur->page_directory
-                                            : (uint64_t)kernel_pml4_phys;
+    next_cr3 = (cur && cur->page_directory && !cur->blocked_in_kernel)
+                   ? (uint64_t)cur->page_directory
+                   : (uint64_t)kernel_pml4_phys;   // mid-syscall procs resume on kernel CR3
 
     // Dormant, in a heap/critical section, or nothing else to schedule.
     if (!sched_enabled || preempt_count > 0 || process_count == 0) return;
@@ -452,40 +468,66 @@ void reap_zombies(void) {
     preempt_enable();
 }
 
-// SYS_WAITPID core. Look for a child of the caller (`wpid > 0`: that exact pid;
-// `wpid <= 0`: any child). Returns:
-//   -1  no such child (ECHILD),
-//   -2  a matching child exists but hasn't exited yet (EAGAIN — userspace spins),
-//   >0  the reaped child's pid, with its exit code written to *out_code.
-// On a hit it collects the zombie and frees it here (address space + kernel stack
-// + process_t + table slot), so the child is reaped by whoever waits for it — the
-// reap_zombies() guard deliberately leaves user-parented zombies for this path.
-// Runs inside a syscall (interrupts masked), so process_table is stable and the
-// child (a zombie, never the current thread) is safe to free.
+// SYS_WAITPID core — a TRUE blocking wait, now that per-process syscall stacks
+// (sched_target) make it safe to block mid-syscall. Wait for a child of the caller
+// (`wpid > 0`: that exact pid; `wpid <= 0`: any child) to exit, then collect and
+// reap it. Returns the reaped child's pid with its exit code in *out_code, or -1 if
+// there is no such child. Parks the caller with PROC_BLOCKED + `sti;hlt`, woken by
+// the child's SYS_EXIT (wake_waiters), exactly like kwait().
+//
+// Two subtleties of blocking inside a syscall: (1) `blocked_in_kernel` makes the
+// scheduler resume us on the KERNEL CR3 (we're in ring 0, and -mcmodel=large kernel
+// code lives at low link addresses only mapped there), so we run do_waitpid on the
+// kernel CR3 throughout — needed for free_page_directory's page-table walk and the
+// caller's copy_to_user of the status. (2) Other processes run their own syscalls
+// while we sleep, overwriting the shared user_cr3/user_rsp globals — so we save them
+// on entry and restore them before returning, so the asm syscall-return path iretq's
+// back into THIS process. Interrupts stay masked from the decision to return until
+// that iretq re-enables them.
 int do_waitpid(int wpid, int* out_code) {
     extern void free_page_directory(uint64_t* pml4);
+    extern uint64_t user_cr3, user_rsp;
     process_t* self = get_current_process();
     if (!self) return -1;
-    int found = 0;
-    for (int i = 0; i < process_count; i++) {
-        process_t* p = process_table[i];
-        if (!p || p->ppid != self->pid) continue;       // only our own children
-        if (wpid > 0 && (int)p->pid != wpid) continue;   // a specific child was asked for
-        found = 1;
-        if (p->state != PROC_ZOMBIE) continue;           // not done — keep scanning (wait-any)
-        int cpid = (int)p->pid;
-        if (out_code) *out_code = p->exit_code;
-        close_proc_fds(p);
-        if (p->page_directory) free_page_directory((uint64_t*)p->page_directory);
-        if (p->kernel_stack) kfree((void*)((uintptr_t)p->kernel_stack - 4096));
-        int last = --process_count;                      // swap-remove, fixing current_idx
-        process_table[i] = process_table[last];
-        process_table[last] = NULL;
-        if (current_idx == last) current_idx = i;
-        kfree(p);
-        return cpid;
+    uint64_t saved_cr3 = user_cr3, saved_ursp = user_rsp;
+    int result;
+    for (;;) {
+        __asm__ volatile("cli");
+        self->blocked_in_kernel = 0;                     // past any block; interrupts are off
+        int zi = -1, any = 0;
+        for (int i = 0; i < process_count; i++) {
+            process_t* p = process_table[i];
+            if (!p || p->ppid != self->pid) continue;    // only our own children
+            if (wpid > 0 && (int)p->pid != wpid) continue;
+            any = 1;
+            if (p->state == PROC_ZOMBIE) { zi = i; break; }
+        }
+        if (!any) { result = -1; break; }                // ECHILD (interrupts stay off)
+        if (zi >= 0) {                                    // a child is ready — collect + reap it
+            process_t* child = process_table[zi];
+            if (out_code) *out_code = child->exit_code;
+            result = (int)child->pid;
+            close_proc_fds(child);
+            if (child->page_directory) free_page_directory((uint64_t*)child->page_directory);
+            if (child->kernel_stack) kfree((void*)((uintptr_t)child->kernel_stack - 4096));
+            int last = --process_count;                   // swap-remove, keeping current_idx valid
+            process_table[zi] = process_table[last];
+            process_table[last] = NULL;
+            if (current_idx == last) current_idx = zi;
+            kfree(child);
+            break;
+        }
+        // A child exists but hasn't exited — park until one does. The scheduler runs
+        // the child (on its own kernel stack), whose SYS_EXIT wakes us via wake_waiters.
+        self->blocked_in_kernel = 1;                      // resume us on the kernel CR3
+        self->state = PROC_BLOCKED;
+        self->waiting_for = (wpid > 0) ? (uint32_t)wpid : 0;
+        __asm__ volatile("sti; hlt");
+        // Resumed on the kernel CR3 — loop, clear the flag, re-check (interrupts off).
     }
-    return found ? -2 : -1;                              // exists-but-running vs no-such-child
+    user_cr3 = saved_cr3;                                 // restore OUR syscall globals for the
+    user_rsp = saved_ursp;                                // asm return path (still on kernel CR3)
+    return result;
 }
 
 // Block the calling thread until child `pid` becomes a zombie, then return its

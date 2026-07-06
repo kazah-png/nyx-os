@@ -67,12 +67,17 @@ int main(void) {
         cow_test = 200;                         /* private copy — parent won't see this */
         printf("  [child]  fork()=0, getpid=%ld, cow_test=%d (own copy)\n",
                getpid(), cow_test);
+        /* Hammer the syscall path while the parent is blocked in waitpid(). With
+         * the old single shared syscall stack these calls would clobber the
+         * parent's parked frame; per-process syscall stacks keep it intact. */
+        for (int i = 1; i <= 3; i++)
+            printf("  [child]  working %d/3 (parent is blocked in waitpid)\n", i);
         exit(123);                              /* exit code collected by the parent */
     } else if (pid > 0) {
         printf("  [parent] fork()=%ld (child pid), getpid=%ld, cow_test=%d (unchanged)\n",
                pid, getpid(), cow_test);
         int status = -1;
-        long w = waitpid((int)pid, &status);
+        long w = waitpid((int)pid, &status);    /* truly blocks until the child exits */
         printf("  [parent] waitpid(%ld) -> reaped pid %ld, child exit code = %d\n",
                pid, w, status);
     } else {

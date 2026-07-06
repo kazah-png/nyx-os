@@ -321,10 +321,11 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3, uin
             // the child (baked into the child's resume frame by do_fork), -1 on error.
             return (uint64_t)(int64_t)do_fork();
         case SYS_WAITPID: {
-            // waitpid(pid, status). Non-blocking core: -1 no such child, -2 child
-            // still running (userspace spins on it), else the reaped child's pid with
-            // its exit code copied to *status. A true sleeping wait would need
-            // per-process syscall stacks (blocking mid-syscall corrupts the shared one).
+            // waitpid(pid, status). do_waitpid BLOCKS until a matching child exits
+            // (per-process syscall stacks make blocking mid-syscall safe), then
+            // returns the reaped child's pid, or -1 if there is no such child. It
+            // hands back on the kernel CR3 with our syscall globals restored, so the
+            // copy_to_user of the exit status below is safe.
             int code = 0;
             int r = do_waitpid((int)a1, &code);
             if (r > 0 && a2) {

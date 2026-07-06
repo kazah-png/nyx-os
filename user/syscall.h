@@ -103,13 +103,9 @@ static inline long fork(void) {
 
 /* Wait for a child to exit and collect its status. Returns the child's pid (with
  * its exit code written to *status) or -1 if there is no such child. The kernel
- * side is non-blocking (returns -2 while the child still runs), so we spin until
- * it exits — the scheduler time-slices the child in between our calls. pid <= 0
- * waits for any child. */
+ * blocks the caller until a child exits (pid <= 0 waits for any child). */
 static inline long waitpid(int pid, int* status) {
-    long r;
-    while ((r = syscall2(SYS_WAITPID, pid, (long)status)) == -2) { }
-    return r;
+    return syscall2(SYS_WAITPID, pid, (long)status);
 }
 
 #endif

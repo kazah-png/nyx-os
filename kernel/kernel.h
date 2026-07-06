@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.8.1"
+#define KERNEL_VERSION "5.8.2"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -149,6 +149,9 @@ typedef struct process {
     uint32_t sched_managed;  // 1 = round-robined by the preemptive scheduler (spawn_user_path);
                              // blocking-exec and unstarted procs leave this 0 so they're skipped
     uint32_t waiting_for;    // pid this proc is blocked in kwait() on (0 = not waiting)
+    uint32_t blocked_in_kernel; // 1 = parked mid-syscall (ring 0): the scheduler must
+                             // resume it on the KERNEL CR3, since -mcmodel=large kernel
+                             // code runs at low link addresses only mapped there
     uint32_t wake_tick;      // tick_count to wake a sleep()-blocked proc (0 = not sleeping)
     uint32_t sched_weight;   // ticks per turn in the weighted round-robin (0 => 1)
     uint32_t sched_quantum;  // ticks left in the current turn (scheduler-internal)
