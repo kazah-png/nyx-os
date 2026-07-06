@@ -213,9 +213,19 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3, uin
                 }
                 return len;
             }
-            /* A real file descriptor -> VFS, writing at the fd's current offset. */
+            /* A real file descriptor -> VFS (or a pipe), writing at the fd's offset. */
             int internal;
             if (ufd_lookup(fd, &internal) != 0) return -1;
+            if (internal & UFD_PIPE_FLAG) {                 /* pipe write */
+                if (!UFD_PIPE_IS_WRITE(internal)) return -1; /* the read end isn't writable */
+                if (len > 4096) len = 4096;
+                char* pbuf = (char*)kmalloc(len);
+                if (!pbuf) return -1;
+                int n = (copy_from_user(pbuf, a2, len) == 0)
+                            ? pipe_write(UFD_PIPE_ID(internal), pbuf, len) : -1;
+                kfree(pbuf);
+                return n;
+            }
             uint32_t* off = ufd_offset_of(fd);
             if (len > 4096) len = 4096;
             char* kbuf = (char*)kmalloc(len);
@@ -248,10 +258,19 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3, uin
         case SYS_READ: {
             int internal;
             if (ufd_lookup((int)a1, &internal) != 0) return -1;
-            uint32_t* off = ufd_offset_of((int)a1);
             int count = (int)a3;
             if (count < 0 || !user_ptr_ok(a2, (uint64_t)count)) return -1;
             if (count > 4096) count = 4096;
+            if (internal & UFD_PIPE_FLAG) {                 /* pipe read — blocks if empty */
+                if (UFD_PIPE_IS_WRITE(internal)) return -1;  /* the write end isn't readable */
+                char* pbuf = (char*)kmalloc(count);
+                if (!pbuf) return -1;
+                int n = pipe_read(UFD_PIPE_ID(internal), pbuf, count);
+                if (n > 0 && copy_to_user(a2, pbuf, n) != 0) n = -1;
+                kfree(pbuf);
+                return n;                                    /* 0 = EOF (all writers closed) */
+            }
+            uint32_t* off = ufd_offset_of((int)a1);
             char* kbuf = (char*)kmalloc(count);
             if (!kbuf) return -1;
             int n = vfs_pread(internal, kbuf, count, off ? *off : 0);
@@ -264,6 +283,10 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3, uin
             int internal;
             if (ufd_lookup((int)a1, &internal) != 0) return -1;
             ufd_release((int)a1);
+            if (internal & UFD_PIPE_FLAG) {                 /* pipe end -> drop a ref */
+                pipe_close_end(UFD_PIPE_ID(internal), UFD_PIPE_IS_WRITE(internal));
+                return 0;
+            }
             return vfs_close(internal);
         }
         case SYS_GETPID: {
@@ -333,6 +356,23 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3, uin
                 copy_to_user(a2, &code, sizeof(int));
             }
             return (uint64_t)(int64_t)r;
+        }
+        case SYS_PIPE: {
+            // pipe(int fds[2]): fds[0] = read end, fds[1] = write end. Returns 0, or -1.
+            if (!user_ptr_ok(a1, 2 * sizeof(int))) return -1;
+            int id = pipe_new();
+            if (id < 0) return -1;
+            int rfd = ufd_alloc(UFD_PIPE_MAKE(id, 0));
+            int wfd = ufd_alloc(UFD_PIPE_MAKE(id, 1));
+            int fds[2] = { rfd, wfd };
+            if (rfd < 0 || wfd < 0 || copy_to_user(a1, fds, sizeof(fds)) != 0) {
+                if (rfd >= 0) ufd_release(rfd);
+                if (wfd >= 0) ufd_release(wfd);
+                pipe_close_end(id, 0);                       // drop both refs -> free the pipe
+                pipe_close_end(id, 1);
+                return -1;
+            }
+            return 0;
         }
         default:
             printf("[SYSCALL] Unknown syscall %lu\n", no);

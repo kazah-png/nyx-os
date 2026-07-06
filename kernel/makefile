@@ -21,7 +21,7 @@ ASFLAGS = -f elf64
 LDFLAGS = -T linker.ld -nostdlib -m elf_x86_64
 
 OBJS_KERNEL = boot.o kernel.o gdt.o idt.o isr.o isr_stubs.o irq.o \
-        memory.o heap.o slab.o process.o syscall.o vfs.o ext2.o ata.o net.o udp.o \
+        memory.o heap.o slab.o process.o syscall.o pipe.o vfs.o ext2.o ata.o net.o udp.o \
         ip.o arp.o ethernet.o rtl8139.o icmp.o timer.o keyboard.o screen.o \
         serial.o umoddi3.o paging.o switch.o stubs.o dhcp.o \
         vbe.o fb.o mouse.o gui.o font.o compositor.o speaker.o tcp.o \

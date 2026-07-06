@@ -211,10 +211,19 @@ int do_fork(void) {
     child->program_break = parent->program_break;   // heap inherited (COW-shared)
     strncpy(child->comm, parent->comm, 31);
     child->comm[31] = '\0';
-    // File descriptors are deliberately NOT inherited: the VFS handles behind them
-    // aren't reference-counted, so sharing would risk a double close on reap. The
-    // child starts with an empty fd table; stdio still works (SYS_WRITE goes to the
-    // console, not through a fd).
+    // Inherit the parent's PIPE fds (with a refcount bump) so the classic
+    // pipe();fork() pattern works. VFS fds are deliberately NOT inherited — their
+    // handles aren't reference-counted, so sharing would risk a double close; the
+    // child gets those empty (stdio still works: SYS_WRITE fd 1/2 hits the console).
+    for (int i = 0; i < PROC_MAX_FDS; i++) {
+        if (parent->ufd_inuse[i] && (parent->ufd_handle[i] & UFD_PIPE_FLAG)) {
+            child->ufd_inuse[i]  = 1;
+            child->ufd_handle[i] = parent->ufd_handle[i];
+            child->ufd_offset[i] = 0;
+            pipe_incref(UFD_PIPE_ID(parent->ufd_handle[i]),
+                        UFD_PIPE_IS_WRITE(parent->ufd_handle[i]));
+        }
+    }
 
     if (init_forked_task_stack(child, frame, user_rsp) < 0) {
         free_page_directory(child_pml4);
@@ -253,12 +262,14 @@ static void close_proc_fds(process_t* proc) {
     int n = 0;
     for (int i = 0; i < PROC_MAX_FDS; i++) {
         if (proc->ufd_inuse[i]) {
-            vfs_close(proc->ufd_handle[i]);
+            int h = proc->ufd_handle[i];
+            if (h & UFD_PIPE_FLAG) pipe_close_end(UFD_PIPE_ID(h), UFD_PIPE_IS_WRITE(h));
+            else                   vfs_close(h);
             proc->ufd_inuse[i] = 0;
             n++;
         }
     }
-    if (n > 0) serial_puts("[reap] force-closed leaked fd(s) from an exited process\n");
+    if (n > 0) serial_puts("[reap] force-closed leftover fd(s) from an exited process\n");
 }
 
 void reap_user_process(process_t* proc) {

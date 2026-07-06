@@ -84,6 +84,37 @@ int main(void) {
         printf("  fork() failed: %ld\n", pid);
     }
 
+    /* pipe() + fork(): a blocking IPC channel between parent and child. The child
+     * read()s the pipe (blocking until data arrives); the parent write()s a message
+     * and the child wakes with it — cross-process byte transfer through the kernel. */
+    printf("Testing pipe() + blocking read across fork()...\n");
+    int pfd[2];
+    if (pipe(pfd) == 0) {
+        long cpid = fork();
+        if (cpid == 0) {
+            close(pfd[1]);                       /* child only reads */
+            char buf[64];
+            long n = read(pfd[0], buf, sizeof(buf) - 1);   /* blocks until parent writes */
+            if (n >= 0) buf[n] = '\0';
+            printf("  [child]  read %ld bytes from pipe: \"%s\"\n", n, buf);
+            close(pfd[0]);
+            exit(0);
+        } else if (cpid > 0) {
+            close(pfd[0]);                        /* parent only writes */
+            const char* msg = "hello from parent via pipe!";
+            long w = write(pfd[1], msg, 27);
+            printf("  [parent] wrote %ld bytes to the pipe\n", w);
+            close(pfd[1]);
+            int st;
+            waitpid((int)cpid, &st);
+            printf("  [parent] child finished\n");
+        } else {
+            printf("  fork() failed\n");
+        }
+    } else {
+        printf("  pipe() failed\n");
+    }
+
     printf("Init complete, exiting.\n");
     return 0;
 }

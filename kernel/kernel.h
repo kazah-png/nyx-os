@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.8.2"
+#define KERNEL_VERSION "5.8.3"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -85,6 +85,16 @@ typedef __builtin_va_list va_list;
 #define SYS_EXEC    9
 #define SYS_FORK    10
 #define SYS_WAITPID 11
+#define SYS_PIPE    12
+
+// Pipe fds are stored in the per-process fd table (ufd_handle) with this flag set,
+// so SYS_READ/WRITE/CLOSE route to the pipe layer instead of the VFS. The low bits
+// carry (pipe_id << 1) | end (end: 0 = read, 1 = write). A real VFS handle is a
+// small index (< MAX_FILES) so it never collides with the flag.
+#define UFD_PIPE_FLAG        0x40000000
+#define UFD_PIPE_MAKE(id, w) (UFD_PIPE_FLAG | ((id) << 1) | ((w) ? 1 : 0))
+#define UFD_PIPE_ID(h)       (((h) & 0x3FFFFFFF) >> 1)
+#define UFD_PIPE_IS_WRITE(h) ((h) & 1)
 
 #define MAX_PATH         256
 #define MAX_FILENAME     128
@@ -569,6 +579,13 @@ process_t* create_process(const char* name, void* entry, uint64_t flags);
 process_t* create_user_process(const char* name, void* entry, void* user_stack, uint64_t* page_dir);
 int do_fork(void);   // SYS_FORK: COW-clone the caller; returns child pid to parent, 0 in child
 int do_waitpid(int pid, int* out_code); // SYS_WAITPID: reap a child; -1 none, -2 running, >0 pid
+
+// Anonymous pipes (pipe.c)
+int  pipe_new(void);                    // alloc a pipe (1 read ref + 1 write ref) -> id, or -1
+int  pipe_read(int id, char* kbuf, int n);   // blocking read into kbuf; 0 = EOF
+int  pipe_write(int id, const char* src, int n); // non-blocking write; -1 = broken pipe
+void pipe_close_end(int id, int is_write);   // drop one ref; frees the pipe at zero
+void pipe_incref(int id, int is_write);      // fork(): inherit a pipe fd
 void reap_user_process(process_t* proc);
 void destroy_process(uint64_t pid);
 process_t* find_process(uint64_t pid);

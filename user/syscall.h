@@ -13,6 +13,7 @@
 #define SYS_EXEC    9
 #define SYS_FORK    10
 #define SYS_WAITPID 11
+#define SYS_PIPE    12
 
 /* x86_64 syscall ABI:
  *   RAX = syscall number
@@ -106,6 +107,13 @@ static inline long fork(void) {
  * blocks the caller until a child exits (pid <= 0 waits for any child). */
 static inline long waitpid(int pid, int* status) {
     return syscall2(SYS_WAITPID, pid, (long)status);
+}
+
+/* Create a pipe: fds[0] is the read end, fds[1] the write end. Returns 0, or -1.
+ * A read() on the read end blocks until a writer writes (or all writers close,
+ * which yields EOF = 0). Survives fork(), so it connects a parent and child. */
+static inline long pipe(int fds[2]) {
+    return syscall1(SYS_PIPE, (long)fds);
 }
 
 #endif
