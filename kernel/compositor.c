@@ -235,7 +235,11 @@ static int taskbar_win_hit(int mx, int my, int* id) {
     int bx = 90;
     for (int i = 0; i < MAX_WINDOWS; i++) {
         if (!windows[i] || !windows[i]->visible) continue;
-        if (windows[i]->workspace != current_workspace) continue;
+        // Must match the window-selection predicate in draw_taskbar() exactly,
+        // otherwise the button layout (bx) drifts out of sync and clicks land on
+        // the wrong window. draw_taskbar() also lists minimized windows from other
+        // workspaces (so they can be restored), so this hit-test must too.
+        if (windows[i]->workspace != current_workspace && windows[i]->state != WSTATE_MINIMIZED) continue;
         int bw = 150;
         if (bx + bw > (int)(fw - CLOCK_W - 8)) bw = (int)(fw - CLOCK_W - 8) - bx;
         if (bw < 40) break;
