@@ -771,7 +771,10 @@ static void cmd_exec(int argc, char** argv) {
         printf("exec: could not load %s (err %d)\n", argv[1], pid);
         return;
     }
+    extern uint32_t g_foreground_pid;
+    g_foreground_pid = (uint32_t)pid;         // Ctrl-C posts SIGINT here while it runs
     int code = kwait((uint32_t)pid);
+    g_foreground_pid = 0;
     printf("[exec] PID %d exited (code %d)\n", pid, code);
 }
 

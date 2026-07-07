@@ -21,3 +21,13 @@ _start:
     mov rax, 0      ; SYS_EXIT
     syscall
     hlt
+
+; Signal-return trampoline. The kernel (signal_dispatch) pushes this address as the
+; handler's return address; when the handler `ret`s, control lands here and
+; SYS_SIGRETURN restores the interrupted context — so this does not return. The
+; libc signal() wrapper hands the kernel this address as the sa_restorer.
+global __sigreturn
+__sigreturn:
+    mov rax, 18     ; SYS_SIGRETURN
+    syscall
+    hlt             ; unreachable: the kernel iretq's back to the interrupted RIP

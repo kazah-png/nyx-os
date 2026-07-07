@@ -154,6 +154,7 @@ global kernel_rsp
 global user_cr3
 global syscall_frame_ptr
 extern syscall_handler
+extern signal_dispatch
 
 section .data
 user_rsp:  dq 0
@@ -197,6 +198,12 @@ syscall_entry:
     mov [syscall_frame_ptr], rsp ; expose the saved user frame to do_fork()
     call syscall_handler
     mov [rsp + 112], rax         ; return value -> saved RAX slot
+
+    ; Deliver a pending signal (still on the kernel CR3; user_cr3 valid for the user
+    ; stack write). May rewrite the frame (RIP->handler, RDI->signo) + user_rsp, or
+    ; not return at all for a default-terminate signal. rsp = the saved user frame.
+    mov rdi, rsp
+    call signal_dispatch
 
     ; Return: back to user CR3 first (higher-half stack stays mapped), then restore.
     mov rax, [user_cr3]

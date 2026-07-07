@@ -179,6 +179,10 @@ void keyboard_irq_handler(void* unused) {
         uint8_t sc = inb(0x60);
         char c = scancode_to_ascii(sc);
         if (c) {
+            if (ctrl_pressed && (c == 'c' || c == 'C')) {   // Ctrl-C -> SIGINT
+                signal_send_foreground(SIGINT);             // to the foreground process
+                return;                                     // consume it (don't buffer 'c')
+            }
             int next = (kbd_head + 1) % KBD_BUFFER_SIZE;
             if (next != kbd_tail) {
                 kbd_buffer[kbd_head] = c;

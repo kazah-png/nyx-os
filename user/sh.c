@@ -165,6 +165,14 @@ static void run_demo(void) {
     printf("sh: demo done.\n");
 }
 
+/* SIGINT (Ctrl-C): abandon the current input line and drop to a fresh prompt, like
+ * a real shell. We print ^C here; the interrupted read(0) returns EINTR (<0), so the
+ * REPL loop just continues and reprints the prompt. */
+static void on_sigint(int sig) {
+    (void)sig;
+    write(1, "^C\n", 3);
+}
+
 int main(int argc, char** argv) {
     /* sh -c "one command line" */
     if (argc >= 3 && strcmp(argv[1], "-c") == 0) {
@@ -177,13 +185,15 @@ int main(int argc, char** argv) {
 
     /* Interactive REPL: read(0) blocks in the kernel's canonical line
      * discipline (echo + backspace handled there), so this is a live shell. */
-    printf("NyxOS sh v0.3 — interactive; try 'demo', 'ls /', 'cat FILE | wc', 'CMD &', 'exit'\n");
+    signal(SIGINT, on_sigint);           /* Ctrl-C -> fresh prompt instead of dying */
+    printf("NyxOS sh v0.3 — interactive; try 'demo', 'ls /', 'CMD &', Ctrl-C, 'exit'\n");
     for (;;) {
         reap_bg();                       /* report finished background jobs */
         write(1, "sh$ ", 4);
         char line[128];
         long n = read(0, line, sizeof(line) - 1);
-        if (n <= 0) {                    /* no stdin (EOF/error) — leave */
+        if (n < 0) continue;             /* interrupted (Ctrl-C -> SIGINT): fresh prompt */
+        if (n == 0) {                    /* real EOF — leave */
             printf("sh: no stdin, bye\n");
             break;
         }

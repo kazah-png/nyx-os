@@ -1,5 +1,15 @@
 #include "libc.h"
 
+/* SIGUSR1 handler for the signals demo — runs in ring 3 when the signal is
+ * delivered, then returns (through the crt0 trampoline / SYS_SIGRETURN) to wherever
+ * the process was interrupted. printf here is fine: it just does write() syscalls,
+ * and the signal is blocked while its own handler runs. */
+static volatile int sigusr1_count = 0;
+static void on_sigusr1(int sig) {
+    sigusr1_count++;
+    printf("  [handler] caught signal %d (SIGUSR1), count now %d\n", sig, sigusr1_count);
+}
+
 int main(void) {
     printf("\n*** NyxOS Userspace Init (x86_64) ***\n");
     printf("PID: %ld\n", getpid());
@@ -267,6 +277,31 @@ int main(void) {
         }
         printf("  polled %d time(s) while running, then reaped pid %ld status %d (expected 7)\n",
                polls, r, st);
+    }
+
+    /* Signals: (1) install a handler, raise it, and confirm the handler ran AND
+     * control returned to main (the kernel diverts into the handler, then SYS_SIGRETURN
+     * restores this context); (2) SIG_IGN drops a signal; (3) a cross-process kill with
+     * the default action terminates the target — waitpid reports 128+signo. */
+    printf("Testing signals (handler + SIG_IGN + kill/default-terminate)...\n");
+    signal(SIGUSR1, on_sigusr1);
+    printf("  installed SIGUSR1 handler; raising SIGUSR1...\n");
+    raise(SIGUSR1);
+    printf("  returned to main after the handler; ran %d time(s) (expect 1)\n", sigusr1_count);
+
+    signal(SIGUSR2, SIG_IGN);
+    raise(SIGUSR2);
+    printf("  raised SIGUSR2 with SIG_IGN -> ignored, still running\n");
+
+    long spid = fork();
+    if (spid == 0) {
+        for (;;) getpid();                  /* busy via syscalls so the signal can deliver */
+    } else if (spid > 0) {
+        kill((int)spid, SIGTERM);           /* default action: terminate the child */
+        int st = 0;
+        waitpid((int)spid, &st);
+        printf("  kill(child %ld, SIGTERM) -> waitpid status %d (expect %d = 128+SIGTERM)\n",
+               spid, st, 128 + SIGTERM);
     }
 
     printf("Init complete, exiting.\n");

@@ -6,10 +6,10 @@
   <strong>Custom x86_64 kernel · C and Assembly · General-purpose OS</strong>
   <br/><br/>
   <!-- Badges -->
-  <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.8.10">
-    <img src="https://img.shields.io/badge/release-v5.8.10-00ff9d?style=flat" />
+  <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.8.11">
+    <img src="https://img.shields.io/badge/release-v5.8.11-00ff9d?style=flat" />
   </a>
-  <img src="https://img.shields.io/badge/status-v5.8.10-00ff9d?style=flat" />
+  <img src="https://img.shields.io/badge/status-v5.8.11-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/TCP-yes-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/GUI-window%20compositor-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/%F0%9F%8C%99%20NyxC-runtime-8b5cf6?style=flat" />
@@ -53,7 +53,7 @@ ______          \'/
     N Y X O S
     G U I   S U I T E
   -------------------------------------
-  Kernel:     NyxOS 5.8.10
+  Kernel:     NyxOS 5.8.11
   Arch:       x86_64 (long mode)
   Memory:     256 MB total, 240 MB free
   Heap:       16384 KB
@@ -161,7 +161,7 @@ nyx:root$ ls /
 bin/   dev/   etc/   home/  mnt/   root/  tmp/   usr/   var/
 
 nyx:root$ uname
-NyxOS 5.8.10 (Scheduler) x86_64
+NyxOS 5.8.11 (Scheduler) x86_64
 
 nyx:root$ mem
 Physical memory: 256 MB total, 252 MB free
@@ -244,7 +244,7 @@ Done.
 ### ELF userspace & syscalls (v3.0.0+)
 - **ELF64 loader** — validates, parses PT_LOAD segments, maps pages per-process
 - **Initramfs** — embedded cpio archive with ELF64 binaries (init.elf, hello.elf)
-- **16 syscalls** via `syscall`/`sysret`: `exit`, `write`, `print`, `open`, `read`, `close`, `getpid`, `sbrk`, `fsize`, `exec`, `fork`, `waitpid`, `pipe`, `execve`, `dup2`, `getdents`
+- **19 syscalls** via `syscall`/`sysret`: `exit`, `write`, `print`, `open`, `read`, `close`, `getpid`, `sbrk`, `fsize`, `exec`, `fork`, `waitpid`, `pipe`, `execve`, `dup2`, `getdents`, `kill`, `signal`, `sigreturn`
 - **C runtime** — minimal libc with `printf`, `sprintf`, `snprintf`, `malloc`, `free`, string/memory functions
 - **Auto-boot init** — kernel loads and executes `/init.elf` from initramfs at startup
 - **Ring 3 execution** — user processes run in ring 3, I/O ports denied via TSS I/O map base
@@ -449,7 +449,7 @@ See the full **[NyxOS Status Report](https://github.com/kazah-png/nyx-os/issues/
 - ✅ NX bit (No-Execute) + SMEP (Supervisor Mode Execution Prevention)
 - ✅ Local APIC + I/O APIC initialization
 - ✅ ELF64 userspace loader with initramfs (auto-boot init.elf)
-- ✅ 16 syscalls via syscall/sysret (exit, write, print, open, read, close, getpid, sbrk, fsize, exec, fork, waitpid, pipe, execve, dup2, getdents)
+- ✅ 19 syscalls via syscall/sysret (…, dup2, getdents, kill, signal, sigreturn)
 - ✅ Minimal C library for userspace (printf, malloc, free, snprintf, string ops)
 - ✅ Real-time clock (RTC) driver with wall-clock time display
 - ✅ Desktop polish (wallpaper, right-click context menu, Settings window, File Manager toolbar)
@@ -477,7 +477,8 @@ See the full **[NyxOS Status Report](https://github.com/kazah-png/nyx-os/issues/
 - ✅ `execve()` argv passing: SysV entry stack (`[argc][argv…][NULL]`, crt0 reads `[rsp]`) — programs receive real command-line arguments (verified: `execve("/args.elf", {"args","uno","dos","tres"})` prints all 4 and exits with argc=4)
 - ✅ **Interactive userspace shell** (`/sh.elf` + `/echo.elf` + `/upper.elf`): a live ring-3 REPL — `read(0)` reads the keyboard (canonical line discipline: echo + backspace), wiring `a | b` with fork+execve+waitpid+pipe+dup2 (verified live: typed `echo hola nyx` → `hola nyx`, `echo … | upper` → `UPPERCASE`, `exit`)
 - ✅ Lazy `sbrk` (demand-paged heap): `SYS_SBRK` just moves the break; heap pages fault in on first touch (`[heap_start, program_break)` window in the #PF handler) — a big `malloc` costs only the pages actually written (verified: `malloc(8000)` grows the break 3 pages lazily, data intact)
-- ✅ **Coreutils** (`/cat.elf`, `/wc.elf`, `/ls.elf`) + shell **background jobs** (`cmd &`): `ls` via a new `SYS_GETDENTS` (kernel does the `vfs_open`/`readdir`/`close`, copies fixed 68-byte records to ring 3); `cat`/`wc` stream files or stdin; a trailing `&` runs a pipeline in the background via non-blocking `waitpid(…, WNOHANG)` — `[bg] pid N` at launch, `[done] pid N` reaped at the next prompt (verified: `ls /` lists dirs + all `.elf`s, `cat welcome.txt | wc` → `1 4 26`, `echo … | upper &` backgrounds and both stages reap) — next: `mmap`, arrow-key history
+- ✅ **Coreutils** (`/cat.elf`, `/wc.elf`, `/ls.elf`) + shell **background jobs** (`cmd &`): `ls` via a new `SYS_GETDENTS` (kernel does the `vfs_open`/`readdir`/`close`, copies fixed 68-byte records to ring 3); `cat`/`wc` stream files or stdin; a trailing `&` runs a pipeline in the background via non-blocking `waitpid(…, WNOHANG)` — `[bg] pid N` at launch, `[done] pid N` reaped at the next prompt (verified: `ls /` lists dirs + all `.elf`s, `cat welcome.txt | wc` → `1 4 26`, `echo … | upper &` backgrounds and both stages reap)
+- ✅ **Signals** (`kill`/`signal`/`sigreturn`): POSIX-style signals delivered at return-to-ring-3 — a user handler is entered by rewriting the saved frame (RIP=handler, RDI=signo) with a crt0 trampoline that returns through `SYS_SIGRETURN`; `SIG_DFL` terminates (exit `128+signo`), `SIG_IGN` drops. **Ctrl-C** posts SIGINT to the foreground process and interrupts a blocking `read(0)` (verified: SIGUSR1 handler runs then control returns to main, `kill(child, SIGTERM)` → status 143, and Ctrl-C at the shell prints `^C` + a fresh prompt without killing it) — next: `mmap`, arrow-key history
 - ✅ NIC-side TCP listen (inbound connections — NyxOS serves HTTP to a host `curl` via `hostfwd`)
 - ✅ **Nyx C language runtime** (`nyxrt.h`/`nyxrt.c`): typed subset of C with string interpolation, transpiles to C, first `.nyx` program (`hello_nyx.elf`) prints "hola desde nyx c! pid=5"
 

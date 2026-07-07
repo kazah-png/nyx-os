@@ -131,6 +131,10 @@ static int stdin_read_line(char* kbuf, int max) {
         char c = getchar_poll();
         if (!c) {
             if (!self) break;                    /* no process context: don't block */
+            if (signal_pending(self)) {          /* a signal (e.g. Ctrl-C) is waiting */
+                len = -EINTR;                    /* bail so the syscall returns + delivers */
+                break;
+            }
             self->blocked_in_kernel = 1;         /* resume us on the kernel CR3 */
             __asm__ volatile("sti; hlt");        /* yield until the next tick/IRQ */
             __asm__ volatile("cli");
@@ -541,6 +545,24 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3, uin
             }
             vfs_close(fd);
             return count;
+        }
+        case SYS_KILL:
+            // kill(pid, sig): post signal `sig` to process `pid` (sig 0 = existence
+            // probe). Delivery happens when the target next returns to ring 3.
+            return (uint64_t)(int64_t)do_kill((int)a1, (int)a2);
+        case SYS_SIGNAL:
+            // signal(sig, handler, trampoline): set the disposition of `sig`
+            // (SIG_DFL/SIG_IGN or a ring-3 handler VA) and record the sigreturn
+            // trampoline. Returns the previous disposition, or -1.
+            return (uint64_t)do_signal((int)a1, a2, a3);
+        case SYS_SIGRETURN: {
+            // Invoked by the ring-3 trampoline after a handler returns. do_sigreturn
+            // restores the pre-handler context into this syscall's frame; we return
+            // the restored RAX so the entry stub's post-write leaves it intact.
+            do_sigreturn();
+            extern uint64_t syscall_frame_ptr;
+            uint64_t* f = (uint64_t*)syscall_frame_ptr;
+            return f ? f[14] : 0;
         }
         default:
             printf("[SYSCALL] Unknown syscall %lu\n", no);

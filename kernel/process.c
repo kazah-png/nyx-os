@@ -215,6 +215,11 @@ int do_fork(void) {
     child->heap_start    = parent->heap_start;       // ...same lazy-sbrk window
     strncpy(child->comm, parent->comm, 31);
     child->comm[31] = '\0';
+    // Inherit signal dispositions + trampoline (POSIX fork); the child starts with
+    // no pending or in-flight signals (sig_pending/sig_active/sig_saved memset to 0).
+    for (int i = 0; i < NSIG; i++) child->sig_handlers[i] = parent->sig_handlers[i];
+    child->sig_mask = parent->sig_mask;
+    child->sig_trampoline = parent->sig_trampoline;
     // Inherit the parent's PIPE fds (with a refcount bump) so the classic
     // pipe();fork() pattern works. VFS fds are deliberately NOT inherited — their
     // handles aren't reference-counted, so sharing would risk a double close; the
@@ -270,6 +275,10 @@ int do_execve(const uint8_t* data, uint32_t size, char* const* kargv, int argc) 
     self->page_directory = pd;
     self->program_break = brk;
     self->heap_start = brk;      // fresh image -> fresh lazy heap window
+    // Reset signal state: the new image invalidates every handler address, so all
+    // caught signals revert to SIG_DFL (POSIX). Clear pending/in-flight state too.
+    for (int i = 0; i < NSIG; i++) self->sig_handlers[i] = SIG_DFL;
+    self->sig_pending = 0; self->sig_active = 0; self->sig_mask = 0; self->sig_trampoline = 0;
     if (old_pd) free_page_directory(old_pd);
 
     // Build the argv frame on the NEW stack. copy_to_user translates through

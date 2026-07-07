@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.8.10"
+#define KERNEL_VERSION "5.8.11"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -89,11 +89,43 @@ typedef __builtin_va_list va_list;
 #define SYS_EXECVE  13
 #define SYS_DUP2    14
 #define SYS_GETDENTS 15
+#define SYS_KILL     16
+#define SYS_SIGNAL   17
+#define SYS_SIGRETURN 18
 
 /* waitpid() options (a3). WNOHANG makes SYS_WAITPID return 0 immediately instead
  * of blocking when a matching child exists but has not exited yet — the shell
  * uses it to reap finished `&` background jobs without stalling at the prompt. */
 #define WNOHANG     1
+
+/* ------------------------------------------------------------------ */
+/*  Signals (v5.8.11) — a subset of POSIX                             */
+/* ------------------------------------------------------------------ */
+/* Signal numbers fit in a u32 bitmask (bit i = signal i), so NSIG <= 32. */
+#define NSIG        32
+#define SIGHUP      1
+#define SIGINT      2    /* Ctrl-C */
+#define SIGQUIT     3
+#define SIGILL      4
+#define SIGABRT     6
+#define SIGFPE      8
+#define SIGKILL     9    /* uncatchable — always the default (terminate) action */
+#define SIGUSR1     10
+#define SIGSEGV     11
+#define SIGUSR2     12
+#define SIGPIPE     13
+#define SIGALRM     14
+#define SIGTERM     15
+#define SIGCHLD     17
+#define SIGCONT     18
+#define SIGSTOP     19   /* uncatchable */
+
+/* Handler sentinels (a real handler is a ring-3 code address, always > 1). */
+#define SIG_DFL     0UL  /* default action (terminate, or ignore for SIGCHLD) */
+#define SIG_IGN     1UL  /* ignore the signal */
+
+/* read()/etc. return this (negated) when a signal interrupts a blocking wait. */
+#define EINTR       4
 
 // Pipe fds are stored in the per-process fd table (ufd_handle) with this flag set,
 // so SYS_READ/WRITE/CLOSE route to the pipe layer instead of the VFS. The low bits
@@ -183,6 +215,16 @@ typedef struct process {
     int      ufd_handle[PROC_MAX_FDS];
     uint32_t ufd_offset[PROC_MAX_FDS];
     uint8_t  ufd_inuse[PROC_MAX_FDS];
+    // Signals (v5.8.11). Delivered at return-to-ring-3 (signal_dispatch, from the
+    // syscall path). sig_handlers: 0=SIG_DFL, 1=SIG_IGN, else a ring-3 handler VA.
+    uint32_t sig_pending;             // bit i set = signal i is pending
+    uint32_t sig_mask;                // bit i set = signal i is blocked (deferred)
+    uint32_t sig_active;              // bit i set = handler for signal i is on the user stack now
+    uint64_t sig_handlers[NSIG];      // per-signal disposition (SIG_DFL/SIG_IGN/handler VA)
+    uint64_t sig_trampoline;          // ring-3 sigreturn trampoline VA (libc __sigreturn)
+    // Ring-3 context saved when a handler is entered, restored by SYS_SIGRETURN:
+    // [0..14]=GPRs r15..rax (frame order), [15]=RFLAGS, [16]=RIP, [17]=user RSP.
+    uint64_t sig_saved[18];
     struct process* next;
     struct process* parent;
     struct process* children;
@@ -590,6 +632,15 @@ process_t* create_process(const char* name, void* entry, uint64_t flags);
 process_t* create_user_process(const char* name, void* entry, void* user_stack, uint64_t* page_dir);
 int do_fork(void);   // SYS_FORK: COW-clone the caller; returns child pid to parent, 0 in child
 int do_waitpid(int pid, int* out_code, int options); // SYS_WAITPID: reap a child; -1 none, 0 WNOHANG-none-ready, >0 pid
+// Signals (signal.c). signal_dispatch is called from syscall_entry (isr_stubs.asm)
+// on the return path, with the saved user frame; it delivers one pending signal.
+void signal_dispatch(uint64_t* frame);
+int  do_kill(int pid, int sig);                      // SYS_KILL: post `sig` to `pid`
+long do_signal(int sig, uint64_t handler, uint64_t trampoline); // SYS_SIGNAL: install disposition
+void do_sigreturn(void);                             // SYS_SIGRETURN: restore pre-handler context
+void signal_raise(process_t* p, int sig);            // post a signal to a process (+ wake if blocked)
+int  signal_pending(process_t* p);                   // 1 if a deliverable (unblocked) signal waits
+void signal_send_foreground(int sig);                // keyboard Ctrl-C -> foreground process
 int do_execve(const uint8_t* data, uint32_t size,
               char* const* kargv, int argc); // SYS_EXECVE: replace caller's image; -1 on failure
 int copy_to_user(uint64_t udst, const void* src, uint64_t len); // via user_cr3 page walk (syscall.c)

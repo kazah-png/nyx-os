@@ -17,8 +17,34 @@
 #define SYS_EXECVE  13
 #define SYS_DUP2    14
 #define SYS_GETDENTS 15
+#define SYS_KILL     16
+#define SYS_SIGNAL   17
+#define SYS_SIGRETURN 18
 
 #define WNOHANG     1   /* waitpid option: don't block if no child is ready */
+
+/* Signals (subset of POSIX) — see kernel/signal.c. */
+#define SIGHUP   1
+#define SIGINT   2   /* Ctrl-C */
+#define SIGQUIT  3
+#define SIGILL   4
+#define SIGABRT  6
+#define SIGFPE   8
+#define SIGKILL  9   /* uncatchable */
+#define SIGUSR1  10
+#define SIGSEGV  11
+#define SIGUSR2  12
+#define SIGPIPE  13
+#define SIGALRM  14
+#define SIGTERM  15
+#define SIGCHLD  17
+#define SIGCONT  18
+#define SIGSTOP  19  /* uncatchable */
+
+typedef void (*sighandler_t)(int);   /* signal handler: void handler(int signo) */
+
+#define SIG_DFL  ((sighandler_t)0)   /* default action (terminate / ignore) */
+#define SIG_IGN  ((sighandler_t)1)   /* ignore the signal */
 
 /* One directory entry as returned by getdents(). Layout MUST match the kernel's
  * record in SYS_GETDENTS (syscall.c): 64-byte name + u32 type = 68 bytes, no
@@ -135,6 +161,30 @@ static inline long waitpid3(int pid, int* status, int options) {
  * cannot fault a lazy-sbrk heap page in) — memset the buffer first. */
 static inline long getdents(const char* path, nyx_dirent_t* buf, int max) {
     return syscall3(SYS_GETDENTS, (long)path, (long)buf, max);
+}
+
+/* The sigreturn trampoline (crt0.asm): the handler's return address, which the
+ * kernel pushes onto the user stack before entering a handler. */
+extern void __sigreturn(void);
+
+/* kill(pid, sig): post signal `sig` to process `pid`. sig 0 probes existence.
+ * Returns 0, or -1 if there is no such process. */
+static inline long kill(int pid, int sig) {
+    return syscall2(SYS_KILL, pid, sig);
+}
+
+/* signal(sig, handler): set the disposition of `sig` to SIG_DFL, SIG_IGN, or a
+ * handler function. Returns the previous disposition, or SIG_ERR ((sighandler_t)-1)
+ * for an invalid/uncatchable signal. The kernel is told the __sigreturn trampoline
+ * so the handler can return normally. */
+#define SIG_ERR ((sighandler_t)-1)
+static inline sighandler_t signal(int sig, sighandler_t handler) {
+    return (sighandler_t)syscall3(SYS_SIGNAL, sig, (long)handler, (long)__sigreturn);
+}
+
+/* raise(sig): send `sig` to the calling process. */
+static inline long raise(int sig) {
+    return syscall2(SYS_KILL, (int)getpid(), sig);
 }
 
 /* Create a pipe: fds[0] is the read end, fds[1] the write end. Returns 0, or -1.
