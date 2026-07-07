@@ -44,9 +44,47 @@ static void resolve(const char* name, char* out) {
     strcat(out, ".elf");
 }
 
+/* Background jobs. A pipeline ending in '&' is not waited on; its pids are parked
+ * here and reaped without blocking at each prompt via waitpid3(.., WNOHANG). The
+ * shell must reap its own background children: reap_zombies() in the kernel only
+ * frees procs whose parent has already gone, so an alive shell owns its zombies. */
+#define MAX_BG 16
+static long bg_pids[MAX_BG];
+static int  bg_count = 0;
+
+static void bg_add(long pid) {
+    if (pid > 0 && bg_count < MAX_BG) bg_pids[bg_count++] = pid;
+}
+
+/* Non-blocking sweep of finished background jobs. Called before each prompt. */
+static void reap_bg(void) {
+    for (int i = 0; i < bg_count; ) {
+        int st = 0;
+        long r = waitpid3((int)bg_pids[i], &st, WNOHANG);
+        if (r == bg_pids[i]) {                      /* exited: report and drop */
+            printf("[done] pid %ld (status %d)\n", bg_pids[i], st);
+            bg_pids[i] = bg_pids[--bg_count];       /* swap-remove */
+        } else if (r < 0) {                         /* already gone: drop quietly */
+            bg_pids[i] = bg_pids[--bg_count];
+        } else {
+            i++;                                    /* r == 0: still running */
+        }
+    }
+}
+
 /* Run one command line (destroys it). Stages split on '|', each fork+execve'd
- * with pipes wired via dup2; the shell reaps every stage with waitpid. */
+ * with pipes wired via dup2. A trailing '&' backgrounds the whole pipeline (the
+ * shell parks the pids and returns immediately); otherwise it reaps every stage
+ * with waitpid. */
 static void run_line(char* line) {
+    /* Trailing '&' (ignoring spaces) -> background the pipeline. */
+    int background = 0;
+    {
+        char* e = line + strlen(line);
+        while (e > line && e[-1] == ' ') e--;
+        if (e > line && e[-1] == '&') { background = 1; *--e = '\0'; }
+    }
+
     char* stages[MAX_STAGES];
     int nstages = 0;
     char* p = line;
@@ -90,6 +128,12 @@ static void run_line(char* line) {
         if (has_next) { close(pfd[1]); prev_rd = pfd[0]; }
     }
 
+    if (background) {                        /* don't wait — park the pids and go */
+        for (int s = 0; s < nstages; s++) bg_add(pids[s]);
+        printf("[bg] pid %ld\n", pids[nstages - 1]);
+        return;
+    }
+
     for (int s = 0; s < nstages; s++) {
         int st = 0;
         waitpid((int)pids[s], &st);
@@ -105,6 +149,10 @@ static void run_demo(void) {
     static const char* script[] = {
         "echo hello from the NyxOS userspace shell",
         "echo pipelines are working on nyxos | upper",
+        "ls /",
+        "cat /home/user/welcome.txt",
+        "cat /home/user/welcome.txt | wc",
+        "echo running in the background | upper &",
         "args one two three",
     };
     for (unsigned i = 0; i < sizeof(script) / sizeof(script[0]); i++) {
@@ -129,8 +177,9 @@ int main(int argc, char** argv) {
 
     /* Interactive REPL: read(0) blocks in the kernel's canonical line
      * discipline (echo + backspace handled there), so this is a live shell. */
-    printf("NyxOS sh v0.2 — interactive; try 'demo', 'echo hi | upper', 'exit'\n");
+    printf("NyxOS sh v0.3 — interactive; try 'demo', 'ls /', 'cat FILE | wc', 'CMD &', 'exit'\n");
     for (;;) {
+        reap_bg();                       /* report finished background jobs */
         write(1, "sh$ ", 4);
         char line[128];
         long n = read(0, line, sizeof(line) - 1);

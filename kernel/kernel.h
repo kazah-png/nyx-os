@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.8.9"
+#define KERNEL_VERSION "5.8.10"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -88,6 +88,12 @@ typedef __builtin_va_list va_list;
 #define SYS_PIPE    12
 #define SYS_EXECVE  13
 #define SYS_DUP2    14
+#define SYS_GETDENTS 15
+
+/* waitpid() options (a3). WNOHANG makes SYS_WAITPID return 0 immediately instead
+ * of blocking when a matching child exists but has not exited yet — the shell
+ * uses it to reap finished `&` background jobs without stalling at the prompt. */
+#define WNOHANG     1
 
 // Pipe fds are stored in the per-process fd table (ufd_handle) with this flag set,
 // so SYS_READ/WRITE/CLOSE route to the pipe layer instead of the VFS. The low bits
@@ -583,7 +589,7 @@ void init_process(void);
 process_t* create_process(const char* name, void* entry, uint64_t flags);
 process_t* create_user_process(const char* name, void* entry, void* user_stack, uint64_t* page_dir);
 int do_fork(void);   // SYS_FORK: COW-clone the caller; returns child pid to parent, 0 in child
-int do_waitpid(int pid, int* out_code); // SYS_WAITPID: reap a child; -1 none, -2 running, >0 pid
+int do_waitpid(int pid, int* out_code, int options); // SYS_WAITPID: reap a child; -1 none, 0 WNOHANG-none-ready, >0 pid
 int do_execve(const uint8_t* data, uint32_t size,
               char* const* kargv, int argc); // SYS_EXECVE: replace caller's image; -1 on failure
 int copy_to_user(uint64_t udst, const void* src, uint64_t len); // via user_cr3 page walk (syscall.c)

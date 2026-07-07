@@ -419,7 +419,7 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3, uin
             // hands back on the kernel CR3 with our syscall globals restored, so the
             // copy_to_user of the exit status below is safe.
             int code = 0;
-            int r = do_waitpid((int)a1, &code);
+            int r = do_waitpid((int)a1, &code, (int)a3);   // a3 = options (WNOHANG)
             if (r > 0 && a2) {
                 if (!user_ptr_ok(a2, sizeof(int))) return -1;
                 copy_to_user(a2, &code, sizeof(int));
@@ -504,6 +504,43 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3, uin
             p->ufd_handle[newfd] = internal;
             p->ufd_offset[newfd] = 0;
             return newfd;
+        }
+        case SYS_GETDENTS: {
+            // getdents(path, buf, max): enumerate directory `path`, writing up to
+            // `max` fixed 68-byte records { char name[64]; u32 type } into the user
+            // buffer. Returns the number written, or -1. The whole vfs_open/readdir/
+            // close cycle runs here so ring 3 never holds a raw VFS handle. This is
+            // the enumeration primitive behind `ls`.
+            //
+            // NOTE (lazy sbrk): copy_to_user walks the *user* page tables and cannot
+            // fault a not-yet-present heap page in — a malloc'd buffer whose later
+            // pages have never been touched would fail the copy. `ls` memset()s its
+            // buffer first (touching every page); if a copy still fails here we stop
+            // and return the records written so far rather than -1, so a caller that
+            // forgets gets a truncated-but-valid listing.
+            if (!user_str_ok(a1)) return -1;
+            char path[128];
+            if (copy_str_from_user(path, a1, sizeof(path)) != 0) return -1;
+            int max = (int)a3;
+            if (max <= 0) return -1;
+            if (max > 256) max = 256;                    // sanity clamp
+            struct { char name[64]; uint32_t type; } rec; // must match user nyx_dirent_t
+            const uint64_t recsz = sizeof(rec);           // 68 (u32 tail, no padding)
+            if (!user_ptr_ok(a2, (uint64_t)max * recsz)) return -1;
+            int fd = vfs_open(path, 0, 0);
+            if (fd < 0) return -1;
+            int count = 0;
+            for (dirent_t* de = vfs_readdir(fd); de && count < max; de = vfs_readdir(fd)) {
+                int i = 0;
+                for (; i < 63 && de->name[i]; i++) rec.name[i] = de->name[i];
+                rec.name[i] = '\0';
+                rec.type = de->type;
+                if (copy_to_user(a2 + (uint64_t)count * recsz, &rec, recsz) != 0)
+                    break;                                // untouched lazy page: stop, keep what we have
+                count++;
+            }
+            vfs_close(fd);
+            return count;
         }
         default:
             printf("[SYSCALL] Unknown syscall %lu\n", no);

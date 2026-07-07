@@ -565,7 +565,7 @@ void reap_zombies(void) {
 // on entry and restore them before returning, so the asm syscall-return path iretq's
 // back into THIS process. Interrupts stay masked from the decision to return until
 // that iretq re-enables them.
-int do_waitpid(int wpid, int* out_code) {
+int do_waitpid(int wpid, int* out_code, int options) {
     extern void free_page_directory(uint64_t* pml4);
     extern uint64_t user_cr3, user_rsp;
     process_t* self = get_current_process();
@@ -598,8 +598,11 @@ int do_waitpid(int wpid, int* out_code) {
             kfree(child);
             break;
         }
-        // A child exists but hasn't exited — park until one does. The scheduler runs
-        // the child (on its own kernel stack), whose SYS_EXIT wakes us via wake_waiters.
+        // A child exists but hasn't exited. WNOHANG callers (shell reaping `&` jobs)
+        // don't want to block — report "none ready yet" with 0 and return at once.
+        if (options & WNOHANG) { result = 0; break; }     // interrupts stay off until return
+        // Otherwise park until one does. The scheduler runs the child (on its own
+        // kernel stack), whose SYS_EXIT wakes us via wake_waiters.
         self->blocked_in_kernel = 1;                      // resume us on the kernel CR3
         self->state = PROC_BLOCKED;
         self->waiting_for = (wpid > 0) ? (uint32_t)wpid : 0;

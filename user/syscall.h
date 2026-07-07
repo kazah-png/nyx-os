@@ -16,6 +16,17 @@
 #define SYS_PIPE    12
 #define SYS_EXECVE  13
 #define SYS_DUP2    14
+#define SYS_GETDENTS 15
+
+#define WNOHANG     1   /* waitpid option: don't block if no child is ready */
+
+/* One directory entry as returned by getdents(). Layout MUST match the kernel's
+ * record in SYS_GETDENTS (syscall.c): 64-byte name + u32 type = 68 bytes, no
+ * padding. type is the VFS node type (1 = directory, else regular file). */
+typedef struct {
+    char name[64];
+    unsigned int type;
+} nyx_dirent_t;
 
 /* x86_64 syscall ABI:
  *   RAX = syscall number
@@ -109,6 +120,21 @@ static inline long fork(void) {
  * blocks the caller until a child exits (pid <= 0 waits for any child). */
 static inline long waitpid(int pid, int* status) {
     return syscall2(SYS_WAITPID, pid, (long)status);
+}
+
+/* waitpid with options. waitpid3(pid, &st, WNOHANG) returns the pid if that child
+ * has already exited (status in *status), 0 if it is still running, or -1 if there
+ * is no such child — the non-blocking reap the shell uses for `&` background jobs. */
+static inline long waitpid3(int pid, int* status, int options) {
+    return syscall3(SYS_WAITPID, pid, (long)status, options);
+}
+
+/* Enumerate directory `path` into up to `max` nyx_dirent_t records at `buf`.
+ * Returns the number of entries written, or -1 on error. The caller must ensure
+ * every page of `buf` is resident before the call (the kernel copies into it and
+ * cannot fault a lazy-sbrk heap page in) — memset the buffer first. */
+static inline long getdents(const char* path, nyx_dirent_t* buf, int max) {
+    return syscall3(SYS_GETDENTS, (long)path, (long)buf, max);
 }
 
 /* Create a pipe: fds[0] is the read end, fds[1] the write end. Returns 0, or -1.

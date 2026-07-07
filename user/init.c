@@ -200,6 +200,75 @@ int main(void) {
         printf("  malloc failed\n");
     }
 
+    /* Coreutils via execve: ls, cat, and a cat|wc pipeline — the same /*.elf
+     * binaries the shell runs. `ls /` exercises the new getdents() syscall; the
+     * pipeline wires cat's stdout into wc's stdin with pipe()+dup2(), so wc should
+     * report the welcome file's 2 lines / 8 words / 50 bytes. */
+    printf("Testing coreutils (ls, cat, cat|wc via execve)...\n");
+    long lpid = fork();
+    if (lpid == 0) {
+        char* av[] = { "ls", "/", 0 };
+        execve("/ls.elf", av, 0);
+        exit(1);
+    } else if (lpid > 0) {
+        int st = 0;
+        printf("  $ ls /\n");
+        waitpid((int)lpid, &st);
+    }
+    long ccpid = fork();
+    if (ccpid == 0) {
+        char* av[] = { "cat", "/home/user/welcome.txt", 0 };
+        execve("/cat.elf", av, 0);
+        exit(1);
+    } else if (ccpid > 0) {
+        int st = 0;
+        printf("  $ cat /home/user/welcome.txt\n");
+        waitpid((int)ccpid, &st);
+    }
+    int wpfd[2];
+    if (pipe(wpfd) == 0) {
+        long p1 = fork();
+        if (p1 == 0) {                              /* cat -> pipe */
+            dup2(wpfd[1], 1); close(wpfd[0]); close(wpfd[1]);
+            char* av[] = { "cat", "/home/user/welcome.txt", 0 };
+            execve("/cat.elf", av, 0);
+            exit(1);
+        }
+        long p2 = fork();
+        if (p2 == 0) {                              /* pipe -> wc */
+            dup2(wpfd[0], 0); close(wpfd[0]); close(wpfd[1]);
+            char* av[] = { "wc", 0 };
+            execve("/wc.elf", av, 0);
+            exit(1);
+        }
+        close(wpfd[0]); close(wpfd[1]);
+        int st = 0;
+        printf("  $ cat /home/user/welcome.txt | wc   (lines words bytes)\n  ");
+        if (p1 > 0) waitpid((int)p1, &st);
+        if (p2 > 0) waitpid((int)p2, &st);
+    }
+
+    /* waitpid(WNOHANG): the non-blocking reap the shell uses for `&` jobs. Fork a
+     * child that spins briefly then exits(7); poll with waitpid3(.., WNOHANG),
+     * which returns 0 while the child still runs and its pid once it has exited. */
+    printf("Testing waitpid(WNOHANG) (non-blocking reap)...\n");
+    long bpid = fork();
+    if (bpid == 0) {
+        for (volatile long i = 0; i < 2000000; i++) { }
+        exit(7);
+    } else if (bpid > 0) {
+        int polls = 0, st = 0;
+        long r;
+        for (;;) {
+            r = waitpid3((int)bpid, &st, WNOHANG);
+            if (r != 0) break;                      /* reaped (pid) or error (-1) */
+            polls++;
+            for (volatile int j = 0; j < 50000; j++) { }   /* brief pause between polls */
+        }
+        printf("  polled %d time(s) while running, then reaped pid %ld status %d (expected 7)\n",
+               polls, r, st);
+    }
+
     printf("Init complete, exiting.\n");
     return 0;
 }
