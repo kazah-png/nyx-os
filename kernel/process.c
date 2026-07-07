@@ -225,6 +225,9 @@ int do_fork(void) {
     // the parent hadn't touched yet.
     for (int i = 0; i < PROC_MAX_VMAS; i++) child->mmap_vmas[i] = parent->mmap_vmas[i];
     child->mmap_next = parent->mmap_next;
+    // Inherit the working directory (relative paths in the child resolve against it).
+    strncpy(child->cwd, parent->cwd, sizeof(child->cwd) - 1);
+    child->cwd[sizeof(child->cwd) - 1] = '\0';
     // Inherit the parent's PIPE fds (with a refcount bump) so the classic
     // pipe();fork() pattern works. VFS fds are deliberately NOT inherited — their
     // handles aren't reference-counted, so sharing would risk a double close; the

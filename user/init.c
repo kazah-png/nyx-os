@@ -363,6 +363,31 @@ int main(void) {
         close((int)rfd);
     }
 
+    /* Per-process working directory: getcwd, chdir into /home/user, then open a
+     * RELATIVE path ("welcome.txt") that the kernel resolves against the cwd, and
+     * chdir("..") to exercise path normalization. */
+    printf("Testing chdir/getcwd + relative open...\n");
+    char cwd[128];
+    getcwd(cwd, sizeof(cwd));
+    printf("  cwd at start: %s\n", cwd);
+    if (chdir("/home/user") == 0) {
+        getcwd(cwd, sizeof(cwd));
+        printf("  after chdir(/home/user): %s\n", cwd);
+        long wfd = open("welcome.txt", O_RDONLY, 0);   /* relative to the cwd */
+        if (wfd >= 0) {
+            char b[64];
+            long got = read((int)wfd, b, sizeof(b) - 1);
+            if (got > 0) b[got] = '\0';
+            printf("  open(\"welcome.txt\") [relative] -> %ld bytes: %s", got, got > 0 ? b : "\n");
+            close((int)wfd);
+        } else {
+            printf("  relative open failed\n");
+        }
+        chdir("..");
+        getcwd(cwd, sizeof(cwd));
+        printf("  after chdir(\"..\"): %s (expect /home)\n", cwd);
+    }
+
     printf("Init complete, exiting.\n");
     return 0;
 }

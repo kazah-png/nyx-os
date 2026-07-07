@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.8.13"
+#define KERNEL_VERSION "5.8.14"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -94,6 +94,8 @@ typedef __builtin_va_list va_list;
 #define SYS_SIGRETURN 18
 #define SYS_MMAP     19
 #define SYS_MUNMAP   20
+#define SYS_CHDIR    21
+#define SYS_GETCWD   22
 
 /* waitpid() options (a3). WNOHANG makes SYS_WAITPID return 0 immediately instead
  * of blocking when a matching child exists but has not exited yet — the shell
@@ -260,6 +262,10 @@ typedef struct process {
     // page with the vma's prot (vm_handle_fault); mmap_next bumps up per mapping.
     vma_t    mmap_vmas[PROC_MAX_VMAS];
     uint64_t mmap_next;
+    // Per-process current working directory (absolute, normalized). Relative paths
+    // in open()/getdents() resolve against it; inherited on fork, kept across execve.
+    // An empty string is treated as "/".
+    char     cwd[MAX_PATH];
     struct process* next;
     struct process* parent;
     struct process* children;
@@ -718,6 +724,7 @@ int vfs_close(int fd);
 int vfs_mkdir(const char* path, mode_t mode);
 int vfs_unlink(const char* path);
 dirent_t* vfs_readdir(int fd);
+int vfs_isdir(const char* path);   // 1 if `path` resolves to a directory, else 0
 uint32_t vfs_fsize(int fd);
 uint8_t* vfs_fdata(int fd);
 int vfs_create_from_mem(const char* path, uint8_t* data, uint32_t size);

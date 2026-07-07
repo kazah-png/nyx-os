@@ -325,6 +325,14 @@ int vfs_close(int fd) {
     return 0;
 }
 
+// 1 if `path` names a directory in the ramdisk tree (used by chdir to reject a
+// file). Mount points are directories too.
+int vfs_isdir(const char* path) {
+    if (vfs_find_mount(path)) return 1;
+    vfs_node_t* n = resolve_path(path);
+    return (n && n->type == 1) ? 1 : 0;
+}
+
 int vfs_create_from_mem(const char* path, uint8_t* data, uint32_t size) {
     char child_name[MAX_NAME];
     vfs_node_t* parent = resolve_parent((char*)path, child_name);

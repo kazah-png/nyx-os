@@ -230,6 +230,51 @@ static int copy_str_from_user(char* dst, uint64_t usrc, uint64_t maxlen) {
     return 0;
 }
 
+/* Resolve `path` (absolute, or relative to `cwd`) into a normalized absolute path
+ * in `out`: collapses `.`, `..`, and redundant `/`. cwd must be absolute; an empty
+ * cwd is treated as "/". This is what makes a process's CWD affect open()/getdents()
+ * — a relative path is joined onto the caller's cwd before hitting the VFS. */
+static void path_resolve(const char* cwd, const char* path, char* out, int outsz) {
+    char buf[MAX_PATH];
+    if (path[0] == '/') {
+        strncpy(buf, path, sizeof(buf) - 1); buf[sizeof(buf) - 1] = '\0';
+    } else {
+        const char* c = (cwd && cwd[0]) ? cwd : "/";
+        snprintf(buf, sizeof(buf), "%s/%s", c, path);
+    }
+    char* comps[32]; int nc = 0;                 // component stack (into buf)
+    char* s = buf;
+    while (*s) {
+        while (*s == '/') s++;                    // skip runs of '/'
+        if (!*s) break;
+        char* start = s;
+        while (*s && *s != '/') s++;
+        if (*s) *s++ = '\0';
+        if (start[0] == '.' && start[1] == '\0') continue;              // "."
+        if (start[0] == '.' && start[1] == '.' && start[2] == '\0') {   // ".."
+            if (nc > 0) nc--;
+            continue;
+        }
+        if (nc < 32) comps[nc++] = start;
+    }
+    int o = 0;
+    if (nc == 0) { if (outsz > 1) out[o++] = '/'; }
+    else for (int i = 0; i < nc; i++) {
+        if (o < outsz - 1) out[o++] = '/';
+        for (char* p = comps[i]; *p && o < outsz - 1; p++) out[o++] = *p;
+    }
+    out[o] = '\0';
+}
+
+/* Copy the caller's cwd-resolved absolute path for a user path pointer into `out`. */
+static int copy_path_from_user(char* out, int outsz, uint64_t uptr) {
+    char rel[128];
+    if (copy_str_from_user(rel, uptr, sizeof(rel)) != 0) return -1;
+    process_t* cur = get_cur_proc();
+    path_resolve(cur ? cur->cwd : "/", rel, out, outsz);
+    return 0;
+}
+
 uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
     (void)a4; (void)a5;
     switch (no) {
@@ -304,8 +349,8 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3, uin
         }
         case SYS_OPEN: {
             if (!user_str_ok(a1)) return -1;
-            char path[128];
-            if (copy_str_from_user(path, a1, sizeof(path)) != 0) return -1;
+            char path[MAX_PATH];
+            if (copy_path_from_user(path, sizeof(path), a1) != 0) return -1;  // cwd-relative
             int flags = (int)a2;
             int mode = (int)a3;
             int internal = vfs_open(path, flags, mode);
@@ -535,8 +580,8 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3, uin
             // and return the records written so far rather than -1, so a caller that
             // forgets gets a truncated-but-valid listing.
             if (!user_str_ok(a1)) return -1;
-            char path[128];
-            if (copy_str_from_user(path, a1, sizeof(path)) != 0) return -1;
+            char path[MAX_PATH];
+            if (copy_path_from_user(path, sizeof(path), a1) != 0) return -1;  // cwd-relative
             int max = (int)a3;
             if (max <= 0) return -1;
             if (max > 256) max = 256;                    // sanity clamp
@@ -583,6 +628,31 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3, uin
             return do_mmap(a1, a2, (int)a3, (int)a4);
         case SYS_MUNMAP:
             return (uint64_t)(int64_t)do_munmap(a1, a2);
+        case SYS_CHDIR: {
+            // chdir(path): set the process CWD (relative paths resolve against the
+            // current one). Rejects a path that isn't a directory. Returns 0 or -1.
+            if (!user_str_ok(a1)) return -1;
+            process_t* cur = get_cur_proc();
+            if (!cur) return -1;
+            char abspath[MAX_PATH];
+            if (copy_path_from_user(abspath, sizeof(abspath), a1) != 0) return -1;
+            if (!vfs_isdir(abspath)) return -1;
+            strncpy(cur->cwd, abspath, sizeof(cur->cwd) - 1);
+            cur->cwd[sizeof(cur->cwd) - 1] = '\0';
+            return 0;
+        }
+        case SYS_GETCWD: {
+            // getcwd(buf, size): copy the process CWD out. Returns the length (excl.
+            // NUL), or -1 if the buffer is too small or invalid.
+            process_t* cur = get_cur_proc();
+            if (!cur) return -1;
+            const char* cwd = cur->cwd[0] ? cur->cwd : "/";
+            int len = (int)strlen(cwd) + 1;
+            int sz = (int)a2;
+            if (sz < len || !user_ptr_ok(a1, (uint64_t)len)) return -1;
+            if (copy_to_user(a1, cwd, len) != 0) return -1;
+            return (uint64_t)(len - 1);
+        }
         default:
             printf("[SYSCALL] Unknown syscall %lu\n", no);
             return -1;

@@ -22,6 +22,8 @@
 #define SYS_SIGRETURN 18
 #define SYS_MMAP     19
 #define SYS_MUNMAP   20
+#define SYS_CHDIR    21
+#define SYS_GETCWD   22
 
 /* mmap prot/flags (anonymous mappings — see kernel/mmap.c). */
 #define PROT_NONE   0
@@ -213,6 +215,16 @@ static inline void* mmap(void* addr, unsigned long length, int prot, int flags, 
 }
 static inline long munmap(void* addr, unsigned long length) {
     return syscall2(SYS_MUNMAP, (long)addr, (long)length);
+}
+
+/* chdir(path): set the working directory (relative paths in open()/getdents()
+ * resolve against it). Returns 0, or -1 if path isn't a directory. getcwd(buf,size)
+ * copies the current directory into buf and returns its length, or -1. */
+static inline long chdir(const char* path) {
+    return syscall1(SYS_CHDIR, (long)path);
+}
+static inline long getcwd(char* buf, long size) {
+    return syscall2(SYS_GETCWD, (long)buf, size);
 }
 
 /* Create a pipe: fds[0] is the read end, fds[1] the write end. Returns 0, or -1.

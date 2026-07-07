@@ -68,6 +68,88 @@ static void resolve(const char* name, char* out) {
     strcat(out, ".elf");
 }
 
+/* Shell-local environment (execve doesn't carry envp yet, so `$VAR` lives here) and
+ * the last command's exit status (`$?`). */
+#define MAX_ENV 16
+static char env_name[MAX_ENV][32];
+static char env_val[MAX_ENV][96];
+static int  env_count;
+static int  last_status;
+
+static const char* env_get(const char* name) {
+    for (int i = 0; i < env_count; i++)
+        if (strcmp(env_name[i], name) == 0) return env_val[i];
+    return 0;
+}
+static void env_set(const char* name, const char* val) {
+    for (int i = 0; i < env_count; i++)
+        if (strcmp(env_name[i], name) == 0) {
+            strncpy(env_val[i], val, sizeof(env_val[i]) - 1);
+            env_val[i][sizeof(env_val[i]) - 1] = '\0';
+            return;
+        }
+    if (env_count >= MAX_ENV) return;
+    strncpy(env_name[env_count], name, 31); env_name[env_count][31] = '\0';
+    strncpy(env_val[env_count], val, 95);   env_val[env_count][95] = '\0';
+    env_count++;
+}
+
+static int is_name_char(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+           (c >= '0' && c <= '9') || c == '_';
+}
+
+/* Substitute `$NAME` (from the env) and `$?` (last exit status) in `in` -> `out`.
+ * An unknown variable expands to nothing, like a real shell. */
+static void expand_vars(const char* in, char* out, int outsz) {
+    int o = 0;
+    for (int i = 0; in[i] && o < outsz - 1; ) {
+        if (in[i] == '$' && in[i + 1] == '?') {
+            char num[16]; snprintf(num, sizeof(num), "%d", last_status);
+            for (int k = 0; num[k] && o < outsz - 1; k++) out[o++] = num[k];
+            i += 2;
+        } else if (in[i] == '$' && is_name_char(in[i + 1])) {
+            char name[32]; int ni = 0;
+            i++;
+            while (is_name_char(in[i]) && ni < 31) name[ni++] = in[i++];
+            name[ni] = '\0';
+            const char* v = env_get(name);
+            if (v) for (int k = 0; v[k] && o < outsz - 1; k++) out[o++] = v[k];
+        } else {
+            out[o++] = in[i++];
+        }
+    }
+    out[o] = '\0';
+}
+
+/* Builtins that must run IN the shell process (they change its cwd/env — a forked
+ * child couldn't). cd/pwd use the chdir/getcwd syscalls; export updates the env. */
+static void builtin_cd(char* arg) {
+    const char* dir = (arg && *arg) ? arg : "/home/user";
+    if (chdir(dir) != 0) printf("cd: %s: no such directory\n", dir);
+}
+static void builtin_pwd(void) {
+    char buf[128];
+    if (getcwd(buf, sizeof(buf)) >= 0) { write(1, buf, strlen(buf)); write(1, "\n", 1); }
+}
+static void builtin_export(char* rest) {
+    char* eq = strchr(rest, '=');
+    if (!eq) { printf("usage: export NAME=value\n"); return; }
+    *eq = '\0';
+    env_set(trim(rest), trim(eq + 1));
+}
+
+/* Run a cd/pwd/export builtin if `line` is one; returns 1 if it was handled. */
+static int try_builtin(char* line) {
+    if (strcmp(line, "pwd") == 0) { builtin_pwd(); return 1; }
+    if (strncmp(line, "cd", 2) == 0 && (line[2] == ' ' || line[2] == '\0')) {
+        builtin_cd(line[2] ? trim(line + 3) : "");
+        return 1;
+    }
+    if (strncmp(line, "export ", 7) == 0) { builtin_export(line + 7); return 1; }
+    return 0;
+}
+
 /* Background jobs. A pipeline ending in '&' is not waited on; its pids are parked
  * here and reaped without blocking at each prompt via waitpid3(.., WNOHANG). The
  * shell must reap its own background children: reap_zombies() in the kernel only
@@ -174,6 +256,7 @@ static void run_line(char* line) {
     for (int s = 0; s < nstages; s++) {
         int st = 0;
         waitpid((int)pids[s], &st);
+        last_status = st;                   /* pipeline status = last stage ($?) */
         if (st != 0)
             printf("sh: [pid %d] exited with status %d\n", (int)pids[s], st);
     }
@@ -184,23 +267,22 @@ static void run_line(char* line) {
  * adds pipe+dup2. Run via the `demo` builtin. */
 static void run_demo(void) {
     static const char* script[] = {
-        "echo hello from the NyxOS userspace shell",
-        "echo pipelines are working on nyxos | upper",
-        "echo redirected into a file > /tmp/sh.txt",
-        "echo appended line >> /tmp/sh.txt",
-        "cat /tmp/sh.txt",
-        "cat /tmp/sh.txt | wc",
+        "pwd",
+        "cd /home/user",
+        "pwd",
+        "cat welcome.txt",                 /* relative path -> resolves against cwd */
+        "export NAME=NyxOS",
+        "echo hello $NAME",                /* $VAR expansion */
         "ls / | grep elf",
-        "cat /home/user/welcome.txt | head -n 1",
+        "echo redirected > /tmp/sh.txt",
+        "cat /tmp/sh.txt | wc",
         "echo running in the background | upper &",
-        "args one two three",
     };
     for (unsigned i = 0; i < sizeof(script) / sizeof(script[0]); i++) {
-        char buf[128];
-        strncpy(buf, script[i], sizeof(buf) - 1);
-        buf[sizeof(buf) - 1] = '\0';
+        char buf[160];
+        expand_vars(script[i], buf, sizeof(buf));
         printf("sh$ %s\n", script[i]);
-        run_line(buf);
+        if (!try_builtin(buf)) run_line(buf);
     }
     printf("sh: demo done.\n");
 }
@@ -226,7 +308,7 @@ int main(int argc, char** argv) {
     /* Interactive REPL: read(0) blocks in the kernel's canonical line
      * discipline (echo + backspace handled there), so this is a live shell. */
     signal(SIGINT, on_sigint);           /* Ctrl-C -> fresh prompt instead of dying */
-    printf("NyxOS sh v0.4 — try 'demo', 'ls | grep elf', 'echo hi > f', 'CMD &', Ctrl-C, 'exit'\n");
+    printf("NyxOS sh v0.5 — 'demo', 'cd DIR', 'pwd', 'export N=v', '$N', 'a | b > f', 'CMD &', 'exit'\n");
     for (;;) {
         reap_bg();                       /* report finished background jobs */
         write(1, "sh$ ", 4);
@@ -241,9 +323,14 @@ int main(int argc, char** argv) {
         line[n] = '\0';
         char* t = trim(line);
         if (!*t) continue;
-        if (strcmp(t, "exit") == 0) break;
-        if (strcmp(t, "demo") == 0) { run_demo(); continue; }
-        run_line(t);
+        char xbuf[192];                  /* $VAR / $? expansion happens before parsing */
+        expand_vars(t, xbuf, sizeof(xbuf));
+        char* x = trim(xbuf);
+        if (!*x) continue;
+        if (strcmp(x, "exit") == 0) break;
+        if (strcmp(x, "demo") == 0) { run_demo(); continue; }
+        if (try_builtin(x)) continue;    /* cd / pwd / export run in-process */
+        run_line(x);
     }
     printf("sh: bye\n");
     return 0;
