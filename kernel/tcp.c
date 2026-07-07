@@ -420,11 +420,20 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t 
         rhdr->seq = 0;
         rhdr->ack = ((temp.ack << 24) & 0xFF000000) | ((temp.ack << 8) & 0x00FF0000)
                    | ((temp.ack >> 8) & 0x0000FF00) | ((temp.ack >> 24) & 0x000000FF);
-        rhdr->offset_flags = (5 << 12) | (TCP_FLAG_RST | TCP_FLAG_ACK);
+        // offset_flags is a 16-bit field that must be network byte order on the
+        // wire (like send_segment does). A plain LE store reversed the bytes, so
+        // 0x5014 (hdrlen 5, RST|ACK) went out as 0x1450 — data offset 1 and, worse,
+        // the RST bit landed outside the flags byte so the peer saw a bare ACK.
+        uint16_t rof = (uint16_t)((5 << 12) | (TCP_FLAG_RST | TCP_FLAG_ACK));
+        rhdr->offset_flags = (uint16_t)((rof >> 8) | (rof << 8));
         rhdr->window = 0;
         rhdr->checksum = 0;
         rhdr->urgent = 0;
-        rhdr->checksum = tcp_checksum(&temp, seg, sizeof(tcp_header_t));
+        // tcp_checksum returns the network-order value as a host integer, so it
+        // must be stored byte-swapped (same as send_segment) — a plain store put
+        // the checksum bytes on the wire reversed, so peers/slirp dropped the RST.
+        uint16_t rck = tcp_checksum(&temp, seg, sizeof(tcp_header_t));
+        rhdr->checksum = (uint16_t)((rck >> 8) | (rck << 8));
         ip_send(src_ip, 6, seg, sizeof(tcp_header_t), -1);
         return;
     }
