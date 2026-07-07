@@ -226,7 +226,7 @@ int vfs_open(const char* path, int flags, mode_t mode) {
 
     vfs_node_t* ino = resolve_path(path);
 
-    if (flags & 1) { // O_CREAT — create a file
+    if (flags & 1) { // O_CREAT — create a file if it does not exist
         if (!ino) {
             char child_name[MAX_NAME];
             vfs_node_t* parent = resolve_parent(path, child_name);
@@ -237,6 +237,10 @@ int vfs_open(const char* path, int flags, mode_t mode) {
             ino->type = 0;
             ino->parent = parent;
             parent->children[parent->child_count++] = ino;
+        }
+        if (flags & 2) {                 // O_TRUNC — reset an existing file to empty
+            if (ino->data) { kfree(ino->data); ino->data = 0; }
+            ino->size = 0;
         }
         return (int)(uintptr_t)ino;
     }

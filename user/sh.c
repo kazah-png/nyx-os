@@ -12,7 +12,7 @@
  * Builtins: `exit` leaves the shell, `demo` runs the canned script. */
 
 #define MAX_STAGES 4
-#define MAX_ARGS   8
+#define MAX_ARGS   12
 
 /* Trim leading/trailing spaces in place. */
 static char* trim(char* s) {
@@ -33,6 +33,30 @@ static int split_args(char* s, char** av, int max) {
     }
     av[n] = 0;
     return n;
+}
+
+/* Pull I/O redirections out of an argv (in place): the tokens `<`, `>`, `>>`
+ * (each followed by a filename) and their attached forms `<f` / `>f` / `>>f`.
+ * Sets *infile / *outfile / *append and compacts argv to the command words only. */
+static void parse_redir(char** av, int* pac, char** infile, char** outfile, int* append) {
+    *infile = 0; *outfile = 0; *append = 0;
+    int n = *pac, w = 0;
+    for (int i = 0; i < n; i++) {
+        char* t = av[i];
+        if (t[0] == '<') {
+            *infile = t[1] ? t + 1 : (i + 1 < n ? av[++i] : 0);
+        } else if (t[0] == '>' && t[1] == '>') {
+            *append = 1;
+            *outfile = t[2] ? t + 2 : (i + 1 < n ? av[++i] : 0);
+        } else if (t[0] == '>') {
+            *append = 0;
+            *outfile = t[1] ? t + 1 : (i + 1 < n ? av[++i] : 0);
+        } else {
+            av[w++] = t;
+        }
+    }
+    av[w] = 0;
+    *pac = w;
 }
 
 /* Resolve a command name: "echo" -> "/echo.elf"; anything already containing a
@@ -110,7 +134,20 @@ static void run_line(char* line) {
             if (has_next)     { close(pfd[0]); dup2(pfd[1], 1); close(pfd[1]); }
             char* av[MAX_ARGS];
             int ac = split_args(trim(stages[s]), av, MAX_ARGS);
+            char *infile, *outfile; int append;
+            parse_redir(av, &ac, &infile, &outfile, &append);
             if (ac == 0) exit(0);
+            /* File redirections override the pipe wiring for the affected fd. */
+            if (infile) {
+                long fd = open(infile, O_RDONLY, 0);
+                if (fd < 0) { printf("sh: %s: cannot open\n", infile); exit(1); }
+                dup2((int)fd, 0); close((int)fd);
+            }
+            if (outfile) {
+                long fd = open(outfile, O_CREAT | (append ? O_APPEND : O_TRUNC), 0644);
+                if (fd < 0) { printf("sh: %s: cannot create\n", outfile); exit(1); }
+                dup2((int)fd, 1); close((int)fd);
+            }
             char path[64];
             resolve(av[0], path);
             execve(path, av, 0);
@@ -149,9 +186,12 @@ static void run_demo(void) {
     static const char* script[] = {
         "echo hello from the NyxOS userspace shell",
         "echo pipelines are working on nyxos | upper",
-        "ls /",
-        "cat /home/user/welcome.txt",
-        "cat /home/user/welcome.txt | wc",
+        "echo redirected into a file > /tmp/sh.txt",
+        "echo appended line >> /tmp/sh.txt",
+        "cat /tmp/sh.txt",
+        "cat /tmp/sh.txt | wc",
+        "ls / | grep elf",
+        "cat /home/user/welcome.txt | head -n 1",
         "echo running in the background | upper &",
         "args one two three",
     };
@@ -186,7 +226,7 @@ int main(int argc, char** argv) {
     /* Interactive REPL: read(0) blocks in the kernel's canonical line
      * discipline (echo + backspace handled there), so this is a live shell. */
     signal(SIGINT, on_sigint);           /* Ctrl-C -> fresh prompt instead of dying */
-    printf("NyxOS sh v0.3 — interactive; try 'demo', 'ls /', 'CMD &', Ctrl-C, 'exit'\n");
+    printf("NyxOS sh v0.4 — try 'demo', 'ls | grep elf', 'echo hi > f', 'CMD &', Ctrl-C, 'exit'\n");
     for (;;) {
         reap_bg();                       /* report finished background jobs */
         write(1, "sh$ ", 4);

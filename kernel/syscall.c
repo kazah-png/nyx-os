@@ -312,6 +312,11 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3, uin
             if (internal < 0) return -1;
             int ufd = ufd_alloc(internal);
             if (ufd < 0) { vfs_close(internal); return -1; }  /* table full */
+            if (flags & O_APPEND) {                           /* start writes at EOF */
+                uint32_t* off = ufd_offset_of(ufd);
+                int sz = vfs_fsize(internal);
+                if (off) *off = (sz > 0) ? (uint32_t)sz : 0;
+            }
             return ufd;
         }
         case SYS_READ: {
@@ -485,16 +490,16 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3, uin
             return (uint64_t)(int64_t)r;
         }
         case SYS_DUP2: {
-            // dup2(oldfd, newfd): make newfd refer to the same pipe end as oldfd,
-            // closing whatever newfd held. This is the redirection primitive — e.g.
-            // dup2(pipefd[1], 1) sends a child's stdout into a pipe. PIPE fds only:
-            // their ends are reference-counted, so two fds can share one safely; VFS
-            // handles aren't refcounted (two fds would double-close on reap) -> -1.
+            // dup2(oldfd, newfd): make newfd refer to oldfd's stream, closing whatever
+            // newfd held. The redirection primitive — dup2(pipefd[1], 1) wires a pipe,
+            // dup2(file_fd, 1) redirects stdout to a file. PIPE ends are reference-
+            // counted, so they DUPLICATE (oldfd stays valid). VFS file handles aren't
+            // refcounted, so they MOVE (oldfd is cleared) — that way the shell's
+            // `dup2(fd,1); close(fd)` leaves exactly one owner and never double-closes.
             int oldfd = (int)a1, newfd = (int)a2;
             process_t* p = get_cur_proc();
             int internal;
             if (!p || ufd_lookup(oldfd, &internal) != 0) return -1;
-            if (!(internal & UFD_PIPE_FLAG)) return -1;      /* pipes only (see above) */
             if (newfd < 0 || newfd >= PROC_MAX_FDS) return -1;
             if (newfd == oldfd) return newfd;
             if (p->ufd_inuse[newfd]) {                        /* implicitly close newfd */
@@ -503,10 +508,17 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3, uin
                 else                     vfs_close(old);
                 p->ufd_inuse[newfd] = 0;
             }
-            pipe_incref(UFD_PIPE_ID(internal), UFD_PIPE_IS_WRITE(internal));
-            p->ufd_inuse[newfd]  = 1;
-            p->ufd_handle[newfd] = internal;
-            p->ufd_offset[newfd] = 0;
+            if (internal & UFD_PIPE_FLAG) {                   /* pipe end -> duplicate (incref) */
+                pipe_incref(UFD_PIPE_ID(internal), UFD_PIPE_IS_WRITE(internal));
+                p->ufd_inuse[newfd]  = 1;
+                p->ufd_handle[newfd] = internal;
+                p->ufd_offset[newfd] = 0;
+            } else {                                          /* VFS file -> move to newfd */
+                p->ufd_inuse[newfd]  = 1;
+                p->ufd_handle[newfd] = internal;
+                p->ufd_offset[newfd] = p->ufd_offset[oldfd]; /* carry offset (append) */
+                p->ufd_inuse[oldfd]  = 0;                     /* clear oldfd: it's moved */
+            }
             return newfd;
         }
         case SYS_GETDENTS: {

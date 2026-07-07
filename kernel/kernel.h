@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.8.12"
+#define KERNEL_VERSION "5.8.13"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -128,6 +128,13 @@ typedef __builtin_va_list va_list;
 
 /* read()/etc. return this (negated) when a signal interrupts a blocking wait. */
 #define EINTR       4
+
+/* open() flags. O_CREAT is the long-standing `flags & 1`; O_TRUNC empties an
+ * existing file (shell `>`), O_APPEND starts writes at EOF (shell `>>`). */
+#define O_RDONLY    0
+#define O_CREAT     1
+#define O_TRUNC     2
+#define O_APPEND    4
 
 /* ------------------------------------------------------------------ */
 /*  mmap (v5.8.12) — anonymous, demand-zero memory mappings           */

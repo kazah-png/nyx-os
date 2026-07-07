@@ -34,6 +34,13 @@
 
 #define WNOHANG     1   /* waitpid option: don't block if no child is ready */
 
+/* open() flags: O_CREAT makes a file, O_TRUNC empties it (shell `>`), O_APPEND
+ * seeks to EOF before writing (shell `>>`). */
+#define O_RDONLY    0
+#define O_CREAT     1
+#define O_TRUNC     2
+#define O_APPEND    4
+
 /* Signals (subset of POSIX) — see kernel/signal.c. */
 #define SIGHUP   1
 #define SIGINT   2   /* Ctrl-C */

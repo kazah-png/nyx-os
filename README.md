@@ -6,10 +6,10 @@
   <strong>Custom x86_64 kernel · C and Assembly · General-purpose OS</strong>
   <br/><br/>
   <!-- Badges -->
-  <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.8.12">
-    <img src="https://img.shields.io/badge/release-v5.8.12-00ff9d?style=flat" />
+  <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.8.13">
+    <img src="https://img.shields.io/badge/release-v5.8.13-00ff9d?style=flat" />
   </a>
-  <img src="https://img.shields.io/badge/status-v5.8.12-00ff9d?style=flat" />
+  <img src="https://img.shields.io/badge/status-v5.8.13-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/TCP-yes-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/GUI-window%20compositor-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/%F0%9F%8C%99%20NyxC-runtime-8b5cf6?style=flat" />
@@ -53,7 +53,7 @@ ______          \'/
     N Y X O S
     G U I   S U I T E
   -------------------------------------
-  Kernel:     NyxOS 5.8.12
+  Kernel:     NyxOS 5.8.13
   Arch:       x86_64 (long mode)
   Memory:     256 MB total, 240 MB free
   Heap:       16384 KB
@@ -183,7 +183,7 @@ nyx:root$ ls /
 bin/   dev/   etc/   home/  mnt/   root/  tmp/   usr/   var/
 
 nyx:root$ uname
-NyxOS 5.8.12 (Scheduler) x86_64
+NyxOS 5.8.13 (Scheduler) x86_64
 
 nyx:root$ mem
 Physical memory: 256 MB total, 252 MB free
@@ -501,7 +501,8 @@ See the full **[NyxOS Status Report](https://github.com/kazah-png/nyx-os/issues/
 - ✅ Lazy `sbrk` (demand-paged heap): `SYS_SBRK` just moves the break; heap pages fault in on first touch (`[heap_start, program_break)` window in the #PF handler) — a big `malloc` costs only the pages actually written (verified: `malloc(8000)` grows the break 3 pages lazily, data intact)
 - ✅ **Coreutils** (`/cat.elf`, `/wc.elf`, `/ls.elf`) + shell **background jobs** (`cmd &`): `ls` via a new `SYS_GETDENTS` (kernel does the `vfs_open`/`readdir`/`close`, copies fixed 68-byte records to ring 3); `cat`/`wc` stream files or stdin; a trailing `&` runs a pipeline in the background via non-blocking `waitpid(…, WNOHANG)` — `[bg] pid N` at launch, `[done] pid N` reaped at the next prompt (verified: `ls /` lists dirs + all `.elf`s, `cat welcome.txt | wc` → `1 4 26`, `echo … | upper &` backgrounds and both stages reap)
 - ✅ **Signals** (`kill`/`signal`/`sigreturn`): POSIX-style signals delivered at return-to-ring-3 — a user handler is entered by rewriting the saved frame (RIP=handler, RDI=signo) with a crt0 trampoline that returns through `SYS_SIGRETURN`; `SIG_DFL` terminates (exit `128+signo`), `SIG_IGN` drops. **Ctrl-C** posts SIGINT to the foreground process and interrupts a blocking `read(0)` (verified: SIGUSR1 handler runs then control returns to main, `kill(child, SIGTERM)` → status 143, and Ctrl-C at the shell prints `^C` + a fresh prompt without killing it)
-- ✅ **`mmap`/`munmap`** (anonymous, demand-zero): `mmap` records a VMA and returns a base VA (in `[4 GiB, 112 TiB)`, clear of the heap and stack) — pages fault in as zeroed on first touch via the same #PF handler as lazy `sbrk`, with prot honored (writable only if `PROT_WRITE`, `NX` unless `PROT_EXEC`); `munmap` frees them (refcount-aware). `fork` inherits mappings COW, `execve` drops them (verified: `mmap(12288)` → `0x100000000`, demand-zero, r/w intact across 3 pages, then `munmap`) — next: file-backed mmap, `mprotect`, arrow-key history
+- ✅ **`mmap`/`munmap`** (anonymous, demand-zero): `mmap` records a VMA and returns a base VA (in `[4 GiB, 112 TiB)`, clear of the heap and stack) — pages fault in as zeroed on first touch via the same #PF handler as lazy `sbrk`, with prot honored (writable only if `PROT_WRITE`, `NX` unless `PROT_EXEC`); `munmap` frees them (refcount-aware). `fork` inherits mappings COW, `execve` drops them (verified: `mmap(12288)` → `0x100000000`, demand-zero, r/w intact across 3 pages, then `munmap`)
+- ✅ **Shell I/O redirection** (`>` `>>` `<`) + coreutils `grep`/`head`/`tail`: the userspace shell (`/sh.elf` v0.4) parses redirections and `dup2`s an `open`'d file onto stdin/stdout; `dup2` now moves VFS handles (pipes still refcount-duplicate), backed by `O_TRUNC`/`O_APPEND` for `>`/`>>` (verified: `echo … > f`, `>> f`, `ls / | grep elf`, `cat f | head -n 1`, `cat f | wc` → `2 6 37`) — next: `cd`/`pwd`/`export` (per-process CWD + env), file-backed mmap, arrow-key history
 - ✅ NIC-side TCP listen (inbound connections — NyxOS serves HTTP to a host `curl` via `hostfwd`)
 - ✅ **Nyx C language runtime** (`nyxrt.h`/`nyxrt.c`): typed subset of C with string interpolation, transpiles to C, first `.nyx` program (`hello_nyx.elf`) prints "hola desde nyx c! pid=5"
 

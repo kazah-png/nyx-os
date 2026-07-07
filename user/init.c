@@ -327,6 +327,42 @@ int main(void) {
         printf("  munmap released the region\n");
     }
 
+    /* File redirection primitives (what the shell's >, >>, < are built on): a child
+     * opens /tmp/rd.txt (O_CREAT|O_TRUNC), dup2's it onto fd 1 and execve's echo, so
+     * echo's stdout lands in the file; a second child appends with O_APPEND; the
+     * parent reads the file back. Exercises VFS dup2 (move semantics) + O_TRUNC/O_APPEND. */
+    printf("Testing file redirection (open O_TRUNC/O_APPEND + dup2)...\n");
+    long r1 = fork();
+    if (r1 == 0) {
+        long fd = open("/tmp/rd.txt", O_CREAT | O_TRUNC, 0644);
+        if (fd < 0) exit(1);
+        dup2((int)fd, 1); close((int)fd);           /* stdout -> the file (truncated) */
+        char* av[] = { "echo", "first line", 0 };
+        execve("/echo.elf", av, 0);
+        exit(1);
+    } else if (r1 > 0) {
+        int st; waitpid((int)r1, &st);
+    }
+    long r2 = fork();
+    if (r2 == 0) {
+        long fd = open("/tmp/rd.txt", O_CREAT | O_APPEND, 0644);
+        if (fd < 0) exit(1);
+        dup2((int)fd, 1); close((int)fd);           /* stdout -> appended to the file */
+        char* av[] = { "echo", "second line", 0 };
+        execve("/echo.elf", av, 0);
+        exit(1);
+    } else if (r2 > 0) {
+        int st; waitpid((int)r2, &st);
+    }
+    long rfd = open("/tmp/rd.txt", O_RDONLY, 0);
+    if (rfd >= 0) {
+        char rb[128];
+        long got = read((int)rfd, rb, sizeof(rb) - 1);
+        if (got > 0) rb[got] = '\0';
+        printf("  /tmp/rd.txt = %ld bytes (expect 2 lines):\n%s", got, got > 0 ? rb : "");
+        close((int)rfd);
+    }
+
     printf("Init complete, exiting.\n");
     return 0;
 }
