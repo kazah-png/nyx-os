@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.8.14"
+#define KERNEL_VERSION "5.8.15"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -96,6 +96,8 @@ typedef __builtin_va_list va_list;
 #define SYS_MUNMAP   20
 #define SYS_CHDIR    21
 #define SYS_GETCWD   22
+#define SYS_MKDIR    23
+#define SYS_UNLINK   24
 
 /* waitpid() options (a3). WNOHANG makes SYS_WAITPID return 0 immediately instead
  * of blocking when a matching child exists but has not exited yet — the shell

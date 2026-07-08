@@ -653,6 +653,33 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3, uin
             if (copy_to_user(a1, cwd, len) != 0) return -1;
             return (uint64_t)(len - 1);
         }
+        case SYS_MKDIR: {
+            // mkdir(path, mode): create a directory (cwd-relative path). Fails if
+            // the parent doesn't exist or the name is taken. Returns 0 or -1.
+            if (!user_str_ok(a1)) return -1;
+            char path[MAX_PATH];
+            if (copy_path_from_user(path, sizeof(path), a1) != 0) return -1;
+            // The parent must already exist as a directory: vfs_mkdir would otherwise
+            // create the FIRST missing component of a deep path (resolve_parent hands
+            // it the deepest existing dir), which ring 3 must not rely on.
+            char parent[MAX_PATH];
+            strncpy(parent, path, sizeof(parent) - 1);
+            parent[sizeof(parent) - 1] = '\0';
+            char* slash = parent;
+            for (char* q = parent; *q; q++) if (*q == '/') slash = q;
+            if (slash == parent) parent[1] = '\0';       // parent is "/"
+            else *slash = '\0';
+            if (!vfs_isdir(parent)) return -1;
+            return (uint64_t)(int64_t)vfs_mkdir(path, (int)a2);
+        }
+        case SYS_UNLINK: {
+            // unlink(path): remove a file (or empty-dir semantics of vfs_unlink —
+            // the same primitive the kernel shell's `rm` uses). cwd-relative.
+            if (!user_str_ok(a1)) return -1;
+            char path[MAX_PATH];
+            if (copy_path_from_user(path, sizeof(path), a1) != 0) return -1;
+            return (uint64_t)(int64_t)vfs_unlink(path);
+        }
         default:
             printf("[SYSCALL] Unknown syscall %lu\n", no);
             return -1;

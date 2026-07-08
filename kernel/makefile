@@ -46,7 +46,8 @@ nyx-kernel.bin: $(OBJS)
 USER_DIR = ../user
 USER_ELFS = $(USER_DIR)/hello.elf $(USER_DIR)/init.elf $(USER_DIR)/spin.elf $(USER_DIR)/fdleak.elf $(USER_DIR)/hello_nyx.elf $(USER_DIR)/args.elf \
             $(USER_DIR)/sh.elf $(USER_DIR)/echo.elf $(USER_DIR)/upper.elf $(USER_DIR)/cat.elf $(USER_DIR)/wc.elf $(USER_DIR)/ls.elf \
-            $(USER_DIR)/grep.elf $(USER_DIR)/head.elf $(USER_DIR)/tail.elf
+            $(USER_DIR)/grep.elf $(USER_DIR)/head.elf $(USER_DIR)/tail.elf \
+            $(USER_DIR)/mkdir.elf $(USER_DIR)/rm.elf $(USER_DIR)/touch.elf $(USER_DIR)/sort.elf $(USER_DIR)/find.elf
 
 # Flags for Nyx C output (GCC: statement-exprs, __auto_type). -mno-red-zone is mandatory.
 NYXCFLAGS = -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR)
@@ -94,6 +95,21 @@ $(USER_DIR)/ls.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.o $(USER_DIR)/ls.o
 $(USER_DIR)/grep.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.o $(USER_DIR)/grep.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o $(USER_DIR)/libc.o $(USER_DIR)/grep.o
 
+$(USER_DIR)/mkdir.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.o $(USER_DIR)/mkdir.o
+	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o $(USER_DIR)/libc.o $(USER_DIR)/mkdir.o
+
+$(USER_DIR)/rm.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.o $(USER_DIR)/rm.o
+	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o $(USER_DIR)/libc.o $(USER_DIR)/rm.o
+
+$(USER_DIR)/touch.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.o $(USER_DIR)/touch.o
+	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o $(USER_DIR)/libc.o $(USER_DIR)/touch.o
+
+$(USER_DIR)/sort.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.o $(USER_DIR)/sort.o
+	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o $(USER_DIR)/libc.o $(USER_DIR)/sort.o
+
+$(USER_DIR)/find.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.o $(USER_DIR)/find.o
+	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o $(USER_DIR)/libc.o $(USER_DIR)/find.o
+
 $(USER_DIR)/head.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.o $(USER_DIR)/head.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o $(USER_DIR)/libc.o $(USER_DIR)/head.o
 
@@ -125,6 +141,21 @@ $(USER_DIR)/head.o: $(USER_DIR)/head.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
 	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
 $(USER_DIR)/tail.o: $(USER_DIR)/tail.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
+	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+
+$(USER_DIR)/mkdir.o: $(USER_DIR)/mkdir.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
+	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+
+$(USER_DIR)/rm.o: $(USER_DIR)/rm.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
+	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+
+$(USER_DIR)/touch.o: $(USER_DIR)/touch.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
+	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+
+$(USER_DIR)/sort.o: $(USER_DIR)/sort.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
+	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+
+$(USER_DIR)/find.o: $(USER_DIR)/find.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
 	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
 $(USER_DIR)/crt0.o: $(USER_DIR)/crt0.asm

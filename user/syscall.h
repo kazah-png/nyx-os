@@ -24,6 +24,8 @@
 #define SYS_MUNMAP   20
 #define SYS_CHDIR    21
 #define SYS_GETCWD   22
+#define SYS_MKDIR    23
+#define SYS_UNLINK   24
 
 /* mmap prot/flags (anonymous mappings — see kernel/mmap.c). */
 #define PROT_NONE   0
@@ -225,6 +227,15 @@ static inline long chdir(const char* path) {
 }
 static inline long getcwd(char* buf, long size) {
     return syscall2(SYS_GETCWD, (long)buf, size);
+}
+
+/* mkdir(path, mode): create a directory; unlink(path): remove a file. Both take
+ * cwd-relative or absolute paths. Return 0, or -1. */
+static inline long mkdir(const char* path, int mode) {
+    return syscall2(SYS_MKDIR, (long)path, mode);
+}
+static inline long unlink(const char* path) {
+    return syscall1(SYS_UNLINK, (long)path);
 }
 
 /* Create a pipe: fds[0] is the read end, fds[1] the write end. Returns 0, or -1.

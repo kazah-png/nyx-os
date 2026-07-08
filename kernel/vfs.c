@@ -142,6 +142,9 @@ static vfs_node_t* resolve_parent(const char* path, char* child_name) {
             if (child_name) strncpy(child_name, token, MAX_NAME-1);
             return dir;
         }
+        result = dir;   // true parent of the token just consumed — so a path that
+                        // ENDS in an existing directory returns its parent (not the
+                        // walk's start node), and unlink/rename of a nested dir works
         dir = next;
     }
     if (child_name) strncpy(child_name, prev, MAX_NAME-1);

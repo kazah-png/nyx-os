@@ -6,10 +6,10 @@
   <strong>Custom x86_64 kernel · C and Assembly · General-purpose OS</strong>
   <br/><br/>
   <!-- Badges -->
-  <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.8.14">
-    <img src="https://img.shields.io/badge/release-v5.8.14-00ff9d?style=flat" />
+  <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.8.15">
+    <img src="https://img.shields.io/badge/release-v5.8.15-00ff9d?style=flat" />
   </a>
-  <img src="https://img.shields.io/badge/status-v5.8.14-00ff9d?style=flat" />
+  <img src="https://img.shields.io/badge/status-v5.8.15-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/TCP-yes-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/GUI-window%20compositor-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/%F0%9F%8C%99%20NyxC-runtime-8b5cf6?style=flat" />
@@ -53,7 +53,7 @@ ______          \'/
     N Y X O S
     G U I   S U I T E
   -------------------------------------
-  Kernel:     NyxOS 5.8.14
+  Kernel:     NyxOS 5.8.15
   Arch:       x86_64 (long mode)
   Memory:     256 MB total, 240 MB free
   Heap:       16384 KB
@@ -183,7 +183,7 @@ nyx:root$ ls /
 bin/   dev/   etc/   home/  mnt/   root/  tmp/   usr/   var/
 
 nyx:root$ uname
-NyxOS 5.8.14 (Scheduler) x86_64
+NyxOS 5.8.15 (Scheduler) x86_64
 
 nyx:root$ mem
 Physical memory: 256 MB total, 252 MB free
@@ -266,7 +266,7 @@ Done.
 ### ELF userspace & syscalls (v3.0.0+)
 - **ELF64 loader** — validates, parses PT_LOAD segments, maps pages per-process
 - **Initramfs** — embedded cpio archive with ELF64 binaries (init.elf, hello.elf)
-- **23 syscalls** via `syscall`/`sysret`: `exit`, `write`, `print`, `open`, `read`, `close`, `getpid`, `sbrk`, `fsize`, `exec`, `fork`, `waitpid`, `pipe`, `execve`, `dup2`, `getdents`, `kill`, `signal`, `sigreturn`, `mmap`, `munmap`, `chdir`, `getcwd`
+- **25 syscalls** via `syscall`/`sysret`: `exit`, `write`, `print`, `open`, `read`, `close`, `getpid`, `sbrk`, `fsize`, `exec`, `fork`, `waitpid`, `pipe`, `execve`, `dup2`, `getdents`, `kill`, `signal`, `sigreturn`, `mmap`, `munmap`, `chdir`, `getcwd`, `mkdir`, `unlink`
 - **C runtime** — minimal libc with `printf`, `sprintf`, `snprintf`, `malloc`, `free`, string/memory functions
 - **Auto-boot init** — kernel loads and executes `/init.elf` from initramfs at startup
 - **Ring 3 execution** — user processes run in ring 3, I/O ports denied via TSS I/O map base
@@ -471,7 +471,7 @@ See the full **[NyxOS Status Report](https://github.com/kazah-png/nyx-os/issues/
 - ✅ NX bit (No-Execute) + SMEP (Supervisor Mode Execution Prevention)
 - ✅ Local APIC + I/O APIC initialization
 - ✅ ELF64 userspace loader with initramfs (auto-boot init.elf)
-- ✅ 23 syscalls via syscall/sysret (…, mmap, munmap, chdir, getcwd)
+- ✅ 25 syscalls via syscall/sysret (…, chdir, getcwd, mkdir, unlink)
 - ✅ Minimal C library for userspace (printf, malloc, free, snprintf, string ops)
 - ✅ Real-time clock (RTC) driver with wall-clock time display
 - ✅ Desktop polish (wallpaper, right-click context menu, Settings window, File Manager toolbar)
@@ -503,7 +503,8 @@ See the full **[NyxOS Status Report](https://github.com/kazah-png/nyx-os/issues/
 - ✅ **Signals** (`kill`/`signal`/`sigreturn`): POSIX-style signals delivered at return-to-ring-3 — a user handler is entered by rewriting the saved frame (RIP=handler, RDI=signo) with a crt0 trampoline that returns through `SYS_SIGRETURN`; `SIG_DFL` terminates (exit `128+signo`), `SIG_IGN` drops. **Ctrl-C** posts SIGINT to the foreground process and interrupts a blocking `read(0)` (verified: SIGUSR1 handler runs then control returns to main, `kill(child, SIGTERM)` → status 143, and Ctrl-C at the shell prints `^C` + a fresh prompt without killing it)
 - ✅ **`mmap`/`munmap`** (anonymous, demand-zero): `mmap` records a VMA and returns a base VA (in `[4 GiB, 112 TiB)`, clear of the heap and stack) — pages fault in as zeroed on first touch via the same #PF handler as lazy `sbrk`, with prot honored (writable only if `PROT_WRITE`, `NX` unless `PROT_EXEC`); `munmap` frees them (refcount-aware). `fork` inherits mappings COW, `execve` drops them (verified: `mmap(12288)` → `0x100000000`, demand-zero, r/w intact across 3 pages, then `munmap`)
 - ✅ **Shell I/O redirection** (`>` `>>` `<`) + coreutils `grep`/`head`/`tail`: the userspace shell (`/sh.elf`) parses redirections and `dup2`s an `open`'d file onto stdin/stdout; `dup2` now moves VFS handles (pipes still refcount-duplicate), backed by `O_TRUNC`/`O_APPEND` for `>`/`>>` (verified: `echo … > f`, `>> f`, `ls / | grep elf`, `cat f | head -n 1`, `cat f | wc` → `2 6 37`)
-- ✅ **Per-process working directory** + shell `cd`/`pwd`/`export`/`$VAR`: each process has a cwd (`chdir`/`getcwd`), and relative paths in `open`/`getdents` resolve against it (with `.`/`..` normalization); inherited across `fork`, kept across `execve`. The shell adds in-process `cd`/`pwd`/`export` builtins and `$VAR`/`$?` expansion (verified: `cd /home/user` then `cat welcome.txt` opens the relative path, `export NAME=NyxOS` + `echo $NAME` → `NyxOS`) — next: file-backed mmap, `mprotect`, arrow-key history
+- ✅ **Per-process working directory** + shell `cd`/`pwd`/`export`/`$VAR`: each process has a cwd (`chdir`/`getcwd`), and relative paths in `open`/`getdents` resolve against it (with `.`/`..` normalization); inherited across `fork`, kept across `execve`. The shell adds in-process `cd`/`pwd`/`export` builtins and `$VAR`/`$?` expansion (verified: `cd /home/user` then `cat welcome.txt` opens the relative path, `export NAME=NyxOS` + `echo $NAME` → `NyxOS`)
+- ✅ **Userland file tools** (`mkdir`/`rm`/`touch`/`sort`/`find` as ring-3 programs): new `mkdir`/`unlink` syscalls (cwd-relative), `sort` reorders lines from stdin or files, `find` walks directory trees recursively over `getdents` with an optional name filter — plus a real VFS fix (unlink/rename of nested directories resolved the wrong parent) found by wiring them (verified: `mkdir /tmp/proj`, `touch`, `find /tmp` lists the tree, `ls /tmp/proj | sort` → `a.txt b.txt`, `rm` both) — next: file-backed mmap, `mprotect`, arrow-key history
 - ✅ NIC-side TCP listen (inbound connections — NyxOS serves HTTP to a host `curl` via `hostfwd`)
 - ✅ **Nyx C language runtime** (`nyxrt.h`/`nyxrt.c`): typed subset of C with string interpolation, transpiles to C, first `.nyx` program (`hello_nyx.elf`) prints "hola desde nyx c! pid=5"
 

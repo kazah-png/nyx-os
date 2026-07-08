@@ -388,6 +388,20 @@ int main(void) {
         printf("  after chdir(\"..\"): %s (expect /home)\n", cwd);
     }
 
+    /* mkdir/unlink from ring 3: make a directory, create a file in it, remove the
+     * file (a re-open must then fail), remove the directory, and confirm mkdir
+     * under a missing parent is rejected. */
+    printf("Testing mkdir/unlink...\n");
+    int mk = (int)mkdir("/tmp/mkd", 0755);
+    long tfd = open("/tmp/mkd/f.txt", O_CREAT, 0644);
+    if (tfd >= 0) close((int)tfd);
+    int un = (int)unlink("/tmp/mkd/f.txt");
+    long gone = open("/tmp/mkd/f.txt", O_RDONLY, 0);
+    int und = (int)unlink("/tmp/mkd");
+    int mkbad = (int)mkdir("/no/such/parent/dir", 0755);
+    printf("  mkdir=%d create+unlink=%d reopen=%ld (expect <0) rmdir=%d bad-mkdir=%d (expect -1)\n",
+           mk, un, gone, und, mkbad);
+
     printf("Init complete, exiting.\n");
     return 0;
 }
