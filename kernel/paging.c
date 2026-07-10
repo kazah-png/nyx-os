@@ -275,6 +275,14 @@ int vm_handle_fault(uint64_t cr2, uint64_t err) {
             void* page = alloc_page();
             if (!page) return 0;
             memset_asm((void*)(uint64_t)page, 0, PAGE_SIZE);
+            if (v->file_buf) {                     // file-backed: copy this page's slice
+                uint64_t off = (cr2 & ~0xFFFULL) - v->start;
+                if (off < v->file_size) {
+                    uint32_t n = PAGE_SIZE;
+                    if (off + n > v->file_size) n = v->file_size - (uint32_t)off;
+                    memcpy((void*)(uint64_t)page, v->file_buf + off, n);
+                }
+            }
             uint64_t f = PAGE_PRESENT | PAGE_USER;
             if (v->prot & PROT_WRITE) f |= PAGE_WRITABLE;
             if (!(v->prot & PROT_EXEC)) f |= PAGE_NX;
@@ -336,6 +344,23 @@ void vm_free_range(uint64_t* pml4, uint64_t start, uint64_t end) {
         if (pte && (*pte & PAGE_PRESENT)) {
             free_page((void*)(*pte & PTE_ADDR_MASK));
             *pte = 0;
+            invlpg((void*)va);
+        }
+    }
+}
+
+// mprotect helper: rewrite the flag bits of every PRESENT page in [start, end),
+// keeping each page's physical frame. Writable iff PROT_WRITE; NX unless PROT_EXEC.
+// Not-present pages are skipped — the VMA's updated prot covers them when they fault.
+void vm_protect_range(uint64_t* pml4, uint64_t start, uint64_t end, int prot) {
+    if (!pml4) return;
+    for (uint64_t va = start; va < end; va += PAGE_SIZE) {
+        uint64_t* pte = pte_ptr(pml4, va, 0);
+        if (pte && (*pte & PAGE_PRESENT)) {
+            uint64_t f = PAGE_PRESENT | PAGE_USER;
+            if (prot & PROT_WRITE) f |= PAGE_WRITABLE;
+            if (!(prot & PROT_EXEC)) f |= PAGE_NX;
+            *pte = (*pte & PTE_ADDR_MASK) | f;
             invlpg((void*)va);
         }
     }

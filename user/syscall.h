@@ -27,6 +27,7 @@
 #define SYS_MKDIR    23
 #define SYS_UNLINK   24
 #define SYS_TTYMODE  25
+#define SYS_MPROTECT 26
 
 #define TTY_CANON   0   /* kernel line discipline: echoed, backspace-edited lines */
 #define TTY_RAW     1   /* byte-at-a-time, no echo, arrows as ESC [ A/B/C/D */
@@ -221,6 +222,12 @@ static inline void* mmap(void* addr, unsigned long length, int prot, int flags, 
 }
 static inline long munmap(void* addr, unsigned long length) {
     return syscall2(SYS_MUNMAP, (long)addr, (long)length);
+}
+
+/* mprotect(addr, len, prot): change the protection of a mapped range (e.g. make a
+ * page read-only or writable). Returns 0, or -1. */
+static inline long mprotect(void* addr, unsigned long len, int prot) {
+    return syscall3(SYS_MPROTECT, (long)addr, len, prot);
 }
 
 /* chdir(path): set the working directory (relative paths in open()/getdents()

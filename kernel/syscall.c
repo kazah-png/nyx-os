@@ -670,13 +670,27 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3, uin
             uint64_t* f = (uint64_t*)syscall_frame_ptr;
             return f ? f[14] : 0;
         }
-        case SYS_MMAP:
-            // mmap(addr, length, prot, flags, fd, offset): anonymous demand-zero
-            // memory. fd/offset (a5/a6) are ignored. Returns the base VA, or
-            // MAP_FAILED ((uint64_t)-1). Pages fault in on first touch.
-            return do_mmap(a1, a2, (int)a3, (int)a4);
+        case SYS_MMAP: {
+            // mmap(addr, length, prot, flags, fd, offset). Anonymous (MAP_ANONYMOUS)
+            // demand-faults to zero; otherwise it's file-backed — resolve fd (a5) to
+            // a VFS handle here and snapshot the file in do_mmap. offset (a6) isn't
+            // marshaled to the handler, so file mappings start at offset 0 (v1).
+            int flags = (int)a4;
+            int fh = 0; uint32_t fsz = 0;
+            if (!(flags & MAP_ANONYMOUS)) {
+                int internal;
+                if (ufd_lookup((int)a5, &internal) != 0) return (uint64_t)-1;  // bad fd
+                if (internal & UFD_PIPE_FLAG) return (uint64_t)-1;             // no pipe mmap
+                fh = internal;
+                fsz = (uint32_t)vfs_fsize(internal);
+            }
+            return do_mmap(a1, a2, (int)a3, flags, fh, fsz);
+        }
         case SYS_MUNMAP:
             return (uint64_t)(int64_t)do_munmap(a1, a2);
+        case SYS_MPROTECT:
+            // mprotect(addr, length, prot): change protection of a mapped range.
+            return (uint64_t)(int64_t)do_mprotect(a1, a2, (int)a3);
         case SYS_CHDIR: {
             // chdir(path): set the process CWD (relative paths resolve against the
             // current one). Rejects a path that isn't a directory. Returns 0 or -1.

@@ -402,6 +402,35 @@ int main(void) {
     printf("  mkdir=%d create+unlink=%d reopen=%ld (expect <0) rmdir=%d bad-mkdir=%d (expect -1)\n",
            mk, un, gone, und, mkbad);
 
+    /* File-backed mmap: map /home/user/welcome.txt read-only and read its contents
+     * straight out of memory (pages fault in filled from the file's snapshot). */
+    printf("Testing file-backed mmap + mprotect...\n");
+    long mfd = open("/home/user/welcome.txt", O_RDONLY, 0);
+    if (mfd >= 0) {
+        long msz = fsize((int)mfd);
+        char* fmap = (char*)mmap(0, msz, PROT_READ, MAP_PRIVATE, (int)mfd, 0);
+        close((int)mfd);
+        if (fmap != MAP_FAILED) {
+            printf("  mmap(welcome.txt, %ld) -> %p, contents: %s", msz, fmap, fmap);
+            munmap(fmap, msz);
+        } else {
+            printf("  file mmap failed\n");
+        }
+    }
+    /* mprotect: an anonymous page mapped READ-ONLY reads back zero; mprotect to
+     * READ|WRITE then makes it writable (a write with no mprotect would fault and
+     * panic — this proves mprotect flipped the page to writable). */
+    char* pm = (char*)mmap(0, 4096, PROT_READ, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+    if (pm != MAP_FAILED) {
+        int was_zero = (pm[0] == 0 && pm[200] == 0);      /* RO, demand-zero (touch it) */
+        long mp = mprotect(pm, 4096, PROT_READ | PROT_WRITE);
+        pm[0] = 'N'; pm[200] = 'X';                        /* now writable */
+        int wrote = (pm[0] == 'N' && pm[200] == 'X');
+        printf("  mprotect: RO page zero=%d, after RO->RW write ok=%d (mprotect=%ld)\n",
+               was_zero, wrote, mp);
+        munmap(pm, 4096);
+    }
+
     printf("Init complete, exiting.\n");
     return 0;
 }

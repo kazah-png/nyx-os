@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.8.17"
+#define KERNEL_VERSION "5.8.18"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -99,6 +99,7 @@ typedef __builtin_va_list va_list;
 #define SYS_MKDIR    23
 #define SYS_UNLINK   24
 #define SYS_TTYMODE  25
+#define SYS_MPROTECT 26
 
 /* SYS_TTYMODE modes. Canonical: read(0) returns a full line, echoed + backspace-
  * edited by the kernel. Raw: read(0) returns bytes as they arrive, NO echo, and
@@ -166,8 +167,13 @@ typedef __builtin_va_list va_list;
 typedef struct {
     uint64_t start;      // page-aligned base VA (inclusive)
     uint64_t end;        // page-aligned end VA (exclusive)
-    uint32_t prot;       // PROT_* bits (honored per-page by vm_handle_fault)
+    uint32_t prot;       // PROT_* bits (honored per-page by vm_handle_fault; mprotect updates it)
     uint8_t  used;       // 1 = slot in use
+    // File-backed mapping: a private kernel snapshot of the file (from offset 0).
+    // A demand-faulted page copies its slice from here; NULL = anonymous (zero-fill).
+    // Owned by the VMA: freed on munmap/execve, deep-copied on fork.
+    uint8_t* file_buf;
+    uint32_t file_size;
 } vma_t;
 
 // Pipe fds are stored in the per-process fd table (ufd_handle) with this flag set,
@@ -697,9 +703,13 @@ void signal_raise(process_t* p, int sig);            // post a signal to a proce
 int  signal_pending(process_t* p);                   // 1 if a deliverable (unblocked) signal waits
 void signal_send_foreground(int sig);                // keyboard Ctrl-C -> foreground process
 // Anonymous mmap (mmap.c). Pages within a returned region demand-fault to zero.
-uint64_t do_mmap(uint64_t addr, uint64_t length, int prot, int flags); // SYS_MMAP; MAP_FAILED = (uint64_t)-1
+uint64_t do_mmap(uint64_t addr, uint64_t length, int prot, int flags,
+                 int file_handle, uint32_t file_size); // SYS_MMAP; MAP_FAILED = (uint64_t)-1
 int      do_munmap(uint64_t addr, uint64_t length);  // SYS_MUNMAP
+int      do_mprotect(uint64_t addr, uint64_t length, int prot); // SYS_MPROTECT
 vma_t*   vma_find(process_t* p, uint64_t addr);      // vm_handle_fault lookup
+void     vm_protect_range(uint64_t* pml4, uint64_t start, uint64_t end, int prot); // paging.c
+void     mmap_free_bufs(process_t* p);               // release file-backed snapshots at reap
 int do_execve(const uint8_t* data, uint32_t size,
               char* const* kargv, int argc); // SYS_EXECVE: replace caller's image; -1 on failure
 int copy_to_user(uint64_t udst, const void* src, uint64_t len); // via user_cr3 page walk (syscall.c)

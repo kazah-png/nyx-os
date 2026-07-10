@@ -225,6 +225,16 @@ int do_fork(void) {
     // the parent hadn't touched yet.
     for (int i = 0; i < PROC_MAX_VMAS; i++) child->mmap_vmas[i] = parent->mmap_vmas[i];
     child->mmap_next = parent->mmap_next;
+    // A file-backed VMA owns its snapshot buffer — give the child its own copy so
+    // munmap/exit in either process doesn't double-free (or corrupt) the other's.
+    for (int i = 0; i < PROC_MAX_VMAS; i++) {
+        vma_t* cv = &child->mmap_vmas[i];
+        if (cv->used && cv->file_buf) {
+            uint8_t* nb = (uint8_t*)kmalloc(cv->file_size);
+            if (nb) { memcpy_asm(nb, cv->file_buf, cv->file_size); cv->file_buf = nb; }
+            else    { cv->file_buf = 0; cv->file_size = 0; }   // degrade to zero-fill
+        }
+    }
     // Inherit the working directory (relative paths in the child resolve against it).
     strncpy(child->cwd, parent->cwd, sizeof(child->cwd) - 1);
     child->cwd[sizeof(child->cwd) - 1] = '\0';
@@ -288,8 +298,11 @@ int do_execve(const uint8_t* data, uint32_t size, char* const* kargv, int argc) 
     for (int i = 0; i < NSIG; i++) self->sig_handlers[i] = SIG_DFL;
     self->sig_pending = 0; self->sig_active = 0; self->sig_mask = 0; self->sig_trampoline = 0;
     // Drop mmap regions: their pages are freed with old_pd, and the fresh image
-    // starts with an empty mmap space.
-    for (int i = 0; i < PROC_MAX_VMAS; i++) self->mmap_vmas[i].used = 0;
+    // starts with an empty mmap space (free any file-backed snapshot buffers first).
+    for (int i = 0; i < PROC_MAX_VMAS; i++) {
+        if (self->mmap_vmas[i].file_buf) { kfree(self->mmap_vmas[i].file_buf); self->mmap_vmas[i].file_buf = 0; }
+        self->mmap_vmas[i].used = 0;
+    }
     self->mmap_next = 0;
     self->tty_raw = 0;           // new image gets the canonical stdin discipline
     if (old_pd) free_page_directory(old_pd);
@@ -374,6 +387,7 @@ void reap_user_process(process_t* proc) {
             break;
         }
     }
+    mmap_free_bufs(proc);
     if (proc->page_directory) free_page_directory((uint64_t*)proc->page_directory);
     if (proc->kernel_stack) kfree((void*)((uintptr_t)proc->kernel_stack - 4096));
     kfree(proc);
@@ -557,6 +571,7 @@ void reap_zombies(void) {
         process_t* par = find_process(p->ppid);
         if (par && par->page_directory && par->state != PROC_ZOMBIE) continue;
         close_proc_fds(p);                              // close any fds it left open
+        mmap_free_bufs(p);
         if (p->page_directory) free_page_directory((uint64_t*)p->page_directory);
         if (p->kernel_stack) kfree((void*)((uintptr_t)p->kernel_stack - 4096));
         // Swap-remove, keeping current_idx pointing at the same live proc if the
@@ -611,6 +626,7 @@ int do_waitpid(int wpid, int* out_code, int options) {
             if (out_code) *out_code = child->exit_code;
             result = (int)child->pid;
             close_proc_fds(child);
+            mmap_free_bufs(child);
             if (child->page_directory) free_page_directory((uint64_t*)child->page_directory);
             if (child->kernel_stack) kfree((void*)((uintptr_t)child->kernel_stack - 4096));
             int last = --process_count;                   // swap-remove, keeping current_idx valid
