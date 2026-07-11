@@ -34,33 +34,20 @@
 ```
 nyx:root$ nyxfetch
 
-______          \'/
-      .-'` .    `'-.    -= * =-
-    .'  '    .---.  '.    /|\
-   /  '    .'     `'. \
-  ;  '    /          \|
- :  '  _ ;            `
-;  :  /(\ \
-|  .       '.
-|  ' /     --'
-|  .   '.__\
-;  :       /
- ;  .     |            ,
-  ;  .    \           /|
-   \  .    '.       .'/
-    '.  '  . `'---'`. `'
-      `'-..._____.-'
-    N Y X O S
-    G U I   S U I T E
-  -------------------------------------
-  Kernel:     NyxOS 5.8.26
-  Arch:       x86_64 (long mode)
-  Memory:     256 MB total, 240 MB free
-  Heap:       16384 KB
-  Paging:     Enabled
-  NX+SMEP:    Enabled
-  Uptime:     42 ticks
-  -------------------------------------
+       .:::o:o#:.           nyx@nyxos
+    .:oo.. :o.              -----------------
+  :oo:.oo.o:                OS:         NyxOS x86_64
+ .#o:.   :.                 Host:       QEMU Standard PC
+ #:::....:                  Kernel:     NyxOS 5.8.26 (GUI Suite)
+o#::. . o.                  Uptime:     00:00:11
+o#.o:   :o                  Resolution: 1024 x 768
+o###o   o#                  CPU:        QEMU Virtual CPU version 2.5+ (1)
+:#oo::  .oo.                Memory:     255 / 255 MiB (0%)
+ o#o:o..  :o:.              Processes:  4
+  o#ooo::.:::#::        .:. Disk:       Not mounted
+  .:o#oo::.: ..:oo::.o:#o.  Network:    127.0.0.1
+     :o#####:#::o:.::o:     Shell:      NyxOS Terminal
+        .::oo####::.        Time:       2026-07-11 18:00:12
 ```
 
 ---
