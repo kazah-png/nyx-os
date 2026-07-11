@@ -6,10 +6,10 @@
   <strong>Custom x86_64 kernel · C and Assembly · General-purpose OS</strong>
   <br/><br/>
   <!-- Badges -->
-  <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.8.20">
-    <img src="https://img.shields.io/badge/release-v5.8.20-00ff9d?style=flat" />
+  <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.8.21">
+    <img src="https://img.shields.io/badge/release-v5.8.21-00ff9d?style=flat" />
   </a>
-  <img src="https://img.shields.io/badge/status-v5.8.20-00ff9d?style=flat" />
+  <img src="https://img.shields.io/badge/status-v5.8.21-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/TCP-yes-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/GUI-window%20compositor-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/%F0%9F%8C%99%20NyxC-runtime-8b5cf6?style=flat" />
@@ -53,7 +53,7 @@ ______          \'/
     N Y X O S
     G U I   S U I T E
   -------------------------------------
-  Kernel:     NyxOS 5.8.20
+  Kernel:     NyxOS 5.8.21
   Arch:       x86_64 (long mode)
   Memory:     256 MB total, 240 MB free
   Heap:       16384 KB
@@ -266,7 +266,7 @@ Done.
 ### ELF userspace & syscalls (v3.0.0+)
 - **ELF64 loader** — validates, parses PT_LOAD segments, maps pages per-process
 - **Initramfs** — embedded cpio archive with ELF64 binaries (init.elf, hello.elf)
-- **27 syscalls** via `syscall`/`sysret`: `exit`, `write`, `print`, `open`, `read`, `close`, `getpid`, `sbrk`, `fsize`, `exec`, `fork`, `waitpid`, `pipe`, `execve`, `dup2`, `getdents`, `kill`, `signal`, `sigreturn`, `mmap`, `munmap`, `chdir`, `getcwd`, `mkdir`, `unlink`, `ttymode`, `mprotect`
+- **28 syscalls** via `syscall`/`sysret`: `exit`, `write`, `print`, `open`, `read`, `close`, `getpid`, `sbrk`, `fsize`, `exec`, `fork`, `waitpid`, `pipe`, `execve`, `dup2`, `getdents`, `kill`, `signal`, `sigreturn`, `mmap`, `munmap`, `chdir`, `getcwd`, `mkdir`, `unlink`, `ttymode`, `mprotect`, `getprocs`
 - **C runtime** — minimal libc with `printf`, `sprintf`, `snprintf`, `malloc`, `free`, string/memory functions
 - **Auto-boot init** — kernel loads and executes `/init.elf` from initramfs at startup
 - **Ring 3 execution** — user processes run in ring 3, I/O ports denied via TSS I/O map base

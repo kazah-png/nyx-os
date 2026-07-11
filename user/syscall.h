@@ -28,6 +28,7 @@
 #define SYS_UNLINK   24
 #define SYS_TTYMODE  25
 #define SYS_MPROTECT 26
+#define SYS_GETPROCS 27
 
 #define TTY_CANON   0   /* kernel line discipline: echoed, backspace-edited lines */
 #define TTY_RAW     1   /* byte-at-a-time, no echo, arrows as ESC [ A/B/C/D */
@@ -80,6 +81,18 @@ typedef struct {
     char name[64];
     unsigned int type;
 } nyx_dirent_t;
+
+/* One process as returned by getprocs(). Layout MUST match the kernel's record
+ * in SYS_GETPROCS (syscall.c): four u32 fields + a 32-byte comm = 48 bytes, no
+ * padding. `state` is the PROC_* enum (0 parked, 1 run, 2 zombie, 3 blocked);
+ * `cpu_time` is ticks of accumulated CPU time. */
+typedef struct {
+    unsigned int pid;
+    unsigned int ppid;
+    unsigned int state;
+    unsigned int cpu_time;
+    char comm[32];
+} nyx_procinfo_t;
 
 /* x86_64 syscall ABI:
  *   RAX = syscall number
@@ -253,6 +266,15 @@ static inline long unlink(const char* path) {
  * the previous mode. Raw mode is what a line editor runs on; execve resets it. */
 static inline long ttymode(int mode) {
     return syscall1(SYS_TTYMODE, mode);
+}
+
+/* Snapshot the process table into up to `max` nyx_procinfo_t records at `buf`.
+ * Returns the number of live processes written, or -1. This is the enumeration
+ * primitive behind `ps` — the process analogue of getdents(). As with getdents,
+ * every page of `buf` must be resident before the call (use a .bss array or
+ * memset first) so the kernel's copy never hits an unfaulted lazy-heap page. */
+static inline long getprocs(nyx_procinfo_t* buf, int max) {
+    return syscall2(SYS_GETPROCS, (long)buf, max);
 }
 
 /* Create a pipe: fds[0] is the read end, fds[1] the write end. Returns 0, or -1.

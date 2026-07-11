@@ -468,6 +468,21 @@ int main(void) {
         close((int)rndfd);
     }
 
+    /* Process enumeration (SYS_GETPROCS, the primitive behind `ps`): snapshot the
+     * table and confirm we can see ourselves. We must appear (running our own comm)
+     * with a sensible ppid; the count should be at least 1. */
+    printf("Testing process enumeration (getprocs)...\n");
+    static nyx_procinfo_t plist[64];
+    long np = getprocs(plist, 64);
+    int self_seen = 0;
+    long mypid = getpid();
+    for (long i = 0; i < np; i++)
+        if (plist[i].pid == (unsigned)mypid) self_seen = 1;
+    printf("  getprocs -> %ld processes, self(pid %ld) visible=%d\n", np, mypid, self_seen);
+    for (long i = 0; i < np && i < 6; i++)
+        printf("    pid=%u ppid=%u state=%u comm=%s\n",
+               plist[i].pid, plist[i].ppid, plist[i].state, plist[i].comm);
+
     printf("Init complete, exiting.\n");
     return 0;
 }

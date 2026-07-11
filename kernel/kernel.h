@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.8.20"
+#define KERNEL_VERSION "5.8.21"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -100,6 +100,7 @@ typedef __builtin_va_list va_list;
 #define SYS_UNLINK   24
 #define SYS_TTYMODE  25
 #define SYS_MPROTECT 26
+#define SYS_GETPROCS 27
 
 /* SYS_TTYMODE modes. Canonical: read(0) returns a full line, echoed + backspace-
  * edited by the kernel. Raw: read(0) returns bytes as they arrive, NO echo, and
