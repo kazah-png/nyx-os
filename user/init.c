@@ -409,13 +409,20 @@ int main(void) {
     if (mfd >= 0) {
         long msz = fsize((int)mfd);
         char* fmap = (char*)mmap(0, msz, PROT_READ, MAP_PRIVATE, (int)mfd, 0);
-        close((int)mfd);
         if (fmap != MAP_FAILED) {
             printf("  mmap(welcome.txt, %ld) -> %p, contents: %s", msz, fmap, fmap);
             munmap(fmap, msz);
         } else {
             printf("  file mmap failed\n");
         }
+        /* offset mmap (proves the 6th syscall arg is plumbed): map from byte 5 of
+         * "Type 'help' for commands.\n" -> the mapping should start at "help'..." */
+        char* omap = (char*)mmap(0, msz - 5, PROT_READ, MAP_PRIVATE, (int)mfd, 5);
+        if (omap != MAP_FAILED) {
+            printf("  mmap(welcome.txt, offset 5) -> starts at: %s", omap);
+            munmap(omap, msz - 5);
+        }
+        close((int)mfd);
     }
     /* mprotect: an anonymous page mapped READ-ONLY reads back zero; mprotect to
      * READ|WRITE then makes it writable (a write with no mprotect would fault and

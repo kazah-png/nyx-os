@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.8.19"
+#define KERNEL_VERSION "5.8.20"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -704,7 +704,7 @@ int  signal_pending(process_t* p);                   // 1 if a deliverable (unbl
 void signal_send_foreground(int sig);                // keyboard Ctrl-C -> foreground process
 // Anonymous mmap (mmap.c). Pages within a returned region demand-fault to zero.
 uint64_t do_mmap(uint64_t addr, uint64_t length, int prot, int flags,
-                 int file_handle, uint32_t file_size); // SYS_MMAP; MAP_FAILED = (uint64_t)-1
+                 int file_handle, uint32_t file_size, uint32_t file_off); // SYS_MMAP; MAP_FAILED=(uint64_t)-1
 int      do_munmap(uint64_t addr, uint64_t length);  // SYS_MUNMAP
 int      do_mprotect(uint64_t addr, uint64_t length, int prot); // SYS_MPROTECT
 vma_t*   vma_find(process_t* p, uint64_t addr);      // vm_handle_fault lookup
@@ -735,7 +735,7 @@ void ensure_idle_process(void);
 void init_syscalls(void);
 void setup_syscall_msrs(void);
 void set_kernel_rsp(uint64_t rsp);
-uint64_t syscall_handler(uint64_t syscall_no, uint64_t arg1, uint64_t arg2, uint64_t arg3, uint64_t arg4, uint64_t arg5);
+uint64_t syscall_handler(uint64_t syscall_no, uint64_t arg1, uint64_t arg2, uint64_t arg3, uint64_t arg4, uint64_t arg5, uint64_t arg6);
 extern void syscall_entry(void);
 
 void init_vfs(void);

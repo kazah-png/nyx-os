@@ -195,8 +195,14 @@ syscall_entry:
     mov rcx, [rsp + 88]          ; RDX = arg3
     mov r8,  [rsp + 40]          ; R10 = arg4
     mov r9,  [rsp + 56]          ; R8  = arg5
-    mov [syscall_frame_ptr], rsp ; expose the saved user frame to do_fork()
+    mov [syscall_frame_ptr], rsp ; expose the saved user frame to do_fork() (frame base)
+    ; arg6 (user R9, at frame+48) is the 7th integer arg -> passed on the stack per
+    ; SysV. Push it so the callee finds it just above the return address, then pop it
+    ; back after the call so rsp is the frame base again for the RAX-slot write below.
+    ; (Alignment isn't required: the kernel is built -mno-sse, so no movaps.)
+    push qword [rsp + 48]        ; arg6
     call syscall_handler
+    add rsp, 8                   ; drop arg6 -> rsp back at the frame base
     mov [rsp + 112], rax         ; return value -> saved RAX slot
 
     ; Deliver a pending signal (still on the kernel CR3; user_cr3 valid for the user

@@ -41,7 +41,7 @@ vma_t* vma_find(process_t* p, uint64_t addr) {
  * file (from offset 0) into a private kernel buffer here, and each faulted page
  * copies its slice from that buffer. Returns the base VA, or MAP_FAILED. */
 uint64_t do_mmap(uint64_t addr, uint64_t length, int prot, int flags,
-                 int file_handle, uint32_t file_size) {
+                 int file_handle, uint32_t file_size, uint32_t file_off) {
     (void)addr; (void)flags;
     process_t* p = get_current_process();
     if (!p || length == 0) return (uint64_t)-1;
@@ -56,11 +56,14 @@ uint64_t do_mmap(uint64_t addr, uint64_t length, int prot, int flags,
     uint64_t base = p->mmap_next;
     if (base + length > MMAP_MAX || base + length < base) return (uint64_t)-1;
 
-    uint8_t* fb = 0;
-    if (file_handle && file_size > 0) {                 /* snapshot the file now */
-        fb = (uint8_t*)kmalloc(file_size);
+    // File-backed: snapshot the file from `file_off` to EOF into a private buffer, so
+    // a demand-faulted page copies file_buf[page_offset] (mapping byte 0 == file[off]).
+    uint8_t* fb = 0; uint32_t snap = 0;
+    if (file_handle && file_off < file_size) {
+        snap = file_size - file_off;
+        fb = (uint8_t*)kmalloc(snap);
         if (!fb) return (uint64_t)-1;
-        if (vfs_pread(file_handle, fb, file_size, 0) < 0) { kfree(fb); return (uint64_t)-1; }
+        if (vfs_pread(file_handle, fb, snap, file_off) < 0) { kfree(fb); return (uint64_t)-1; }
     }
 
     p->mmap_next = base + length;
@@ -69,7 +72,7 @@ uint64_t do_mmap(uint64_t addr, uint64_t length, int prot, int flags,
     p->mmap_vmas[slot].prot      = (uint32_t)prot;
     p->mmap_vmas[slot].used      = 1;
     p->mmap_vmas[slot].file_buf  = fb;
-    p->mmap_vmas[slot].file_size = fb ? file_size : 0;
+    p->mmap_vmas[slot].file_size = snap;
     return base;                                        /* pages fault in on first touch */
 }
 

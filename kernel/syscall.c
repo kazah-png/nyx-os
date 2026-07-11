@@ -322,8 +322,8 @@ static int copy_path_from_user(char* out, int outsz, uint64_t uptr) {
     return 0;
 }
 
-uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3, uint64_t a4, uint64_t a5) {
-    (void)a4; (void)a5;
+uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
+                         uint64_t a4, uint64_t a5, uint64_t a6) {
     switch (no) {
         case SYS_EXIT: {
             printf("[USER] exit(%lu)\n", a1);
@@ -672,9 +672,8 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3, uin
         }
         case SYS_MMAP: {
             // mmap(addr, length, prot, flags, fd, offset). Anonymous (MAP_ANONYMOUS)
-            // demand-faults to zero; otherwise it's file-backed — resolve fd (a5) to
-            // a VFS handle here and snapshot the file in do_mmap. offset (a6) isn't
-            // marshaled to the handler, so file mappings start at offset 0 (v1).
+            // demand-faults to zero; otherwise file-backed — resolve fd (a5) to a VFS
+            // handle here and snapshot the file (from `offset`, a6) in do_mmap.
             int flags = (int)a4;
             int fh = 0; uint32_t fsz = 0;
             if (!(flags & MAP_ANONYMOUS)) {
@@ -684,7 +683,7 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3, uin
                 fh = internal;
                 fsz = (uint32_t)vfs_fsize(internal);
             }
-            return do_mmap(a1, a2, (int)a3, flags, fh, fsz);
+            return do_mmap(a1, a2, (int)a3, flags, fh, fsz, (uint32_t)a6);
         }
         case SYS_MUNMAP:
             return (uint64_t)(int64_t)do_munmap(a1, a2);
