@@ -1851,35 +1851,39 @@ void kernel_main(uint64_t magic, void* mboot_ptr) {
 // ============================================================
 void nyxfetch(void) {
     clear_screen();
-    set_terminal_color(vga_entry_color(VGA_LIGHT_BROWN, VGA_BLACK));
 
-    const char* logo[] = {
-        "______          \\'/",
-        "      .-'` .    `'-.    -= * =-",
-        "    .'  '    .---.  '.    /|\\",
-        "   /  '    .'     `'. \\",
-        "  ;  '    /          \\|",
-        " :  '  _ ;            `",
-        ";  :  /(\\ \\",
-        "|  .       '.",
-        "|  ' /     --'",
-        "|  .   '.__\\",
-        ";  :       /",
-        " ;  .     |            ,",
-        "  ;  .    \\           /|",
-        "   \\  .    '.       .'/",
-        "    '.  '  . `'---'`. `'",
-        "      `'-..._____.-'",
-        "    N Y X O S",
-        "    N I G H T F A L L",
-        NULL
+    /* The GUI terminal colorizes via ANSI SGR; the boot/VGA console does not
+     * parse escapes (they would render as garbage). So emit ANSI only once the
+     * compositor is up, and tint the boot splash with set_terminal_color(). */
+    int gui = compositor_is_running();
+    const char* LOGO_C = gui ? "\x1b[95m" : "";   /* fox: NyxOS purple      */
+    const char* KEY_C  = gui ? "\x1b[96m" : "";   /* field labels: cyan     */
+    const char* ACC_C  = gui ? "\x1b[95m" : "";   /* accents: user@host     */
+    const char* RST_C  = gui ? "\x1b[0m"  : "";
+    set_terminal_color(vga_entry_color(VGA_LIGHT_MAGENTA, VGA_BLACK));
+
+    /* The Nyx fox, rendered as an ASCII shade ramp (" .:o#"). Pure ASCII on
+     * purpose: the terminal write path drops bytes >= 0x80, so block glyphs
+     * would vanish. 27 columns wide, 14 rows tall. */
+    static const char* fox[] = {
+        "       .:::o:o#:.          ",
+        "    .:oo.. :o.             ",
+        "  :oo:.oo.o:               ",
+        " .#o:.   :.                ",
+        " #:::....:                 ",
+        "o#::. . o.                 ",
+        "o#.o:   :o                 ",
+        "o###o   o#                 ",
+        ":#oo::  .oo.               ",
+        " o#o:o..  :o:.             ",
+        "  o#ooo::.:::#::        .:.",
+        "  .:o#oo::.: ..:oo::.o:#o. ",
+        "     :o#####:#::o:.::o:    ",
+        "        .::oo####::.       ",
     };
-    for (int i = 0; logo[i] != NULL; i++)
-        printf("%s\n", logo[i]);
+    const int FOX_H = 14;
 
-    set_terminal_color(vga_entry_color(VGA_LIGHT_CYAN, VGA_BLACK));
-    printf("  -------------------------------------\n");
-
+    /* ---- Gather system facts (all real; nothing hardcoded) ---- */
     char cpu_brand[49] = "Unknown";
     uint32_t e, b, c, d;
     __asm__ volatile("cpuid" : "=a"(e), "=b"(b), "=c"(c), "=d"(d) : "a"(0x80000000));
@@ -1936,22 +1940,35 @@ void nyxfetch(void) {
         snprintf(disk_str, sizeof(disk_str), "%llu KiB / %llu KiB", free_kb, total_kb);
     }
 
-    printf("  OS:         %s x86_64\n", KERNEL_NAME);
-    printf("  Host:       QEMU Standard PC\n");
-    printf("  Kernel:     %s %s (%s)\n", KERNEL_NAME, KERNEL_VERSION, KERNEL_CODENAME);
-    printf("  Uptime:     %s\n", uptime);
-    printf("  Resolution: %s\n", res_str);
-    printf("  CPU:        %s (%d)\n", cpu_brand, cpu_count);
-    printf("  Memory:     %llu MiB / %llu MiB (%u%%)\n",
-           free_mem / (1024*1024), memory_total / (1024*1024), mem_pct);
-    printf("  Processes:  %d\n", process_count);
-    printf("  Disk (/mnt): %s\n", disk_str);
-    printf("  Network:    %s\n", ip_str);
-    printf("  Shell:      NyxOS Terminal\n");
-    printf("  Date/Time:  %u-%u-%u %u:%u:%u\n",
-           (unsigned int)rtc.year, (unsigned int)rtc.month, (unsigned int)rtc.day,
-           (unsigned int)rtc.hour, (unsigned int)rtc.minute, (unsigned int)rtc.second);
-    printf("  -------------------------------------\n");
+    /* ---- Build the info column (index-aligned with the fox rows) ---- */
+    char info[16][96];
+    int n = 0;
+    snprintf(info[n++], 96, "%snyx%s@%snyxos%s", ACC_C, RST_C, ACC_C, RST_C);
+    snprintf(info[n++], 96, "-----------------");
+    snprintf(info[n++], 96, "%sOS:%s         %s x86_64", KEY_C, RST_C, KERNEL_NAME);
+    snprintf(info[n++], 96, "%sHost:%s       QEMU Standard PC", KEY_C, RST_C);
+    snprintf(info[n++], 96, "%sKernel:%s     %s %s (%s)", KEY_C, RST_C, KERNEL_NAME, KERNEL_VERSION, KERNEL_CODENAME);
+    snprintf(info[n++], 96, "%sUptime:%s     %s", KEY_C, RST_C, uptime);
+    snprintf(info[n++], 96, "%sResolution:%s %s", KEY_C, RST_C, res_str);
+    snprintf(info[n++], 96, "%sCPU:%s        %s (%d)", KEY_C, RST_C, cpu_brand, cpu_count);
+    snprintf(info[n++], 96, "%sMemory:%s     %llu / %llu MiB (%u%%)", KEY_C, RST_C,
+             free_mem / (1024*1024), memory_total / (1024*1024), mem_pct);
+    snprintf(info[n++], 96, "%sProcesses:%s  %d", KEY_C, RST_C, process_count);
+    snprintf(info[n++], 96, "%sDisk:%s       %s", KEY_C, RST_C, disk_str);
+    snprintf(info[n++], 96, "%sNetwork:%s    %s", KEY_C, RST_C, ip_str);
+    snprintf(info[n++], 96, "%sShell:%s      NyxOS Terminal", KEY_C, RST_C);
+    snprintf(info[n++], 96, "%sTime:%s       %u-%02u-%02u %02u:%02u:%02u", KEY_C, RST_C,
+             (unsigned int)rtc.year, (unsigned int)rtc.month, (unsigned int)rtc.day,
+             (unsigned int)rtc.hour, (unsigned int)rtc.minute, (unsigned int)rtc.second);
+
+    /* ---- Render: fox on the left, facts on the right, line by line ---- */
+    static const char* blank_row = "                           "; /* 27 spaces */
+    int rows = n > FOX_H ? n : FOX_H;
+    for (int i = 0; i < rows; i++) {
+        const char* l = (i < FOX_H) ? fox[i] : blank_row;
+        const char* r = (i < n)     ? info[i] : "";
+        printf("%s%s%s  %s\n", LOGO_C, l, RST_C, r);
+    }
     set_terminal_color(vga_entry_color(VGA_LIGHT_GREEN, VGA_BLACK));
 }
 
