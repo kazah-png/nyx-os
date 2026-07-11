@@ -281,6 +281,8 @@ static void run_demo(void) {
         "find /tmp",
         "ls /tmp/proj | sort",             /* insertion order b,a -> sorted a,b */
         "rm /tmp/proj/a.txt /tmp/proj/b.txt",
+        "ls /dev",                         /* device nodes */
+        "echo swallowed by the void > /dev/null",
         "echo running in the background | upper &",
     };
     for (unsigned i = 0; i < sizeof(script) / sizeof(script[0]); i++) {

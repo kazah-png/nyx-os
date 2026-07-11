@@ -25,7 +25,27 @@ typedef struct vfs_node {
     uint8_t  mount_backed; // 1 = transient node mirroring a mounted-FS file
     char     mpath[MAX_NAME]; // path within the mount (e.g. "/foo.txt")
     void*    mount_ent;    // mount_entry_t* to flush writes through
+    uint32_t dev_type;    // 0 = regular file; else a /dev special (DEV_* below)
 } vfs_node_t;
+
+/* Special device nodes under /dev. read/write of these bypass ino->data. */
+#define DEV_NULL    1     // reads -> EOF, writes discarded
+#define DEV_ZERO    2     // reads -> endless zero bytes, writes discarded
+#define DEV_RANDOM  3     // reads -> pseudo-random bytes, writes discarded
+
+/* xorshift64 PRNG for /dev/random, lazily seeded from the tick counter. */
+static uint64_t dev_rng_state = 0;
+static uint8_t dev_rand_byte(void) {
+    extern uint32_t get_ticks(void);
+    if (!dev_rng_state) {
+        dev_rng_state = ((uint64_t)get_ticks() << 16) ^ 0x9E3779B97F4A7C15ULL;
+        if (!dev_rng_state) dev_rng_state = 0x1234567ABCDEFULL;
+    }
+    dev_rng_state ^= dev_rng_state << 13;
+    dev_rng_state ^= dev_rng_state >> 7;
+    dev_rng_state ^= dev_rng_state << 17;
+    return (uint8_t)(dev_rng_state >> 33);
+}
 
 static vfs_node_t nodes[MAX_INODES];
 static uint32_t node_count = 0;
@@ -176,6 +196,17 @@ void init_vfs(void) {
     vfs_write(fd, "Welcome to NyxOS v1.0.0\n", 24);
     vfs_write(fd, "Type 'help' for commands.\n", 26);
     vfs_close(fd);
+
+    // Special device files under /dev — regular-looking nodes whose read/write are
+    // intercepted by dev_type in vfs_pread/vfs_pwrite. urandom is an alias of random.
+    static const struct { const char* path; uint32_t dt; } devs[] = {
+        {"/dev/null", DEV_NULL}, {"/dev/zero", DEV_ZERO},
+        {"/dev/random", DEV_RANDOM}, {"/dev/urandom", DEV_RANDOM},
+    };
+    for (unsigned i = 0; i < sizeof(devs) / sizeof(devs[0]); i++) {
+        int dfd = vfs_open(devs[i].path, 1, 0);           // O_CREAT
+        if (dfd >= 0) ((vfs_node_t*)(uintptr_t)(uint32_t)dfd)->dev_type = devs[i].dt;
+    }
 }
 
 int vfs_open(const char* path, int flags, mode_t mode) {
@@ -291,6 +322,15 @@ int vfs_write(int fd, const void* buf, size_t count) {
 int vfs_pread(int fd, void* buf, uint32_t count, uint32_t offset) {
     vfs_node_t* ino = (vfs_node_t*)(uintptr_t)(uint32_t)fd;
     if (!ino || ino->type != 0) return -1;
+    if (ino->dev_type) {                       // /dev special: content is generated
+        switch (ino->dev_type) {
+            case DEV_NULL:   return 0;         // always EOF
+            case DEV_ZERO:   memset_asm(buf, 0, count); return (int)count;
+            case DEV_RANDOM: for (uint32_t i = 0; i < count; i++)
+                                 ((uint8_t*)buf)[i] = dev_rand_byte();
+                             return (int)count;
+        }
+    }
     if (offset >= ino->size) return 0;
     uint32_t avail = ino->size - offset;
     if (count > avail) count = avail;
@@ -303,6 +343,7 @@ int vfs_pread(int fd, void* buf, uint32_t count, uint32_t offset) {
 int vfs_pwrite(int fd, const void* buf, uint32_t count, uint32_t offset) {
     vfs_node_t* ino = (vfs_node_t*)(uintptr_t)(uint32_t)fd;
     if (!ino || ino->type != 0) return -1;
+    if (ino->dev_type) return (int)count;      // /dev/null etc: accept + discard
     uint32_t end = offset + count;
     if (end < offset) return -1;                 // overflow
     if (!ino->data || end > ino->size) {

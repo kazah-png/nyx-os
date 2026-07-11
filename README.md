@@ -6,10 +6,10 @@
   <strong>Custom x86_64 kernel · C and Assembly · General-purpose OS</strong>
   <br/><br/>
   <!-- Badges -->
-  <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.8.18">
-    <img src="https://img.shields.io/badge/release-v5.8.18-00ff9d?style=flat" />
+  <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.8.19">
+    <img src="https://img.shields.io/badge/release-v5.8.19-00ff9d?style=flat" />
   </a>
-  <img src="https://img.shields.io/badge/status-v5.8.18-00ff9d?style=flat" />
+  <img src="https://img.shields.io/badge/status-v5.8.19-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/TCP-yes-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/GUI-window%20compositor-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/%F0%9F%8C%99%20NyxC-runtime-8b5cf6?style=flat" />
@@ -53,7 +53,7 @@ ______          \'/
     N Y X O S
     G U I   S U I T E
   -------------------------------------
-  Kernel:     NyxOS 5.8.18
+  Kernel:     NyxOS 5.8.19
   Arch:       x86_64 (long mode)
   Memory:     256 MB total, 240 MB free
   Heap:       16384 KB
@@ -183,7 +183,7 @@ nyx:root$ ls /
 bin/   dev/   etc/   home/  mnt/   root/  tmp/   usr/   var/
 
 nyx:root$ uname
-NyxOS 5.8.18 (Scheduler) x86_64
+NyxOS 5.8.19 (Scheduler) x86_64
 
 nyx:root$ mem
 Physical memory: 256 MB total, 252 MB free
@@ -507,7 +507,8 @@ See the full **[NyxOS Status Report](https://github.com/kazah-png/nyx-os/issues/
 - ✅ **Userland file tools** (`mkdir`/`rm`/`touch`/`sort`/`find` as ring-3 programs): new `mkdir`/`unlink` syscalls (cwd-relative), `sort` reorders lines from stdin or files, `find` walks directory trees recursively over `getdents` with an optional name filter — plus a real VFS fix (unlink/rename of nested directories resolved the wrong parent) found by wiring them (verified: `mkdir /tmp/proj`, `touch`, `find /tmp` lists the tree, `ls /tmp/proj | sort` → `a.txt b.txt`, `rm` both)
 - ✅ **Shell line editing + history** (raw tty): `ttymode(TTY_RAW)` gives byte-at-a-time, no-echo stdin with arrows as ANSI escapes; the shell's `readline()` renders its own line — **↑/↓ walks a 16-entry history**, **←/→/Home/End move the cursor**, insert/delete anywhere in the line. Fixed a driver bug found live: the keyboard's E0-prefix check ran after the press-bit mask, so extended keys never worked anywhere (verified: ↑↑+Enter reruns `echo first`; `echo abcd` + ←← + backspace runs `echo acd`)
 - ✅ **Shell Tab completion** (pure userspace, over `getdents`): completes command names (builtins + `/`'s `.elf`s, pipeline-aware after `\|`) and filesystem paths; a unique match fills in with a trailing space or `/`, several extend to the longest common prefix or list the candidates (verified: `ec`+Tab → `echo`; `t`+Tab → `tail  touch`; `ls /ho`+Tab → `ls /home/`)
-- ✅ **File-backed `mmap` + `mprotect`**: mapping a file (`mmap(…, fd, …)` without `MAP_ANONYMOUS`) snapshots it into a per-VMA kernel buffer, and demand-faulted pages copy their slice from it — so reading the mapping returns file contents (the buffer is freed on munmap/exit, deep-copied on fork). `mprotect(addr,len,prot)` rewrites present-page flags and the VMA's prot (verified: `mmap(welcome.txt)` reads back the file; an `PROT_READ` page + `mprotect(RO→RW)` then accepts a write) — next: `/dev` special files, ELF shared libc
+- ✅ **File-backed `mmap` + `mprotect`**: mapping a file (`mmap(…, fd, …)` without `MAP_ANONYMOUS`) snapshots it into a per-VMA kernel buffer, and demand-faulted pages copy their slice from it — so reading the mapping returns file contents (the buffer is freed on munmap/exit, deep-copied on fork). `mprotect(addr,len,prot)` rewrites present-page flags and the VMA's prot (verified: `mmap(welcome.txt)` reads back the file; an `PROT_READ` page + `mprotect(RO→RW)` then accepts a write)
+- ✅ **`/dev` special files**: `/dev/null` (read → EOF, writes discarded), `/dev/zero` (endless zeros), `/dev/random` + `/dev/urandom` (xorshift PRNG) as real VFS nodes — read/write intercepted by a `dev_type` on the node, so `ls /dev`, `open`/`read`/`write`, and `>` redirection all just work (verified: `/dev/zero`→16 zero bytes, `/dev/null`→read 0/write discarded, `/dev/random`→varied bytes, `echo … > /dev/null` swallowed) — next: ELF shared libc, 6-arg syscalls, userspace `ps`/`kill`
 - ✅ NIC-side TCP listen (inbound connections — NyxOS serves HTTP to a host `curl` via `hostfwd`)
 - ✅ **Nyx C language runtime** (`nyxrt.h`/`nyxrt.c`): typed subset of C with string interpolation, transpiles to C, first `.nyx` program (`hello_nyx.elf`) prints "hola desde nyx c! pid=5"
 

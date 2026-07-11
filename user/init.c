@@ -431,6 +431,36 @@ int main(void) {
         munmap(pm, 4096);
     }
 
+    /* /dev special files: /dev/zero reads endless zeros, /dev/null EOFs on read and
+     * swallows writes, /dev/random yields pseudo-random bytes. */
+    printf("Testing /dev special files (null/zero/random)...\n");
+    char db[16];
+    long zfd = open("/dev/zero", O_RDONLY, 0);
+    if (zfd >= 0) {
+        for (int i = 0; i < 16; i++) db[i] = (char)0xAA;   /* poison, then read over it */
+        long n = read((int)zfd, db, 16);
+        int allz = (n == 16);
+        for (long i = 0; i < n; i++) if (db[i] != 0) { allz = 0; break; }
+        printf("  /dev/zero  -> read %ld bytes, all-zero=%d\n", n, allz);
+        close((int)zfd);
+    }
+    long nfd = open("/dev/null", O_RDONLY, 0);
+    if (nfd >= 0) {
+        long rn = read((int)nfd, db, 8);
+        long wn = write((int)nfd, "discard me", 10);
+        printf("  /dev/null  -> read=%ld (want 0), write=%ld (want 10, discarded)\n", rn, wn);
+        close((int)nfd);
+    }
+    long rndfd = open("/dev/random", O_RDONLY, 0);
+    if (rndfd >= 0) {
+        long n = read((int)rndfd, db, 8);
+        int varied = 0;
+        for (long i = 1; i < n; i++) if (db[i] != db[0]) { varied = 1; break; }
+        printf("  /dev/random-> read %ld bytes, varied=%d, first=0x%x\n",
+               n, varied, (unsigned)(unsigned char)db[0]);
+        close((int)rndfd);
+    }
+
     printf("Init complete, exiting.\n");
     return 0;
 }
