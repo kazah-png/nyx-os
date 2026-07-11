@@ -61,7 +61,11 @@ imageview_win_t* imageview_create_ctx(void) {
     iv->img_w = 512;
     iv->img_h = 384;
     iv->zoom = 1.0f;
-    iv->pixels = (uint8_t*)kmalloc(iv->img_w * iv->img_h * 4);
+    // Compute the allocation size in size_t: img_w/img_h are uint32_t, so
+    // img_w * img_h * 4 would otherwise be evaluated in 32-bit and could wrap
+    // before widening to kmalloc's size_t argument (CodeQL cpp/integer-
+    // multiplication-cast-to-long). Casting the first operand keeps it 64-bit.
+    iv->pixels = (uint8_t*)kmalloc((size_t)iv->img_w * iv->img_h * 4);
     if (iv->pixels) {
         generate_test_pattern(iv->pixels, iv->img_w, iv->img_h);
     }
