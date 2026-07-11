@@ -24,11 +24,20 @@ typedef struct {
     int output_len;
     int capturing;
     int visible_rows;
+    // Cursor-addressed "screen mode" for full-screen TUIs (edit, top). Entered when
+    // a captured program emits a CSI cursor sequence (ESC[H / ESC[2J); the lines[]
+    // grid is then treated as a fixed screen drawn from row 0, with a block cursor
+    // at (out_row,out_col). Reset when the command finishes.
+    int screen_mode;
+    int out_row, out_col;
 } terminal_win_t;
+
+#define TERM_SCREEN_ROWS 45    // rows cleared/addressable in screen mode (>= any window)
 
 terminal_win_t* terminal_create_ctx(void);
 void terminal_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch);
 void terminal_win_key(window_t* win, int key);
 int terminal_capture_putchar(int c);
+void terminal_capture_reset(terminal_win_t* t);   // leave screen mode when a cmd ends
 
 #endif

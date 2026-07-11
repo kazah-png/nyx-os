@@ -280,9 +280,9 @@ static inline long getprocs(nyx_procinfo_t* buf, int max) {
 
 /* readkey(timeout_ms): block up to timeout_ms for a single keypress. Returns the
  * key (an ASCII byte, or an extended keycode >= 0x80 for arrows), 0 if the timeout
- * elapsed with no key, or a negative value if interrupted. The timed-input
- * primitive for TUI refresh loops (e.g. `top`): wait a fixed interval for a
- * command, redraw when nothing was pressed. No echo, independent of ttymode. */
+ * elapsed with no key, or a negative value if interrupted. A timeout of 0 blocks
+ * FOREVER until a key (for editors); a positive timeout suits TUI refresh loops
+ * (e.g. `top`) — redraw when nothing was pressed. No echo, independent of ttymode. */
 static inline long readkey(long timeout_ms) {
     return syscall1(SYS_READKEY, timeout_ms);
 }

@@ -222,7 +222,7 @@ static int stdin_readkey(uint32_t timeout_ms) {
         int k = getkey_poll();
         if (k) { result = k; break; }
         if (self && signal_pending(self)) { result = -EINTR; break; }
-        if ((int32_t)(tick_count - deadline) >= 0) break;   /* timed out -> 0 */
+        if (timeout_ms != 0 && (int32_t)(tick_count - deadline) >= 0) break;  /* timed out -> 0 (0 = block forever) */
         if (self) self->blocked_in_kernel = 1;
         __asm__ volatile("sti; hlt");
         __asm__ volatile("cli");

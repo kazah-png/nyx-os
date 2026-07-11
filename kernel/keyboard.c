@@ -186,6 +186,10 @@ void keyboard_irq_handler(void* unused) {
                 signal_send_foreground(SIGINT);             // to the foreground process
                 return;                                     // consume it (don't buffer 'c')
             }
+            // Ctrl+letter -> the ASCII control char (Ctrl-A=0x01 .. Ctrl-Z=0x1A), so
+            // TUI programs can bind commands (nano-style Ctrl-O save / Ctrl-X exit).
+            if (ctrl_pressed && ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')))
+                c = (char)((c | 0x20) - 'a' + 1);
             int next = (kbd_head + 1) % KBD_BUFFER_SIZE;
             if (next != kbd_tail) {
                 kbd_buffer[kbd_head] = c;
