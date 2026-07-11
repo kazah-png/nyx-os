@@ -761,9 +761,15 @@ static void cmd_sb16play(int argc, char** argv) {
 
 #include "elf.h"
 // Run an ELF as a FOREGROUND job: spawn it into the preemptive scheduler, then
-// block until it exits (kwait). The scheduler time-slices it against the shell
-// while we wait; the desktop is paused for the duration (the shell/compositor
-// thread is blocked in kwait), exactly like a foreground job in a real shell.
+// wait for it to exit — WITHOUT freezing the desktop. Rather than blocking the
+// compositor thread in kwait() (which would park it and stop all repainting), we
+// loop: recomposite the desktop, sleep a frame, and check whether the child has
+// become a zombie. The child runs preemptively during each sleep and drains the
+// keyboard ring itself via its read()/readkey() syscalls — the compositor's own
+// event loop is suspended here (nested in this handler), so there's no contention
+// over input. The upshot: a foreground TUI like `top` refreshes LIVE in the GUI
+// window instead of only on the serial console. (v5.8.24 — before this the
+// compositor was parked in kwait and the window was frozen until the job exited.)
 static void cmd_exec(int argc, char** argv) {
     if (argc < 2) { printf("Usage: exec <file>\n"); return; }
     int pid = spawn_user_path(argv[1]);
@@ -773,8 +779,18 @@ static void cmd_exec(int argc, char** argv) {
     }
     extern uint32_t g_foreground_pid;
     g_foreground_pid = (uint32_t)pid;         // Ctrl-C posts SIGINT here while it runs
-    int code = kwait((uint32_t)pid);
+    // Non-blocking foreground wait: repaint at ~16 fps while the job runs. Only
+    // reap_zombies runs on this (compositor) thread and it's busy in this loop,
+    // so the child stays a zombie until we collect it below — no lost exit code.
+    for (;;) {
+        process_t* child = find_process((uint32_t)pid);
+        if (!child || child->state == PROC_ZOMBIE) break;
+        compositor_redraw_now();
+        sleep(60);
+    }
+    int code = find_process((uint32_t)pid) ? kwait((uint32_t)pid) : 0;  // reap (immediate)
     g_foreground_pid = 0;
+    compositor_redraw_now();                  // final frame + the prompt below
     printf("[exec] PID %d exited (code %d)\n", pid, code);
 }
 

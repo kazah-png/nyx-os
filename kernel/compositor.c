@@ -512,6 +512,15 @@ static void redraw_all(void) {
     draw_ctx_menu();
 }
 
+// Public one-shot recomposite. Used by the foreground-exec wait loop (cmd_exec)
+// to keep the desktop repainting — so a running TUI (e.g. top) is visible live —
+// while the compositor thread is parked in that loop instead of its own event
+// loop. Pure draw: touches no input state, safe to call re-entrantly from a
+// command handler that the compositor's key dispatch invoked.
+void compositor_redraw_now(void) {
+    redraw_all();
+}
+
 static window_t* find_window(int id) {
     for (int i = 0; i < MAX_WINDOWS; i++)
         if (windows[i] && windows[i]->id == id) return windows[i];

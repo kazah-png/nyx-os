@@ -6,10 +6,10 @@
   <strong>Custom x86_64 kernel · C and Assembly · General-purpose OS</strong>
   <br/><br/>
   <!-- Badges -->
-  <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.8.23">
-    <img src="https://img.shields.io/badge/release-v5.8.23-00ff9d?style=flat" />
+  <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.8.24">
+    <img src="https://img.shields.io/badge/release-v5.8.24-00ff9d?style=flat" />
   </a>
-  <img src="https://img.shields.io/badge/status-v5.8.23-00ff9d?style=flat" />
+  <img src="https://img.shields.io/badge/status-v5.8.24-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/TCP-yes-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/GUI-window%20compositor-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/%F0%9F%8C%99%20NyxC-runtime-8b5cf6?style=flat" />
@@ -53,7 +53,7 @@ ______          \'/
     N Y X O S
     G U I   S U I T E
   -------------------------------------
-  Kernel:     NyxOS 5.8.23
+  Kernel:     NyxOS 5.8.24
   Arch:       x86_64 (long mode)
   Memory:     256 MB total, 240 MB free
   Heap:       16384 KB

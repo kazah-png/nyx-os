@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.8.23"
+#define KERNEL_VERSION "5.8.24"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -940,5 +940,6 @@ void rtc_read_time(rtc_time_t* time);
 // Compositor
 void compositor_init(void);
 void compositor_run(void);
+void compositor_redraw_now(void);   // one-shot recomposite (foreground-exec wait loop)
 
 #endif // KERNEL_H
