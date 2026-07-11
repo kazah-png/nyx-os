@@ -24,7 +24,13 @@ int elf_load_image(const uint8_t* data, uint32_t size, uint64_t** out_pd,
     if (!elf_validate(data, size)) return -1;
 
     elf64_hdr_t* hdr = (elf64_hdr_t*)data;
-    if (hdr->e_phoff + hdr->e_phnum * hdr->e_phentsize > size) return -1;
+    // e_phnum and e_phentsize are uint16_t, so they promote to int and the
+    // program-header table size is computed in 32-bit — for hostile values
+    // (up to 65535 * 65535) that overflows int (signed UB) before it widens to
+    // the 64-bit comparison, which could sneak a too-large table past this bound
+    // check (CodeQL cpp/integer-multiplication-cast-to-long). Do the math in
+    // 64-bit so the size is exact.
+    if (hdr->e_phoff + (uint64_t)hdr->e_phnum * hdr->e_phentsize > size) return -1;
 
     uint64_t* pd = alloc_page_directory();
     if (!pd) return -1;
