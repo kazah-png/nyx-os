@@ -59,13 +59,44 @@ static void parse_redir(char** av, int* pac, char** infile, char** outfile, int*
     *pac = w;
 }
 
-/* Resolve a command name: "echo" -> "/echo.elf"; anything already containing a
- * '/' or '.' is taken as an explicit path. */
+static const char* env_get(const char* name);   /* forward: defined with the env table below */
+
+/* True if `path` names an openable file — used to probe $PATH candidates. */
+static int file_exists(const char* path) {
+    long fd = open(path, O_RDONLY, 0);
+    if (fd < 0) return 0;
+    close((int)fd);
+    return 1;
+}
+
+/* Resolve a command name to a runnable path. A name containing '/' is an explicit
+ * path (absolute or cwd-relative) and used verbatim — never $PATH-searched. Otherwise
+ * each ':'-separated directory in $PATH is tried in order, "<dir>/<name>" then
+ * "<dir>/<name>.elf" (NyxOS executables carry the .elf suffix), and the first that
+ * exists wins — so $PATH is authoritative (a command not on it is "not found",
+ * signalled by an empty `out`). Only if $PATH is unset/empty does it fall back to the
+ * legacy "/<name>.elf" so the shell still works with no environment. */
 static void resolve(const char* name, char* out) {
-    if (strchr(name, '/') || strchr(name, '.')) { strcpy(out, name); return; }
-    out[0] = '/';
-    strcpy(out + 1, name);
-    strcat(out, ".elf");
+    if (strchr(name, '/')) { strcpy(out, name); return; }   /* explicit path: no search */
+    const char* path = env_get("PATH");
+    if (path && *path) {
+        for (const char* p = path; *p; ) {
+            char dir[96]; int di = 0;
+            while (*p && *p != ':' && di < (int)sizeof(dir) - 1) dir[di++] = *p++;
+            dir[di] = '\0';
+            while (*p == ':') p++;                           /* skip separator(s) */
+            if (di == 0) continue;                           /* empty entry */
+            const char* sep = (dir[di - 1] == '/') ? "" : "/";
+            char cand[160];
+            snprintf(cand, sizeof(cand), "%s%s%s", dir, sep, name);
+            if (file_exists(cand)) { strcpy(out, cand); return; }
+            snprintf(cand, sizeof(cand), "%s%s%s.elf", dir, sep, name);
+            if (file_exists(cand)) { strcpy(out, cand); return; }
+        }
+        out[0] = '\0';                                       /* searched $PATH, not found */
+        return;
+    }
+    out[0] = '/'; strcpy(out + 1, name); strcat(out, ".elf");   /* no $PATH: legacy fallback */
 }
 
 /* Shell-local environment (execve doesn't carry envp yet, so `$VAR` lives here) and
@@ -247,8 +278,9 @@ static void run_line(char* line) {
                 if (fd < 0) { printf("sh: %s: cannot create\n", outfile); exit(1); }
                 dup2((int)fd, 1); close((int)fd);
             }
-            char path[64];
+            char path[160];
             resolve(av[0], path);
+            if (!path[0]) { printf("sh: %s: not found\n", av[0]); exit(127); }  /* not on $PATH */
             execve(path, av, env_build());   /* child inherits the shell environment */
             printf("sh: %s: not found\n", path);
             exit(127);
@@ -542,7 +574,7 @@ int main(int argc, char** argv) {
     env_set("USER", "nyx");
     env_set("HOME", "/home/user");
     env_set("SHELL", "/sh.elf");
-    env_set("PATH", "/");
+    env_set("PATH", "/bin:/usr/bin:/");
     env_set("TERM", "nyx");
 
     /* sh -c "one command line" */
