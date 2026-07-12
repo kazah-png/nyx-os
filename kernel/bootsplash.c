@@ -1,17 +1,21 @@
 #include "kernel.h"
 #include "bootsplash.h"
 #include "font.h"
+#include "nyx_logo.h"
 
-#define ACCENT       fb_rgb(80, 170, 255)
-#define TITLE_C      fb_rgb(180, 210, 240)
-#define SUB_C        fb_rgb(130, 150, 180)
-#define TEXT_C       fb_rgb(200, 200, 220)
-#define BAR_BG_C     fb_rgb(35, 40, 52)
+/* NyxOS purple theme — matches the login screen (login.c) and the moon tint. */
+#define ACCENT       fb_rgb(150, 110, 240)
+#define LOGO_C       fb_rgb(168, 138, 245)   /* moon, identical to login.c   */
+#define TITLE_C      fb_rgb(200, 180, 245)
+#define SUB_C        fb_rgb(140, 120, 180)
+#define TEXT_C       fb_rgb(205, 195, 225)
+#define BAR_BG_C     fb_rgb(40, 34, 56)
 #define BAR_FG_C     ACCENT
-#define BAR_BDR      fb_rgb(55, 60, 75)
-#define PCT_C        fb_rgb(130, 200, 255)
-#define STAR_DIM     fb_rgb(50, 55, 70)
-#define STAR_BRIGHT  fb_rgb(150, 160, 190)
+#define BAR_BDR      fb_rgb(66, 56, 88)
+#define PCT_C        fb_rgb(190, 165, 255)
+#define STAR_DIM     fb_rgb(60, 52, 82)
+#define STAR_BRIGHT  fb_rgb(175, 158, 205)
+#define SPLASH_BG    fb_rgb(24, 18, 40)      /* flat dark purple (erase/fill) */
 
 #define BAR_W        500
 #define BAR_H        14
@@ -22,27 +26,9 @@
 #define NUM_STARS    60
 #define TOTAL_MS     5000
 
-static const char* logo_lines[] = {
-    "______          \\'/",
-    "      .-'` .    `'-.    -= * =-",
-    "    .'  '    .---.  '.    /|\\",
-    "   /  '    .'     `'. \\",
-    "  ;  '    /          \\|",
-    " :  '  _ ;            `",
-    ";  :  /(\\ \\",
-    "|  .       '.",
-    "|  ' /     --'",
-    "|  .   '.__\\",
-    ";  :       /",
-    " ;  .     |            ,",
-    "  ;  .    \\           /|",
-    "   \\  .    '.       .'/",
-    "    '.  '  . `'---'`. `'",
-    "      `'-..._____.-'",
-    "    N Y X O S",
-    "    N I G H T F A L L",
-    NULL
-};
+// The logo is the shared NyxOS moon (nyx_logo.h) — the same brand mark used by
+// the login screen and nyxfetch, so the whole boot flow shows one consistent
+// logo instead of the old "NIGHTFALL" crescent.
 
 // Pre-computed positions for 8 dots on a circle
 static const int spin_dx[8] = {14, 10, 0, -10, -14, -10, 0, 10};
@@ -88,7 +74,7 @@ static void draw_spinner(int phase) {
 }
 
 static void erase_spinner(void) {
-    uint32_t bg = fb_rgb(18, 22, 32);
+    uint32_t bg = SPLASH_BG;
     int r = SPIN_RADIUS + 4;
     fb_fill_rect(spin_cx - r, spin_cy - r, r * 2, r * 2, bg);
 }
@@ -117,31 +103,25 @@ void bootsplash_init(void) {
 
     for (uint32_t y = 0; y < fh; y++) {
         uint32_t t = y * 255 / fh;
-        uint8_t r = 12 + t * 14 / 255;
-        uint8_t g = 16 + t * 16 / 255;
-        uint8_t b = 26 + t * 22 / 255;
-        if (r > 30) r = 30;
-        if (g > 40) g = 40;
-        if (b > 55) b = 55;
+        uint8_t r = 16 + t * 22 / 255;
+        uint8_t g = 12 + t * 12 / 255;
+        uint8_t b = 30 + t * 26 / 255;
+        if (r > 38) r = 38;
+        if (g > 24) g = 24;
+        if (b > 62) b = 62;
         fb_fill_rect(0, y, fw, 1, fb_rgb(r, g, b));
     }
 
-    logo_n = 0;
-    int logo_max_w = 0;
-    while (logo_lines[logo_n]) {
-        int len = strlen(logo_lines[logo_n]);
-        if (len > logo_max_w) logo_max_w = len;
-        logo_n++;
-    }
+    logo_n = NYX_LOGO_ROWS;
 
     int logo_h_px = logo_n * FONT_HEIGHT;
     logo_top = fh / 3 - logo_h_px / 2 - 20;
 
-    uint32_t bg_col = fb_rgb(12, 16, 26);
+    uint32_t bg_col = SPLASH_BG;
     for (int i = 0; i < logo_n; i++) {
-        int lw = strlen(logo_lines[i]) * FONT_WIDTH;
+        int lw = NYX_LOGO_COLS * FONT_WIDTH;
         int lx = (fw - lw) / 2;
-        font_draw_string(lx, logo_top + i * FONT_HEIGHT, logo_lines[i], TITLE_C, bg_col);
+        font_draw_string(lx, logo_top + i * FONT_HEIGHT, NYX_LOGO[i], LOGO_C, bg_col);
     }
 
     for (int i = 0; i < NUM_STARS; i++) {
@@ -187,7 +167,7 @@ void bootsplash_update(int step, int total, const char* status) {
     snprintf(pct, sizeof(pct), "%d%%", (step * 100) / total);
     int px = bar_x + BAR_W + 12;
     int py = bar_y + (BAR_H - FONT_HEIGHT) / 2;
-    uint32_t bg = fb_rgb(18, 22, 32);
+    uint32_t bg = SPLASH_BG;
     fb_fill_rect(px - 2, py - 2, 5 * FONT_WIDTH + 4, FONT_HEIGHT + 4, bg);
     font_draw_string(px, py, pct, PCT_C, bg);
 

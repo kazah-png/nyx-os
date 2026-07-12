@@ -9,10 +9,10 @@
 // background, so we hand it the gradient color under each glyph row).
 static uint32_t login_grad(uint32_t y, uint32_t fh) {
     uint32_t t = y * 255 / fh;
-    uint32_t r = 12 + t * 14 / 255, g = 16 + t * 16 / 255, b = 26 + t * 22 / 255;
-    if (r > 30) r = 30;
-    if (g > 40) g = 40;
-    if (b > 55) b = 55;
+    uint32_t r = 16 + t * 22 / 255, g = 12 + t * 12 / 255, b = 30 + t * 26 / 255;
+    if (r > 38) r = 38;
+    if (g > 24) g = 24;
+    if (b > 62) b = 62;
     return fb_rgb(r, g, b);
 }
 
@@ -21,8 +21,8 @@ extern volatile int kbd_head;
 extern volatile int kbd_tail;
 
 static void draw_field(int x, int y, int w, int active, const char* text, int masked) {
-    uint32_t bd = active ? fb_rgb(80,170,255) : fb_rgb(55,60,75);
-    uint32_t bg = active ? fb_rgb(45,55,75) : fb_rgb(35,40,55);
+    uint32_t bd = active ? fb_rgb(150,120,240) : fb_rgb(68,58,92);
+    uint32_t bg = active ? fb_rgb(52,44,80) : fb_rgb(40,34,56);
     fb_fill_rect(x, y, w, 20, bg);
     fb_fill_rect(x, y, w, 1, bd);
     fb_fill_rect(x, y+19, w, 1, bd);
@@ -64,16 +64,16 @@ int login_screen(void) {
         int y = moon_top + i * FONT_HEIGHT;
         font_draw_string(moon_x, y, NYX_LOGO[i], moon, login_grad((uint32_t)y, fh));
     }
-    fb_fill_rect(px, py, 360, 210, fb_rgb(25,30,42));
-    fb_fill_rect(px-1, py-1, 362, 1, fb_rgb(60,65,80));
-    fb_fill_rect(px-1, py+210, 362, 1, fb_rgb(40,45,55));
-    fb_fill_rect(px-1, py, 1, 210, fb_rgb(60,65,80));
-    fb_fill_rect(px+360, py, 1, 210, fb_rgb(40,45,55));
+    fb_fill_rect(px, py, 360, 210, fb_rgb(30,24,46));
+    fb_fill_rect(px-1, py-1, 362, 1, fb_rgb(72,60,96));
+    fb_fill_rect(px-1, py+210, 362, 1, fb_rgb(50,42,66));
+    fb_fill_rect(px-1, py, 1, 210, fb_rgb(72,60,96));
+    fb_fill_rect(px+360, py, 1, 210, fb_rgb(50,42,66));
 
-    font_draw_string((fw-12*8)/2, py+10, "NyxOS Login", fb_rgb(190,168,245), fb_rgb(25,30,42));
+    font_draw_string((fw-12*8)/2, py+10, "NyxOS Login", fb_rgb(190,168,245), fb_rgb(30,24,46));
     fb_fill_rect(px+20, py+30, 320, 1, fb_rgb(55,60,75));
-    font_draw_string(px+20, py+45, "Username:", fb_rgb(150,170,200), fb_rgb(25,30,42));
-    font_draw_string(px+20, py+98, "Password:", fb_rgb(150,170,200), fb_rgb(25,30,42));
+    font_draw_string(px+20, py+45, "Username:", fb_rgb(180,165,215), fb_rgb(30,24,46));
+    font_draw_string(px+20, py+98, "Password:", fb_rgb(180,165,215), fb_rgb(30,24,46));
 
     int ux = px+20, uy = py+65, uw = 320;
     int pfx = px+20, pfy = py+118, pfw = 320;
@@ -129,7 +129,7 @@ submit:
     int ok = auth_verify(user, pass);
     serial_puts(ok ? "[LOGIN] OK.\n" : "[LOGIN] FAIL.\n");
     if (!ok) {
-        font_draw_string((fw-18*8)/2, py+180, "Invalid credentials", fb_rgb(220,60,60), fb_rgb(25,30,42));
+        font_draw_string((fw-18*8)/2, py+180, "Invalid credentials", fb_rgb(220,60,60), fb_rgb(30,24,46));
         for (volatile int i = 0; i < 30000000; i++);
         return 0;
     }
