@@ -158,8 +158,13 @@ int terminal_capture_putchar(int c) {
             if (!t->screen_mode) term_screen_clear(t);
             t->out_row = esc_p[0] > 0 ? esc_p[0] - 1 : 0;
             t->out_col = esc_p[1] > 0 ? esc_p[1] - 1 : 0;
-        } else if (c == 'J') {                    // clear screen
-            term_screen_clear(t);
+        } else if (c == 'J') {                    // erase display
+            if (esc_p[0] == 3 && !t->screen_mode) {   // ESC[3J: wipe scrollback, stay normal
+                t->line_count = 0;                    // (userspace `clear` — composes in the shell)
+                t->scroll_offset = 0;
+            } else {                                   // ESC[2J / ESC[J: full-screen clear (TUI)
+                term_screen_clear(t);
+            }
         } else if (c == 'K') {                    // clear to end of line
             if (t->screen_mode && t->out_row >= 0 && t->out_row < TERM_SCREEN_ROWS)
                 for (int x = t->out_col; x >= 0 && x < TERM_COLS; x++) {
