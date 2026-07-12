@@ -487,7 +487,7 @@ int main(void) {
      * static files, then our OWN /proc/<pid>/status — proving per-pid dirs appear
      * on demand and reflect live process state. */
     printf("Testing /proc filesystem...\n");
-    static char pbuf[256];
+    static char pbuf[640];   /* large enough for /proc/<pid>/maps */
     const char* pfiles[3];
     pfiles[0] = "/proc/version"; pfiles[1] = "/proc/meminfo"; pfiles[2] = "/proc/uptime";
     for (int i = 0; i < 3; i++) {
@@ -513,6 +513,17 @@ int main(void) {
         close((int)stfd);
     } else {
         printf("  %s: open failed\n", spath);
+    }
+    /* /proc/<pid>/maps: our mapped memory regions (program, shared libc, stack). */
+    char mpath[40];
+    sprintf(mpath, "/proc/%d/maps", (int)mypid);
+    long mpfd = open(mpath, O_RDONLY, 0);
+    if (mpfd >= 0) {
+        long n = read((int)mpfd, pbuf, sizeof(pbuf) - 1);
+        if (n < 0) n = 0;
+        pbuf[n] = '\0';
+        printf("  %s:\n%s", mpath, pbuf);
+        close((int)mpfd);
     }
 
     /* Timed key read (SYS_READKEY, the primitive behind `top`): with no key

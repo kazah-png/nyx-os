@@ -45,6 +45,7 @@ typedef struct vfs_node {
 #define PROC_PID_DIR     5   // /proc/<pid> directory (proc_pid set)
 #define PROC_PID_STATUS  6   // /proc/<pid>/status  (proc_pid set)
 #define PROC_PID_CMDLINE 7   // /proc/<pid>/cmdline (proc_pid set)
+#define PROC_PID_MAPS    8   // /proc/<pid>/maps    (mapped memory regions)
 
 /* xorshift64 PRNG for /dev/random, lazily seeded from the tick counter. */
 static uint64_t dev_rng_state = 0;
@@ -262,6 +263,29 @@ static int proc_generate(vfs_node_t* ino, char* buf, int bufsz) {
             if (p) snprintf(buf, bufsz, "%s\n", p->cmdline[0] ? p->cmdline : p->comm);
             break;
         }
+        case PROC_PID_MAPS: {
+            // Mapped memory regions of the process — the address ranges present in
+            // its page tables, coalesced by permission, labelled by VA (program /
+            // shared libc / dlopen'd lib / mmap / stack). Shows what dlopen mapped.
+            process_t* p = find_process(ino->proc_pid);
+            if (!p || !p->page_directory) break;
+            static vm_region_t regs[24];      // static: this runs preempt-safe under vfs_pread
+            int nr = vm_collect_regions((uint64_t*)p->page_directory, regs, 24);
+            int off = 0;
+            for (int r = 0; r < nr && off < bufsz - 64; r++) {
+                const char* label =
+                    regs[r].start >= 0x7FFF00000000ULL          ? "[stack]"  :
+                    regs[r].start >= MMAP_BASE                  ? "[mmap]"   :
+                    regs[r].start >= 0x31000000ULL              ? "[dynlib]" :
+                    regs[r].start >= SHARED_LIBC_BASE - 0x1000  ? "[libc]"   :
+                    regs[r].start <  0x100000ULL                ? "[program]": "[heap]";
+                off += snprintf(buf + off, bufsz - off, "%012llx-%012llx r%c%c  %s\n",
+                                (unsigned long long)regs[r].start, (unsigned long long)regs[r].end,
+                                regs[r].writable ? 'w' : '-',
+                                regs[r].exec ? 'x' : '-', label);
+            }
+            break;
+        }
     }
     return (int)strlen(buf);
 }
@@ -301,6 +325,7 @@ static void proc_sync(void) {
         if (!d) continue;                        // pool full — skip this pid
         proc_make(d, "status",  0, PROC_PID_STATUS,  p->pid);
         proc_make(d, "cmdline", 0, PROC_PID_CMDLINE, p->pid);
+        proc_make(d, "maps",    0, PROC_PID_MAPS,    p->pid);
     }
     preempt_enable();
 }
@@ -480,7 +505,7 @@ int vfs_pread(int fd, void* buf, uint32_t count, uint32_t offset) {
         }
     }
     if (ino->proc_type) {                      // /proc: content synthesized on read
-        char gbuf[512];
+        char gbuf[1024];               // maps can list many regions
         int len = proc_generate(ino, gbuf, sizeof(gbuf));
         if (offset >= (uint32_t)len) return 0;
         uint32_t avail = (uint32_t)len - offset;

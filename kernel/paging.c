@@ -243,6 +243,43 @@ void map_page_ro(uint64_t* pml4, void* phys, void* virt, int exec) {
     *pte = ((uint64_t)phys & PTE_ADDR_MASK) | f;
 }
 
+// Walk a process's user address space, coalescing runs of present pages with the
+// same permissions into regions (for /proc/<pid>/maps). A COW page counts as
+// writable (it becomes writable on the next write). Returns the region count.
+int vm_collect_regions(uint64_t* pml4, vm_region_t* out, int max) {
+    if (!pml4 || !out || max <= 0) return 0;
+    int n = 0;
+    for (int i = 0; i < PML4_HIGHER; i++) {
+        if (!(pml4[i] & PAGE_PRESENT)) continue;
+        uint64_t* pdpt = (uint64_t*)(pml4[i] & PT_PHYS_MASK);
+        for (int j = 0; j < 512; j++) {
+            if (!(pdpt[j] & PAGE_PRESENT) || (pdpt[j] & PAGE_HUGE)) continue;
+            uint64_t* pd = (uint64_t*)(pdpt[j] & PT_PHYS_MASK);
+            for (int k = 0; k < 512; k++) {
+                if (!(pd[k] & PAGE_PRESENT) || (pd[k] & PAGE_HUGE)) continue;
+                uint64_t* pt = (uint64_t*)(pd[k] & PT_PHYS_MASK);
+                for (int l = 0; l < 512; l++) {
+                    uint64_t e = pt[l];
+                    if (!(e & PAGE_PRESENT)) continue;
+                    uint64_t va = ((uint64_t)i << 39) | ((uint64_t)j << 30)
+                                | ((uint64_t)k << 21) | ((uint64_t)l << 12);
+                    int w = ((e & PAGE_WRITABLE) || (e & PTE_COW)) ? 1 : 0;
+                    int x = (e & PAGE_NX) ? 0 : 1;
+                    if (n > 0 && out[n-1].end == va && out[n-1].writable == w && out[n-1].exec == x) {
+                        out[n-1].end = va + 4096;                    // extend the run
+                    } else {
+                        if (n >= max) return n;
+                        out[n].start = va; out[n].end = va + 4096;
+                        out[n].writable = w; out[n].exec = x;
+                        n++;
+                    }
+                }
+            }
+        }
+    }
+    return n;
+}
+
 // Called from the #PF handler. Returns 1 if the fault was a demand/COW page it
 // resolved (retry the instruction), 0 for a genuine fault (let it panic).
 int vm_handle_fault(uint64_t cr2, uint64_t err) {

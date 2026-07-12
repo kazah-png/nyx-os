@@ -2279,8 +2279,14 @@ int snprintf(char *buf, size_t size, const char *fmt, ...) {
                 fmt++;
             } else if (*fmt == 'x' || *fmt == 'X') {
                 unsigned long val = long_flag ? va_arg(args, unsigned long) : (unsigned long)va_arg(args, unsigned int);
-                char tmp[24];
-                itoa((int)val, tmp, 16);
+                // 64-bit-safe hex (itoa truncates to int) + width zero-padding.
+                char tmp[24]; int ti = 0;
+                if (val == 0) tmp[ti++] = '0';
+                else { char rev[24]; int ri = 0; unsigned long v = val;
+                       while (v) { int d = (int)(v & 0xF); rev[ri++] = d < 10 ? (char)('0'+d) : (char)('a'+d-10); v >>= 4; }
+                       while (ri) tmp[ti++] = rev[--ri]; }
+                tmp[ti] = '\0';
+                if (width > ti) { int pad = width - ti; while (pad-- > 0 && written < (int)size - 1) { *p++ = '0'; written++; } }
                 char *t = tmp;
                 while (*t && written < (int)size - 1) { *p++ = *t++; written++; }
                 fmt++;
