@@ -420,6 +420,10 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
             process_t* cur = get_cur_proc();
             if (cur) {
                 cur->exit_code = (int)a1;
+                // Close fds now (not just at reap) so pipe write ends drop and any
+                // parent reading this process's output gets EOF — e.g. the shell's
+                // `$(cmd)` capture, which reads the pipe before it reaps the subshell.
+                close_proc_fds(cur);
                 cur->state = PROC_ZOMBIE;
                 wake_waiters(cur);
             }

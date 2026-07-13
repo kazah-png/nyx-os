@@ -6,6 +6,8 @@
  * '||'; each pipeline is up to MAX_STAGES programs joined by '|', and each stage runs
  * as a fork+execve'd child with its stdin/stdout wired to the neighbouring pipes, and
  * the shell waitpid()s them all. '&&'/'||' gate the next pipeline on the last one's $?.
+ * `$(command)` (command substitution) runs `command` in a forked subshell and splices
+ * its captured stdout into the line before it is parsed.
  *
  * Modes: `sh -c "line"` runs one line; with no arguments it is INTERACTIVE —
  * read(0, …) is a blocking, echoing line read from the keyboard (kernel
@@ -523,6 +525,74 @@ static int split_list(char* line, char** seg, int* op, int max) {
 }
 
 static void run_demo(void);              /* forward: the demo runs command lists too */
+static int run_command_list(char* line); /* forward: capture_command runs a subshell */
+
+/* ---- command substitution $(...) ------------------------------------------ */
+/* Run `cmd` in a forked subshell and capture its stdout into `out`. The child is a
+ * fork of the shell, so it can run builtins / pipelines / operators via
+ * run_command_list; we redirect its fd 1 to a pipe and drain it in the parent. The
+ * captured text has trailing whitespace trimmed and its internal newlines/tabs turned
+ * into spaces — the unquoted word-splitting a real shell does for `$(...)`. */
+static void capture_command(char* cmd, char* out, int outsz) {
+    out[0] = '\0';
+    int pfd[2];
+    if (pipe(pfd) != 0) return;
+    long pid = fork();
+    if (pid == 0) {                          /* subshell: stdout -> pipe, run, exit */
+        close(pfd[0]);
+        dup2(pfd[1], 1);
+        close(pfd[1]);
+        run_command_list(cmd);
+        exit(0);
+    }
+    if (pid < 0) { close(pfd[0]); close(pfd[1]); return; }
+    close(pfd[1]);                           /* parent only reads */
+    int total = 0;
+    for (;;) {
+        char buf[128];
+        long n = read(pfd[0], buf, sizeof(buf));
+        if (n <= 0) break;
+        for (long i = 0; i < n && total < outsz - 1; i++) {
+            char c = buf[i];
+            if (c == '\n' || c == '\r' || c == '\t') c = ' ';   /* word-split on IFS */
+            out[total++] = c;
+        }
+    }
+    out[total] = '\0';
+    close(pfd[0]);
+    int st;
+    waitpid3((int)pid, &st, 0);
+    while (total > 0 && out[total - 1] == ' ') out[--total] = '\0';   /* trim trailing */
+}
+
+/* Expand every `$(command)` in `in` -> `out`, replacing it with the command's captured
+ * output. The closing paren is matched by depth (so parens inside the command don't end
+ * it early), and nested `$(...)` work for free because capture_command runs the inner
+ * text back through run_command_list, which expands substitutions again. */
+static void expand_cmdsubst(const char* in, char* out, int outsz) {
+    int o = 0;
+    for (int i = 0; in[i] && o < outsz - 1; ) {
+        if (in[i] == '$' && in[i + 1] == '(') {
+            int depth = 1, j = i + 2;
+            while (in[j] && depth > 0) {
+                if (in[j] == '(') depth++;
+                else if (in[j] == ')') { depth--; if (depth == 0) break; }
+                j++;
+            }
+            char inner[256];
+            int il = 0;
+            for (int k = i + 2; k < j && il < (int)sizeof(inner) - 1; k++) inner[il++] = in[k];
+            inner[il] = '\0';
+            char captured[512];
+            capture_command(inner, captured, sizeof(captured));
+            for (int k = 0; captured[k] && o < outsz - 1; k++) out[o++] = captured[k];
+            i = (in[j] == ')') ? j + 1 : j;      /* skip past the closing ')' */
+        } else {
+            out[o++] = in[i++];
+        }
+    }
+    out[o] = '\0';
+}
 
 /* Run a full command line: the list of pipelines joined by ; && ||. Each segment is
  * var-expanded on its own (so `$?` sees the PREVIOUS segment's status), then run as a
@@ -530,9 +600,11 @@ static void run_demo(void);              /* forward: the demo runs command lists
  * `last_status` untouched — exactly bash's behaviour for `a && b || c` chains.
  * Returns 1 if an `exit` builtin ran (the REPL should stop), else 0. */
 static int run_command_list(char* line) {
+    char subst[512];                             /* expand $(...) on the whole line first */
+    expand_cmdsubst(line, subst, sizeof(subst));
     char* seg[MAX_LIST];
     int   op[MAX_LIST];
-    int   n = split_list(line, seg, op, MAX_LIST);
+    int   n = split_list(subst, seg, op, MAX_LIST);
     for (int i = 0; i < n; i++) {
         if (i > 0) {                                 /* honour the joining operator */
             if (op[i] == OP_AND && last_status != 0) continue;   /* && after failure */
@@ -540,7 +612,7 @@ static int run_command_list(char* line) {
         }
         char* s = trim(seg[i]);
         if (!*s) continue;
-        char xbuf[192];                              /* per-segment $VAR / $? / ~ expand */
+        char xbuf[512];                              /* per-segment $VAR / $? / ~ expand */
         expand_vars(s, xbuf, sizeof(xbuf));
         char* x = trim(xbuf);
         if (!*x) continue;
@@ -578,6 +650,8 @@ static void run_demo(void) {
         "false || echo OR: runs after failure",
         "false && echo skipped ; echo semicolon: always runs",
         "false; echo exit status was $?",  /* $? sees the previous segment */
+        "echo working dir is $(pwd)",      /* command substitution $(...) */
+        "echo nested: $(echo $(echo deep))",
         "echo running in the background | upper &",
     };
     for (unsigned i = 0; i < sizeof(script) / sizeof(script[0]); i++) {
@@ -837,7 +911,7 @@ int main(int argc, char** argv) {
      * discipline (echo + backspace handled there), so this is a live shell. */
     signal(SIGINT, on_sigint);           /* Ctrl-C -> fresh prompt instead of dying */
     signal(SIGTSTP, SIG_IGN);            /* Ctrl-Z at the prompt is a no-op (only jobs stop) */
-    printf("NyxOS sh v0.10 — history/edit, Tab, globs (*?), ~, jobs/fg/bg, '|', '&', '&&', '||', ';', 'exit'\n");
+    printf("NyxOS sh v0.11 — history/edit, Tab, globs (*?), ~, $(cmd), jobs/fg/bg, '|', '&', '&&', '||', ';', 'exit'\n");
     for (;;) {
         reap_jobs();                     /* report finished background jobs */
         char line[128];

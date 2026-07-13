@@ -123,8 +123,13 @@ process_t* create_user_process(const char* name, void* entry, void* user_stack, 
     if (!user_stack) {
         void* stack_page = alloc_page();
         if (!stack_page) { kfree(p); return NULL; }
-        uint64_t stack_virt = 0x00007FFFFFFFE000ULL;
+        uint64_t stack_virt = 0x00007FFFFFFFE000ULL;     // top page (holds the frame)
         map_page_dir(page_dir, stack_page, (void*)stack_virt, 0x7 | PAGE_NX);
+        for (int sp = 1; sp < USER_STACK_PAGES; sp++) {  // 64 KB total, growing down
+            void* pg = alloc_page();
+            if (!pg) { kfree(p); return NULL; }
+            map_page_dir(page_dir, pg, (void*)(stack_virt - (uint64_t)sp * 4096), 0x7 | PAGE_NX);
+        }
         // Empty SysV entry frame (crt0 reads argc/argv from [rsp] on every launch).
         uint64_t* stk = (uint64_t*)((uint8_t*)stack_page + 4096 - 32);
         stk[0] = 0; stk[1] = 0; stk[2] = 0; stk[3] = 0;   // argc=0, NULLs, pad
@@ -410,20 +415,21 @@ int do_execve(const uint8_t* data, uint32_t size, char* const* kargv, int argc,
 // and flushes mount-backed writes). Called when a process is reaped so fds don't
 // leak across exec/spawn cycles — a well-behaved process closes its own, but a
 // crashed or careless one shouldn't exhaust the VFS.
-static void close_proc_fds(process_t* proc) {
+// Non-static: also called from SYS_EXIT so a process's fds (esp. pipe write ends)
+// close when it exits, not only when it is reaped — otherwise a parent reading the
+// exiting child's pipe never sees EOF (the zombie still holds the write end) and
+// deadlocks. Idempotent: it clears ufd_inuse, so the reap-time call is a no-op.
+void close_proc_fds(process_t* proc) {
     if (!proc) return;
     extern int vfs_close(int fd);
-    int n = 0;
     for (int i = 0; i < PROC_MAX_FDS; i++) {
         if (proc->ufd_inuse[i]) {
             int h = proc->ufd_handle[i];
             if (h & UFD_PIPE_FLAG) pipe_close_end(UFD_PIPE_ID(h), UFD_PIPE_IS_WRITE(h));
             else                   vfs_close(h);
             proc->ufd_inuse[i] = 0;
-            n++;
         }
     }
-    if (n > 0) serial_puts("[reap] force-closed leftover fd(s) from an exited process\n");
 }
 
 void reap_user_process(process_t* proc) {

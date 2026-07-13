@@ -35,10 +35,20 @@ int elf_load_image(const uint8_t* data, uint32_t size, uint64_t** out_pd,
     uint64_t* pd = alloc_page_directory();
     if (!pd) return -1;
 
-    void* stack_phys = alloc_page();
+    // The user stack. `stack_virt` is the base of the TOP page (which holds the SysV
+    // entry frame); the stack grows DOWN from there. A single 4 KB page is far too
+    // small — a modest call chain with a few hundred bytes of locals per frame (e.g.
+    // the shell's command-list / substitution code) overflows it and #PFs. Map
+    // USER_STACK_PAGES pages (kernel.h) growing downward so real programs have room.
+    void* stack_phys = alloc_page();     // top page: holds the argc/argv entry frame
     if (!stack_phys) { free_page_directory(pd); return -1; }
     uint64_t stack_virt = 0x00007FFFFFFFE000ULL;
     map_page_dir(pd, stack_phys, (void*)stack_virt, 0x7 | PAGE_NX);
+    for (int sp = 1; sp < USER_STACK_PAGES; sp++) {   // additional pages below the top
+        void* pg = alloc_page();
+        if (!pg) { free_page_directory(pd); return -1; }
+        map_page_dir(pd, pg, (void*)(stack_virt - (uint64_t)sp * 4096), 0x7 | PAGE_NX);
+    }
 
     // Empty SysV entry frame at the stack top: [argc=0][argv NULL][envp NULL][pad].
     // crt0 reads argc/argv from [rsp] on EVERY launch, so a plain spawn needs a

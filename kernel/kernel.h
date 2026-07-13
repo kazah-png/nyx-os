@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.8.41"
+#define KERNEL_VERSION "5.8.42"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -684,6 +684,10 @@ void init_idt(void);
 void idt_set_gate(uint8_t num, uint64_t base, uint16_t sel, uint8_t flags);
 void idt_set_gate_ist(uint8_t num, uint64_t base, uint16_t sel, uint8_t flags, uint8_t ist);
 
+// User ring-3 stack: pages mapped growing DOWN from 0x00007FFFFFFFF000. One 4 KB
+// page overflows on modest call chains, so give every user process 64 KB.
+#define USER_STACK_PAGES 16
+
 // IST stack sizes
 #define IST_STACK_SIZE 8192
 #define IST_DOUBLE_FAULT 1
@@ -769,6 +773,7 @@ int  pipe_write(int id, const char* src, int n); // non-blocking write; -1 = bro
 void pipe_close_end(int id, int is_write);   // drop one ref; frees the pipe at zero
 void pipe_incref(int id, int is_write);      // fork(): inherit a pipe fd
 void reap_user_process(process_t* proc);
+void close_proc_fds(process_t* proc);   // close a process's fds (called at exit + reap)
 void destroy_process(uint64_t pid);
 process_t* find_process(uint64_t pid);
 process_t* get_current_process(void);
