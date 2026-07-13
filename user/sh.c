@@ -2,9 +2,10 @@
 
 /* sh — the NyxOS userspace shell. Runs entirely in ring 3 on the Unix process
  * toolkit the kernel grew in v5.7.25..v5.8.6: fork() + execve(argv) + waitpid()
- * + pipe() + dup2(). A command line is up to MAX_STAGES programs joined by '|';
- * each stage runs as a fork+execve'd child with its stdin/stdout wired to the
- * neighbouring pipes, and the shell waitpid()s them all.
+ * + pipe() + dup2(). A command line is a list of pipelines joined by ';', '&&' and
+ * '||'; each pipeline is up to MAX_STAGES programs joined by '|', and each stage runs
+ * as a fork+execve'd child with its stdin/stdout wired to the neighbouring pipes, and
+ * the shell waitpid()s them all. '&&'/'||' gate the next pipeline on the last one's $?.
  *
  * Modes: `sh -c "line"` runs one line; with no arguments it is INTERACTIVE —
  * read(0, …) is a blocking, echoing line read from the keyboard (kernel
@@ -180,7 +181,7 @@ static void expand_vars(const char* in, char* out, int outsz) {
  * child couldn't). cd/pwd use the chdir/getcwd syscalls; export updates the env. */
 static void builtin_cd(char* arg) {
     const char* dir = (arg && *arg) ? arg : "/home/user";
-    if (chdir(dir) != 0) printf("cd: %s: no such directory\n", dir);
+    if (chdir(dir) != 0) { printf("cd: %s: no such directory\n", dir); last_status = 1; }
 }
 static void builtin_pwd(void) {
     char buf[128];
@@ -198,9 +199,13 @@ static void builtin_jobs(void);
 static void builtin_fg(char* arg);
 static void builtin_bg(char* arg);
 
-/* Run a cd/pwd/export/jobs/fg/bg builtin if `line` is one; returns 1 if handled. */
+/* Run a cd/pwd/export/jobs/fg/bg/true/false builtin if `line` is one; returns 1 if
+ * handled. `true`/`false` exist purely to set `$?` for && / || testing (bash has them
+ * as builtins too); they can't be exec'd but are always available at the prompt. */
 static int try_builtin(char* line) {
     if (strcmp(line, "pwd") == 0) { builtin_pwd(); return 1; }
+    if (strcmp(line, "true") == 0) { last_status = 0; return 1; }
+    if (strcmp(line, "false") == 0) { last_status = 1; return 1; }
     if (strcmp(line, "jobs") == 0) { builtin_jobs(); return 1; }
     if (strncmp(line, "cd", 2) == 0 && (line[2] == ' ' || line[2] == '\0')) {
         builtin_cd(line[2] ? trim(line + 3) : "");
@@ -487,8 +492,69 @@ static void run_line(char* line) {
     setfg((int)getpid());                   /* shell reclaims the terminal */
 }
 
-/* The canned demo — one plain command, one two-stage pipeline, and one
- * argv+status check. Every line exercises fork/execve/waitpid; the pipeline
+/* ---- command lists: pipelines joined by ; && || --------------------------- */
+/* A command line is a list of pipelines separated by operators: `;` (sequence,
+ * always run the next), `&&` (run next only if the last succeeded, $?==0) and `||`
+ * (run next only if the last failed). This sits ABOVE run_line's pipeline/'|'/'&'
+ * handling. */
+#define MAX_LIST 16
+enum { OP_SEMI, OP_AND, OP_OR };
+
+/* Split `line` (in place) into pipeline segments on the top-level operators, filling
+ * seg[] and the operator that PRECEDES each segment into op[] (op[0] is unused). We
+ * must not mistake `&&` for a background `&` or `||` for a pipe `|`: only the doubled
+ * forms are list operators; a lone `&`/`|` is left inside the segment for run_line's
+ * background / pipeline splitter to handle. Returns the segment count. */
+static int split_list(char* line, char** seg, int* op, int max) {
+    int n = 0;
+    seg[n] = line; op[n] = OP_SEMI; n++;
+    for (char* s = line; *s && n < max; ) {
+        if (s[0] == '&' && s[1] == '&') {
+            *s = '\0'; s += 2; seg[n] = s; op[n] = OP_AND; n++;
+        } else if (s[0] == '|' && s[1] == '|') {
+            *s = '\0'; s += 2; seg[n] = s; op[n] = OP_OR; n++;
+        } else if (s[0] == ';') {
+            *s = '\0'; s += 1; seg[n] = s; op[n] = OP_SEMI; n++;
+        } else {
+            s++;
+        }
+    }
+    return n;
+}
+
+static void run_demo(void);              /* forward: the demo runs command lists too */
+
+/* Run a full command line: the list of pipelines joined by ; && ||. Each segment is
+ * var-expanded on its own (so `$?` sees the PREVIOUS segment's status), then run as a
+ * builtin or a pipeline. Short-circuiting works because a skipped segment leaves
+ * `last_status` untouched — exactly bash's behaviour for `a && b || c` chains.
+ * Returns 1 if an `exit` builtin ran (the REPL should stop), else 0. */
+static int run_command_list(char* line) {
+    char* seg[MAX_LIST];
+    int   op[MAX_LIST];
+    int   n = split_list(line, seg, op, MAX_LIST);
+    for (int i = 0; i < n; i++) {
+        if (i > 0) {                                 /* honour the joining operator */
+            if (op[i] == OP_AND && last_status != 0) continue;   /* && after failure */
+            if (op[i] == OP_OR  && last_status == 0) continue;   /* || after success */
+        }
+        char* s = trim(seg[i]);
+        if (!*s) continue;
+        char xbuf[192];                              /* per-segment $VAR / $? / ~ expand */
+        expand_vars(s, xbuf, sizeof(xbuf));
+        char* x = trim(xbuf);
+        if (!*x) continue;
+        if (strcmp(x, "exit") == 0) return 1;
+        if (strcmp(x, "demo") == 0) { run_demo(); last_status = 0; continue; }
+        last_status = 0;                             /* builtins default to success... */
+        if (try_builtin(x)) continue;                /* ...cd/false override on failure */
+        run_line(x);                                 /* pipeline: sets last_status to $? */
+    }
+    return 0;
+}
+
+/* The canned demo — plain commands, a pipeline, redirection, and the new
+ * && / || / ; operators. Every line exercises fork/execve/waitpid; the pipeline
  * adds pipe+dup2. Run via the `demo` builtin. */
 static void run_demo(void) {
     static const char* script[] = {
@@ -508,13 +574,18 @@ static void run_demo(void) {
         "rm /tmp/proj/a.txt /tmp/proj/b.txt",
         "ls /dev",                         /* device nodes */
         "echo swallowed by the void > /dev/null",
+        "true && echo AND: runs after success",   /* && / || / ; operators */
+        "false || echo OR: runs after failure",
+        "false && echo skipped ; echo semicolon: always runs",
+        "false; echo exit status was $?",  /* $? sees the previous segment */
         "echo running in the background | upper &",
     };
     for (unsigned i = 0; i < sizeof(script) / sizeof(script[0]); i++) {
         char buf[160];
-        expand_vars(script[i], buf, sizeof(buf));
+        strncpy(buf, script[i], sizeof(buf) - 1);
+        buf[sizeof(buf) - 1] = '\0';
         printf("sh$ %s\n", script[i]);
-        if (!try_builtin(buf)) run_line(buf);
+        run_command_list(buf);             /* handles builtins, pipelines, and ; && || */
     }
     printf("sh: demo done.\n");
 }
@@ -753,12 +824,12 @@ int main(int argc, char** argv) {
     env_set("PATH", "/bin:/usr/bin:/");
     env_set("TERM", "nyx");
 
-    /* sh -c "one command line" */
+    /* sh -c "one command line" — may itself be a ; && || list */
     if (argc >= 3 && strcmp(argv[1], "-c") == 0) {
         char buf[128];
         strncpy(buf, argv[2], sizeof(buf) - 1);
         buf[sizeof(buf) - 1] = '\0';
-        run_line(buf);
+        run_command_list(buf);
         return 0;
     }
 
@@ -766,7 +837,7 @@ int main(int argc, char** argv) {
      * discipline (echo + backspace handled there), so this is a live shell. */
     signal(SIGINT, on_sigint);           /* Ctrl-C -> fresh prompt instead of dying */
     signal(SIGTSTP, SIG_IGN);            /* Ctrl-Z at the prompt is a no-op (only jobs stop) */
-    printf("NyxOS sh v0.9 — history/edit, Tab, globs (*?), ~, jobs/fg/bg (Ctrl-Z), '|', '&', 'exit'\n");
+    printf("NyxOS sh v0.10 — history/edit, Tab, globs (*?), ~, jobs/fg/bg, '|', '&', '&&', '||', ';', 'exit'\n");
     for (;;) {
         reap_jobs();                     /* report finished background jobs */
         char line[128];
@@ -774,14 +845,9 @@ int main(int argc, char** argv) {
         if (n < 0) continue;             /* interrupted (Ctrl-C -> SIGINT): fresh prompt */
         char* t = trim(line);
         if (!*t) continue;
-        char xbuf[192];                  /* $VAR / $? expansion happens before parsing */
-        expand_vars(t, xbuf, sizeof(xbuf));
-        char* x = trim(xbuf);
-        if (!*x) continue;
-        if (strcmp(x, "exit") == 0) break;
-        if (strcmp(x, "demo") == 0) { run_demo(); continue; }
-        if (try_builtin(x)) continue;    /* cd / pwd / export run in-process */
-        run_line(x);
+        /* run_command_list splits on ; && || and expands $VARs per segment (so $?
+         * reflects the previous segment); it returns 1 when an `exit` builtin runs. */
+        if (run_command_list(t)) break;
     }
     printf("sh: bye\n");
     return 0;

@@ -565,6 +565,24 @@ int main(void) {
         waitpid((int)epid, &st);
     }
 
+    /* Shell operators (; && ||) — run a compound line through `sh -c` and let the
+     * shell's list parser gate each pipeline on the previous one's exit status.
+     * Expected output: "A_ok" (true && ...), "B_ok" (false || ...), NO "BAD" (false
+     * && short-circuits), and "C_status=1" ($? carries the failed status across ;). */
+    printf("Testing shell operators (sh -c with ; && ||)...\n");
+    long opid = fork();
+    if (opid == 0) {
+        char* av[] = { "sh", "-c",
+            "true && echo A_ok ; false || echo B_ok ; false && echo BAD ; echo C_status=$?", 0 };
+        execve("/sh.elf", av, 0);
+        exit(1);
+    } else if (opid > 0) {
+        int st = 0;
+        printf("  $ sh -c 'true && echo A_ok ; false || echo B_ok ; "
+               "false && echo BAD ; echo C_status=$?'\n");
+        waitpid((int)opid, &st);
+    }
+
     printf("Init complete, exiting.\n");
     return 0;
 }
