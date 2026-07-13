@@ -186,6 +186,10 @@ void keyboard_irq_handler(void* unused) {
                 signal_send_foreground(SIGINT);             // to the foreground process
                 return;                                     // consume it (don't buffer 'c')
             }
+            if (ctrl_pressed && (c == 'z' || c == 'Z')) {   // Ctrl-Z -> SIGTSTP (job stop)
+                signal_send_foreground(SIGTSTP);
+                return;                                     // consume it (don't buffer 'z')
+            }
             // Ctrl+letter -> the ASCII control char (Ctrl-A=0x01 .. Ctrl-Z=0x1A), so
             // TUI programs can bind commands (nano-style Ctrl-O save / Ctrl-X exit).
             if (ctrl_pressed && ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')))

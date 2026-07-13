@@ -187,43 +187,119 @@ static void builtin_export(char* rest) {
     env_set(trim(rest), trim(eq + 1));
 }
 
-/* Run a cd/pwd/export builtin if `line` is one; returns 1 if it was handled. */
+/* Job-control builtins (defined with the jobs table below). */
+static void builtin_jobs(void);
+static void builtin_fg(char* arg);
+static void builtin_bg(char* arg);
+
+/* Run a cd/pwd/export/jobs/fg/bg builtin if `line` is one; returns 1 if handled. */
 static int try_builtin(char* line) {
     if (strcmp(line, "pwd") == 0) { builtin_pwd(); return 1; }
+    if (strcmp(line, "jobs") == 0) { builtin_jobs(); return 1; }
     if (strncmp(line, "cd", 2) == 0 && (line[2] == ' ' || line[2] == '\0')) {
         builtin_cd(line[2] ? trim(line + 3) : "");
         return 1;
+    }
+    if (strncmp(line, "fg", 2) == 0 && (line[2] == ' ' || line[2] == '\0')) {
+        builtin_fg(line[2] ? trim(line + 3) : ""); return 1;
+    }
+    if (strncmp(line, "bg", 2) == 0 && (line[2] == ' ' || line[2] == '\0')) {
+        builtin_bg(line[2] ? trim(line + 3) : ""); return 1;
     }
     if (strncmp(line, "export ", 7) == 0) { builtin_export(line + 7); return 1; }
     return 0;
 }
 
-/* Background jobs. A pipeline ending in '&' is not waited on; its pids are parked
- * here and reaped without blocking at each prompt via waitpid3(.., WNOHANG). The
- * shell must reap its own background children: reap_zombies() in the kernel only
- * frees procs whose parent has already gone, so an alive shell owns its zombies. */
-#define MAX_BG 16
-static long bg_pids[MAX_BG];
-static int  bg_count = 0;
+/* Job control. Each `&` background pipeline and each Ctrl-Z-stopped foreground job
+ * gets a slot here; `jobs` lists them, `fg`/`bg` resume them. The shell reaps its own
+ * children — the kernel's reap_zombies only frees procs whose parent has already gone,
+ * so an alive shell owns its zombies. */
+#define MAX_JOBS 16
+typedef struct {
+    long pid;          /* the job's (last-stage) pid; 0 = free slot */
+    int  stopped;      /* 1 = stopped (Ctrl-Z), 0 = running in the background */
+    char cmd[64];      /* the command line, for the `jobs` listing */
+} job_t;
+static job_t jobs[MAX_JOBS];
 
-static void bg_add(long pid) {
-    if (pid > 0 && bg_count < MAX_BG) bg_pids[bg_count++] = pid;
-}
-
-/* Non-blocking sweep of finished background jobs. Called before each prompt. */
-static void reap_bg(void) {
-    for (int i = 0; i < bg_count; ) {
-        int st = 0;
-        long r = waitpid3((int)bg_pids[i], &st, WNOHANG);
-        if (r == bg_pids[i]) {                      /* exited: report and drop */
-            printf("[done] pid %ld (status %d)\n", bg_pids[i], st);
-            bg_pids[i] = bg_pids[--bg_count];       /* swap-remove */
-        } else if (r < 0) {                         /* already gone: drop quietly */
-            bg_pids[i] = bg_pids[--bg_count];
-        } else {
-            i++;                                    /* r == 0: still running */
+/* Record a job; returns its 1-based number, or -1 if the table is full. */
+static int job_add(long pid, int stopped, const char* cmd) {
+    if (pid <= 0) return -1;
+    for (int i = 0; i < MAX_JOBS; i++) {
+        if (jobs[i].pid == 0) {
+            jobs[i].pid = pid; jobs[i].stopped = stopped;
+            strncpy(jobs[i].cmd, cmd, sizeof(jobs[i].cmd) - 1);
+            jobs[i].cmd[sizeof(jobs[i].cmd) - 1] = '\0';
+            return i + 1;
         }
     }
+    return -1;
+}
+
+/* Look up a job by 1-based number, or the most recent one when n <= 0. NULL if none. */
+static job_t* job_find(int n) {
+    if (n > 0 && n <= MAX_JOBS && jobs[n - 1].pid) return &jobs[n - 1];
+    if (n <= 0)
+        for (int i = MAX_JOBS - 1; i >= 0; i--) if (jobs[i].pid) return &jobs[i];
+    return 0;
+}
+
+/* Non-blocking sweep of finished background jobs. Called before each prompt. Stopped
+ * jobs aren't running, so they're skipped (they only resume via fg/bg). A final
+ * waitpid(-1) mop-up reaps any other finished children (non-leader pipeline stages). */
+static void reap_jobs(void) {
+    for (int i = 0; i < MAX_JOBS; i++) {
+        if (jobs[i].pid == 0 || jobs[i].stopped) continue;
+        int st = 0;
+        long r = waitpid3((int)jobs[i].pid, &st, WNOHANG);
+        if (r == jobs[i].pid) { printf("[%d]  Done       %s\n", i + 1, jobs[i].cmd); jobs[i].pid = 0; }
+        else if (r < 0)       { jobs[i].pid = 0; }
+    }
+    int st;
+    while (waitpid3(-1, &st, WNOHANG) > 0) { }   /* mop up other finished children */
+}
+
+/* Parse a job spec: "%2"/"2" -> 2, empty -> 0 (most recent). */
+static int job_num(const char* arg) {
+    if (!arg || !*arg) return 0;
+    if (arg[0] == '%') arg++;
+    return atoi(arg);
+}
+
+static void builtin_jobs(void) {
+    int any = 0;
+    for (int i = 0; i < MAX_JOBS; i++) {
+        if (jobs[i].pid == 0) continue;
+        printf("[%d]  %s  %s\n", i + 1, jobs[i].stopped ? "Stopped" : "Running", jobs[i].cmd);
+        any = 1;
+    }
+    if (!any) printf("jobs: no active jobs\n");
+}
+
+/* fg [%n] — resume job n (or the most recent) in the FOREGROUND: SIGCONT it if
+ * stopped, claim the terminal, and wait (WUNTRACED, so another Ctrl-Z re-stops it). */
+static void builtin_fg(char* arg) {
+    job_t* j = job_find(job_num(arg));
+    if (!j) { printf("fg: no such job\n"); return; }
+    long pid = j->pid;
+    printf("%s\n", j->cmd);                       /* real shells echo the resumed cmd */
+    if (j->stopped) { kill((int)pid, SIGCONT); j->stopped = 0; }
+    setfg(pid);
+    int st = 0;
+    waitpid3((int)pid, &st, WUNTRACED);
+    setfg((int)getpid());
+    if (WIFSTOPPED(st)) { j->stopped = 1; printf("\nStopped    %s\n", j->cmd); }
+    else { last_status = st; j->pid = 0; }        /* exited -> free the slot */
+}
+
+/* bg [%n] — resume a stopped job in the BACKGROUND (SIGCONT, keep running). */
+static void builtin_bg(char* arg) {
+    job_t* j = job_find(job_num(arg));
+    if (!j) { printf("bg: no such job\n"); return; }
+    if (!j->stopped) { printf("bg: job already running\n"); return; }
+    kill((int)j->pid, SIGCONT);
+    j->stopped = 0;
+    printf("[bg] %s &\n", j->cmd);
 }
 
 /* Run one command line (destroys it). Stages split on '|', each fork+execve'd
@@ -238,6 +314,10 @@ static void run_line(char* line) {
         while (e > line && e[-1] == ' ') e--;
         if (e > line && e[-1] == '&') { background = 1; *--e = '\0'; }
     }
+
+    char jobcmd[64];                             /* snapshot the command for the jobs list */
+    strncpy(jobcmd, line, sizeof(jobcmd) - 1);
+    jobcmd[sizeof(jobcmd) - 1] = '\0';
 
     char* stages[MAX_STAGES];
     int nstages = 0;
@@ -296,19 +376,29 @@ static void run_line(char* line) {
         if (has_next) { close(pfd[1]); prev_rd = pfd[0]; }
     }
 
-    if (background) {                        /* don't wait — park the pids and go */
-        for (int s = 0; s < nstages; s++) bg_add(pids[s]);
-        printf("[bg] pid %ld\n", pids[nstages - 1]);
+    if (background) {                        /* don't wait — record a running job */
+        int jn = job_add(pids[nstages - 1], 0, jobcmd);
+        printf("[%d]  %ld  %s\n", jn, pids[nstages - 1], jobcmd);
         return;
     }
 
+    /* Foreground: claim the terminal for the job (so Ctrl-C / Ctrl-Z reach IT, not the
+     * shell), wait with WUNTRACED so a Ctrl-Z stop parks the job instead of killing it,
+     * then reclaim the terminal for the shell. */
+    setfg(pids[nstages - 1]);
     for (int s = 0; s < nstages; s++) {
         int st = 0;
-        waitpid((int)pids[s], &st);
+        waitpid3((int)pids[s], &st, WUNTRACED);
+        if (WIFSTOPPED(st)) {               /* Ctrl-Z: park it as a stopped job */
+            int jn = job_add(pids[s], 1, jobcmd);
+            printf("\n[%d]  Stopped    %s\n", jn, jobcmd);
+            break;                          /* leave any other pipeline stages running */
+        }
         last_status = st;                   /* pipeline status = last stage ($?) */
         if (st != 0)
             printf("sh: [pid %d] exited with status %d\n", (int)pids[s], st);
     }
+    setfg((int)getpid());                   /* shell reclaims the terminal */
 }
 
 /* The canned demo — one plain command, one two-stage pipeline, and one
@@ -589,9 +679,10 @@ int main(int argc, char** argv) {
     /* Interactive REPL: read(0) blocks in the kernel's canonical line
      * discipline (echo + backspace handled there), so this is a live shell. */
     signal(SIGINT, on_sigint);           /* Ctrl-C -> fresh prompt instead of dying */
-    printf("NyxOS sh v0.7 — arrows (history/edit) + Tab completion, 'demo', 'cd', '$N', 'a|b>f', '&', 'exit'\n");
+    signal(SIGTSTP, SIG_IGN);            /* Ctrl-Z at the prompt is a no-op (only jobs stop) */
+    printf("NyxOS sh v0.8 — history/edit, Tab, '&' + job control (jobs/fg/bg, Ctrl-Z), 'demo', 'exit'\n");
     for (;;) {
-        reap_bg();                       /* report finished background jobs */
+        reap_jobs();                     /* report finished background jobs */
         char line[128];
         int n = readline("sh$ ", line, sizeof(line));
         if (n < 0) continue;             /* interrupted (Ctrl-C -> SIGINT): fresh prompt */

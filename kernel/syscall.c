@@ -132,7 +132,10 @@ static int stdin_read_line(char* kbuf, int max) {
         if (!c) {
             if (!self) break;                    /* no process context: don't block */
             if (signal_pending(self)) {          /* a signal (e.g. Ctrl-C) is waiting */
-                len = -EINTR;                    /* bail so the syscall returns + delivers */
+                __asm__ volatile("cli");
+                if (signal_check_stop(self)) { __asm__ volatile("sti"); continue; }  /* Ctrl-Z: resumed */
+                __asm__ volatile("sti");
+                len = -EINTR;                    /* real signal: bail so the syscall returns + delivers */
                 break;
             }
             self->blocked_in_kernel = 1;         /* resume us on the kernel CR3 */
@@ -173,7 +176,12 @@ static int stdin_read_raw(char* kbuf, int max) {
         if (!k) {
             if (len > 0) break;              /* drained all that was pending */
             if (!self) break;
-            if (signal_pending(self)) { len = -EINTR; break; }
+            if (signal_pending(self)) {
+                __asm__ volatile("cli");
+                if (signal_check_stop(self)) { __asm__ volatile("sti"); continue; }  /* Ctrl-Z: resumed */
+                __asm__ volatile("sti");
+                len = -EINTR; break;
+            }
             self->blocked_in_kernel = 1;
             __asm__ volatile("sti; hlt");
             __asm__ volatile("cli");
@@ -221,7 +229,12 @@ static int stdin_readkey(uint32_t timeout_ms) {
     for (;;) {
         int k = getkey_poll();
         if (k) { result = k; break; }
-        if (self && signal_pending(self)) { result = -EINTR; break; }
+        if (self && signal_pending(self)) {
+            __asm__ volatile("cli");
+            if (signal_check_stop(self)) { __asm__ volatile("sti"); continue; }  /* Ctrl-Z: resumed */
+            __asm__ volatile("sti");
+            result = -EINTR; break;
+        }
         if (timeout_ms != 0 && (int32_t)(tick_count - deadline) >= 0) break;  /* timed out -> 0 (0 = block forever) */
         if (self) self->blocked_in_kernel = 1;
         __asm__ volatile("sti; hlt");
@@ -252,7 +265,10 @@ static int do_sleep_ms(uint32_t ms) {
         /* cli makes the deadline check + block atomic vs. the waking tick. */
         __asm__ volatile("cli");
         if ((int32_t)(tick_count - deadline) >= 0) { __asm__ volatile("sti"); break; }
-        if (self && signal_pending(self)) { __asm__ volatile("sti"); result = -EINTR; break; }
+        if (self && signal_pending(self)) {
+            if (signal_check_stop(self)) continue;   /* Ctrl-Z: parked+resumed, keep sleeping */
+            __asm__ volatile("sti"); result = -EINTR; break;
+        }
         if (self) {
             self->blocked_in_kernel = 1;         /* resume us on the kernel CR3 */
             self->wake_tick = deadline;          /* irq_scheduler_tick wakes us here */
@@ -906,6 +922,17 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
             // queue (the scheduler runs others meanwhile). Returns 0, or -EINTR if a
             // signal interrupted the wait. The primitive behind `sleep`.
             return (uint64_t)(int64_t)do_sleep_ms((uint32_t)a1);
+        case SYS_SETFG: {
+            // setfg(pid): make `pid` the terminal foreground process, so keyboard
+            // signals (Ctrl-C -> SIGINT, Ctrl-Z -> SIGTSTP) target it. The shell
+            // points this at its current foreground child while it runs, then back at
+            // itself — the mechanism behind job control. Only a live pid (or 0 to
+            // clear) is accepted. Returns 0, or -1.
+            extern uint32_t g_foreground_pid;
+            if (a1 != 0 && !find_process((uint32_t)a1)) return -1;
+            g_foreground_pid = (uint32_t)a1;
+            return 0;
+        }
         default:
             printf("[SYSCALL] Unknown syscall %lu\n", no);
             return -1;

@@ -34,6 +34,13 @@ static int default_is_ignore(int sig) { return sig == SIGCHLD || sig == SIGCONT;
  * runs on the way out. Safe from IRQ context (just field writes). */
 void signal_raise(process_t* p, int sig) {
     if (!p || sig <= 0 || sig >= NSIG) return;
+    /* SIGCONT resumes a job-control-stopped process: flip it back to RUN so the
+     * scheduler runs it again (it's parked in signal_dispatch waiting for exactly
+     * this). SIGCONT's default action is "ignore", so no handler runs on delivery. */
+    if (sig == SIGCONT && p->state == PROC_STOPPED) {
+        p->stop_sig = 0;
+        p->state = PROC_RUN;
+    }
     p->sig_pending |= (1u << sig);
     if (p->state == PROC_BLOCKED) {          /* unblock so its wait returns EINTR */
         p->waiting_for = 0;
@@ -46,6 +53,32 @@ void signal_raise(process_t* p, int sig) {
  * syscalls to decide whether to bail out with EINTR. */
 int signal_pending(process_t* p) {
     return p && (p->sig_pending & ~p->sig_mask) != 0;
+}
+
+/* If a job-control STOP signal (SIGTSTP / SIGSTOP) is pending, PARK the process here
+ * until SIGCONT resumes it, and return 1 — so the interrupted blocking syscall can
+ * RESTART its wait rather than returning -EINTR (stop/continue is then transparent to
+ * the operation, e.g. a `sleep` keeps sleeping after fg/bg). Returns 0 if no stop is
+ * pending. Called with interrupts off from a blocking syscall's wait loop; the caller
+ * already saves/restores user_cr3/user_rsp around that loop. Parks like do_waitpid
+ * (blocked_in_kernel -> resume on the kernel CR3, sti/hlt until PROC_RUN). */
+int signal_check_stop(process_t* p) {
+    if (!p) return 0;
+    uint32_t stops = p->sig_pending & ((1u << SIGTSTP) | (1u << SIGSTOP));
+    if (!stops) return 0;
+    int sig = (stops & (1u << SIGTSTP)) ? SIGTSTP : SIGSTOP;
+    p->sig_pending &= ~(1u << sig);
+    p->stop_sig = (uint32_t)sig;
+    p->stopped_reported = 0;
+    p->state = PROC_STOPPED;
+    wake_waiters(p);                         /* parent's waitpid(WUNTRACED) reports the stop */
+    p->blocked_in_kernel = 1;
+    while (p->state == PROC_STOPPED) __asm__ volatile("sti; hlt");
+    __asm__ volatile("cli");
+    p->blocked_in_kernel = 0;
+    p->sig_pending &= ~(1u << SIGCONT);      /* consume the SIGCONT that resumed us (default: ignore),
+                                              * else the caller's next signal_pending() bails -EINTR */
+    return 1;                                /* resumed (SIGCONT): caller restarts its wait */
 }
 
 /* SYS_KILL: post `sig` to `pid`. sig 0 is the existence probe (returns 0 if the
@@ -110,6 +143,29 @@ void signal_dispatch(uint64_t* frame) {
     if (disp == SIG_DFL) {
         p->sig_pending &= ~(1u << sig);
         if (default_is_ignore(sig)) return;
+        /* Job-control stop (SIGTSTP/SIGSTOP): PARK here instead of terminating, so the
+         * process never returns to ring 3 while stopped. We mark PROC_STOPPED, wake a
+         * parent blocked in waitpid(WUNTRACED) to report the stop, then sti/hlt until
+         * SIGCONT flips us back to PROC_RUN (the scheduler skips non-RUN states). This
+         * is the do_waitpid mid-syscall discipline: blocked_in_kernel resumes us on the
+         * kernel CR3, and user_cr3/user_rsp are saved/restored across the park because
+         * other processes' syscalls clobber those globals while we sleep. */
+        if (sig == SIGTSTP || sig == SIGSTOP) {
+            extern uint64_t user_cr3;
+            uint64_t s_cr3 = user_cr3, s_rsp = user_rsp;
+            p->stop_sig = (uint32_t)sig;
+            p->stopped_reported = 0;
+            p->state = PROC_STOPPED;
+            wake_waiters(p);                 /* parent's WUNTRACED waitpid reports the stop */
+            p->blocked_in_kernel = 1;        /* resume on the kernel CR3 after SIGCONT */
+            while (p->state == PROC_STOPPED) __asm__ volatile("sti; hlt");
+            __asm__ volatile("cli");
+            p->blocked_in_kernel = 0;
+            p->sig_pending &= ~(1u << SIGCONT);  /* consume the SIGCONT that resumed us */
+            user_cr3 = s_cr3;                /* restore OUR globals for the asm return path */
+            user_rsp = s_rsp;
+            return;                          /* resumed (SIGCONT): finish the syscall return */
+        }
         signal_terminate(p, sig);            /* never returns */
         return;
     }

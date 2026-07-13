@@ -661,15 +661,24 @@ int do_waitpid(int wpid, int* out_code, int options) {
     for (;;) {
         __asm__ volatile("cli");
         self->blocked_in_kernel = 0;                     // past any block; interrupts are off
-        int zi = -1, any = 0;
+        int zi = -1, si = -1, any = 0;
         for (int i = 0; i < process_count; i++) {
             process_t* p = process_table[i];
             if (!p || p->ppid != self->pid) continue;    // only our own children
             if (wpid > 0 && (int)p->pid != wpid) continue;
             any = 1;
-            if (p->state == PROC_ZOMBIE) { zi = i; break; }
+            if (p->state == PROC_ZOMBIE) { zi = i; break; }   // an exit takes priority over a stop
+            if ((options & WUNTRACED) && p->state == PROC_STOPPED && !p->stopped_reported)
+                si = i;                                  // a not-yet-reported stop (Ctrl-Z)
         }
         if (!any) { result = -1; break; }                // ECHILD (interrupts stay off)
+        if (zi < 0 && si >= 0) {                          // a child stopped — report, don't reap
+            process_t* ch = process_table[si];
+            ch->stopped_reported = 1;                     // report each stop exactly once
+            if (out_code) *out_code = WSTOPPED | (int)ch->stop_sig;
+            result = (int)ch->pid;
+            break;                                        // interrupts stay off until return
+        }
         if (zi >= 0) {                                    // a child is ready — collect + reap it
             process_t* child = process_table[zi];
             if (out_code) *out_code = child->exit_code;

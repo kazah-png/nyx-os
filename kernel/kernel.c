@@ -786,6 +786,8 @@ static void cmd_exec(int argc, char** argv) {
     for (;;) {
         process_t* child = find_process((uint32_t)pid);
         if (!child || child->state == PROC_ZOMBIE) break;
+        if (child->state == PROC_STOPPED)         // no job control here: a Ctrl-Z'd
+            signal_raise(child, SIGCONT);         // direct-exec job just resumes
         compositor_redraw_now();
         sleep(60);
     }

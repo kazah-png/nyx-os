@@ -34,6 +34,7 @@
 #define SYS_DLSYM    30
 #define SYS_TIME     31
 #define SYS_SLEEP    32
+#define SYS_SETFG    33
 
 #define TTY_CANON   0   /* kernel line discipline: echoed, backspace-edited lines */
 #define TTY_RAW     1   /* byte-at-a-time, no echo, arrows as ESC [ A/B/C/D */
@@ -48,6 +49,11 @@
 #define MAP_FAILED  ((void*)-1)
 
 #define WNOHANG     1   /* waitpid option: don't block if no child is ready */
+#define WUNTRACED   2   /* waitpid option: also report a STOPPED child (Ctrl-Z) */
+#define WSTOPPED    0x10000  /* status sentinel bit: the child stopped (not exited) */
+/* Decode a waitpid status: WIFSTOPPED true if the child stopped, WSTOPSIG its signal. */
+#define WIFSTOPPED(s) (((s) & WSTOPPED) != 0)
+#define WSTOPSIG(s)   ((s) & 0xFF)
 
 /* open() flags: O_CREAT makes a file, O_TRUNC empties it (shell `>`), O_APPEND
  * seeks to EOF before writing (shell `>>`). */
@@ -73,6 +79,7 @@
 #define SIGCHLD  17
 #define SIGCONT  18
 #define SIGSTOP  19  /* uncatchable */
+#define SIGTSTP  20  /* terminal stop (Ctrl-Z) */
 
 typedef void (*sighandler_t)(int);   /* signal handler: void handler(int signo) */
 
@@ -345,6 +352,14 @@ static inline long sleep_ms(long ms) {
 }
 static inline long sleep_sec(long s) {
     return syscall1(SYS_SLEEP, s * 1000);
+}
+
+/* setfg(pid): make `pid` the terminal foreground process, so keyboard signals (Ctrl-C
+ * -> SIGINT, Ctrl-Z -> SIGTSTP) target it instead of the shell. The shell points this
+ * at a job while it runs in the foreground, then back at itself (pid 0 clears it).
+ * The mechanism behind job control. Returns 0, or -1 for an unknown pid. */
+static inline long setfg(long pid) {
+    return syscall1(SYS_SETFG, pid);
 }
 
 /* Duplicate oldfd onto newfd (closing newfd first if open) — the redirection

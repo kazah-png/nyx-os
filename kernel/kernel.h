@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.8.35"
+#define KERNEL_VERSION "5.8.36"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -106,6 +106,7 @@ typedef __builtin_va_list va_list;
 #define SYS_DLSYM    30
 #define SYS_TIME     31
 #define SYS_SLEEP    32
+#define SYS_SETFG    33
 
 /* SYS_TTYMODE modes. Canonical: read(0) returns a full line, echoed + backspace-
  * edited by the kernel. Raw: read(0) returns bytes as they arrive, NO echo, and
@@ -116,8 +117,15 @@ typedef __builtin_va_list va_list;
 
 /* waitpid() options (a3). WNOHANG makes SYS_WAITPID return 0 immediately instead
  * of blocking when a matching child exists but has not exited yet — the shell
- * uses it to reap finished `&` background jobs without stalling at the prompt. */
+ * uses it to reap finished `&` background jobs without stalling at the prompt.
+ * WUNTRACED additionally reports a child that has STOPPED (Ctrl-Z / SIGTSTP) — the
+ * status is the sentinel WSTOPPED|sig, so the shell can build job control. */
 #define WNOHANG     1
+#define WUNTRACED   2
+/* waitpid status sentinel: a stopped (not exited) child. Bit 16 can't appear in a
+ * normal exit status (0-255) or a killed status (128+signo), so it's unambiguous;
+ * the low byte carries the stop signal. */
+#define WSTOPPED    0x10000
 
 /* ------------------------------------------------------------------ */
 /*  Signals (v5.8.11) — a subset of POSIX                             */
@@ -140,6 +148,7 @@ typedef __builtin_va_list va_list;
 #define SIGCHLD     17
 #define SIGCONT     18
 #define SIGSTOP     19   /* uncatchable */
+#define SIGTSTP     20   /* terminal stop (Ctrl-Z) — catchable, default = stop */
 
 /* Handler sentinels (a real handler is a ring-3 code address, always > 1). */
 #define SIG_DFL     0UL  /* default action (terminate, or ignore for SIGCHLD) */
@@ -285,6 +294,8 @@ typedef struct process {
                              // resume it on the KERNEL CR3, since -mcmodel=large kernel
                              // code runs at low link addresses only mapped there
     uint32_t wake_tick;      // tick_count to wake a sleep()-blocked proc (0 = not sleeping)
+    uint32_t stop_sig;       // job control: signal that stopped us (SIGTSTP/SIGSTOP), 0 = not stopped
+    uint32_t stopped_reported; // 1 = this stop was already reported to the parent's waitpid(WUNTRACED)
     uint32_t sched_weight;   // ticks per turn in the weighted round-robin (0 => 1)
     uint32_t sched_quantum;  // ticks left in the current turn (scheduler-internal)
     int      exit_code;      // status passed to SYS_EXIT, collected by kwait()
@@ -326,6 +337,7 @@ typedef struct process {
 #define PROC_RUN     1   // runnable or running
 #define PROC_ZOMBIE  2   // scheduled user proc that exited; awaiting reap_zombies()
 #define PROC_BLOCKED 3   // blocked in kwait()/sleep(); scheduler skips
+#define PROC_STOPPED 4   // job-control stopped (SIGTSTP/SIGSTOP); parked until SIGCONT
 
 // Weighted round-robin: the compositor (GUI) runs several ticks per turn so it
 // stays responsive while background jobs (weight 1) run.
@@ -731,6 +743,7 @@ long do_signal(int sig, uint64_t handler, uint64_t trampoline); // SYS_SIGNAL: i
 void do_sigreturn(void);                             // SYS_SIGRETURN: restore pre-handler context
 void signal_raise(process_t* p, int sig);            // post a signal to a process (+ wake if blocked)
 int  signal_pending(process_t* p);                   // 1 if a deliverable (unblocked) signal waits
+int  signal_check_stop(process_t* p);                // park on a pending stop signal; 1 if it did (restart)
 void signal_send_foreground(int sig);                // keyboard Ctrl-C -> foreground process
 // Anonymous mmap (mmap.c). Pages within a returned region demand-fault to zero.
 uint64_t do_mmap(uint64_t addr, uint64_t length, int prot, int flags,
