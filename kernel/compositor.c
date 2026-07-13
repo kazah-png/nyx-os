@@ -31,6 +31,11 @@ static int ctx_menu_x = 0, ctx_menu_y = 0;
 static int mouse_x = 0, mouse_y = 0;
 static int mouse_z = 0;          // previous wheel total (see mouse_get_z); delta = new - this
 static uint8_t mouse_btns = 0;
+// Set by redraw_all() whenever it recomposites the back buffer; the event loop
+// clears it after fb_present(). This means *any* redraw_all() caller — including
+// menu/drag handlers that call it directly (not via the loop's `redraw` flag) —
+// gets its finished frame published, without every caller having to remember to.
+static int frame_dirty = 0;
 
 #define CURSOR_W 12
 #define CURSOR_H 16
@@ -505,6 +510,7 @@ static void redraw_all(void) {
     draw_taskbar();
     draw_start_menu();
     draw_ctx_menu();
+    frame_dirty = 1;      // a fresh frame is in the back buffer, awaiting fb_present()
 }
 
 // Public one-shot recomposite. Used by the foreground-exec wait loop (cmd_exec)
@@ -514,6 +520,8 @@ static void redraw_all(void) {
 // command handler that the compositor's key dispatch invoked.
 void compositor_redraw_now(void) {
     redraw_all();
+    fb_present();     // this path runs outside the event loop, so publish here
+    frame_dirty = 0;
 }
 
 static window_t* find_window(int id) {
@@ -1034,6 +1042,10 @@ static void draw_welcome_windows(void) {
 
 void compositor_run(void) {
     compositor_active = 1;
+    // Double buffering: compose each frame off-screen and blit it in one shot
+    // (fb_present) so the screen never shows the half-drawn background between
+    // elements — this is what removes the flicker on click / drag / repaint.
+    fb_enable_backbuffer();
     uint32_t fw = fb_get_width(), fh = fb_get_height();
     quit = 0;
     mouse_x = fw / 2; mouse_y = fh / 2;
@@ -1043,6 +1055,8 @@ void compositor_run(void) {
     redraw_all();
     save_cursor_bg(mouse_x, mouse_y);
     draw_cursor(mouse_x, mouse_y);
+    fb_present();
+    frame_dirty = 0;
     int redraw = 0;
     uint32_t clock_tick = 0;
     extern volatile int kbd_head, kbd_tail;
@@ -1375,6 +1389,7 @@ void compositor_run(void) {
 
 done_click:
 
+        int moved = (mx != mouse_x || my != mouse_y);
         mouse_x = mx; mouse_y = my;
         mouse_btns = btns;
 
@@ -1391,6 +1406,10 @@ done_click:
 
         save_cursor_bg(mouse_x, mouse_y);
         draw_cursor(mouse_x, mouse_y);
+        // Publish the finished frame in one blit — only when something actually
+        // changed (a recomposite happened, or the pointer moved) so an idle
+        // desktop doesn't pointlessly copy the whole framebuffer every wakeup.
+        if (frame_dirty || moved) { fb_present(); frame_dirty = 0; }
         for (int d = 0; d < 100000; d++) __asm__ volatile("pause");
     }
 

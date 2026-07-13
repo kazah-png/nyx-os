@@ -6,10 +6,10 @@
   <strong>Custom x86_64 kernel · C and Assembly · General-purpose OS</strong>
   <br/><br/>
   <!-- Badges -->
-  <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.8.39">
-    <img src="https://img.shields.io/badge/release-v5.8.39-00ff9d?style=flat" />
+  <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.8.40">
+    <img src="https://img.shields.io/badge/release-v5.8.40-00ff9d?style=flat" />
   </a>
-  <img src="https://img.shields.io/badge/status-v5.8.39-00ff9d?style=flat" />
+  <img src="https://img.shields.io/badge/status-v5.8.40-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/TCP-yes-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/GUI-window%20compositor-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/%F0%9F%8C%99%20NyxC-runtime-8b5cf6?style=flat" />
@@ -38,7 +38,7 @@ nyx:root$ nyxfetch
     .:oo.. :o.              -----------------
   :oo:.oo.o:                OS:         NyxOS x86_64
  .#o:.   :.                 Host:       QEMU Standard PC
- #:::....:                  Kernel:     NyxOS 5.8.39 (GUI Suite)
+ #:::....:                  Kernel:     NyxOS 5.8.40 (GUI Suite)
 o#::. . o.                  Uptime:     00:00:11
 o#.o:   :o                  Resolution: 1024 x 768
 o###o   o#                  CPU:        QEMU Virtual CPU version 2.5+ (1)
@@ -59,7 +59,7 @@ o###o   o#                  CPU:        QEMU Virtual CPU version 2.5+ (1)
 The project implements core kernel primitives, a custom network stack (RTL8139 NIC + ARP/IP/UDP/ICMP/DHCP + TCP), a window compositor GUI, and a Sound Blaster 16 audio driver — all written in C and x86_64 Assembly with no external libraries.
 
 <div align="center">
-  <img src="gui.png?v=3" alt="NyxOS Desktop v5.8.39" width="700" />
+  <img src="gui.png?v=3" alt="NyxOS Desktop v5.8.40" width="700" />
   <p><em>NyxOS Desktop — app icons, purple wallpaper, windows and a taskbar</em></p>
 </div>
 
@@ -170,7 +170,7 @@ nyx:root$ ls /
 bin/   dev/   etc/   home/  mnt/   root/  tmp/   usr/   var/
 
 nyx:root$ uname
-NyxOS 5.8.39 (GUI Suite) x86_64
+NyxOS 5.8.40 (GUI Suite) x86_64
 
 nyx:root$ mem
 Physical memory: 256 MB total, 252 MB free
@@ -294,6 +294,7 @@ Built-in command interpreter with **40+ commands**:
 - **Bochs VBE framebuffer** — Up to 1024x768x32, LFB at 0xE0000000
 - **Auto-boot desktop** — NyxOS Desktop launches automatically at startup
 - **Framebuffer abstraction** — `put_pixel`, `fill_rect`, `blit`, `fb_rgb`
+- **Double-buffered compositor** — each frame is composited off-screen and blitted to the LFB in one shot (`fb_present`), so clicks, drags and repaints are flicker-free
 - **PS/2 mouse** — IRQ12-driven, 3-byte packet decode, absolute cursor positioning
 - **VGA 8x16 bitmap font** — Full 256-glyph set from Linux kernel font data
 - **Window compositor** — 32 windows, z-ordering, title bars (min/max/close), drag-to-move, resize, 4 workspaces

@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.8.39"
+#define KERNEL_VERSION "5.8.40"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -948,6 +948,8 @@ void fb_put_pixel(uint32_t x, uint32_t y, uint32_t color);
 void fb_fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color);
 void fb_blit(const void* src, uint32_t sx, uint32_t sy, uint32_t w, uint32_t h, uint32_t dx, uint32_t dy);
 void fb_clear(uint32_t color);
+int  fb_enable_backbuffer(void);   // opt-in double buffering (compositor)
+void fb_present(void);             // blit the back buffer to the LFB (one frame)
 uint32_t fb_get_width(void);
 uint32_t fb_get_height(void);
 void* fb_get_addr(void);
