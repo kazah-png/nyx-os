@@ -29,6 +29,17 @@ static const char* exception_names[32] = {
 
 extern int vm_handle_fault(uint64_t cr2, uint64_t err);
 
+// Which POSIX signal a real kernel delivers for a given CPU exception vector.
+static int exception_signal(uint64_t int_no) {
+    switch (int_no) {
+        case 0:  return SIGFPE;    // #DE divide error
+        case 6:  return SIGILL;    // #UD invalid opcode
+        case 16: return SIGFPE;    // #MF x87 FP error
+        case 19: return SIGFPE;    // #XM SIMD FP
+        default: return SIGSEGV;   // #GP, #PF, #SS, #NP, … — memory/protection faults
+    }
+}
+
 void isr_handler(uint64_t int_no, uint64_t rip, uint64_t error, uint64_t cs) {
     // Page fault: give demand-paging / copy-on-write a chance to resolve it
     // (allocate the page / make a private copy) and retry the instruction.
@@ -36,13 +47,36 @@ void isr_handler(uint64_t int_no, uint64_t rip, uint64_t error, uint64_t cs) {
         return;
 
     if (int_no < 32) {
+        uint64_t cr2 = (int_no == 14) ? read_cr2() : 0;
+
+        // A fault taken from RING 3 must NOT bring down the whole kernel: terminate
+        // just the offending process — the default action of the fatal signal it
+        // earned — and yield to the scheduler forever, exactly like SYS_EXIT. This
+        // is what turns a crashing user program from a system-wide panic into a
+        // recoverable "process killed" (the shell's other jobs keep running).
+        if ((cs & 3) == 3) {
+            int signo = exception_signal(int_no);
+            process_t* cur = get_current_process();
+            printf("\n[fault] pid %u (%s): %s (#%lu) at RIP 0x%lx err 0x%lx",
+                   cur ? (unsigned)cur->pid : 0, cur ? cur->comm : "?",
+                   exception_names[int_no], int_no, rip, error);
+            if (int_no == 14) printf(" fault-addr 0x%lx", cr2);
+            printf(" -> killed (signal %d)\n", signo);
+            if (cur) {
+                cur->exit_code = 128 + signo;   // waitpid status convention: 128 + signo
+                close_proc_fds(cur);            // drop pipe ends so readers get EOF
+                cur->state = PROC_ZOMBIE;
+                wake_waiters(cur);              // unblock a parent in waitpid()
+            }
+            __asm__ volatile("sti");            // hand the CPU to the scheduler and
+            for (;;) __asm__ volatile("hlt");   // never resume the faulting instruction
+        }
+
+        // A fault in RING 0 is a genuine kernel bug — unrecoverable, so panic.
         printf("\n[PANIC] Exception: %s (#%lu)\n", exception_names[int_no], int_no);
         printf("[PANIC] RIP=0x%lx  CS=0x%lx (ring %lu)  error=0x%lx\n",
                rip, cs, cs & 3, error);
-        if (int_no == 14) {
-            uint64_t cr2 = read_cr2();
-            printf("[PANIC] Page fault at 0x%lx\n", cr2);
-        }
+        if (int_no == 14) printf("[PANIC] Page fault at 0x%lx\n", cr2);
         kernel_panic("%s (#%lu) at RIP 0x%lx (ring %lu, err 0x%lx)",
                      exception_names[int_no], int_no, rip, cs & 3, error);
     }

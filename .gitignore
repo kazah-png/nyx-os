@@ -69,3 +69,9 @@ issue_body.md
 
 # === Legacy artifacts ===
 binutils-2.41.tar.gz
+
+# === Temporary test screenshots ===
+g1.png
+g2.png
+j*.png
+w*.png
