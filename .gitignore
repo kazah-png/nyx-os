@@ -61,9 +61,6 @@ screen.ppm
 kernel/build.sh
 kernel/fix_kernel.sh
 
-# === One-off utilities ===
-tools/ppm2png.py
-
 # === Issue/PR templates ===
 issue_body.md
 
