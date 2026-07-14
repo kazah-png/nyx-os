@@ -493,7 +493,6 @@ void init_paging(void) {
     if (!kernel_pml4) kernel_panic("No PML4 page");
     memset_asm(kernel_pml4, 0, PAGE_SIZE);
 
-    printf("[PAGING] Identity-mapping %d MB...\n", IDENTITY_MAP_MB);
     // Allocate one PDP table (covers up to 512 GB)
     uint64_t* pdpt = (uint64_t*)alloc_page();
     if (!pdpt) kernel_panic("No PDPT page");
@@ -504,7 +503,19 @@ void init_paging(void) {
     if (!pd) kernel_panic("No PD page");
     memset_asm(pd, 0, PAGE_SIZE);
 
-    int num_pages = IDENTITY_MAP_MB / 2; // 2MB per entry
+    // Identity-map ALL of physical RAM (not a fixed 64 MB): the kernel allocates
+    // page-table pages and copy-on-write target pages with alloc_page() and then
+    // touches them through their IDENTITY (low) virtual address, so every page
+    // alloc_page() can hand out MUST be identity-mapped. When only 64 MB was mapped,
+    // heavy memory use (a large program + fork COW + a pipeline) eventually allocated
+    // a page above 64 MB and the kernel faulted dereferencing its unmapped identity
+    // address — the intermittent `cmd | less`-class crash. One PD spans 512*2MB = 1 GB;
+    // cap there (more RAM would need extra PDs). Size to memory_total, rounded up.
+    uint64_t ram_mb = (memory_total ? memory_total : ((uint64_t)IDENTITY_MAP_MB << 20)) >> 20;
+    int num_pages = (int)((ram_mb + 1) / 2);           // 2MB huge pages, round up
+    if (num_pages < IDENTITY_MAP_MB / 2) num_pages = IDENTITY_MAP_MB / 2;  // >= 64 MB
+    if (num_pages > 512) num_pages = 512;              // one PD = 1 GB max
+    printf("[PAGING] Identity-mapping %d MB (RAM %lu MB)...\n", num_pages * 2, ram_mb);
     for (int i = 0; i < num_pages; i++) {
         pd[i] = ((uint64_t)i * 0x200000) | PAGE_PRESENT | PAGE_WRITABLE | PAGE_HUGE;
     }
