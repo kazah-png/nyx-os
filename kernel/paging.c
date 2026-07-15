@@ -546,7 +546,7 @@ void init_paging(void) {
     // Expose physical address for assembly page-table switching
     kernel_pml4_phys = (uint64_t)kernel_pml4;
 
-    printf("[PAGING] Loading CR3 with %lx\n", (uint64_t)kernel_pml4);
+    printf("[PAGING] Loading CR3 with 0x%lx\n", (uint64_t)kernel_pml4);
     write_cr3((uint64_t)kernel_pml4);
 
     // Enable NXE (No-Execute) in EFER

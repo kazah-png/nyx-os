@@ -109,7 +109,7 @@ int rtl8139_init(void) {
                 }
                 printf("[RTL8139] MAC: ");
                 for (int mi = 0; mi < 6; mi++) {
-                    printf("%x", rtl_mac[mi]);
+                    printf("%02x", rtl_mac[mi]);
                     if (mi < 5) printf(":");
                 }
                 printf("\n");

@@ -28,7 +28,7 @@ int initramfs_load(void) {
         printf("[INITRAMFS] No initramfs data (size=%u)\n", initramfs_size);
         return -1;
     }
-    printf("[INITRAMFS] Data at %x, %u bytes\n", (uint32_t)(uintptr_t)initramfs_data_ptr, initramfs_size);
+    printf("[INITRAMFS] Data at 0x%x, %u bytes\n", (uint32_t)(uintptr_t)initramfs_data_ptr, initramfs_size);
     return 0;
 }
 

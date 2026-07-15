@@ -228,7 +228,10 @@ int vprintf(const char* fmt, va_list args) {
                 case 'X': {
                     uint64_t v = (long_count >= 1) ? va_arg(args, uint64_t)
                                                    : (uint64_t)va_arg(args, unsigned int);
-                    putchar('0'); putchar('x'); count += 2;   // keep the historic 0x prefix
+                    // Standard C %x: NO auto "0x" prefix (matches vsnprintf + userspace
+                    // libc). Callers write "0x%x" when they want the prefix; the old
+                    // auto-prefix produced "0x0x…" for every such site and uglified hex
+                    // dumps / MAC octets ("0x52:0x54"). Use %p for a prefixed pointer.
                     u64_to_str(v, 16, nbuf);
                     emit_padded(nbuf, width, left, pad, &count);
                     break;

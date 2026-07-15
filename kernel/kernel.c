@@ -1052,7 +1052,7 @@ static void cmd_tcptest(int argc, char** argv) {
             if (total == 0) {
                 int hn = n < 16 ? n : 16;
                 printf("First %d bytes:", hn);
-                for (int i = 0; i < hn; i++) printf(" %x", buf[i]);
+                for (int i = 0; i < hn; i++) printf(" %02x", buf[i]);
                 printf("\n");
             }
             buf[n] = '\0';
@@ -1483,7 +1483,7 @@ static void cmd_ifconfig(int argc, char** argv) {
     printf("Network interfaces:\n");
     for (int i = 0; i < 8; i++) {
         if (net_interfaces[i].name[0]) {
-            printf("%s  HWaddr %x:%x:%x:%x:%x:%x  IP %d.%d.%d.%d\n",
+            printf("%s  HWaddr %02x:%02x:%02x:%02x:%02x:%02x  IP %d.%d.%d.%d\n",
                 net_interfaces[i].name,
                 net_interfaces[i].mac[0], net_interfaces[i].mac[1],
                 net_interfaces[i].mac[2], net_interfaces[i].mac[3],
@@ -1637,12 +1637,22 @@ static void panic_screen(const char* msg, uint64_t cr0, uint64_t cr2,
     snprintf(rb, sizeof(rb), "CR3=0x%lx   from=0x%lx", cr3, caller);
     font_draw_string(margin, y, rb, dim, bg);
 
-    // Footer + brand mark.
+    // Footer.
     font_draw_string(margin, (int)h - 58,
                      "The system has been halted to prevent damage.", dim, bg);
     font_draw_string(margin, (int)h - 38,
                      "Please restart your device (power cycle or Ctrl+Alt+Del).", dim, bg);
-    font_draw_string_scaled((int)w - 6 * (int)font_get_width() - 24, 30, "NyxOS", dim, bg, 1);
+
+    // Brand mark — the shared NyxOS purple moon (nyx_logo.h), top-right corner, with
+    // a "NyxOS" label centered under it. Same art/tint as the login + boot splash.
+    uint32_t moon = fb_rgb(168, 138, 245);
+    int moon_w = NYX_LOGO_COLS * (int)font_get_width();
+    int moon_x = (int)w - moon_w - margin;
+    int moon_y = 34;
+    for (int i = 0; i < NYX_LOGO_ROWS; i++)
+        font_draw_string(moon_x, moon_y + i * (int)font_get_height(), NYX_LOGO[i], moon, bg);
+    font_draw_string_scaled(moon_x + (moon_w - 5 * (int)font_get_width()) / 2,
+                            moon_y + NYX_LOGO_ROWS * (int)font_get_height() + 6, "NyxOS", dim, bg, 1);
 }
 
 void kernel_panic(const char* msg, ...) {
@@ -2413,7 +2423,7 @@ void init_load_modules(void) {
     if (!(mb[0] & 8)) return;
     uint32_t mods_count = mb[5];
     uint32_t mods_addr = mb[6];
-    printf("[MODULES] %d module(s) at %x\n", mods_count, mods_addr);
+    printf("[MODULES] %d module(s) at 0x%x\n", mods_count, mods_addr);
     uint32_t* mod_entry = (uint32_t*)(uintptr_t)mods_addr;
     for (uint32_t i = 0; i < mods_count; i++) {
         uint32_t mod_start = mod_entry[0];
