@@ -635,6 +635,16 @@ void hide_file(const char* path) {
 }
 
 void vfs_rename(const char* old, const char* new) {
+    // If either endpoint is on a mounted FS, the ramdisk tree walk below can't
+    // find or place it. Fall back to copy-then-delete, which works for files
+    // across any mix of ramdisk and mounted FS (vfs_cp/vfs_unlink are both
+    // mount-aware). Directories on a mount aren't moved — that would need a
+    // recursive copy — and vfs_cp fails cleanly on them, so `old` is preserved.
+    if (vfs_find_mount(old) || vfs_find_mount(new)) {
+        if (vfs_cp(old, new) == 0)
+            vfs_unlink(old);
+        return;
+    }
     char child_name[MAX_NAME];
     vfs_node_t* parent = resolve_parent(old, child_name);
     if (!parent) return;
@@ -711,6 +721,25 @@ static int fs_unlink(const char* p) {
     preempt_disable(); int r = ext2_unlink(p);         preempt_enable(); return r;
 }
 
+// Make a mount point visible in the ramdisk tree, so directory listings that
+// walk children (the GUI file manager, `ls` of the parent) show it. vfs_open on
+// this path still routes to the mounted FS — vfs_find_mount takes precedence —
+// so the stub only supplies the parent's entry; it is never opened itself.
+static void ensure_mount_stub(const char* mount_point) {
+    if (resolve_path(mount_point)) return;      // already present
+    char child_name[MAX_NAME];
+    vfs_node_t* parent = resolve_parent(mount_point, child_name);
+    if (!parent || parent->type != 1) return;
+    if (parent->child_count >= MAX_CHILDREN) return;   // full: mount still works, just not listed
+    if (find_child(parent, child_name)) return;
+    vfs_node_t* dir = alloc_node();
+    if (!dir) return;
+    strncpy(dir->name, child_name, MAX_NAME - 1);
+    dir->type = 1;
+    dir->parent = parent;
+    parent->children[parent->child_count++] = dir;
+}
+
 int vfs_mount(const char* mount_point, int fs_type, void* fs_data) {
     (void)fs_data;
     if (mount_count >= MAX_MOUNT_POINTS) return -1;
@@ -734,6 +763,7 @@ int vfs_mount(const char* mount_point, int fs_type, void* fs_data) {
     }
 
     mount_count++;
+    ensure_mount_stub(mount_point);   // so the mount shows up when browsing "/"
     return 0;
 }
 
@@ -926,32 +956,65 @@ int vfs_write_file(const char* path, const void* buf, uint32_t len) {
 }
 
 int vfs_cp(const char* src, const char* dst) {
-    // Check if destination is on a mount point
-    mount_entry_t* dst_me = vfs_find_mount(dst);
-    if (dst_me && dst_me->write_file) {
-        // Read source from RAM VFS
+    // --- Load the source bytes into a buffer, whether it lives in the ramdisk
+    // tree or on a mounted FS (e.g. /mnt). Only regular files are copied. ---
+    uint8_t* sbuf = NULL;
+    uint32_t ssize = 0;
+    mount_entry_t* src_me = vfs_find_mount(src);
+    if (src_me && src_me->read_file) {
+        const char* sub = src + strlen(src_me->mount_point);
+        if (!*sub) sub = "/";
+        // Refuse to "copy" a directory (that would need recursion); a mounted-FS
+        // readdir succeeding (>=0) means the path is a directory.
+        if (src_me->readdir) {
+            dirent_t probe;
+            if (src_me->readdir(sub, &probe, 1) >= 0) return -1;
+        }
+        if (src_me->resolve && !src_me->resolve(sub)) return -1;   // missing
+        ssize = src_me->get_size ? src_me->get_size(sub) : 0;
+        sbuf = (uint8_t*)kmalloc(ssize ? ssize : 1);
+        if (!sbuf) return -1;
+        if (ssize) {
+            int r = src_me->read_file(sub, sbuf, ssize);
+            if (r < 0) { kfree(sbuf); return -1; }
+            ssize = (r > 0) ? (uint32_t)r : 0;
+        }
+    } else {
         vfs_node_t* src_ino = resolve_path(src);
         if (!src_ino || src_ino->type != 0) return -1;
-        return dst_me->write_file(dst + strlen(dst_me->mount_point),
-                                 src_ino->data, src_ino->size);
+        ssize = src_ino->size;
+        sbuf = (uint8_t*)kmalloc(ssize ? ssize : 1);
+        if (!sbuf) return -1;
+        if (ssize && src_ino->data) memcpy(sbuf, src_ino->data, ssize);
     }
 
-    vfs_node_t* src_ino = resolve_path(src);
-    if (!src_ino || src_ino->type != 0) return -1;
-    char child_name[MAX_NAME];
-    vfs_node_t* dst_parent = resolve_parent(dst, child_name);
-    if (!dst_parent || dst_parent->type != 1) return -1;
-    if (find_child(dst_parent, child_name)) return -1;
-    vfs_node_t* dst_ino = alloc_node();
-    if (!dst_ino) return -1;
-    strncpy(dst_ino->name, child_name, MAX_NAME-1);
-    dst_ino->type = 0;
-    dst_ino->parent = dst_parent;
-    dst_ino->size = src_ino->size;
-    if (src_ino->size > 0 && src_ino->data) {
-        dst_ino->data = (uint8_t*)kmalloc(src_ino->size);
-        if (dst_ino->data) memcpy(dst_ino->data, src_ino->data, src_ino->size);
+    // --- Write to the destination, again ramdisk- or mount-backed. ---
+    int rc = -1;
+    mount_entry_t* dst_me = vfs_find_mount(dst);
+    if (dst_me && dst_me->write_file) {
+        const char* sub = dst + strlen(dst_me->mount_point);
+        if (!*sub) sub = "/";
+        rc = dst_me->write_file(sub, sbuf, ssize) >= 0 ? 0 : -1;
+    } else {
+        char child_name[MAX_NAME];
+        vfs_node_t* dst_parent = resolve_parent(dst, child_name);
+        if (dst_parent && dst_parent->type == 1 && !find_child(dst_parent, child_name)) {
+            vfs_node_t* dst_ino = alloc_node();
+            if (dst_ino) {
+                strncpy(dst_ino->name, child_name, MAX_NAME-1);
+                dst_ino->type = 0;
+                dst_ino->parent = dst_parent;
+                dst_ino->size = ssize;
+                if (ssize) {
+                    dst_ino->data = (uint8_t*)kmalloc(ssize);
+                    if (dst_ino->data) memcpy(dst_ino->data, sbuf, ssize);
+                    else dst_ino->size = 0;
+                }
+                dst_parent->children[dst_parent->child_count++] = dst_ino;
+                rc = 0;
+            }
+        }
     }
-    dst_parent->children[dst_parent->child_count++] = dst_ino;
-    return 0;
+    kfree(sbuf);
+    return rc;
 }

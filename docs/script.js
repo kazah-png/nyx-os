@@ -109,7 +109,7 @@
         '    <span class="m">.:oo.. :o.</span>              <span class="p">-----------------</span>',
         '  <span class="m">:oo:.oo.o:</span>                <span class="k">OS:</span>         NyxOS x86_64',
         ' <span class="m">.#o:.   :.</span>                 <span class="k">Host:</span>       QEMU Standard PC',
-        ' <span class="m">#:::....:</span>                  <span class="k">Kernel:</span>     NyxOS 5.8.61 (Full Suite)',
+        ' <span class="m">#:::....:</span>                  <span class="k">Kernel:</span>     NyxOS 5.8.62 (Full Suite)',
         '<span class="m">o#::. . o.</span>                  <span class="k">Uptime:</span>     00:00:11',
         '<span class="m">o#.o:   :o</span>                  <span class="k">Resolution:</span> 1024 x 768',
         '<span class="m">o###o   o#</span>                  <span class="k">CPU:</span>        QEMU Virtual CPU version 2.5+ (1)',
