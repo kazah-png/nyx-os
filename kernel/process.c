@@ -560,6 +560,16 @@ void irq_scheduler_tick(void) {
         }
     }
 
+    // alarm(2) timers: post SIGALRM to any process whose deadline has passed.
+    // signal_raise wakes it if it's blocked, so delivery runs on its syscall return.
+    for (int i = 0; i < process_count; i++) {
+        process_t* p = process_table[i];
+        if (p && p->alarm_tick != 0 && (int32_t)(tick_count - p->alarm_tick) >= 0) {
+            p->alarm_tick = 0;
+            signal_raise(p, SIGALRM);
+        }
+    }
+
     // Default: resume the thread we interrupted, preserving its address space (a
     // ring-3 process keeps its own CR3 if it's the only thing runnable).
     process_t* cur = (current_idx >= 0 && current_idx < process_count)

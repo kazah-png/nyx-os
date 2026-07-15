@@ -43,6 +43,7 @@
 #define SYS_SENDTO   39
 #define SYS_RECVFROM 40
 #define SYS_SIGPROCMASK 41
+#define SYS_ALARM    42
 
 #define TTY_CANON   0   /* kernel line discipline: echoed, backspace-edited lines */
 #define TTY_RAW     1   /* byte-at-a-time, no echo, arrows as ESC [ A/B/C/D */
@@ -263,6 +264,13 @@ static inline sighandler_t signal(int sig, sighandler_t handler) {
 #define SIG_SETMASK  2
 static inline long sigprocmask(int how, unsigned long set, unsigned long* oldset) {
     return syscall3(SYS_SIGPROCMASK, how, (long)set, (long)oldset);
+}
+
+/* alarm(seconds): deliver SIGALRM to this process after `seconds` seconds (0
+ * cancels a pending alarm). Returns the seconds remaining on any previous alarm,
+ * or 0. Without a SIGALRM handler the default action terminates the process. */
+static inline unsigned int alarm(unsigned int seconds) {
+    return (unsigned int)syscall1(SYS_ALARM, seconds);
 }
 
 /* raise(sig): send `sig` to the calling process. */

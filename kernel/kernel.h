@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.8.57"
+#define KERNEL_VERSION "5.8.58"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -115,6 +115,7 @@ typedef __builtin_va_list va_list;
 #define SYS_SENDTO   39
 #define SYS_RECVFROM 40
 #define SYS_SIGPROCMASK 41
+#define SYS_ALARM    42
 
 /* SYS_TTYMODE modes. Canonical: read(0) returns a full line, echoed + backspace-
  * edited by the kernel. Raw: read(0) returns bytes as they arrive, NO echo, and
@@ -331,6 +332,8 @@ typedef struct process {
     // Ring-3 context saved when a handler is entered, restored by SYS_SIGRETURN:
     // [0..14]=GPRs r15..rax (frame order), [15]=RFLAGS, [16]=RIP, [17]=user RSP.
     uint64_t sig_saved[18];
+    uint32_t alarm_tick;              // alarm(2) deadline in ticks (0 = none); irq_scheduler_tick
+                                      // posts SIGALRM once tick_count passes it
     // Anonymous mmap regions (v5.8.12). A fault inside a vma gets a fresh zeroed
     // page with the vma's prot (vm_handle_fault); mmap_next bumps up per mapping.
     vma_t    mmap_vmas[PROC_MAX_VMAS];
@@ -786,6 +789,7 @@ int  do_kill(int pid, int sig);                      // SYS_KILL: post `sig` to 
 long do_signal(int sig, uint64_t handler, uint64_t trampoline); // SYS_SIGNAL: install disposition
 void do_sigreturn(void);                             // SYS_SIGRETURN: restore pre-handler context
 long do_sigprocmask(int how, uint64_t set, uint64_t oldset_ptr); // SYS_SIGPROCMASK: read/change block mask
+unsigned int do_alarm(unsigned int seconds);                     // SYS_ALARM: schedule SIGALRM after N s
 void signal_raise(process_t* p, int sig);            // post a signal to a process (+ wake if blocked)
 int  signal_pending(process_t* p);                   // 1 if a deliverable (unblocked) signal waits
 int  signal_check_stop(process_t* p);                // park on a pending stop signal; 1 if it did (restart)

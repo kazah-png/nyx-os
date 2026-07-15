@@ -291,6 +291,29 @@ long do_sigprocmask(int how, uint64_t set, uint64_t oldset_ptr) {
     return 0;
 }
 
+/* SYS_ALARM: schedule SIGALRM to the calling process after `seconds` seconds (0
+ * cancels a pending alarm). Returns the whole seconds left on a previous alarm, or
+ * 0. irq_scheduler_tick posts SIGALRM once tick_count passes the deadline; with no
+ * handler installed SIGALRM's default action terminates the process (like Unix). */
+unsigned int do_alarm(unsigned int seconds) {
+    extern volatile uint32_t tick_count;
+    process_t* p = get_current_process();
+    if (!p) return 0;
+    uint32_t now = tick_count;
+    unsigned int remaining = 0;
+    if (p->alarm_tick != 0) {
+        int32_t left = (int32_t)(p->alarm_tick - now);
+        if (left > 0) remaining = ((unsigned int)left + 999) / 1000;   /* round up to seconds */
+    }
+    if (seconds == 0) {
+        p->alarm_tick = 0;                     /* cancel */
+    } else {
+        uint32_t d = now + seconds * 1000;     /* 1000 Hz -> ticks */
+        p->alarm_tick = d ? d : 1;             /* avoid 0 (== "no alarm") on a rare wrap */
+    }
+    return remaining;
+}
+
 /* Keyboard Ctrl-C -> post SIGINT to the foreground process. */
 void signal_send_foreground(int sig) {
     if (!g_foreground_pid) return;

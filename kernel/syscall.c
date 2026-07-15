@@ -872,6 +872,10 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
             // The mechanism behind sigsetjmp/siglongjmp restoring the mask on a
             // non-local jump out of a handler (so repeated faults stay catchable).
             return (uint64_t)do_sigprocmask((int)a1, a2, a3);
+        case SYS_ALARM:
+            // alarm(seconds): schedule SIGALRM after N seconds (0 cancels); returns
+            // the seconds left on any previous alarm. Fires from irq_scheduler_tick.
+            return (uint64_t)do_alarm((unsigned int)a1);
         case SYS_MMAP: {
             // mmap(addr, length, prot, flags, fd, offset). Anonymous (MAP_ANONYMOUS)
             // demand-faults to zero; otherwise file-backed — resolve fd (a5) to a VFS
