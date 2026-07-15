@@ -264,7 +264,7 @@ int nsock_close(int s) {
     return 0;
 }
 
-// ---- Built-in loopback TCP echo service (port 7) --------------------------
+// ---- Built-in loopback echo service (port 7, TCP + UDP; RFC 862) -----------
 // A tiny always-on, inetd-style echo server so a userspace socket program has
 // something to talk to over loopback (127.0.0.1) — fully self-contained, no
 // external host or NIC required. It also answers on the NIC address if reached.
@@ -273,9 +273,17 @@ int nsock_close(int s) {
 static int echo_listen = -1;
 static int echo_conns[ECHO_MAX];
 
+// UDP echo: bounce each datagram straight back to its sender. Registered as a
+// kernel udp listener, so it only fires when no userspace socket claims port 7
+// (nsock_udp_deliver runs first in udp_handle_packet).
+static void udp_echo_handler(uint8_t* data, uint32_t len, uint32_t src_ip, uint16_t src_port) {
+    udp_send(src_ip, src_port, ECHO_PORT, data, len, -1);
+}
+
 void tcp_echo_init(void) {
     for (int i = 0; i < ECHO_MAX; i++) echo_conns[i] = -1;
     echo_listen = tcp_listen(ECHO_PORT);
+    udp_register_listener(ECHO_PORT, udp_echo_handler);   // echo UDP datagrams too
 }
 
 void tcp_echo_poll(void) {
