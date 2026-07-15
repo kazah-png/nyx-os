@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.8.59"
+#define KERNEL_VERSION "5.8.60"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -116,6 +116,7 @@ typedef __builtin_va_list va_list;
 #define SYS_RECVFROM 40
 #define SYS_SIGPROCMASK 41
 #define SYS_ALARM    42
+#define SYS_POLL     43
 
 /* SYS_TTYMODE modes. Canonical: read(0) returns a full line, echoed + backspace-
  * edited by the kernel. Raw: read(0) returns bytes as they arrive, NO echo, and
@@ -816,6 +817,7 @@ int  pipe_new(void);                    // alloc a pipe (1 read ref + 1 write re
 int  pipe_read(int id, char* kbuf, int n);   // blocking read into kbuf; 0 = EOF
 int  pipe_write(int id, const char* src, int n); // non-blocking write; -1 = broken pipe
 void pipe_close_end(int id, int is_write);   // drop one ref; frees the pipe at zero
+int  pipe_readable(int id);                  // poll(): 1 if read would return now
 void pipe_incref(int id, int is_write);      // fork(): inherit a pipe fd
 void reap_user_process(process_t* proc);
 void close_proc_fds(process_t* proc);   // close a process's fds (called at exit + reap)
@@ -892,6 +894,7 @@ char serial_getchar_nonblock(void);
 void init_keyboard(void);
 char getchar(void);
 char getchar_poll(void);
+int  keyboard_has_input(void);               // poll(): 1 if a key/serial byte is waiting
 int  getkey_poll(void);
 void keyboard_irq_handler(void* unused);
 int is_ctrl_pressed(void);
@@ -948,6 +951,7 @@ int nsock_sendto(int s, const void* buf, int len, uint32_t ip, uint16_t port);  
 int nsock_recvfrom(int s, void* buf, int len, uint32_t* src_ip, uint16_t* src_port); // UDP, blocks
 int nsock_udp_deliver(uint16_t dst_port, uint8_t* data, uint32_t len, uint32_t src_ip, uint16_t src_port);
 int nsock_close(int s);
+int nsock_readable(int s);   // poll(): 1 if the socket has data/EOF ready to read
 void tcp_echo_init(void);   // start the loopback TCP echo service (port 7)
 void tcp_echo_poll(void);   // drive it from the net poll loop
 void udp_register_listener(uint16_t port, void (*handler)(uint8_t*, uint32_t, uint32_t, uint16_t));

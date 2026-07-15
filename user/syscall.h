@@ -44,6 +44,7 @@
 #define SYS_RECVFROM 40
 #define SYS_SIGPROCMASK 41
 #define SYS_ALARM    42
+#define SYS_POLL     43
 
 #define TTY_CANON   0   /* kernel line discipline: echoed, backspace-edited lines */
 #define TTY_RAW     1   /* byte-at-a-time, no echo, arrows as ESC [ A/B/C/D */
@@ -460,6 +461,22 @@ static inline long recvfrom(int fd, void* buf, long len, int flags,
                             unsigned int* ip, int* port) {
     (void)flags;
     return syscall6(SYS_RECVFROM, fd, (long)buf, len, 0, (long)ip, (long)port);
+}
+
+/* --- I/O multiplexing: poll(2) ---------------------------------------------- */
+/* Wait for events on a set of fds in one call — the primitive for full-duplex /
+ * multi-fd programs. events/revents are masks of POLLIN (readable) / POLLOUT
+ * (writable); the kernel also sets POLLNVAL for a bad fd. timeout is in ms
+ * (0 = return immediately, <0 = block forever). Returns the number of fds with a
+ * non-zero revents, 0 on timeout, or -1. Works over sockets, pipes and stdin. */
+#define POLLIN   0x001
+#define POLLOUT  0x004
+#define POLLERR  0x008
+#define POLLHUP  0x010
+#define POLLNVAL 0x020
+struct pollfd { int fd; short events; short revents; };
+static inline long poll(struct pollfd* fds, int nfds, int timeout) {
+    return syscall3(SYS_POLL, (long)fds, nfds, timeout);
 }
 
 #endif

@@ -57,7 +57,8 @@ USER_ELFS = $(USER_DIR)/hello.elf $(USER_DIR)/init.elf $(USER_DIR)/spin.elf $(US
             $(USER_DIR)/fault.elf $(USER_DIR)/less.elf $(USER_DIR)/more.elf \
             $(USER_DIR)/pstorm.elf $(USER_DIR)/bigread.elf $(USER_DIR)/segv.elf \
             $(USER_DIR)/sockdemo.elf $(USER_DIR)/srvdemo.elf $(USER_DIR)/udpdemo.elf \
-            $(USER_DIR)/nc.elf $(USER_DIR)/sigrec.elf $(USER_DIR)/alarmdemo.elf
+            $(USER_DIR)/nc.elf $(USER_DIR)/sigrec.elf $(USER_DIR)/alarmdemo.elf \
+            $(USER_DIR)/polldemo.elf
 
 # Flags for Nyx C output (GCC: statement-exprs, __auto_type). -mno-red-zone is mandatory.
 NYXCFLAGS = -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR)
@@ -130,6 +131,12 @@ $(USER_DIR)/sigrec.o: $(USER_DIR)/sigrec.c $(USER_DIR)/libc.h $(USER_DIR)/syscal
 $(USER_DIR)/alarmdemo.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/alarmdemo.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/alarmdemo.o
 $(USER_DIR)/alarmdemo.o: $(USER_DIR)/alarmdemo.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
+	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+
+# polldemo — poll() I/O multiplexing over a pipe + a socket.
+$(USER_DIR)/polldemo.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/polldemo.o
+	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/polldemo.o
+$(USER_DIR)/polldemo.o: $(USER_DIR)/polldemo.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
 	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
 # The pager. less.elf and more.elf are the same program (full-screen pager).

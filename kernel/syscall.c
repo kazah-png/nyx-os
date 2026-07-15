@@ -79,6 +79,12 @@ static int user_str_ok(uint64_t ptr) {
  * redirects a child's stdin/stdout. open()/pipe() allocate from UFD_BASE up. */
 #define UFD_BASE 3
 
+// poll(2) event/result bits — must match user/syscall.h.
+#define POLLIN   0x001
+#define POLLOUT  0x004
+#define POLLNVAL 0x020
+struct kpollfd { int fd; short events; short revents; };   // 8 bytes, matches userspace
+
 static int ufd_alloc(int internal) {
     process_t* p = get_cur_proc();
     if (!p) return -1;
@@ -876,6 +882,66 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
             // alarm(seconds): schedule SIGALRM after N seconds (0 cancels); returns
             // the seconds left on any previous alarm. Fires from irq_scheduler_tick.
             return (uint64_t)do_alarm((unsigned int)a1);
+        case SYS_POLL: {
+            // poll(struct pollfd* fds, int nfds, int timeout_ms). Blocks until a
+            // listed fd is ready (POLLIN = readable, POLLOUT = writable — always
+            // ready here), the timeout elapses (0 = non-blocking, <0 = forever), or
+            // a signal arrives (-EINTR). Returns the count of ready fds, or 0.
+            int nfds = (int)a2, timeout = (int)a3;
+            if (nfds < 0 || nfds > 64) return -1;
+            if (nfds > 0 && !user_ptr_ok(a1, (uint64_t)nfds * 8)) return -1;
+            struct kpollfd kfds[64];
+            if (nfds > 0 && copy_from_user(kfds, a1, (uint64_t)nfds * 8) != 0) return -1;
+            extern volatile uint32_t tick_count;
+            process_t* self = get_cur_proc();
+            uint32_t start = tick_count;
+            for (;;) {
+                __asm__ volatile("cli");        // atomic readiness snapshot vs. the timer/NIC IRQ
+                int ready = 0;
+                for (int i = 0; i < nfds; i++) {
+                    kfds[i].revents = 0;
+                    int fd = kfds[i].fd;
+                    short ev = kfds[i].events, rv = 0;
+                    if (fd < 0) continue;                          // negative fd: ignored (POSIX)
+                    int internal;
+                    if (ufd_lookup(fd, &internal) != 0) {          // not in the fd table
+                        if (fd == 0) {                             // stdin
+                            if ((ev & POLLIN) && keyboard_has_input()) rv |= POLLIN;
+                        } else if (fd == 1 || fd == 2) {           // stdout/stderr: always writable
+                            if (ev & POLLOUT) rv |= POLLOUT;
+                        } else {
+                            rv = POLLNVAL;                          // bad fd
+                        }
+                    } else if (internal & UFD_PIPE_FLAG) {
+                        if ((ev & POLLIN) && !UFD_PIPE_IS_WRITE(internal)
+                            && pipe_readable(UFD_PIPE_ID(internal))) rv |= POLLIN;
+                        if ((ev & POLLOUT) && UFD_PIPE_IS_WRITE(internal)) rv |= POLLOUT;
+                    } else if (internal & UFD_SOCK_FLAG) {
+                        if ((ev & POLLIN) && nsock_readable(UFD_SOCK_ID(internal))) rv |= POLLIN;
+                        if (ev & POLLOUT) rv |= POLLOUT;           // sockets treated always-writable
+                    } else {                                       // VFS file: never blocks
+                        if (ev & POLLIN)  rv |= POLLIN;
+                        if (ev & POLLOUT) rv |= POLLOUT;
+                    }
+                    kfds[i].revents = rv;
+                    if (rv) ready++;
+                }
+                int timed_out = (timeout == 0) ||
+                    (timeout > 0 && (int32_t)(tick_count - (start + (uint32_t)timeout)) >= 0);
+                if (ready > 0 || timed_out) {
+                    __asm__ volatile("sti");
+                    if (nfds > 0) copy_to_user(a1, kfds, (uint64_t)nfds * 8);
+                    return (uint64_t)ready;                        // ready count, or 0 on timeout
+                }
+                if (self && signal_pending(self)) { __asm__ volatile("sti"); return (uint64_t)(-EINTR); }
+                // Enable IRQs so the 1000 Hz timer advances tick_count (the timeout);
+                // syscalls run with interrupts masked, so without this the deadline
+                // would never pass. Then drive the sockets and delay before re-checking.
+                __asm__ volatile("sti");
+                kernel_poll_net();
+                for (volatile int d = 0; d < 1500; d++) inb(0x80);
+            }
+        }
         case SYS_MMAP: {
             // mmap(addr, length, prot, flags, fd, offset). Anonymous (MAP_ANONYMOUS)
             // demand-faults to zero; otherwise file-backed — resolve fd (a5) to a VFS

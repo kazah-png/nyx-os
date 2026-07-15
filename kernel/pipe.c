@@ -94,6 +94,13 @@ int pipe_write(int id, const char* src, int n) {
 //  - other processes' syscalls clobber the shared user_cr3/user_rsp globals while
 //    we sleep, so we save them on entry and restore them before returning so the
 //    caller's copy_to_user + the asm return path target this process.
+// poll(): 1 if pipe_read(id) would return immediately — buffered data, or EOF
+// because all writers have closed. Called with interrupts masked (a syscall).
+int pipe_readable(int id) {
+    if (id < 0 || id >= MAX_PIPES || !pipes[id].used) return 1;   // invalid -> read errors
+    return pipes[id].count > 0 || pipes[id].write_refs == 0;
+}
+
 int pipe_read(int id, char* kbuf, int n) {
     extern uint64_t user_cr3, user_rsp;
     if (id < 0 || id >= MAX_PIPES || !pipes[id].used || n <= 0) return -1;

@@ -255,6 +255,16 @@ int nsock_udp_deliver(uint16_t dst_port, uint8_t* data, uint32_t len,
     return 0;
 }
 
+// poll(): 1 if this socket has data (or EOF) ready to read now, else 0. UDP is
+// ready when a datagram is queued; TCP defers to tcp_recv_ready.
+int nsock_readable(int s) {
+    if (!nsock_valid(s)) return 1;                  // invalid -> a read errors: "ready"
+    if (nsocks[s].type == SOCK_DGRAM)
+        return (nsocks[s].dq && nsocks[s].dq_head != nsocks[s].dq_tail) ? 1 : 0;
+    if (nsocks[s].tcp_conn < 0) return 1;
+    return tcp_recv_ready(nsocks[s].tcp_conn);
+}
+
 int nsock_close(int s) {
     if (!nsock_valid(s)) return -1;
     if (nsocks[s].tcp_conn >= 0) tcp_close(nsocks[s].tcp_conn);

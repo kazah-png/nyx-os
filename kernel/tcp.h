@@ -59,6 +59,7 @@ int tcp_accept(int listen_id);       // -> conn_id of a newly ESTABLISHED child,
 int tcp_send(int conn_id, const uint8_t* data, uint32_t len);
 int tcp_recv(int conn_id, uint8_t* buf, uint32_t max_len);
 int tcp_state(int conn_id);
+int tcp_recv_ready(int conn_id);     // poll(): 1 if recv would return data/EOF now
 int tcp_close(int conn_id);
 void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t dst_ip);
 void tcp_tick(void);                 // drive retransmit timers (call from net poll)

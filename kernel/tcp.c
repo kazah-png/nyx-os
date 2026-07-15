@@ -329,6 +329,16 @@ int tcp_state(int conn_id) {
     return conns[conn_id].active ? conns[conn_id].state : TCP_STATE_CLOSED;
 }
 
+// 1 if tcp_recv() would return immediately (buffered data, or EOF because the
+// connection is closed) — the readiness check behind poll()/select(). A live
+// connection with no buffered data is "not ready" (a read would block).
+int tcp_recv_ready(int conn_id) {
+    if (conn_id < 0 || conn_id >= TCP_MAX_CONNS) return 1;
+    tcp_conn_t* c = &conns[conn_id];
+    if (!c->active) return 1;                       // dead -> a read errors: treat as ready
+    return c->recv_len > 0 || c->state == TCP_STATE_CLOSED;
+}
+
 int tcp_close(int conn_id) {
     if (conn_id < 0 || conn_id >= TCP_MAX_CONNS) return -1;
     tcp_conn_t* conn = &conns[conn_id];

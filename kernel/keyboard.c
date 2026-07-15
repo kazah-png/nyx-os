@@ -214,6 +214,15 @@ static inline char kbd_poll_direct(void) {
     return 0;
 }
 
+// poll(): 1 if getchar_poll() would return a byte now (a buffered key, an i8042
+// scancode, or serial input) without consuming it — for stdin (fd 0) readiness.
+int keyboard_has_input(void) {
+    if (kbd_tail != kbd_head) return 1;      // software ring has a key
+    if (inb(0x64) & 0x01) return 1;          // i8042 output buffer full (scancode waiting)
+    if (inb(0x3FD) & 0x01) return 1;         // COM1 LSR bit 0: serial input available
+    return 0;
+}
+
 char getchar_poll(void) {
     if (kbd_tail != kbd_head) {
         char c = kbd_buffer[kbd_tail];
