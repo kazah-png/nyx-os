@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.8.54"
+#define KERNEL_VERSION "5.8.55"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -112,6 +112,8 @@ typedef __builtin_va_list va_list;
 #define SYS_BIND     36
 #define SYS_LISTEN   37
 #define SYS_ACCEPT   38
+#define SYS_SENDTO   39
+#define SYS_RECVFROM 40
 
 /* SYS_TTYMODE modes. Canonical: read(0) returns a full line, echoed + backspace-
  * edited by the kernel. Raw: read(0) returns bytes as they arrive, NO echo, and
@@ -936,6 +938,9 @@ int nsock_listen(int s, int backlog);                   // passive open on the b
 int nsock_accept(int s);                                // blocks; new socket id for the peer
 int nsock_send(int s, const void* buf, int len);
 int nsock_recv(int s, void* buf, int len);              // blocks until data or EOF
+int nsock_sendto(int s, const void* buf, int len, uint32_t ip, uint16_t port);     // UDP
+int nsock_recvfrom(int s, void* buf, int len, uint32_t* src_ip, uint16_t* src_port); // UDP, blocks
+int nsock_udp_deliver(uint16_t dst_port, uint8_t* data, uint32_t len, uint32_t src_ip, uint16_t src_port);
 int nsock_close(int s);
 void tcp_echo_init(void);   // start the loopback TCP echo service (port 7)
 void tcp_echo_poll(void);   // drive it from the net poll loop

@@ -3,18 +3,34 @@
 
 extern net_iface_t net_interfaces[8];
 
-// Userspace TCP sockets. A socket is a thin handle over a tcp.c connection; the
+// Userspace sockets. A socket is a thin handle over the tcp.c/udp.c stack; the
 // process fd table (syscall.c) stores UFD_SOCK_MAKE(id) and routes read/write/
-// close here. SOCK_STREAM (TCP) only for now — SOCK_DGRAM/UDP is future work.
+// close (TCP) or sendto/recvfrom (UDP) here. SOCK_STREAM = TCP, SOCK_DGRAM = UDP.
 #define MAX_SOCKETS 32
 #define SOCK_STREAM 1
+#define SOCK_DGRAM  2
+
+// A UDP socket buffers received datagrams (with their source) in a small ring;
+// inbound datagrams arrive via udp_handle_packet -> nsock_udp_deliver, and
+// recvfrom dequeues. The ring is kmalloc'd per DGRAM socket so the nsock table
+// stays small (a datagram entry is ~1.5 KB).
+#define UDP_DGRAM_MAX 1472       // max payload (Ethernet MTU - IP(20) - UDP(8))
+#define UDP_QUEUE     4          // datagrams buffered per socket
+typedef struct {
+    uint32_t src_ip;
+    uint16_t src_port;
+    uint16_t len;
+    uint8_t  data[UDP_DGRAM_MAX];
+} dgram_t;
 
 typedef struct {
     int in_use;
-    int type;
-    int tcp_conn;        // connected/accepted conn id, the LISTEN conn id, or -1
-    uint16_t local_port; // set by bind()
-    int listening;       // 1 once listen() put it into passive-open
+    int type;            // SOCK_STREAM (TCP) or SOCK_DGRAM (UDP)
+    int tcp_conn;        // TCP: connected/accepted conn id, LISTEN conn id, or -1
+    uint16_t local_port; // bind()'s port (or an ephemeral auto-bind on first sendto)
+    int listening;       // TCP: 1 once listen() put it into passive-open
+    dgram_t* dq;         // UDP: receive ring (UDP_QUEUE entries), else NULL
+    int dq_head, dq_tail;
 } nsock_t;
 
 static nsock_t nsocks[MAX_SOCKETS];
@@ -76,12 +92,20 @@ static int nsock_valid(int s) {
 
 int nsock_create(int domain, int type, int protocol) {
     (void)domain; (void)protocol;
-    if (type != SOCK_STREAM) return -1;           // TCP (SOCK_STREAM) only for now
+    if (type != SOCK_STREAM && type != SOCK_DGRAM) return -1;
     for (int i = 0; i < MAX_SOCKETS; i++) {
         if (!nsocks[i].in_use) {
-            nsocks[i].in_use = 1;
             nsocks[i].type = type;
             nsocks[i].tcp_conn = -1;
+            nsocks[i].local_port = 0;
+            nsocks[i].listening = 0;
+            nsocks[i].dq = NULL;
+            nsocks[i].dq_head = nsocks[i].dq_tail = 0;
+            if (type == SOCK_DGRAM) {
+                nsocks[i].dq = (dgram_t*)kmalloc(sizeof(dgram_t) * UDP_QUEUE);
+                if (!nsocks[i].dq) return -1;     // leave the slot free
+            }
+            nsocks[i].in_use = 1;                 // last, so a kmalloc fail leaves it free
             return i;
         }
     }
@@ -89,7 +113,7 @@ int nsock_create(int domain, int type, int protocol) {
 }
 
 int nsock_connect(int s, uint32_t ip, uint16_t port) {
-    if (!nsock_valid(s)) return -1;
+    if (!nsock_valid(s) || nsocks[s].type != SOCK_STREAM) return -1;   // TCP only
     static uint16_t ephemeral = 40000;            // client source-port pool
     uint16_t sport = ephemeral++;
     if (ephemeral >= 60000) ephemeral = 40000;
@@ -175,9 +199,66 @@ int nsock_recv(int s, void* buf, int len) {
     return 0;                                     // timed out -> treat as EOF
 }
 
+// ---- UDP (SOCK_DGRAM) socket layer ------------------------------------------
+
+int nsock_sendto(int s, const void* buf, int len, uint32_t ip, uint16_t port) {
+    if (!nsock_valid(s) || nsocks[s].type != SOCK_DGRAM || len < 0) return -1;
+    if (nsocks[s].local_port == 0) {              // auto-bind an ephemeral source port
+        static uint16_t eph = 48000;
+        nsocks[s].local_port = eph++;
+        if (eph >= 60000) eph = 48000;
+    }
+    int r = udp_send(ip, port, nsocks[s].local_port, (const uint8_t*)buf, (uint32_t)len, -1);
+    return (r < 0) ? -1 : len;                    // report payload bytes, not on-wire length
+}
+
+int nsock_recvfrom(int s, void* buf, int len, uint32_t* src_ip, uint16_t* src_port) {
+    if (!nsock_valid(s) || nsocks[s].type != SOCK_DGRAM || !nsocks[s].dq || len <= 0) return -1;
+    // Block (busy-poll) until a datagram is queued, or a timeout. Datagrams are
+    // enqueued by nsock_udp_deliver from the receive path during these polls.
+    for (int i = 0; i < 6000; i++) {
+        if (nsocks[s].dq_head != nsocks[s].dq_tail) {
+            dgram_t* d = &nsocks[s].dq[nsocks[s].dq_tail];
+            int n = (int)d->len < len ? (int)d->len : len;
+            memcpy(buf, d->data, n);
+            if (src_ip)   *src_ip   = d->src_ip;
+            if (src_port) *src_port = d->src_port;
+            nsocks[s].dq_tail = (nsocks[s].dq_tail + 1) % UDP_QUEUE;
+            return n;
+        }
+        kernel_poll_net();
+        for (volatile int d = 0; d < 1500; d++) inb(0x80);
+    }
+    return -1;                                     // timed out, no datagram
+}
+
+// Called from udp_handle_packet: enqueue an inbound datagram to the DGRAM socket
+// bound to dst_port, if any. Returns 1 if a socket claimed this port (delivered,
+// or dropped-because-full), 0 if none (so the caller falls back to kernel
+// listeners like dhcp/dns).
+int nsock_udp_deliver(uint16_t dst_port, uint8_t* data, uint32_t len,
+                      uint32_t src_ip, uint16_t src_port) {
+    for (int i = 0; i < MAX_SOCKETS; i++) {
+        if (!nsocks[i].in_use || nsocks[i].type != SOCK_DGRAM || !nsocks[i].dq) continue;
+        if (nsocks[i].local_port != dst_port) continue;
+        int next = (nsocks[i].dq_head + 1) % UDP_QUEUE;
+        if (next == nsocks[i].dq_tail) return 1;  // ring full -> drop (still ours)
+        dgram_t* d = &nsocks[i].dq[nsocks[i].dq_head];
+        uint32_t n = len > UDP_DGRAM_MAX ? UDP_DGRAM_MAX : len;
+        memcpy(d->data, data, n);
+        d->len = (uint16_t)n;
+        d->src_ip = src_ip;
+        d->src_port = src_port;
+        nsocks[i].dq_head = next;
+        return 1;
+    }
+    return 0;
+}
+
 int nsock_close(int s) {
     if (!nsock_valid(s)) return -1;
     if (nsocks[s].tcp_conn >= 0) tcp_close(nsocks[s].tcp_conn);
+    if (nsocks[s].dq) { kfree(nsocks[s].dq); nsocks[s].dq = NULL; }   // UDP receive ring
     nsocks[s].in_use = 0;
     nsocks[s].tcp_conn = -1;
     return 0;

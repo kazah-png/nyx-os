@@ -40,6 +40,8 @@
 #define SYS_BIND     36
 #define SYS_LISTEN   37
 #define SYS_ACCEPT   38
+#define SYS_SENDTO   39
+#define SYS_RECVFROM 40
 
 #define TTY_CANON   0   /* kernel line discipline: echoed, backspace-edited lines */
 #define TTY_RAW     1   /* byte-at-a-time, no echo, arrows as ESC [ A/B/C/D */
@@ -420,6 +422,24 @@ static inline long listen(int fd, int backlog) {
 }
 static inline long accept(int fd) {
     return syscall1(SYS_ACCEPT, fd);
+}
+
+/* --- UDP datagrams (SOCK_DGRAM) -------------------------------------------- */
+/* sendto(fd, buf, len, flags, ip, port): send a UDP datagram to ip:port (ip from
+ * inet_ipv4(), port host order; flags ignored). Returns bytes sent, or -1. The
+ * socket auto-binds an ephemeral source port on the first send if not bind()'d. */
+static inline long sendto(int fd, const void* buf, long len, int flags,
+                          unsigned int ip, int port) {
+    (void)flags;
+    return syscall6(SYS_SENDTO, fd, (long)buf, len, 0, (long)ip, port);
+}
+/* recvfrom(fd, buf, len, flags, *ip, *port): block for a UDP datagram; on success
+ * *ip and *port (each may be NULL) receive the sender's network-order IP and
+ * host-order port. Returns the datagram length (truncated to len), or -1. */
+static inline long recvfrom(int fd, void* buf, long len, int flags,
+                            unsigned int* ip, int* port) {
+    (void)flags;
+    return syscall6(SYS_RECVFROM, fd, (long)buf, len, 0, (long)ip, (long)port);
 }
 
 #endif

@@ -609,6 +609,41 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
             if (ufd < 0) { nsock_close(cs); return -1; }    /* fd table full */
             return ufd;
         }
+        case SYS_SENDTO: {
+            /* sendto(fd, buf, len, flags, ip, port): ip is network-order, port host. */
+            int fd = (int)a1, len = (int)a3;
+            if (len < 0 || !user_ptr_ok(a2, (uint64_t)len)) return -1;
+            int internal;
+            if (ufd_lookup(fd, &internal) != 0 || !(internal & UFD_SOCK_FLAG)) return -1;
+            if (len > 4096) len = 4096;
+            char* sbuf = (char*)kmalloc(len);
+            if (!sbuf) return -1;
+            int n = (copy_from_user(sbuf, a2, len) == 0)
+                        ? nsock_sendto(UFD_SOCK_ID(internal), sbuf, len,
+                                       (uint32_t)a5, (uint16_t)a6) : -1;
+            kfree(sbuf);
+            return n;
+        }
+        case SYS_RECVFROM: {
+            /* recvfrom(fd, buf, len, flags, uint*ip, int*port): blocks for a datagram;
+             * writes the sender's IP (4 bytes @a5) and port (4-byte int @a6) if given. */
+            int fd = (int)a1, len = (int)a3;
+            if (len < 0 || !user_ptr_ok(a2, (uint64_t)len)) return -1;
+            int internal;
+            if (ufd_lookup(fd, &internal) != 0 || !(internal & UFD_SOCK_FLAG)) return -1;
+            if (len > 4096) len = 4096;
+            char* rbuf = (char*)kmalloc(len);
+            if (!rbuf) return -1;
+            uint32_t src_ip = 0; uint16_t src_port = 0;
+            int n = nsock_recvfrom(UFD_SOCK_ID(internal), rbuf, len, &src_ip, &src_port);
+            if (n > 0 && copy_to_user(a2, rbuf, n) != 0) n = -1;
+            kfree(rbuf);
+            if (n > 0) {
+                if (a5 && user_ptr_ok(a5, 4)) copy_to_user(a5, &src_ip, 4);
+                if (a6 && user_ptr_ok(a6, 4)) { int p = (int)src_port; copy_to_user(a6, &p, 4); }
+            }
+            return n;
+        }
         case SYS_GETPID: {
             process_t* cur = get_cur_proc();
             return cur ? cur->pid : 0;

@@ -56,7 +56,7 @@ USER_ELFS = $(USER_DIR)/hello.elf $(USER_DIR)/init.elf $(USER_DIR)/spin.elf $(US
             $(USER_DIR)/cp.elf $(USER_DIR)/mv.elf $(USER_DIR)/uname.elf $(USER_DIR)/whoami.elf $(USER_DIR)/which.elf $(USER_DIR)/clear.elf \
             $(USER_DIR)/fault.elf $(USER_DIR)/less.elf $(USER_DIR)/more.elf \
             $(USER_DIR)/pstorm.elf $(USER_DIR)/bigread.elf $(USER_DIR)/segv.elf \
-            $(USER_DIR)/sockdemo.elf $(USER_DIR)/srvdemo.elf
+            $(USER_DIR)/sockdemo.elf $(USER_DIR)/srvdemo.elf $(USER_DIR)/udpdemo.elf
 
 # Flags for Nyx C output (GCC: statement-exprs, __auto_type). -mno-red-zone is mandatory.
 NYXCFLAGS = -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR)
@@ -105,6 +105,12 @@ $(USER_DIR)/sockdemo.o: $(USER_DIR)/sockdemo.c $(USER_DIR)/libc.h $(USER_DIR)/sy
 $(USER_DIR)/srvdemo.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/srvdemo.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/srvdemo.o
 $(USER_DIR)/srvdemo.o: $(USER_DIR)/srvdemo.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
+	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+
+# Userspace UDP sockets demo (SOCK_DGRAM sendto/recvfrom over loopback).
+$(USER_DIR)/udpdemo.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/udpdemo.o
+	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/udpdemo.o
+$(USER_DIR)/udpdemo.o: $(USER_DIR)/udpdemo.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
 	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
 # The pager. less.elf and more.elf are the same program (full-screen pager).

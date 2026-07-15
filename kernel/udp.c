@@ -77,6 +77,9 @@ void udp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip) {
     uint16_t src_port = ntohs(udp->src_port);
     uint8_t* payload = packet + sizeof(udp_header_t);
     uint32_t payload_len = len - sizeof(udp_header_t);
+    // A userspace UDP socket bound to this port gets the datagram first; only if
+    // none claims the port do we fall back to the kernel listeners (dhcp/dns).
+    if (nsock_udp_deliver(dst_port, payload, payload_len, src_ip, src_port)) return;
     for (int i = 0; i < 16; i++) {
         if (udp_listeners[i].active && udp_listeners[i].port == dst_port) {
             udp_listeners[i].handler(payload, payload_len, src_ip, src_port);
