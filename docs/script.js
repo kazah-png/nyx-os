@@ -109,28 +109,36 @@
         '    <span class="m">.:oo.. :o.</span>              <span class="p">-----------------</span>',
         '  <span class="m">:oo:.oo.o:</span>                <span class="k">OS:</span>         NyxOS x86_64',
         ' <span class="m">.#o:.   :.</span>                 <span class="k">Host:</span>       QEMU Standard PC',
-        ' <span class="m">#:::....:</span>                  <span class="k">Kernel:</span>     NyxOS 5.8.26 (GUI Suite)',
+        ' <span class="m">#:::....:</span>                  <span class="k">Kernel:</span>     NyxOS 5.8.61 (Full Suite)',
         '<span class="m">o#::. . o.</span>                  <span class="k">Uptime:</span>     00:00:11',
         '<span class="m">o#.o:   :o</span>                  <span class="k">Resolution:</span> 1024 x 768',
         '<span class="m">o###o   o#</span>                  <span class="k">CPU:</span>        QEMU Virtual CPU version 2.5+ (1)',
         '<span class="m">:#oo::  .oo.</span>                <span class="k">Memory:</span>     255 / 255 MiB (0%)',
-        ' <span class="m">o#o:o..  :o:.</span>              <span class="k">Processes:</span>  4',
-        '  <span class="m">o#ooo::.:::#::        .:.</span> <span class="k">Disk:</span>       Not mounted',
-        '  <span class="m">.:o#oo::.: ..:oo::.o:#o.</span>  <span class="k">Network:</span>    127.0.0.1',
+        ' <span class="m">o#o:o..  :o:.</span>              <span class="k">Processes:</span>  5',
+        '  <span class="m">o#ooo::.:::#::        .:.</span> <span class="k">Disk:</span>       16M EXT2 at /mnt',
+        '  <span class="m">.:o#oo::.: ..:oo::.o:#o.</span>  <span class="k">Network:</span>    10.0.2.15 (DHCP)',
         '     <span class="m">:o#####:#::o:.::o:</span>     <span class="k">Shell:</span>      NyxOS Terminal',
-        '        <span class="m">.::oo####::.</span>        <span class="k">Time:</span>       2026-07-11 18:00:12',
+        '        <span class="m">.::oo####::.</span>        <span class="k">Time:</span>       2026-07-16 18:00:12',
         ''
       ]},
-      { type: "cmd", text: "ping 127.0.0.1" },
+      { type: "cmd", text: "poll() demo" },
       { type: "out", lines: [
-        '64 bytes from 127.0.0.1: icmp_seq=1 ttl=64 <span class="k">time=0 ms</span>',
-        '<span class="p">4 packets transmitted, 4 received, 0% loss</span>',
+        'pipe readable &rarr; <span class="v">"from the pipe"</span>',
+        'socket readable &rarr; <span class="v">"from the socket"</span>',
+        'poll &rarr; 0 (timeout)',
+        '<span class="p">OK</span>',
         ''
       ]},
-      { type: "cmd", text: "tcpserve 80" },
+      { type: "cmd", text: "echo TCPNCOK | nc 127.0.0.1 7" },
       { type: "out", lines: [
-        'Accepted a connection. <span class="v">GET / HTTP/1.1</span>',
-        '&rarr; <span class="k">HTTP/1.1 200 OK</span> · Hello from NyxOS TCP!',
+        '<span class="k">TCPNCOK</span>',
+        ''
+      ]},
+      { type: "cmd", text: "exec /alarmdemo.elf" },
+      { type: "out", lines: [
+        'previous alarm had ~5s left',
+        '<span class="v">SIGALRM delivered!</span>',
+        'alarm()/SIGALRM works!',
         ''
       ]}
     ];

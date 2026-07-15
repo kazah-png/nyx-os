@@ -6,10 +6,10 @@
   <strong>Custom x86_64 kernel · C and Assembly · General-purpose OS</strong>
   <br/><br/>
   <!-- Badges -->
-  <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.8.61">
-    <img src="https://img.shields.io/badge/release-v5.8.61-00ff9d?style=flat" />
+  <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.8.62">
+    <img src="https://img.shields.io/badge/release-v5.8.62-00ff9d?style=flat" />
   </a>
-  <img src="https://img.shields.io/badge/status-v5.8.61-00ff9d?style=flat" />
+  <img src="https://img.shields.io/badge/status-v5.8.62-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/TCP-yes-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/GUI-window%20compositor-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/%F0%9F%8C%99%20NyxC-runtime-8b5cf6?style=flat" />
@@ -38,16 +38,16 @@ nyx:root$ nyxfetch
     .:oo.. :o.              -----------------
   :oo:.oo.o:                OS:         NyxOS x86_64
  .#o:.   :.                 Host:       QEMU Standard PC
- #:::....:                  Kernel:     NyxOS 5.8.61 (GUI Suite)
+ #:::....:                  Kernel:     NyxOS 5.8.62 (Full Suite)
 o#::. . o.                  Uptime:     00:00:11
 o#.o:   :o                  Resolution: 1024 x 768
 o###o   o#                  CPU:        QEMU Virtual CPU version 2.5+ (1)
 :#oo::  .oo.                Memory:     255 / 255 MiB (0%)
- o#o:o..  :o:.              Processes:  4
-  o#ooo::.:::#::        .:. Disk:       Not mounted
-  .:o#oo::.: ..:oo::.o:#o.  Network:    127.0.0.1
+ o#o:o..  :o:.              Processes:  5
+  o#ooo::.:::#::        .:. Disk:       16M EXT2 at /mnt
+  .:o#oo::.: ..:oo::.o:#o.  Network:    10.0.2.15 (DHCP)
      :o#####:#::o:.::o:     Shell:      NyxOS Terminal
-        .::oo####::.        Time:       2026-07-11 18:00:12
+        .::oo####::.        Time:       2026-07-16 18:00:12
 ```
 
 ---
@@ -56,10 +56,10 @@ o###o   o#                  CPU:        QEMU Virtual CPU version 2.5+ (1)
 
 **NyxOS** is a from-scratch x86_64 kernel built as a general-purpose OS for low-level systems programming. It boots via Multiboot (GRUB-compatible), runs in long mode with 4-level paging, and provides a clean foundation for kernel development.
 
-The project implements core kernel primitives, a custom network stack (RTL8139 NIC + ARP/IP/UDP/ICMP/DHCP + TCP), a window compositor GUI, and a Sound Blaster 16 audio driver — all written in C and x86_64 Assembly with no external libraries.
+The project implements core kernel primitives, a custom network stack (RTL8139 NIC + ARP/IP/UDP/ICMP/DHCP + TCP with retransmission and passive open), userspace TCP/UDP sockets with `poll()` I/O multiplexing, a window compositor GUI, and a Sound Blaster 16 audio driver — all written in C and x86_64 Assembly with no external libraries.
 
 <div align="center">
-  <img src="gui.png?v=3" alt="NyxOS Desktop v5.8.61" width="700" />
+  <img src="gui.png?v=3" alt="NyxOS Desktop v5.8.62" width="700" />
   <p><em>NyxOS Desktop — app icons, purple wallpaper, windows and a taskbar</em></p>
 </div>
 
@@ -176,7 +176,7 @@ nyx:root$ ls /
 bin/   dev/   etc/   home/  mnt/   root/  tmp/   usr/   var/
 
 nyx:root$ uname
-NyxOS 5.8.61 (GUI Suite) x86_64
+NyxOS 5.8.62 (Full Suite) x86_64
 
 nyx:root$ mem
 Physical memory: 256 MB total, 252 MB free
@@ -262,9 +262,13 @@ Done.
 - **ELF64 loader** — validates, parses PT_LOAD segments, maps pages per-process
 - **Initramfs** — embedded cpio archive with ELF64 binaries (init.elf, hello.elf)
 - **44 syscalls** via `syscall`/`sysret`: `exit`, `write`, `print`, `open`, `read`, `close`, `getpid`, `sbrk`, `fsize`, `exec`, `fork`, `waitpid`, `pipe`, `execve`, `dup2`, `getdents`, `kill`, `signal`, `sigreturn`, `mmap`, `munmap`, `chdir`, `getcwd`, `mkdir`, `unlink`, `ttymode`, `mprotect`, `getprocs`, `readkey`, `dlopen`, `dlsym`, `time`, `sleep`, `setfg`, `socket`, `connect`, `bind`, `listen`, `accept`, `sendto`, `recvfrom`, `sigprocmask`, `alarm`, `poll`
-- **C runtime** — minimal libc with `printf`, `sprintf`, `snprintf`, `malloc`, `free`, string/memory functions
+- **Signals** — `SIGSEGV`/`SIGFPE`/`SIGILL` catchable from ring 3 via `signal(SIG, handler)` + `siglongjmp` for multi-fault recovery; `SIGALRM` via `alarm()` with timer-driven delivery; Ctrl-C sends `SIGINT`; `kill` from userspace
+- **C runtime** — minimal libc with `printf`, `sprintf`, `snprintf`, `malloc`, `free`, string/memory functions, plus `sigsetjmp`/`siglongjmp`, `poll()`, `alarm()`, `netdb.h`
+- **Shared ELF libc** — one copy of libc mapped RO/shared into every process at 0x30000000, private `.bss` per process; ELFs link via `--just-symbols` (~35% smaller binaries)
+- **Runtime `dlopen`/`dlsym`** — load prelinked `.so` at runtime, resolve symbols by name
 - **Auto-boot init** — kernel loads and executes `/init.elf` from initramfs at startup
 - **Ring 3 execution** — user processes run in ring 3, I/O ports denied via TSS I/O map base
+- **Per-process file descriptors** — ufd table in `process_t`, isolated + closed on reap
 - **sbrk heap** — per-process heap via page allocation in user page directory
 
 ### Shell & commands
@@ -274,11 +278,12 @@ Built-in command interpreter with **40+ commands**:
 |----------|----------|
 | **System** | `help`, `clear`, `nyxfetch`, `uname`, `date`, `version`, `reboot`, `crash` |
 | **Files** | `ls`, `cd`, `pwd`, `cat`, `touch`, `mkdir`, `rm`, `cp`, `mv`, `head`, `tail`, `grep`, `sort`, `wc`, `find`, `tree`, `write`, `which`, `diff` |
-| **Process** | `ps`, `kill`, `mem`, `exec` |
-| **Network** | `ifconfig`, `dhcp`, `ping`, `setip`, `tcptest` |
-| **Graphics** | `mode`, `gui`, `fonttest`, `desktop` |
+| **Process** | `ps`, `kill`, `mem`, `exec`, `spawn`, `jobs`, `wait`, `nice`, `renice`, `pmap`, `free`, `usertest` |
+| **Network** | `ifconfig`, `dhcp`, `ping`, `setip`, `httpget`, `tcptest`, `tcpdrop`, `tcploop`, `tcpserve`, `nc` |
+| **Graphics** | `mode`, `gui`, `fonttest`, `desktop`, `wallpaper` |
 | **Sound** | `beep`, `play`, `sb16play` |
-| **Misc** | `echo`, `env`, `export`, `history`, `hexdump`, `layout`, `doom` |
+| **Files** | `df`, `mount` |
+| **Misc** | `echo`, `env`, `export`, `history`, `hexdump`, `layout`, `doom`, `cpus` |
 
 **Shell features:**
 - Tab completion for command names
@@ -292,11 +297,13 @@ Built-in command interpreter with **40+ commands**:
 ### Network stack (real)
 - **RTL8139 NIC driver** — PCI detection, I/O BAR, MMIO, TX/RX ring buffers, link detection, CONFIG1 fix
 - **ARP** — Cache with request/reply, static entries, periodic cleanup
-- **IPv4** — Send/receive with header checksum, local delivery
-- **UDP** — Raw datagram send, port-based listener registration
-- **ICMP** — Echo request/reply (ping)
+- **IPv4** — Send/receive with header checksum, local delivery + loopback
+- **ICMP** — Echo request/reply (ping) with RTT stats, loss %, and loopback support
 - **DHCP** — Full client (DISCOVER → OFFER → REQUEST → ACK), auto-configures IP/netmask/gateway
-- **TCP** — Full connection state machine (CLOSED, SYN_SENT, ESTABLISHED, FIN_WAIT, CLOSE_WAIT, TIME_WAIT), 8 concurrent connections, HTTP GET support
+- **UDP** — Raw datagram send/receive with port-based listener registration; userspace `sendto()`/`recvfrom()` via SOCK_DGRAM sockets
+- **TCP** — Full connection state machine (CLOSED, SYN_SENT, ESTABLISHED, FIN_WAIT, CLOSE_WAIT, TIME_WAIT), 8 concurrent connections, passive open (`listen`/`accept`), retransmission with exponential backoff (RTO), cumulative ACK processing, HTTP GET, loopback TCP
+- **Userspace sockets** — `socket()`, `connect()`, `bind()`, `listen()`, `accept()`, `sendto()`, `recvfrom()`, `read()`, `write()`, `close()` from ring 3; built-in TCP echo service on port 7; `nc` (netcat) for full-duplex TCP/UDP clients and TCP server (`-l`)
+- **I/O multiplexing** — `poll()` over sockets, pipes, and stdin (POLLIN/POLLOUT, timeout, -EINTR)
 - **Interface** — `ifconfig` for status, static IP via `setip` or DHCP-assigned
 
 ### GUI subsystem (v2.2.0+)
@@ -310,8 +317,9 @@ Built-in command interpreter with **40+ commands**:
 - **Window compositor** — 32 windows, z-ordering, title bars (min/max/close), drag-to-move, resize, 4 workspaces
 - **Taskbar** — Running app buttons, Start menu (12 items), clock display
 - **Desktop icons** — Files, Terminal, DOOM, Settings, About, Paint
-- **Terminal emulator window** — 2000-line scrollback, Tab completion, full command execution
-- **File Manager window** — VFS directory browsing, click navigation, file preview
+- **GUI applications** — Text Editor (file open/save, cursor nav, click-to-position), Image Viewer (test pattern, zoom/pan), Sound Test (PC Speaker + SB16 sine/square/sweep), Settings (color theme picker), Wallpaper (color swatches for desktop background)
+- **Terminal emulator window** — 2000-line scrollback, Tab completion, full command execution, scrollbar + PgUp/PgDn/wheel navigation
+- **File Manager window** — VFS directory browsing, click navigation, file preview, copy/paste, drag-and-drop into folders
 - **GUI paint demo** — 6-color mouse-driven drawing with Bresenham lines
 - **PC speaker** — PIT channel 2 tone generation, musical note definitions
 
