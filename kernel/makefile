@@ -26,7 +26,7 @@ OBJS_KERNEL = boot.o kernel.o gdt.o idt.o isr.o isr_stubs.o irq.o \
         serial.o umoddi3.o paging.o switch.o stubs.o dhcp.o \
         vbe.o fb.o mouse.o gui.o font.o compositor.o speaker.o tcp.o \
         sb16.o terminal_win.o fileman_win.o paint_win.o taskman_win.o \
-        editor_win.o imageview_win.o soundtest_win.o calc_win.o wallpaper_win.o \
+        editor_win.o imageview_win.o soundtest_win.o calc_win.o wallpaper_win.o minesweeper_win.o \
         elf.o initramfs.o rtc.o apic.o dns.o http.o smp.o trampoline.o bootsplash.o auth.o login.o sha256.o shared_libc.o
 
 OBJS = $(OBJS_KERNEL)

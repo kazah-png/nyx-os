@@ -9,6 +9,7 @@
 #include "imageview_win.h"
 #include "soundtest_win.h"
 #include "calc_win.h"
+#include "minesweeper_win.h"
 #include "wallpaper_win.h"
 #include "rtc.h"
 #include "login.h"
@@ -333,8 +334,9 @@ static void draw_start_menu(void) {
         "File Manager", "Text Editor", "Image Viewer", "Terminal",
         "Settings", "Task Manager", "Desktop Demo",
         "Paint", "Sound Test", "About", "Shutdown", "Calculator",
+        "Minesweeper",
     };
-    for (int i = 0; i < 12; i++) {
+    for (int i = 0; i < 13; i++) {
         int iy = sm_y + 28 + i * 28;
         if ((uint32_t)(iy + 28) > fh - TASKBAR_H) break;
         fb_fill_rect(sm_x + 4, iy, START_W - 8, 26, fb_rgb(45,45,50));
@@ -744,6 +746,19 @@ static void do_start_menu_action(int idx) {
                 }
             }
             break;
+        case 12: // Minesweeper
+            {
+                window_t* mwin = window_create(320, 180, MS_WIN_W, MS_WIN_H,
+                                               "Minesweeper", minesweeper_win_draw);
+                if (mwin) {
+                    mwin->reserved = minesweeper_create_ctx();
+                    if (mwin->reserved) {
+                        mwin->on_click = minesweeper_win_click;
+                        mwin->on_key = minesweeper_win_key;
+                    }
+                }
+            }
+            break;
     }
     redraw_all();
 }
@@ -1063,13 +1078,13 @@ static void settings_win_click(window_t* win, int mx, int my, int btn) {
     }
 }
 
-#define NUM_DESKTOP_ICONS 8
+#define NUM_DESKTOP_ICONS 9
 #define ICON_SIZE 64
 #define ICON_PAD 12
 static const char* desktop_icon_names[] = {
-    "Files", "Terminal", "Editor", "Viewer", "Settings", "Paint", "Sounds", "Calc"
+    "Files", "Terminal", "Editor", "Viewer", "Settings", "Paint", "Sounds", "Calc", "Mines"
 };
-static int desktop_icon_actions[] = {0, 3, 1, 2, 4, 7, 8, 11};
+static int desktop_icon_actions[] = {0, 3, 1, 2, 4, 7, 8, 11, 12};
 static int desktop_icon_x[NUM_DESKTOP_ICONS];
 static int desktop_icon_y[NUM_DESKTOP_ICONS];
 
@@ -1283,6 +1298,16 @@ void compositor_run(void) {
                 if (windows[i] && windows[i]->visible && windows[i]->state != WSTATE_MINIMIZED
                     && windows[i]->workspace == current_workspace)
                     sorted_win[nw++] = windows[i];
+            // Order topmost-first (descending z-order), like the left-click path, so
+            // an overlapped right-click is routed to the window on top instead of
+            // whichever one happens to sit earliest in the array. Without this a
+            // right-click (e.g. flagging in Minesweeper, or the File Manager context
+            // menu) leaks to a lower window when the two overlap.
+            for (int i = 0; i < nw; i++)
+                for (int j = i + 1; j < nw; j++)
+                    if (sorted_win[i]->z_order < sorted_win[j]->z_order) {
+                        window_t* t = sorted_win[i]; sorted_win[i] = sorted_win[j]; sorted_win[j] = t;
+                    }
             for (int i = 0; i < nw; i++)
                 if (window_hit(sorted_win[i], mx, my)) { on_desktop = 0; break; }
             if (on_desktop) {
