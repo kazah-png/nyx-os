@@ -524,6 +524,7 @@ See the full **[NyxOS Status Report](https://github.com/kazah-png/nyx-os/issues/
 | **Main Developer** | [@kazah-png](https://github.com/kazah-png) |
 | **Bug Finder** | [@Voliox86](https://github.com/Voliox86) |
 | **Art & Design** | [@kurawi-debug](https://github.com/kurawi-debug) |
+| **Junior Dev** | [@0plimplim0](https://github.com/0plimplim0) |
 
 ---
 
