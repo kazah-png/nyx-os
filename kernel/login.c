@@ -139,8 +139,10 @@ static void draw_panel(int px, int py, int mode, int field, int avatar,
         if (field == 2)
             font_draw_string(px + 20, py + 250, "Press 1-4 to pick, Enter to create.", fb_rgb(150, 200, 150), bg);
     } else {
-        font_draw_string(px + 20, py + 160, "Log in, or press TAB to create your own account.",
-                         fb_rgb(150, 150, 180), bg);
+        // Centered and short enough to stay inside the box (a longer, left-aligned
+        // line overflowed the right edge and left artifacts when toggling modes).
+        const char* h = "New here? Press TAB to create an account.";
+        font_draw_string(px + (BOX_W - (int)strlen(h) * 8) / 2, py + 160, h, fb_rgb(150, 150, 180), bg);
     }
 
     if (msg && msg[0])
@@ -254,16 +256,21 @@ int login_screen(void) {
 
         attempts++;
         serial_puts("[LOGIN] FAIL.\n");
-        // Brute-force defence: lock out after LOGIN_MAX_ATTEMPTS, throttle between.
+        // Brute-force defence: escalate the delay, and after LOGIN_MAX_ATTEMPTS
+        // impose a longer cooldown — but NEVER reboot. Returning 0 here made the
+        // caller reboot, which under `-no-reboot` just closes the VM (and a user
+        // fumbling the new sign-up could trip it). The login stays up instead, so
+        // they can retry or press TAB to create an account.
         if (attempts >= LOGIN_MAX_ATTEMPTS) {
-            msg = "Too many attempts - locked";
+            msg = "Too many attempts - locked briefly";
             draw_panel(px, py, mode, 0, avatar, "", "", msg);
-            serial_puts("[LOGIN] LOCKED.\n");
-            for (volatile long i = 0; i < 60000000L; i++);
-            return 0;
+            serial_puts("[LOGIN] LOCKED (cooldown).\n");
+            for (volatile long i = 0; i < 150000000L; i++);   // cooldown, then reset
+            attempts = 0;
+            msg = "You can try again, or press TAB to sign up";
+            continue;
         }
-        msg = (attempts == 1) ? "Invalid credentials (1/3)" :
-              (attempts == 2) ? "Invalid credentials (2/3)" : "Invalid credentials";
+        msg = (attempts == 1) ? "Invalid credentials (1/3)" : "Invalid credentials (2/3)";
         for (volatile long i = 0; i < 25000000L * attempts; i++);   // graduated throttle
     }
 }
