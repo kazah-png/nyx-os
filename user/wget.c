@@ -20,8 +20,35 @@
  */
 
 #define RESP_MAX 65536
+#define MAX_REDIRECTS 5
 
 static void es(const char* s) { write(2, s, strlen(s)); }   /* stderr string */
+
+/* Scan an HTTP header block [h, h+len) for a "Location:" line (case-insensitive)
+ * and copy its value into out. Returns 1 if found. */
+static int find_location(const char* h, int len, char* out, int outsz) {
+    int i = 0;
+    while (i < len) {
+        const char* key = "location:";
+        int j = i, k = 0;
+        while (key[k] && j < len) {
+            char c = h[j];
+            if (c >= 'A' && c <= 'Z') c += 32;
+            if (c != key[k]) break;
+            k++; j++;
+        }
+        if (!key[k]) {
+            while (j < len && (h[j] == ' ' || h[j] == '\t')) j++;
+            int o = 0;
+            while (j < len && h[j] != '\r' && h[j] != '\n' && o < outsz - 1) out[o++] = h[j++];
+            out[o] = '\0';
+            return 1;
+        }
+        while (i < len && h[i] != '\n') i++;   // advance to next line
+        i++;
+    }
+    return 0;
+}
 
 /* Parse a dotted-quad into the kernel's network order (first octet = low byte,
  * as connect()/sendto() expect). Returns 1 on success, 0 if s isn't a.b.c.d. */
@@ -160,60 +187,83 @@ int main(int argc, char** argv) {
         if (np > used && pos[used][0] == '/') { strncpy(path, pos[used], sizeof(path) - 1); path[sizeof(path) - 1] = '\0'; }
     }
 
-    /* Resolve the host (dotted IP → used verbatim; otherwise DNS). */
-    unsigned int ip;
-    if (!parse_ipv4(host, &ip)) {
-        if (!quiet) { es("wget: resolving "); es(host); es(" ...\n"); }
-        if (dns_resolve(host, resolver, rport, &ip) != 0) {
-            es("wget: cannot resolve host: "); es(host); es("\n");
-            return 1;
-        }
-    }
-    if (!quiet) {
-        char m[160];
-        snprintf(m, sizeof(m), "wget: connecting to %d.%d.%d.%d:%d%s\n",
-                 ip & 0xFF, (ip >> 8) & 0xFF, (ip >> 16) & 0xFF, (ip >> 24) & 0xFF, port, path);
-        es(m);
-    }
-
-    int fd = socket(AF_INET, SOCK_STREAM, 0);
-    if (fd < 0) { es("wget: socket() failed\n"); return 1; }
-    if (connect(fd, ip, port) != 0) { es("wget: connection failed\n"); close(fd); return 1; }
-
-    /* Build and send the request. Host header carries the port when non-default. */
-    char hosthdr[160];
-    if (port == 80) snprintf(hosthdr, sizeof(hosthdr), "%s", host);
-    else            snprintf(hosthdr, sizeof(hosthdr), "%s:%d", host, port);
-    char req[512];
-    int rl = snprintf(req, sizeof(req),
-        "GET %s HTTP/1.0\r\nHost: %s\r\nUser-Agent: NyxOS-wget/1.0\r\nConnection: close\r\n\r\n",
-        path, hosthdr);
-    if (write(fd, req, rl) != rl) { es("wget: send failed\n"); close(fd); return 1; }
-
-    /* Read the whole response (Connection: close → the server EOFs when done). */
+    /* Fetch host:port/path, following up to MAX_REDIRECTS 3xx Location redirects.
+     * host/port/path are rewritten in place on each hop. */
     static char resp[RESP_MAX];
-    int total = 0;
-    for (;;) {
-        int n = read(fd, resp + total, RESP_MAX - 1 - total);
-        if (n <= 0) break;
-        total += n;
-        if (total >= RESP_MAX - 1) break;
-    }
-    resp[total] = '\0';
-    close(fd);
-    if (total == 0) { es("wget: empty response\n"); return 1; }
+    int total = 0, status = 0, body_len = 0;
+    char* body = resp;
+    for (int hop = 0; ; hop++) {
+        unsigned int ip;
+        if (!parse_ipv4(host, &ip)) {
+            if (!quiet) { es("wget: resolving "); es(host); es(" ...\n"); }
+            if (dns_resolve(host, resolver, rport, &ip) != 0) {
+                es("wget: cannot resolve host: "); es(host); es("\n");
+                return 1;
+            }
+        }
+        if (!quiet) {
+            char m[200];
+            snprintf(m, sizeof(m), "wget: connecting to %d.%d.%d.%d:%d%s\n",
+                     ip & 0xFF, (ip >> 8) & 0xFF, (ip >> 16) & 0xFF, (ip >> 24) & 0xFF, port, path);
+            es(m);
+        }
 
-    /* Split headers / body at the blank line. */
-    char* sep = strstr(resp, "\r\n\r\n");
-    char* body = sep ? sep + 4 : resp;
-    int body_len = sep ? total - (int)(body - resp) : total;
+        int fd = socket(AF_INET, SOCK_STREAM, 0);
+        if (fd < 0) { es("wget: socket() failed\n"); return 1; }
+        if (connect(fd, ip, port) != 0) { es("wget: connection failed\n"); close(fd); return 1; }
 
-    int status = 0;
-    if (strncmp(resp, "HTTP/", 5) == 0) {
-        char* sp = strchr(resp, ' ');
-        if (sp) status = atoi(sp + 1);
+        char hosthdr[160];
+        if (port == 80) snprintf(hosthdr, sizeof(hosthdr), "%s", host);
+        else            snprintf(hosthdr, sizeof(hosthdr), "%s:%d", host, port);
+        char req[512];
+        int rl = snprintf(req, sizeof(req),
+            "GET %s HTTP/1.0\r\nHost: %s\r\nUser-Agent: NyxOS-wget/1.0\r\nConnection: close\r\n\r\n",
+            path, hosthdr);
+        if (write(fd, req, rl) != rl) { es("wget: send failed\n"); close(fd); return 1; }
+
+        total = 0;
+        for (;;) {
+            int n = read(fd, resp + total, RESP_MAX - 1 - total);
+            if (n <= 0) break;
+            total += n;
+            if (total >= RESP_MAX - 1) break;
+        }
+        resp[total] = '\0';
+        close(fd);
+        if (total == 0) { es("wget: empty response\n"); return 1; }
+
+        char* sep = strstr(resp, "\r\n\r\n");
+        body = sep ? sep + 4 : resp;
+        body_len = sep ? total - (int)(body - resp) : total;
+        status = 0;
+        if (strncmp(resp, "HTTP/", 5) == 0) {
+            char* sp = strchr(resp, ' ');
+            if (sp) status = atoi(sp + 1);
+        }
+        if (show_hdr && sep) { write(2, resp, (int)(sep - resp)); es("\n"); }
+
+        /* 3xx with a Location and hops left → parse the new target and re-fetch. */
+        char loc[256];
+        if (status >= 300 && status < 400 && hop < MAX_REDIRECTS && sep &&
+            find_location(resp, (int)(sep - resp), loc, sizeof(loc))) {
+            if (!quiet) { es("wget: redirect -> "); es(loc); es("\n"); }
+            if (strncmp(loc, "http://", 7) == 0) {          // absolute URL → new host
+                const char* p = loc + 7; int h = 0; port = 80;
+                while (*p && *p != ':' && *p != '/' && h < (int)sizeof(host) - 1) host[h++] = *p++;
+                host[h] = '\0';
+                if (*p == ':') { p++; port = atoi(p); while (*p >= '0' && *p <= '9') p++; }
+                if (*p == '/') { strncpy(path, p, sizeof(path) - 1); path[sizeof(path) - 1] = '\0'; }
+                else           { path[0] = '/'; path[1] = '\0'; }
+            } else if (loc[0] == '/') {                     // root-relative → same host/port
+                strncpy(path, loc, sizeof(path) - 1); path[sizeof(path) - 1] = '\0';
+            } else {                                        // bare relative → treat as /loc
+                char tmp[256]; snprintf(tmp, sizeof(tmp), "/%s", loc);
+                strncpy(path, tmp, sizeof(path) - 1); path[sizeof(path) - 1] = '\0';
+            }
+            continue;
+        }
+        break;
     }
-    if (show_hdr && sep) { write(2, resp, (int)(sep - resp)); es("\n"); }
 
     if (outfile) {
         long of = open(outfile, O_CREAT | O_TRUNC, 0644);

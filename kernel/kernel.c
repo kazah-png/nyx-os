@@ -93,6 +93,7 @@ static void cmd_diff(int argc, char** argv);
 static void cmd_mode(int argc, char** argv);
 static void cmd_gui(int argc, char** argv);
 static void cmd_fonttest(int argc, char** argv);
+static void cmd_open(int argc, char** argv);
 static void cmd_desktop(int argc, char** argv);
 static void cmd_beep(int argc, char** argv);
 static void cmd_play(int argc, char** argv);
@@ -136,6 +137,7 @@ static const command_t commands[] = {
     {"cd",        cmd_cd,        "Change directory: cd <path>", false},
     {"pwd",       cmd_pwd,       "Print working directory", false},
     {"cat",       cmd_cat,       "Display file contents: cat <file>", false},
+    {"open",      cmd_open,      "Open a file in the GUI Text Editor: open <file>", false},
     {"touch",     cmd_touch,     "Create empty file: touch <file>", false},
     {"mkdir",     cmd_mkdir,     "Create directory: mkdir <dir>", false},
     {"rm",        cmd_rm,        "Remove file or directory: rm <path>", false},
@@ -1544,6 +1546,29 @@ static void cmd_cat(int argc, char** argv) {
     if (argc < 2) { printf("Usage: cat <file>\n"); return; }
     vfs_cat_file(argv[1]);
     putchar('\n');
+}
+
+// Open a file in the GUI Text Editor window. Runs on the compositor thread (the
+// kernel shell is dispatched from there), so it may create a window directly via
+// compositor_open_editor. Pairs with `wget -O <file> <url>` for a download-and-read
+// flow. The path is resolved to absolute against the shell's cwd.
+static void cmd_open(int argc, char** argv) {
+    if (argc < 2) { printf("Usage: open <file>\n"); return; }
+    char abs[256];
+    if (argv[1][0] == '/') {
+        strncpy(abs, argv[1], sizeof(abs) - 1); abs[sizeof(abs) - 1] = '\0';
+    } else {
+        const char* cwd = vfs_getcwd();
+        if (strcmp(cwd, "/") == 0) snprintf(abs, sizeof(abs), "/%s", argv[1]);
+        else                       snprintf(abs, sizeof(abs), "%s/%s", cwd, argv[1]);
+    }
+    int fd = vfs_open(abs, 0, 0);          // fail early with a clear message
+    if (fd < 0) { printf("open: cannot open %s\n", abs); return; }
+    vfs_close(fd);
+    if (compositor_open_editor(abs))
+        printf("Opened %s in the editor.\n", abs);
+    else
+        printf("open: could not launch the editor\n");
 }
 
 static void cmd_touch(int argc, char** argv) {
