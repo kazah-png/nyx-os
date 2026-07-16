@@ -12,6 +12,7 @@ CFLAGS = -std=gnu99 -ffreestanding -Os -Wall -Wextra \
          -mno-red-zone -mno-sse -mno-mmx -mno-sse2 \
          -mno-3dnow -mcmodel=large \
          -ffunction-sections -fdata-sections \
+         -MMD -MP \
          -I.
 
 
@@ -31,14 +32,24 @@ OBJS_KERNEL = boot.o kernel.o gdt.o idt.o isr.o isr_stubs.o irq.o \
 
 OBJS = $(OBJS_KERNEL)
 
+# Auto-generated per-object header dependencies (from -MMD): every kernel .o now
+# depends on EVERY header it #includes, so editing e.g. tcp.h's TCP_MAX_CONNS
+# rebuilds tcp.o/net.o. Before this, only kernel.h was a tracked prerequisite, so
+# changing a macro in any other header silently left STALE objects — a bump that
+# "didn't take effect" until an unrelated .c edit forced a recompile (this masked a
+# TCP_MAX_CONNS capacity fix as a phantom "Heisenbug"). `-include` ignores the .d
+# files that don't exist yet (first build) or belong to .asm objects.
+-include $(OBJS_KERNEL:.o=.d)
+
 all: $(USER_ELFS) nyx-kernel.bin
 
 nyx-kernel.bin: $(OBJS)
 	$(LD) $(LDFLAGS) -o $@ $^
 
-# kernel.h carries KERNEL_VERSION and every core type, so make it a prerequisite of
-# every kernel object — otherwise an incremental build after only a version bump
-# leaves stale objects (e.g. /proc/version, nyxfetch showing an old version).
+# Header prerequisites are tracked automatically now (-MMD + the -include above), so
+# a change to ANY included header — kernel.h's KERNEL_VERSION, tcp.h's TCP_MAX_CONNS,
+# … — rebuilds the objects that include it. (kernel.h stays listed as a belt-and-
+# braces prereq for the very first build, before any .d files exist.)
 %.o: %.c kernel.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
@@ -417,4 +428,4 @@ disk: ../ext2-test.img
 .PHONY: disk
 
 clean:
-	rm -f *.o *.bin initramfs_data.h trampoline.bin $(USER_DIR)/*.o $(USER_DIR)/*.elf $(USER_DIR)/hello.o
+	rm -f *.o *.d *.bin initramfs_data.h trampoline.bin $(USER_DIR)/*.o $(USER_DIR)/*.elf $(USER_DIR)/hello.o

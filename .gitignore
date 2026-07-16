@@ -1,5 +1,6 @@
 # === Build artifacts ===
 *.o
+*.d
 *.ko
 *.obj
 *.elf
