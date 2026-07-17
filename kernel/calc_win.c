@@ -163,7 +163,7 @@ void calc_win_click(window_t* win, int mx, int my, int btn) {
 
     int x0 = win->x + CALC_MARGIN;
     int y0 = win->y + CALC_MARGIN;
-    int by_start = y0 + CALC_DISP_H + CALC_GAP;
+    int by_start = y0 + CALC_DISP_H + CALC_GAP + TITLE_H;
 
     for (int i = 0; i < 16; i++) {
         int col = i % CALC_COLS;
