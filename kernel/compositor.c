@@ -1169,6 +1169,7 @@ void compositor_run(void) {
     quit = 0;
     mouse_x = fw / 2; mouse_y = fh / 2;
     mouse_set_pos(mouse_x, mouse_y);
+    uint8_t prev_btns = 0;
 
     draw_welcome_windows();
     redraw_all();
@@ -1513,8 +1514,12 @@ void compositor_run(void) {
                             hit->resize_start_w = hit->w;
                             hit->resize_start_h = hit->h;
                             resize_id = hit->id;
-                        } else if (hit->on_click) {
+                        } else if (hit->on_click && prev_btns != btns) {
                             hit->on_click(hit, mx, my, 1);
+                            redraw = 1;
+                        }
+                        if (hit->on_pressed) {
+                            hit->on_pressed(hit, mx, my, 1);
                             redraw = 1;
                         }
                     }
@@ -1535,6 +1540,7 @@ void compositor_run(void) {
                 redraw = 1;
             }
         }
+        prev_btns = btns;
 
 done_click:
 
