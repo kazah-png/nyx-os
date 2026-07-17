@@ -133,9 +133,9 @@ process_t* create_user_process(const char* name, void* entry, void* user_stack, 
     if (!user_stack) {
         void* stack_page = alloc_page();
         if (!stack_page) { kfree(p); return NULL; }
-        uint64_t stack_virt = 0x00007FFFFFFFE000ULL;     // top page (holds the frame)
+        uint64_t stack_virt = USER_STACK_TOP;            // top page (holds the frame)
         map_page_dir(page_dir, stack_page, (void*)stack_virt, 0x7 | PAGE_NX);
-        for (int sp = 1; sp < USER_STACK_PAGES; sp++) {  // 64 KB total, growing down
+        for (int sp = 1; sp < USER_STACK_INIT_PAGES; sp++) {  // rest demand-grow (vm_handle_fault)
             void* pg = alloc_page();
             if (!pg) { kfree(p); return NULL; }
             map_page_dir(page_dir, pg, (void*)(stack_virt - (uint64_t)sp * 4096), 0x7 | PAGE_NX);

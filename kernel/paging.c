@@ -359,6 +359,29 @@ int vm_handle_fault(uint64_t cr2, uint64_t err) {
         }
     }
 
+    // Stack auto-grow: a USER not-present fault (err bit2 set, bit0 clear) inside the
+    // stack window [USER_STACK_LOW, USER_STACK_TOP + PAGE_SIZE), below the committed
+    // pages — materialise a fresh zeroed RW+NX page so the stack grows on demand up to
+    // the USER_STACK_LOW floor. Precedes the pte_ptr walk: a grown page has no PTE yet.
+    if ((err & 0x4) && !(err & 0x1) && p && p->page_directory &&
+        cr2 >= USER_STACK_LOW && cr2 < USER_STACK_TOP + PAGE_SIZE) {
+        void* page = alloc_page();
+        if (!page) return 0;
+        memset_asm((void*)(uint64_t)page, 0, PAGE_SIZE);
+        map_page_dir(pml4, page, (void*)(cr2 & ~0xFFFULL), 0x7 | PAGE_NX);   // P|W|U|NX
+        invlpg((void*)cr2);
+        vm_demand_faults++;
+        return 1;
+    }
+    // Stack overflow: a USER fault in the guard page just below the stack floor. Report
+    // it clearly, then return 0 so the #PF handler delivers SIGSEGV (we never map it —
+    // growing here would silently run the stack into whatever lies below).
+    if ((err & 0x4) && p && cr2 >= USER_STACK_LOW - PAGE_SIZE && cr2 < USER_STACK_LOW) {
+        printf("[stack overflow] pid=%u comm=%s hit the stack guard page (cr2=0x%lx)\n",
+               (unsigned)p->pid, p->comm ? p->comm : "?", cr2);
+        return 0;
+    }
+
     uint64_t* pte = pte_ptr(pml4, cr2, 0);
     if (!pte) return 0;
     uint64_t e = *pte;

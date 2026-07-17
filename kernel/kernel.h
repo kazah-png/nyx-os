@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.8.84"
+#define KERNEL_VERSION "5.8.85"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -732,9 +732,19 @@ void init_idt(void);
 void idt_set_gate(uint8_t num, uint64_t base, uint16_t sel, uint8_t flags);
 void idt_set_gate_ist(uint8_t num, uint64_t base, uint16_t sel, uint8_t flags, uint8_t ist);
 
-// User ring-3 stack: pages mapped growing DOWN from 0x00007FFFFFFFF000. One 4 KB
-// page overflows on modest call chains, so give every user process 64 KB.
-#define USER_STACK_PAGES 16
+// User ring-3 stack (v5.8.85: demand-grown with a guard page). The TOP page is at
+// USER_STACK_TOP (the SysV entry frame sits at its top); the stack grows DOWN. Only
+// USER_STACK_INIT_PAGES are committed at load (elf_load_image / create_user_process);
+// vm_handle_fault materialises further pages on touch, down to a floor of
+// USER_STACK_MAX_PAGES total (USER_STACK_LOW). This lets a deep program use far more
+// stack than the old fixed 64 KB while committing almost nothing up front. A fault
+// BELOW USER_STACK_LOW is a genuine stack overflow → SIGSEGV; the page just under the
+// floor [USER_STACK_LOW-PAGE_SIZE, USER_STACK_LOW) is a permanent unmapped GUARD, and a
+// fault there is reported ("[stack overflow]") for a clear diagnostic before the kill.
+#define USER_STACK_TOP        0x00007FFFFFFFE000ULL   // base of the top stack page
+#define USER_STACK_INIT_PAGES 4                        // committed at load (16 KB)
+#define USER_STACK_MAX_PAGES  128                      // demand-grow ceiling (512 KB)
+#define USER_STACK_LOW        (USER_STACK_TOP - (uint64_t)(USER_STACK_MAX_PAGES - 1) * PAGE_SIZE)
 
 // IST stack sizes
 #define IST_STACK_SIZE 8192

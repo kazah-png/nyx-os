@@ -36,15 +36,15 @@ int elf_load_image(const uint8_t* data, uint32_t size, uint64_t** out_pd,
     if (!pd) return -1;
 
     // The user stack. `stack_virt` is the base of the TOP page (which holds the SysV
-    // entry frame); the stack grows DOWN from there. A single 4 KB page is far too
-    // small — a modest call chain with a few hundred bytes of locals per frame (e.g.
-    // the shell's command-list / substitution code) overflows it and #PFs. Map
-    // USER_STACK_PAGES pages (kernel.h) growing downward so real programs have room.
+    // entry frame); the stack grows DOWN from there. Commit only USER_STACK_INIT_PAGES
+    // up front — vm_handle_fault demand-grows the rest on touch, down to the
+    // USER_STACK_LOW floor (kernel.h), with a guard page below it. So a deep call chain
+    // gets far more than the old fixed 64 KB while a plain program commits almost nothing.
     void* stack_phys = alloc_page();     // top page: holds the argc/argv entry frame
     if (!stack_phys) { free_page_directory(pd); return -1; }
-    uint64_t stack_virt = 0x00007FFFFFFFE000ULL;
+    uint64_t stack_virt = USER_STACK_TOP;
     map_page_dir(pd, stack_phys, (void*)stack_virt, 0x7 | PAGE_NX);
-    for (int sp = 1; sp < USER_STACK_PAGES; sp++) {   // additional pages below the top
+    for (int sp = 1; sp < USER_STACK_INIT_PAGES; sp++) {   // rest are demand-grown
         void* pg = alloc_page();
         if (!pg) { free_page_directory(pd); return -1; }
         map_page_dir(pd, pg, (void*)(stack_virt - (uint64_t)sp * 4096), 0x7 | PAGE_NX);
