@@ -91,5 +91,6 @@ void smp_stress_iteration(cpu_info_t* me);
 void ap_scheduler_tick(void);
 void smp_start_ap_threads(void);
 extern volatile int smp_work_active;
+extern volatile int smp_user_balance;   // spread new user processes over the APs
 
 #endif

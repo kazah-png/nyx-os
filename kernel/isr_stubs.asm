@@ -367,12 +367,33 @@ ap_timer_stub:
     push 0                       ; error code (none for this vector)
     push 0x40                    ; int_no = AP_TIMER_VECTOR
     SAVE_REGS
-    mov [gs:CPU_SAVED_RSP], rsp  ; where the interrupted thread resumes
-    call ap_scheduler_tick       ; counts the tick, EOIs, picks the next thread
-    mov rsp, [gs:CPU_NEXT_RSP]   ; ...and here is where we go
+    ; As of v5.8.93 an AP can be running a USER process, so it may have been
+    ; interrupted on a user CR3 — under which the kernel's low, -mcmodel=large
+    ; code is not mapped at all. Switch to the kernel tables before any call,
+    ; exactly as irq_common does. (The stack we are on is either a kernel
+    ; thread's, or the process's kernel stack via TSS RSP0 — a higher-half
+    ; alias, mapped in both address spaces.)
+    mov rax, kernel_pml4_phys
+    mov rbx, KERNEL_BASE
+    add rax, rbx
+    mov rax, [rax]
+    mov cr3, rax
+    mov [gs:CPU_SAVED_RSP], rsp  ; where the interrupted task resumes
+    call ap_scheduler_tick       ; counts the tick, EOIs, picks what runs next
+    mov rsp, [gs:CPU_NEXT_RSP]   ; set RSP before CR3, so the stack stays valid
+    mov rax, [gs:CPU_NEXT_CR3]
+    test rax, rax
+    jz .ap_bad_cr3
+    test rax, 0xFFF
+    jnz .ap_bad_cr3
+    mov cr3, rax
     RESTORE_REGS
     add rsp, 16                  ; drop int_no + error
     iretq
+.ap_bad_cr3:
+    cli
+    hlt
+    jmp .ap_bad_cr3
 
 ; Spurious LAPIC interrupt. It takes no EOI by design — the only job here is to
 ; exist, so a spurious vector can't fault an AP into a triple fault.

@@ -142,6 +142,16 @@ process_t* create_user_process(const char* name, void* entry, void* user_stack, 
     // which the compositor sets per-terminal before running a command) so a tool
     // launched after `cd /home/nyx` starts there, not at "/". fork() copies the
     // parent's cwd in do_fork(); this covers the spawn/exec-from-shell path.
+    // Spread user processes across cores when balancing is on. Off by default:
+    // the default placement (CPU 0) is exactly the behaviour every earlier
+    // version had, so enabling SMP costs nothing until it is asked for. Each
+    // process owns its page tables, so moving one to another core needs no TLB
+    // coordination — unlike a thread group, which do_clone keeps together.
+    if (smp_user_balance && cpu_count > 1) {
+        static uint32_t rr = 0;
+        p->sched_cpu = (int32_t)(rr++ % cpu_count);
+    }
+
     const char* cwd0 = vfs_getcwd();
     if (cwd0 && cwd0[0]) {
         strncpy(p->cwd, cwd0, sizeof(p->cwd) - 1);
@@ -414,6 +424,11 @@ int do_clone(uint64_t fn, uint64_t stack, uint64_t arg, uint64_t flags) {
     // lookup resolves through tg_leader(), so the WHOLE group shares one heap and one
     // mmap table — that's what makes malloc/mmap coherent across threads.
     t->tgid           = tg_leader(self)->pid;
+    // Pin the whole thread group to ONE core. Threads share a PML4, so if two
+    // ran on different cores an unmap on one would leave a stale TLB entry on
+    // the other — and NyxOS has no shootdown IPI yet. Processes are free to
+    // spread (each has its own tables); a thread group is not.
+    t->sched_cpu      = tg_leader(self)->sched_cpu;
     t->program_break  = self->program_break;
     t->heap_start     = self->heap_start;
     strncpy(t->comm, self->comm, 31); t->comm[31] = '\0';
@@ -785,7 +800,7 @@ void preempt_enable(void)  { if (preempt_count > 0) preempt_count--; }
 // Point next_rsp/next_cr3 at process p (about to be resumed). Kernel threads run
 // in the kernel address space; user processes get their own CR3, and the TSS
 // RSP0 must be their kernel stack so their next ring3→ring0 entry lands safely.
-static void sched_target(process_t* p) {
+void sched_target(process_t* p) {
     next_rsp = (uint64_t)p->stack;
     if (p->page_directory) {
         // A process interrupted in ring 0 (mid-syscall) resumes there, whose

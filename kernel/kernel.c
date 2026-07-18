@@ -57,6 +57,7 @@ static void cmd_mem(int argc, char** argv);
 static void cmd_cpus(int argc, char** argv);
 static void cmd_smpstress(int argc, char** argv);
 static void cmd_smpthreads(int argc, char** argv);
+static void cmd_smpuser(int argc, char** argv);
 static void cmd_cowtest(int argc, char** argv);
 static void cmd_crash(int argc, char** argv);
 static void cmd_hexdump(int argc, char** argv);
@@ -133,6 +134,7 @@ static const command_t commands[] = {
     {"cpus",      cmd_cpus,      "List CPU cores (SMP)", false},
     {"smpstress", cmd_smpstress, "Hammer the allocators from every CPU: smpstress [secs]", false},
     {"smpthreads",cmd_smpthreads,"Run the per-AP kernel threads: smpthreads [secs]", false},
+    {"smpuser",   cmd_smpuser,   "Spread user processes over the CPUs: smpuser [n]", false},
     {"cowtest",   cmd_cowtest,   "Test demand paging + copy-on-write", false},
 
     {"crash",     cmd_crash,     "Trigger a kernel panic", false},
@@ -1483,6 +1485,54 @@ static void cmd_smpthreads(int argc, char** argv) {
            aps_working, cpu_count - 1, cpu_info[0].work_ops,
            (aps_working == (int)(cpu_count - 1) && cpu_info[0].work_ops == 0)
                ? "PARALLEL OK" : "check");
+}
+
+// Stage 3b: run RING-3 processes on the application processors.
+//
+// Spawns n copies of /spin.elf with balancing on, so create_user_process hands
+// them out round-robin, then reports where each one actually is. The proof that
+// matters is `cpus`-style: an AP whose sched_cur is a process with a page
+// directory is a core that took a ring3 -> ring0 transition through its OWN TSS
+// and came back — none of which was possible before this stage.
+static void cmd_smpuser(int argc, char** argv) {
+    if (cpu_count < 2) {
+        printf("smpuser: single CPU — nothing to spread (boot with -smp N)\n");
+        return;
+    }
+    int n = (argc >= 2) ? atoi(argv[1]) : 4;
+    if (n < 1 || n > 16) n = 4;
+
+    smp_user_balance = 1;
+    printf("smpuser: spawning %d user process(es) with balancing on...\n", n);
+    int pids[16];
+    for (int i = 0; i < n; i++) pids[i] = spawn_user_path("/spin.elf");
+    sleep(2000);                    // let every core pick its process up
+
+    printf("PID   CPU  STATE\n");
+    int on_ap = 0;
+    for (int i = 0; i < n; i++) {
+        if (pids[i] <= 0) { printf("%-5d  --   spawn failed\n", pids[i]); continue; }
+        process_t* p = find_process((uint64_t)pids[i]);
+        if (!p) { printf("%-5d  --   gone\n", pids[i]); continue; }
+        printf("%-5d %-4d %s\n", pids[i], p->sched_cpu,
+               p->state == PROC_RUN ? "running" : "not running");
+        if (p->sched_cpu > 0) on_ap++;
+    }
+
+    // What each core is actually executing right now.
+    printf("CPU  ROLE  RUNNING\n");
+    int aps_on_user = 0;
+    for (uint32_t i = 0; i < cpu_count && i < MAX_CPUS; i++) {
+        process_t* c = (process_t*)cpu_info[i].sched_cur;
+        int is_user = (i > 0) && c && c->page_directory;
+        printf("%-3u  %-4s  %s%s\n", i, i == 0 ? "BSP" : "AP",
+               c ? c->comm : "(idle)", is_user ? "   <- ring 3 on an AP" : "");
+        if (is_user) aps_on_user++;
+    }
+    for (int i = 0; i < n; i++) if (pids[i] > 0) do_kill(pids[i], SIGKILL);
+    smp_user_balance = 0;
+    printf("smpuser: %d/%d placed on APs, %d AP(s) executing ring 3 -> %s\n",
+           on_ap, n, aps_on_user, aps_on_user > 0 ? "USERSPACE ON APs OK" : "check");
 }
 
 static void cmd_cowtest(int argc, char** argv) {

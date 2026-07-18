@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.8.92"
+#define KERNEL_VERSION "5.8.93"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -756,6 +756,8 @@ void gdt_set_gate(int32_t num, uint32_t base, uint32_t limit, uint8_t access, ui
 void tss_set_stack(uint64_t rsp0);
 void tss_set_ist(uint8_t ist_idx, uint64_t stack_top);
 void load_tss(void);
+void load_tss_for_cpu(uint32_t cpu);   // each core loads its OWN TSS (see gdt.c)
+void sched_target(process_t* p);       // aim this CPU's next_rsp/next_cr3/TSS at p
 void init_idt(void);
 void idt_set_gate(uint8_t num, uint64_t base, uint16_t sel, uint8_t flags);
 void idt_set_gate_ist(uint8_t num, uint64_t base, uint16_t sel, uint8_t flags, uint8_t ist);

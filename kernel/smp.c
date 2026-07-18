@@ -50,6 +50,10 @@ void ap_timer_tick(void) {
 
 volatile int smp_work_active = 0;
 
+// Off by default — see create_user_process(). Turning it on is what makes newly
+// spawned user processes land on application processors.
+volatile int smp_user_balance = 0;
+
 // This core's scheduler. Called from ap_timer_stub with the interrupted thread's
 // RSP already parked in sc_saved_rsp; it answers in sc_next_rsp.
 //
@@ -92,7 +96,17 @@ void ap_scheduler_tick(void) {
     spin_unlock_irqrestore(&sched_lock, fl);
 
     me->sched_cur = pick;
-    me->sc_next_rsp = pick ? (uint64_t)pick->stack : me->idle_rsp;
+    if (pick) {
+        // sched_target() is the BSP's battle-tested aiming logic, and every slot
+        // it writes (next_rsp/next_cr3/kernel_rsp, and the TSS RSP0) is per-CPU
+        // as of stages 2/3a — so it is correct verbatim on an AP. Reusing it,
+        // rather than a second copy, is what makes user processes work here: all
+        // the ring/CR3 subtleties earlier Heisenbugs taught us come along.
+        sched_target(pick);
+    } else {
+        me->sc_next_rsp = me->idle_rsp;      // back to the boot idle loop
+        me->sc_next_cr3 = kernel_pml4_phys;  // ...which is always kernel-side
+    }
 }
 
 // The per-AP worker. It counts only while smp_work_active, and halts otherwise,
@@ -387,6 +401,7 @@ void ap_main(uint32_t cpu_id) {
     // no diagnostic. Descriptor tables first, LAPIC second, `sti` last.
     gdt_load_on_ap();
     idt_load_on_ap();
+    load_tss_for_cpu(cpu_id);      // our own TSS — the ring3 -> ring0 landing pad
     cpu_install_gs_base(cpu_id);   // after the trampoline's `mov gs, ax` zeroed the base
     setup_syscall_msrs();          // STAR/LSTAR/SF_MASK are per-CPU; ready for stage 3
     ap_lapic_init();
