@@ -6,10 +6,10 @@
   <strong>Custom x86_64 kernel · C and Assembly · General-purpose OS</strong>
   <br/><br/>
   <!-- Badges -->
-  <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.8.89">
-    <img src="https://img.shields.io/badge/release-v5.8.89-00ff9d?style=flat" />
+  <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.8.90">
+    <img src="https://img.shields.io/badge/release-v5.8.90-00ff9d?style=flat" />
   </a>
-  <img src="https://img.shields.io/badge/status-v5.8.89-00ff9d?style=flat" />
+  <img src="https://img.shields.io/badge/status-v5.8.90-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/TCP-yes-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/GUI-window%20compositor-00ff9d?style=flat" />
   <img src="https://img.shields.io/badge/%F0%9F%8C%99%20NyxC-runtime-8b5cf6?style=flat" />
@@ -38,7 +38,7 @@ nyx:root$ nyxfetch
     .:oo.. :o.              -----------------
   :oo:.oo.o:                OS:         NyxOS x86_64
  .#o:.   :.                 Host:       QEMU Standard PC
- #:::....:                  Kernel:     NyxOS 5.8.89 (Full Suite)
+ #:::....:                  Kernel:     NyxOS 5.8.90 (Full Suite)
 o#::. . o.                  Uptime:     00:00:11
 o#.o:   :o                  Resolution: 1024 x 768
 o###o   o#                  CPU:        QEMU Virtual CPU version 2.5+ (1)
@@ -59,7 +59,7 @@ o###o   o#                  CPU:        QEMU Virtual CPU version 2.5+ (1)
 The project implements core kernel primitives, a custom network stack (RTL8139 NIC + ARP/IP/UDP/ICMP/DHCP + TCP with retransmission and passive open), userspace TCP/UDP sockets with `poll()` I/O multiplexing, a window compositor GUI, and a Sound Blaster 16 audio driver — all written in C and x86_64 Assembly with no external libraries.
 
 <div align="center">
-  <img src="gui.png?v=3" alt="NyxOS Desktop v5.8.89" width="700" />
+  <img src="gui.png?v=3" alt="NyxOS Desktop v5.8.90" width="700" />
   <p><em>NyxOS Desktop — app icons, purple wallpaper, windows and a taskbar</em></p>
 </div>
 
@@ -176,7 +176,7 @@ nyx:root$ ls /
 bin/   dev/   etc/   home/  mnt/   root/  tmp/   usr/   var/
 
 nyx:root$ uname
-NyxOS 5.8.89 (Full Suite) x86_64
+NyxOS 5.8.90 (Full Suite) x86_64
 
 nyx:root$ mem
 Physical memory: 256 MB total, 252 MB free
@@ -490,7 +490,8 @@ See the full **[NyxOS Status Report](https://github.com/kazah-png/nyx-os/issues/
 - ⚠️ **Login stability:** login screen works but may have edge cases with very fast typing or buffer overflow.
 
 ### What's being built
-- ✅ SMP multi-core bringup (INIT-SIPI-SIPI + trampoline → long mode; verified with `-smp 4`, `cpus` command) — next: per-CPU scheduling to run threads on the APs
+- ✅ SMP multi-core bringup (INIT-SIPI-SIPI + trampoline → long mode; verified with `-smp 4`, `cpus` command)
+- ✅ SMP stage 1 — **the APs are alive**: each core loads the shared GDT/IDT, runs its own periodic LAPIC timer on a dedicated vector, and services it from a kernel idle loop, so `cpus` shows every core's tick counter climbing independently. They stay out of the scheduler on purpose — `current_idx`, `saved_rsp`/`next_rsp` and the allocators are still unsynchronised globals. Next: spinlocks + per-CPU `user_cr3`/`user_rsp` (stage 2), then a per-CPU scheduler running user processes on the APs (stage 3)
 - ✅ Demand paging + copy-on-write via the #PF handler (verified with the `cowtest` self-test; CR0.WP enabled)
 - ✅ Copy-on-write `fork()` (`SYS_FORK`): physical page refcounting + COW address-space clone; child resumes with `fork()==0`, both round-robin (verified in `/init.elf` — parent/child diverge on a shared variable)
 - ✅ `waitpid()` (`SYS_WAITPID`): a parent reaps a child and collects its exit code from ring 3 (verified: child `exit(123)` → parent `waitpid` → code 123, no leaked zombie)

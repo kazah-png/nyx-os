@@ -40,9 +40,14 @@ prot_mode:
     mov eax, [cr3_value]
     mov cr3, eax
 
+    ; EFER: LME (long mode) + NXE (no-execute). NXE is per-CPU and the BSP sets
+    ; its own in init_paging, so an AP that skipped it saw every PAGE_NX bit as a
+    ; RESERVED bit — and faulted the instant it touched an NX page. That is silent
+    ; while an AP only halts; it kills the core the moment it reads its own LAPIC
+    ; (map_mmio maps that page NX).
     mov ecx, 0xC0000080
     rdmsr
-    or eax, (1 << 8)
+    or eax, (1 << 8) | (1 << 11)
     wrmsr
 
     mov eax, cr0

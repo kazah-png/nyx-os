@@ -47,3 +47,10 @@ void init_idt(void) {
 
     _idt_flush((uint64_t)&idtp);
 }
+
+// Application processors share the BSP's IDT: the table is only written during
+// boot setup, never at interrupt time, so one copy serves every core. An AP
+// runs on the kernel page tables, where this low address is identity-mapped.
+void idt_load_on_ap(void) {
+    _idt_flush((uint64_t)&idtp);
+}

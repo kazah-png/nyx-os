@@ -78,3 +78,15 @@ void init_gdt(void) {
     __asm__ volatile("lgdt %0" : : "m"(gp));
     load_tss();
 }
+
+// Point an application processor at the BSP's GDT. The descriptor table is
+// read-only once built, so all CPUs can share one — and they must, since the
+// IDT's gates name selector 0x08 and every CPU has to resolve that identically.
+//
+// The TSS is deliberately NOT loaded. An AP never leaves ring 0 yet, so it has
+// no use for RSP0, and `ltr` on the shared TSS would #GP anyway: the BSP's ltr
+// already set its busy bit, and a TSS may only be busy on one CPU. Running user
+// processes on APs means giving each one its own TSS first.
+void gdt_load_on_ap(void) {
+    __asm__ volatile("lgdt %0" : : "m"(gp));
+}

@@ -328,3 +328,50 @@ irq_common:
     RESTORE_REGS
     add rsp, 16
     iretq
+
+; ---------------------------------------------------------------------------
+; Application-processor LAPIC timer (vector AP_TIMER_VECTOR).
+;
+; Deliberately NOT irq_common. irq_common drives the scheduler through the
+; globals saved_rsp / next_rsp / next_cr3 — ONE set for the whole machine — so
+; an AP entering it would overwrite whatever context switch the BSP was in the
+; middle of. Until the scheduler is per-CPU and spinlocked, an AP may only touch
+; its own cpu_info slot, which is all ap_timer_tick does.
+;
+; No CR3 juggling either: an AP always runs in the kernel address space, so the
+; page tables it was interrupted under are already the ones C code needs.
+;
+; Only the SysV call-clobbered registers are saved — ap_timer_tick preserves the
+; rest by ABI. 9 pushes on top of the CPU's 5-qword frame leave RSP 16-byte
+; aligned at the `call`, as the ABI requires.
+; ---------------------------------------------------------------------------
+extern ap_timer_tick
+
+global ap_timer_stub
+ap_timer_stub:
+    push rax
+    push rcx
+    push rdx
+    push rsi
+    push rdi
+    push r8
+    push r9
+    push r10
+    push r11
+    call ap_timer_tick
+    pop r11
+    pop r10
+    pop r9
+    pop r8
+    pop rdi
+    pop rsi
+    pop rdx
+    pop rcx
+    pop rax
+    iretq
+
+; Spurious LAPIC interrupt. It takes no EOI by design — the only job here is to
+; exist, so a spurious vector can't fault an AP into a triple fault.
+global ap_spurious_stub
+ap_spurious_stub:
+    iretq

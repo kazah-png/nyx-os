@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.8.89"
+#define KERNEL_VERSION "5.8.90"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -754,6 +754,8 @@ void load_tss(void);
 void init_idt(void);
 void idt_set_gate(uint8_t num, uint64_t base, uint16_t sel, uint8_t flags);
 void idt_set_gate_ist(uint8_t num, uint64_t base, uint16_t sel, uint8_t flags, uint8_t ist);
+void gdt_load_on_ap(void);     // point an AP at the BSP's GDT (no TSS — see gdt.c)
+void idt_load_on_ap(void);     // point an AP at the BSP's IDT (shared, read-only)
 
 // User ring-3 stack (v5.8.89: demand-grown with a guard page). The TOP page is at
 // USER_STACK_TOP (the SysV entry frame sits at its top); the stack grows DOWN. Only
@@ -789,6 +791,7 @@ void irq_eoi(uint64_t int_no);
 typedef struct { uint64_t base; uint64_t len; uint32_t type; } mb_mmap_entry_t;
 void init_memory(uint64_t mem_size, const mb_mmap_entry_t* mmap, int mmap_count);
 void enable_smep_smap(void);   // CR4.SMEP/SMAP if the CPU supports them (kernel.c)
+int  cpu_apply_smep_smap(void); // same, silent + returns bit0=SMEP bit1=SMAP (APs use this)
 void* kmalloc(size_t size);
 void* kmalloc_aligned(size_t size, uint32_t align);
 void kfree(void* ptr);

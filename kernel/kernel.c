@@ -1380,14 +1380,20 @@ static void cmd_mem(int argc, char** argv) {
 static void cmd_cpus(int argc, char** argv) {
     (void)argc; (void)argv;
     printf("SMP: %u CPU(s) online (max %u)\n", cpu_count, MAX_CPUS);
-    printf("CPU  ROLE  APIC  SELF  STATE\n");
+    printf("CPU  ROLE  APIC  SELF  STATE    CLOCK  TICKS\n");
     for (uint32_t i = 0; i < cpu_count && i < MAX_CPUS; i++) {
-        // APIC = id the BSP assigned; SELF = id the core read from its own LAPIC.
-        printf("%-3u  %-4s  %-4u  %-4u  %s\n",
+        // APIC = id the BSP assigned; SELF = id the core read for itself.
+        // TICKS is the proof of life: each AP counts its OWN LAPIC timer, so the
+        // columns must climb independently across two runs of this command.
+        printf("%-3u  %-4s  %-4u  %-4u  %-7s  %-5s  %lu\n",
                i, i == 0 ? "BSP" : "AP",
                cpu_info[i].apic_id, cpu_info[i].apic_id_self,
-               cpu_info[i].running ? "online" : "offline");
+               cpu_info[i].running ? "online" : "offline",
+               i == 0 ? "PIT" : "LAPIC",
+               i == 0 ? (uint64_t)tick_count : cpu_info[i].ticks);
     }
+    if (cpu_count > 1)
+        printf("APs run a kernel idle loop only (no user processes yet).\n");
 }
 
 static void cmd_cowtest(int argc, char** argv) {
@@ -1837,7 +1843,10 @@ static int g_mmap_count = 0;
 // never wants it). Called on the BSP after paging is up, and by each AP (smp.c).
 // Note: the default QEMU `qemu64` CPU does NOT advertise SMEP/SMAP, so this is a no-op
 // there; run with `-cpu qemu64,+smep,+smap` (or a Haswell+/`max` model) to activate it.
-void enable_smep_smap(void) {
+// CR4 is per-CPU, so every core applies this itself. Returns bit0=SMEP, bit1=SMAP
+// as actually enabled. Silent on purpose: APs call this, and printf is shared
+// unlocked state that an AP has no business touching.
+int cpu_apply_smep_smap(void) {
     uint32_t eax, ebx, ecx, edx;
     __asm__ volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(7), "c"(0));
     int have_smep = (ebx >> 7)  & 1;
@@ -1848,8 +1857,14 @@ void enable_smep_smap(void) {
     if (have_smap) cr4 |= (1UL << 21);
     __asm__ volatile("mov %0, %%cr4" :: "r"(cr4) : "memory");
     if (have_smap) __asm__ volatile("clac");   // start with AC clear (only legal once SMAP is on)
-    printf("[CPU] SMEP=%s SMAP=%s\n", have_smep ? "on" : "unavailable",
-           have_smap ? "on" : "unavailable");
+    return (have_smep ? 1 : 0) | (have_smap ? 2 : 0);
+}
+
+// BSP entry point: apply, then report.
+void enable_smep_smap(void) {
+    int f = cpu_apply_smep_smap();
+    printf("[CPU] SMEP=%s SMAP=%s\n", (f & 1) ? "on" : "unavailable",
+           (f & 2) ? "on" : "unavailable");
 }
 
 void kernel_main(uint64_t magic, void* mboot_ptr) {

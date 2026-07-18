@@ -33,8 +33,12 @@
 #define LAPIC_TIMER_CURCNT   0x390
 #define LAPIC_TIMER_DIV      0x3E0
 
+// LAPIC_TIMER_DIV encoding (bit 2 is skipped by the architecture)
+#define LAPIC_TIMER_DIV16    0x3
+
 // LVT entry flags
 #define LVT_MASKED    (1 << 16)
+#define LVT_TIMER_PERIODIC (1 << 17)   // LVT_TIMER mode: reload from INITCNT forever
 #define LVT_TRIGGER   (1 << 15)
 #define LVT_LEVEL     (1 << 14)
 #define LVT_FIXED     0

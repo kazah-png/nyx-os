@@ -8,6 +8,72 @@ uint32_t cpu_count = 1;
 extern uint8_t _binary_trampoline_bin_start[];
 extern uint8_t _binary_trampoline_bin_end[];
 
+// AP interrupt stubs (isr_stubs.asm)
+extern void ap_timer_stub(void);
+extern void ap_spurious_stub(void);
+
+// LAPIC timer reload value. Deliberately UNCALIBRATED: the exact rate is
+// irrelevant while all an AP does is count, and calibrating needs a reference
+// clock the APs don't have — the PIT belongs to the BSP and isn't even
+// programmed until after smp_init. Measured against that PIT, divide-by-16 with
+// 62500 counts gives ~500 Hz per AP under QEMU. Real hardware has a different
+// APIC bus frequency, so the AP tick rate will differ there.
+#define AP_TIMER_INITCNT 62500
+
+// Which CPU is executing this code? Resolved from the initial APIC id in
+// CPUID(1).EBX[31:24] — an instruction, not a memory access, so it is valid
+// before the LAPIC mapping is reachable and safe to call from an interrupt.
+// The eventual answer is a GS-based per-CPU pointer, which is also what per-CPU
+// user_cr3/user_rsp will need; a linear scan over at most MAX_CPUS entries is
+// enough while the only per-CPU field is a counter.
+cpu_info_t* cpu_self(void) {
+    uint32_t eax, ebx, ecx, edx;
+    __asm__ volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(1), "c"(0));
+    uint32_t id = (ebx >> 24) & 0xFF;
+    for (uint32_t i = 0; i < MAX_CPUS; i++)
+        if (cpu_info[i].apic_id_self == id) return &cpu_info[i];
+    for (uint32_t i = 0; i < MAX_CPUS; i++)
+        if (cpu_info[i].apic_id == id) return &cpu_info[i];
+    return &cpu_info[0];
+}
+
+// The application processors' entire interrupt hot path: count our own tick and
+// acknowledge our own LAPIC. Both are strictly CPU-local — cpu_info[] is indexed
+// per CPU, and the 0xFEE00000 MMIO window is decoded by whichever core issues the
+// access. Nothing else belongs here: the kernel has no spinlocks yet, so printf,
+// kmalloc or the scheduler would race the BSP.
+void ap_timer_tick(void) {
+    cpu_self()->ticks++;
+    apic_eoi();
+}
+
+// Bring this AP's Local APIC online and start its periodic timer. Every register
+// touched here is CPU-local, so none of it disturbs the BSP's LAPIC.
+static void ap_lapic_init(void) {
+    if (!lapic) return;
+
+    // The MSR enable bit is per-CPU too, and an AP comes out of INIT with its
+    // LAPIC hardware-disabled.
+    uint64_t base = read_msr(IA32_APIC_BASE_MSR);
+    if (!(base & APIC_BASE_ENABLE))
+        write_msr(IA32_APIC_BASE_MSR, base | APIC_BASE_ENABLE);
+
+    lapic[LAPIC_SVR / 4] = SVR_ENABLE | AP_SPURIOUS_VECTOR;   // software-enable
+    lapic[LAPIC_TPR / 4] = 0;                                 // accept every priority
+
+    // Mask the LVT sources we have no handler for. An unmasked LINT0/LINT1,
+    // thermal or error interrupt would vector somewhere with no gate installed.
+    lapic[LAPIC_LVT_THERMAL / 4] = LVT_MASKED;
+    lapic[LAPIC_LVT_PERFMON / 4] = LVT_MASKED;
+    lapic[LAPIC_LVT_LINT0 / 4]   = LVT_MASKED;
+    lapic[LAPIC_LVT_LINT1 / 4]   = LVT_MASKED;
+    lapic[LAPIC_LVT_ERROR / 4]   = LVT_MASKED;
+
+    lapic[LAPIC_TIMER_DIV / 4] = LAPIC_TIMER_DIV16;
+    lapic[LAPIC_LVT_TIMER / 4] = AP_TIMER_VECTOR | LVT_TIMER_PERIODIC;
+    lapic[LAPIC_TIMER_INITCNT / 4] = AP_TIMER_INITCNT;        // writing this starts it
+}
+
 static int detect_aps_via_cpuid(void) {
     uint32_t eax, ebx, ecx, edx;
 
@@ -73,7 +139,14 @@ void smp_init(void) {
         cpu_info[i].cpu_number = i;
         cpu_info[i].started = 0;
         cpu_info[i].running = 0;
+        cpu_info[i].ticks = 0;
     }
+
+    // The gates the APs will vector through must exist BEFORE any AP starts —
+    // the first LAPIC timer can fire while we are still in this loop sending
+    // SIPIs to the next core.
+    idt_set_gate(AP_TIMER_VECTOR,    (uint64_t)ap_timer_stub    + KERNEL_BASE, 0x08, 0x8E);
+    idt_set_gate(AP_SPURIOUS_VECTOR, (uint64_t)ap_spurious_stub + KERNEL_BASE, 0x08, 0x8E);
 
     // The BSP is always CPU 0 and online — record it up front so `cpus`/nyxfetch
     // see it even on a single-core machine (where detection returns early).
@@ -163,11 +236,26 @@ void ap_main(uint32_t cpu_id) {
     cpu_info[cpu_id].running = 1;
 
     // CR4 is per-CPU: match the BSP's SMEP/SMAP so every core enforces the same
-    // ring-0 isolation (a no-op on CPUs that don't advertise them).
-    enable_smep_smap();
+    // ring-0 isolation (a no-op on CPUs that don't advertise them). The silent
+    // variant — an AP must not call printf, which is shared and unlocked.
+    cpu_apply_smep_smap();
 
-    // HLT yields VCPU to BSP in single-threaded TCG. cli prevents NMIs
-    // (which lack handler setup) from waking the AP.
-    __asm__ volatile("cli");
-    while (1) __asm__ volatile("hlt");
+    // ORDER MATTERS HERE. The trampoline left us on its own throwaway GDT and
+    // with NO IDT at all, so until the next two calls any fault is a triple
+    // fault — which is exactly how a stray LAPIC read used to kill the AP with
+    // no diagnostic. Descriptor tables first, LAPIC second, `sti` last.
+    gdt_load_on_ap();
+    idt_load_on_ap();
+    ap_lapic_init();
+
+    // Kernel idle loop. This core now genuinely executes and services its own
+    // timer interrupts, which is what a climbing cpu_info[].ticks proves. It
+    // stays OUT of the scheduler on purpose: current_idx, saved_rsp/next_rsp and
+    // the allocators are all unsynchronised globals today, so running processes
+    // here would corrupt the BSP. That needs per-CPU state and real spinlocks.
+    //
+    // `sti; hlt` is the race-free idiom — sti's one-instruction shadow means the
+    // interrupt can't slip in before the halt. Halting also stops this core from
+    // starving the BSP under single-threaded TCG.
+    for (;;) __asm__ volatile("sti; hlt");
 }

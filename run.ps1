@@ -1,7 +1,10 @@
 param(
     [ValidateSet('gui','serial','net','debug')]
     [string]$Mode = 'gui',
-    [switch]$Sound
+    [switch]$Sound,
+    # CPU count. Every harness before v5.8.90 omitted -smp, so no application
+    # processor had ever actually run; 4 is what `cpus` is meant to show off.
+    [int]$Cpus = 4
 )
 
 $root = $PSScriptRoot
@@ -55,6 +58,7 @@ if (!(Get-Command qemu-system-x86_64 -ErrorAction SilentlyContinue)) {
 $argsList = @(
     "-cdrom", $iso,
     "-m", "256M",
+    "-smp", "$Cpus",
     "-no-reboot",
     "-cpu", "qemu64"
 )
