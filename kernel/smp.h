@@ -31,6 +31,9 @@ typedef struct {
     uint64_t sc_kernel_rsp; // +8   kernel stack this CPU enters syscalls on
     uint64_t sc_user_cr3;   // +16  user CR3 saved on entry, restored on exit
     uint64_t sc_frame_ptr;  // +24  base of the saved user register frame
+    uint64_t sc_saved_rsp;  // +32  RSP of the context this CPU just interrupted
+    uint64_t sc_next_rsp;   // +40  RSP of the context this CPU will resume
+    uint64_t sc_next_cr3;   // +48  CR3 to resume under (BSP only; APs stay kernel)
 
     uint32_t apic_id;       // APIC id the BSP assigned/expects for this CPU
     uint32_t apic_id_self;  // APIC id the CPU read from its OWN Local APIC (proof)
@@ -42,6 +45,15 @@ typedef struct {
     volatile uint64_t ticks; // THIS core's LAPIC-timer ticks (APs only; BSP uses tick_count)
     volatile uint64_t stress_ops;  // allocator-hammer iterations this core completed
     volatile uint64_t stress_bad;  // integrity failures this core observed
+    volatile uint64_t work_ops;    // iterations this CPU's pinned worker thread ran
+
+    // This CPU's scheduler cursor. sched_cur is the process_t it is currently
+    // running, or NULL meaning "the idle context this core booted into" — whose
+    // stack pointer is then parked in idle_rsp so we can get back to it. Typed
+    // void* only to keep this header free of process.h ordering constraints.
+    void*    sched_cur;
+    uint64_t idle_rsp;
+    int      sched_scan;           // rotating index for round-robin fairness
 } cpu_info_t;
 
 /* Pin the assembler contract. If this line fails to compile, someone moved a
@@ -51,7 +63,10 @@ typedef char cpu_abi_prefix_offsets_are_pinned[
     (__builtin_offsetof(cpu_info_t, sc_user_rsp)   ==  0 &&
      __builtin_offsetof(cpu_info_t, sc_kernel_rsp) ==  8 &&
      __builtin_offsetof(cpu_info_t, sc_user_cr3)   == 16 &&
-     __builtin_offsetof(cpu_info_t, sc_frame_ptr)  == 24) ? 1 : -1];
+     __builtin_offsetof(cpu_info_t, sc_frame_ptr)  == 24 &&
+     __builtin_offsetof(cpu_info_t, sc_saved_rsp)  == 32 &&
+     __builtin_offsetof(cpu_info_t, sc_next_rsp)   == 40 &&
+     __builtin_offsetof(cpu_info_t, sc_next_cr3)   == 48) ? 1 : -1];
 
 extern cpu_info_t cpu_info[MAX_CPUS];
 extern uint32_t cpu_count;
@@ -70,5 +85,11 @@ void ap_timer_tick(void);
 // iteration itself, so every core contends for the same locks.
 extern volatile int smp_stress_active;
 void smp_stress_iteration(cpu_info_t* me);
+
+// Per-CPU scheduling of kernel threads pinned to an AP (v5.8.92). Called from
+// ap_timer_stub, which is a real context-switching ISR for these cores.
+void ap_scheduler_tick(void);
+void smp_start_ap_threads(void);
+extern volatile int smp_work_active;
 
 #endif

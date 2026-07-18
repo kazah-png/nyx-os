@@ -1,6 +1,7 @@
 #include "kernel.h"
 #include "apic.h"
 #include "smp.h"
+#include "spinlock.h"
 
 cpu_info_t cpu_info[MAX_CPUS];
 uint32_t cpu_count = 1;
@@ -45,6 +46,87 @@ cpu_info_t* cpu_self(void) {
 void ap_timer_tick(void) {
     cpu_self()->ticks++;
     apic_eoi();
+}
+
+volatile int smp_work_active = 0;
+
+// This core's scheduler. Called from ap_timer_stub with the interrupted thread's
+// RSP already parked in sc_saved_rsp; it answers in sc_next_rsp.
+//
+// Round-robin over the tasks PINNED to this CPU (p->sched_cpu == our number).
+// Pinning is the entire mutual-exclusion argument: no other core will even look
+// at these tasks, so nothing here can race the BSP over who runs what. The lock
+// covers only the SHAPE of the table — entries and process_count — against a
+// concurrent create_process or reap.
+//
+// sched_cur == NULL means "the idle context this core booted into", whose stack
+// pointer we park in idle_rsp so there is always somewhere to go back to when no
+// pinned thread is runnable. Every task here is a kernel thread sharing the
+// kernel address space, so there is no CR3 to switch and no ring to cross.
+void ap_scheduler_tick(void) {
+    cpu_info_t* me = cpu_self();
+    me->ticks++;
+    apic_eoi();
+
+    process_t* cur = (process_t*)me->sched_cur;
+    if (cur) cur->stack = (void*)me->sc_saved_rsp;   // remember where to resume it
+    else     me->idle_rsp = me->sc_saved_rsp;        // ...or where idle left off
+
+    extern process_t* process_table[MAX_PROCESSES];
+    extern int process_count;
+    extern spinlock_t sched_lock;
+
+    process_t* pick = NULL;
+    uint64_t fl = spin_lock_irqsave(&sched_lock);
+    int n = process_count;
+    for (int i = 1; i <= n; i++) {
+        int idx = (me->sched_scan + i) % n;
+        process_t* p = process_table[idx];
+        if (!p || p->state != PROC_RUN) continue;
+        if (p->sched_cpu != (int32_t)me->cpu_number) continue;
+        if (!p->stack) continue;
+        pick = p;
+        me->sched_scan = idx;
+        break;
+    }
+    spin_unlock_irqrestore(&sched_lock, fl);
+
+    me->sched_cur = pick;
+    me->sc_next_rsp = pick ? (uint64_t)pick->stack : me->idle_rsp;
+}
+
+// The per-AP worker. It counts only while smp_work_active, and halts otherwise,
+// so an idle machine pays nothing for having these threads parked on its cores.
+//
+// It deliberately counts into cpu_self()->work_ops rather than a slot chosen by
+// its own id: the counter therefore records which core ACTUALLY executed it. If
+// pinning were broken and the BSP ran this thread, the work would show up in the
+// BSP's row — the test can't be fooled by the thread simply reporting where it
+// was supposed to be.
+// It also takes over the allocator hammer: once a worker exists, the scheduler
+// always picks it over the idle context, so smpstress would otherwise stop
+// seeing any AP participation.
+static void ap_worker(void) {
+    for (;;) {
+        cpu_info_t* me = cpu_self();
+        if (smp_stress_active)    smp_stress_iteration(me);
+        else if (smp_work_active) me->work_ops++;
+        else __asm__ volatile("hlt");
+    }
+}
+
+// One worker per application processor, created on the BSP once the process
+// table exists. Nothing pins work to CPU 0 — the BSP keeps its own scheduler.
+void smp_start_ap_threads(void) {
+    for (uint32_t i = 1; i < cpu_count && i < MAX_CPUS; i++) {
+        if (!cpu_info[i].running) continue;
+        char name[32];
+        strncpy(name, "apworker0", sizeof(name) - 1);
+        name[8] = (char)('0' + i);
+        if (!create_kernel_thread_on_cpu(name, (void*)ap_worker, (int)i))
+            printf("[SMP] could not create worker for CPU %u\n", i);
+    }
+    printf("[SMP] %u AP worker thread(s) pinned\n", cpu_count > 1 ? cpu_count - 1 : 0);
 }
 
 // Point this CPU's GS base at its own cpu_info slot, so syscall_entry can reach

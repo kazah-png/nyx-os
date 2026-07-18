@@ -56,6 +56,7 @@ static void cmd_mtdemo(int argc, char** argv);
 static void cmd_mem(int argc, char** argv);
 static void cmd_cpus(int argc, char** argv);
 static void cmd_smpstress(int argc, char** argv);
+static void cmd_smpthreads(int argc, char** argv);
 static void cmd_cowtest(int argc, char** argv);
 static void cmd_crash(int argc, char** argv);
 static void cmd_hexdump(int argc, char** argv);
@@ -131,6 +132,7 @@ static const command_t commands[] = {
     {"mem",       cmd_mem,       "Show memory usage", false},
     {"cpus",      cmd_cpus,      "List CPU cores (SMP)", false},
     {"smpstress", cmd_smpstress, "Hammer the allocators from every CPU: smpstress [secs]", false},
+    {"smpthreads",cmd_smpthreads,"Run the per-AP kernel threads: smpthreads [secs]", false},
     {"cowtest",   cmd_cowtest,   "Test demand paging + copy-on-write", false},
 
     {"crash",     cmd_crash,     "Trigger a kernel panic", false},
@@ -1444,6 +1446,45 @@ static void cmd_smpstress(int argc, char** argv) {
            free_before == free_after ? "BALANCED OK" : "check (cold slab keeps its first page)");
 }
 
+// Prove the per-CPU scheduler: each AP has a kernel thread pinned to it, and
+// this wakes them all for a few seconds while the BSP just sleeps.
+//
+// The counters are the proof, and they cannot be faked: a worker counts into
+// cpu_self()->work_ops, i.e. the core that ACTUALLY executed it. If pinning were
+// broken and the BSP picked up a worker, the work would land in the BSP's row —
+// so "every AP row climbs and the BSP's stays at zero" is a real statement about
+// which core ran which thread, not about which core was supposed to.
+static void cmd_smpthreads(int argc, char** argv) {
+    uint32_t secs = (argc >= 2) ? (uint32_t)atoi(argv[1]) : 3;
+    if (secs == 0 || secs > 30) secs = 3;
+    if (cpu_count < 2) {
+        printf("smpthreads: single CPU — no APs to schedule on (boot with -smp N)\n");
+        return;
+    }
+
+    for (uint32_t i = 0; i < MAX_CPUS; i++) cpu_info[i].work_ops = 0;
+    printf("smpthreads: waking %u pinned kernel thread(s) for %us "
+           "(the BSP only sleeps)...\n", cpu_count - 1, secs);
+
+    smp_work_active = 1;
+    sleep(secs * 1000);          // the BSP blocks here — anything counted is an AP
+    smp_work_active = 0;
+    sleep(100);
+
+    printf("CPU  ROLE  THREAD      WORK\n");
+    int aps_working = 0;
+    for (uint32_t i = 0; i < cpu_count && i < MAX_CPUS; i++) {
+        process_t* c = (process_t*)cpu_info[i].sched_cur;
+        printf("%-3u  %-4s  %-10s  %lu\n", i, i == 0 ? "BSP" : "AP",
+               c ? c->comm : "(idle)", cpu_info[i].work_ops);
+        if (i > 0 && cpu_info[i].work_ops > 0) aps_working++;
+    }
+    printf("smpthreads: %d of %u AP(s) executed their thread; BSP counted %lu -> %s\n",
+           aps_working, cpu_count - 1, cpu_info[0].work_ops,
+           (aps_working == (int)(cpu_count - 1) && cpu_info[0].work_ops == 0)
+               ? "PARALLEL OK" : "check");
+}
+
 static void cmd_cowtest(int argc, char** argv) {
     (void)argc; (void)argv;
     // Two pages in an otherwise-unused PML4 slot (0xFFFFA000_00000000).
@@ -2015,6 +2056,7 @@ void kernel_main(uint64_t magic, void* mboot_ptr) {
     printf("[INIT] Process Manager...\n"); init_process();
     bootsplash_update(4, 23, "Starting process manager...");
     printf("[INIT] Creating idle process...\n"); ensure_idle_process();
+    smp_start_ap_threads();   // one kernel thread pinned to each application processor
     bootsplash_update(5, 23, "Creating idle process...");
     printf("[INIT] System Calls...\n"); init_syscalls();
     bootsplash_update(6, 23, "Initializing system calls...");

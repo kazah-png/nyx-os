@@ -6,10 +6,17 @@ BITS 64
 %define KERNEL_BASE 0xFFFFFF8000000000
 
 extern kernel_pml4_phys
-extern next_cr3
-extern saved_rsp
-extern next_rsp
 extern irq_eoi
+
+; Byte offsets into cpu_info_t's ABI-fixed prefix (smp.h). Repeated near
+; syscall_entry, where the full rationale for reaching them through GS lives.
+%define CPU_USER_RSP    0
+%define CPU_KERNEL_RSP  8
+%define CPU_USER_CR3    16
+%define CPU_FRAME_PTR   24
+%define CPU_SAVED_RSP   32
+%define CPU_NEXT_RSP    40
+%define CPU_NEXT_CR3    48
 
 ; Save all registers (15 pushes)
 %macro SAVE_REGS 0
@@ -153,19 +160,15 @@ global syscall_entry
 extern syscall_handler
 extern signal_dispatch
 
-; Byte offsets into cpu_info_t's ABI-fixed prefix (smp.h). These four slots used
-; to be plain globals right here — one set for the whole machine, which is fine
-; on one CPU and catastrophic the moment a second core takes a syscall: both
-; would stash their user CR3 and RSP over each other. They are now per-CPU, and
-; a compile-time check in smp.h fails the build if these offsets ever drift.
+; The CPU_* offsets (defined at the top of this file) name slots in cpu_info_t's
+; ABI-fixed prefix. They used to be plain globals right here — one set for the
+; whole machine, which is fine on one CPU and catastrophic the moment a second
+; core takes a syscall: both would stash their user CR3 and RSP over each other.
+; A compile-time check in smp.h fails the build if the offsets ever drift.
 ;
-;   +24 = base of the saved user register frame on the kernel stack:
-;         [+0..112]=GPRs (r15..rax), [+120]=RFLAGS, [+128]=RIP. do_fork() reads
-;         it to clone the caller's ring-3 context into the child (rax=0 there).
-%define CPU_USER_RSP    0
-%define CPU_KERNEL_RSP  8
-%define CPU_USER_CR3    16
-%define CPU_FRAME_PTR   24
+;   CPU_FRAME_PTR = base of the saved user register frame on the kernel stack:
+;   [+0..112]=GPRs (r15..rax), [+120]=RFLAGS, [+128]=RIP. do_fork() reads it to
+;   clone the caller's ring-3 context into the child (with rax=0 for the child).
 
 section .text
 ; Entry: rax=syscall#, rdi/rsi/rdx/r10/r8/r9=args, rcx=user RIP, r11=user RFLAGS,
@@ -310,24 +313,17 @@ irq_common:
     ; Send EOI (handles APIC or legacy PIC)
     mov rdi, [rsp + 120]     ; int_no
     call irq_eoi
-    ; Scheduler tick — save RSP via higher-half address
-    mov rax, saved_rsp
-    mov rbx, KERNEL_BASE
-    add rax, rbx
-    mov [rax], rsp
+    ; Scheduler hand-off. These three slots are PER-CPU (v5.8.92) — one shared set
+    ; described a single machine-wide switch, which is exactly wrong once a second
+    ; core schedules. GS already holds this core's block, and its base is the
+    ; higher-half alias, so these resolve under a user CR3 too via PML4[511] —
+    ; which is what the old `mov rax, sym / add KERNEL_BASE` dance was doing by hand.
+    mov [gs:CPU_SAVED_RSP], rsp
     call irq_scheduler_tick
-    ; Read next RSP (higher-half address, valid in any CR3 via PML4[511] mirror)
-    mov rax, next_rsp
-    mov rbx, KERNEL_BASE
-    add rax, rbx
-    mov rdx, [rax]               ; rdx = next_rsp (higher-half address)
-    ; Set RSP before switching CR3 — ensures valid stack during CR3 switch
-    mov rsp, rdx
+    ; Set RSP before switching CR3 — ensures a valid stack during the CR3 switch
+    mov rsp, [gs:CPU_NEXT_RSP]
     ; Validate next_cr3 before switching
-    mov rax, next_cr3
-    mov rbx, KERNEL_BASE
-    add rax, rbx
-    mov rax, [rax]
+    mov rax, [gs:CPU_NEXT_CR3]
     test rax, rax
     jz .bad_cr3
     test rax, 0xFFF
@@ -350,42 +346,32 @@ irq_common:
 ; ---------------------------------------------------------------------------
 ; Application-processor LAPIC timer (vector AP_TIMER_VECTOR).
 ;
-; Deliberately NOT irq_common. irq_common drives the scheduler through the
-; globals saved_rsp / next_rsp / next_cr3 — ONE set for the whole machine — so
-; an AP entering it would overwrite whatever context switch the BSP was in the
-; middle of. Until the scheduler is per-CPU and spinlocked, an AP may only touch
-; its own cpu_info slot, which is all ap_timer_tick does.
+; As of v5.8.92 this is a REAL context-switching ISR, not just a tick counter:
+; it saves the full register set, hands its RSP to this core's own scheduler,
+; and resumes whatever that scheduler chose. Each core's saved/next slots live
+; in its own cpu_info block, so two cores describe two independent switches.
 ;
-; No CR3 juggling either: an AP always runs in the kernel address space, so the
-; page tables it was interrupted under are already the ones C code needs.
+; Still deliberately NOT irq_common. That path does CR3 work and drives the
+; BSP's process table; an AP here runs only kernel threads, which all share the
+; kernel address space — so there is no CR3 to switch and no ring to cross.
+; Keeping the two paths apart is what lets APs schedule without touching any of
+; the delicate ring-3 machinery.
 ;
-; Only the SysV call-clobbered registers are saved — ap_timer_tick preserves the
-; rest by ABI. 9 pushes on top of the CPU's 5-qword frame leave RSP 16-byte
-; aligned at the `call`, as the ABI requires.
+; The pushed frame matches init_task_stack()'s layout exactly (error, int_no,
+; then 15 GPRs), which is what makes a thread built there resumable here.
 ; ---------------------------------------------------------------------------
-extern ap_timer_tick
+extern ap_scheduler_tick
 
 global ap_timer_stub
 ap_timer_stub:
-    push rax
-    push rcx
-    push rdx
-    push rsi
-    push rdi
-    push r8
-    push r9
-    push r10
-    push r11
-    call ap_timer_tick
-    pop r11
-    pop r10
-    pop r9
-    pop r8
-    pop rdi
-    pop rsi
-    pop rdx
-    pop rcx
-    pop rax
+    push 0                       ; error code (none for this vector)
+    push 0x40                    ; int_no = AP_TIMER_VECTOR
+    SAVE_REGS
+    mov [gs:CPU_SAVED_RSP], rsp  ; where the interrupted thread resumes
+    call ap_scheduler_tick       ; counts the tick, EOIs, picks the next thread
+    mov rsp, [gs:CPU_NEXT_RSP]   ; ...and here is where we go
+    RESTORE_REGS
+    add rsp, 16                  ; drop int_no + error
     iretq
 
 ; Spurious LAPIC interrupt. It takes no EOI by design — the only job here is to

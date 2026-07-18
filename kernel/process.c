@@ -1,10 +1,17 @@
 #include "kernel.h"
+#include "spinlock.h"
 
 extern process_t* process_table[MAX_PROCESSES];
 extern int process_count;
 static uint64_t next_pid = 1;
 
 int current_idx = 0;
+
+// Guards the SHAPE of process_table — the entries array and process_count —
+// against a core scanning it while another appends or swap-removes. It does NOT
+// guard the contents of a process_t: each task is owned by the one CPU pinned to
+// it (p->sched_cpu), so nothing else writes its stack or state.
+spinlock_t sched_lock = SPINLOCK_INIT;
 
 void init_process(void) {
     memset_asm(process_table, 0, sizeof(process_table));
@@ -105,7 +112,18 @@ process_t* create_process(const char* name, void* entry, uint64_t flags) {
             return NULL;
         }
     }
+    uint64_t fl = spin_lock_irqsave(&sched_lock);
     process_table[process_count++] = p;
+    spin_unlock_irqrestore(&sched_lock, fl);
+    return p;
+}
+
+// Create a kernel thread that only the given CPU will ever run. Pinning is the
+// whole mutual-exclusion story for AP scheduling: no other core looks at a task
+// whose sched_cpu isn't its own, so two cores can never pick the same one.
+process_t* create_kernel_thread_on_cpu(const char* name, void* entry, int cpu) {
+    process_t* p = create_process(name, entry, 0);
+    if (p) p->sched_cpu = (int32_t)cpu;
     return p;
 }
 
@@ -461,7 +479,7 @@ int do_futex(uint64_t uaddr, int op, uint32_t val) {
     // and the park are atomic w.r.t. a waker on this core — no lost wakeup. Parking
     // sti's, so save/restore the shared user_cr3/user_rsp globals around it exactly like
     // do_waitpid, or another task's syscall would clobber our return path.
-    uint64_t saved_cr3 = user_cr3, saved_rsp = user_rsp;
+    uint64_t saved_cr3 = user_cr3, s_ursp = user_rsp;   /* s_ursp: saved_rsp is now a per-CPU accessor */
     for (;;) {
         __asm__ volatile("cli");
         if (*(volatile uint32_t*)key != val) { __asm__ volatile("sti"); break; }  // changed
@@ -475,7 +493,7 @@ int do_futex(uint64_t uaddr, int op, uint32_t val) {
     self->futex_key = 0;
     self->state     = PROC_RUN;
     user_cr3 = saved_cr3;
-    user_rsp = saved_rsp;
+    user_rsp = s_ursp;
     return 0;
 }
 
@@ -736,10 +754,9 @@ process_t* get_current_process(void) {
     return NULL;
 }
 
-// Global variables for assembly-level context switching
-uint64_t saved_rsp = 0;
-uint64_t next_rsp = 0;
-uint64_t next_cr3 = 0;
+// saved_rsp/next_rsp/next_cr3 used to be globals here. They are per-CPU slots as
+// of v5.8.92 (kernel.h maps these names onto cpu_self()), because a second core
+// scheduling would otherwise have overwritten the BSP's switch mid-flight.
 
 // Preemptive round-robin scheduling over KERNEL threads (page_directory==NULL).
 // Wiring: irq_common (isr_stubs.asm) saves the interrupted context, stores its
@@ -864,6 +881,7 @@ void irq_scheduler_tick(void) {
         if (!p || p->state != PROC_RUN) continue;
         if (p == idle_proc) continue;
         if (p->stack == NULL) continue;
+        if (p->sched_cpu != 0) continue;      // pinned to an AP — that core's job
         if (p->page_directory != NULL && !p->sched_managed) continue;
         current_idx = idx;
         p->sched_quantum = p->sched_weight ? p->sched_weight : 1;   // start its turn
@@ -904,11 +922,14 @@ void reap_zombies(void) {
             free_page_directory((uint64_t*)p->page_directory);
         if (p->kernel_stack) kfree((void*)((uintptr_t)p->kernel_stack - 4096));
         // Swap-remove, keeping current_idx pointing at the same live proc if the
-        // one we moved happened to be the current thread.
+        // one we moved happened to be the current thread. Under sched_lock: an AP
+        // may be scanning this array right now.
+        uint64_t sfl = spin_lock_irqsave(&sched_lock);
         int last = --process_count;
         process_table[i] = process_table[last];
         process_table[last] = NULL;
         if (current_idx == last) current_idx = i;
+        spin_unlock_irqrestore(&sched_lock, sfl);
         kfree(p);
         i--;                                            // re-examine the swapped-in slot
     }

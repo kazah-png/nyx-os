@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.8.91"
+#define KERNEL_VERSION "5.8.92"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -345,6 +345,11 @@ typedef struct process {
     uint32_t stopped_reported; // 1 = this stop was already reported to the parent's waitpid(WUNTRACED)
     uint32_t sched_weight;   // ticks per turn in the weighted round-robin (0 => 1)
     uint32_t sched_quantum;  // ticks left in the current turn (scheduler-internal)
+    // Which CPU may run this task. 0 (the memset default, so every existing task
+    // keeps its behaviour) = the BSP; N > 0 = that AP, exclusively. Pinning is
+    // what keeps two cores from picking the same task — no core but N will even
+    // look at it, so no "currently running on" flag is needed.
+    int32_t  sched_cpu;
     int      exit_code;      // status passed to SYS_EXIT, collected by kwait()
     // Per-process file-descriptor table: opaque small ints (UFD_BASE + slot) each
     // mapping to an internal VFS handle + byte offset. Isolated per process and
@@ -812,7 +817,16 @@ void init_memory(uint64_t mem_size, const mb_mmap_entry_t* mmap, int mmap_count)
 #define user_cr3          (cpu_self()->sc_user_cr3)
 #define syscall_frame_ptr (cpu_self()->sc_frame_ptr)
 
+/* The context-switch hand-off slots, per-CPU as of v5.8.92: the ISR parks the
+ * interrupted RSP in saved_rsp, the scheduler answers with next_rsp/next_cr3.
+ * One shared set was fine while only the BSP ever switched; with a second core
+ * scheduling, they would have described each other's switch. */
+#define saved_rsp         (cpu_self()->sc_saved_rsp)
+#define next_rsp          (cpu_self()->sc_next_rsp)
+#define next_cr3          (cpu_self()->sc_next_cr3)
+
 uint32_t get_free_pages(void); // free physical frames (SMP stress invariant)
+process_t* create_kernel_thread_on_cpu(const char* name, void* entry, int cpu);
 void enable_smep_smap(void);   // CR4.SMEP/SMAP if the CPU supports them (kernel.c)
 int  cpu_apply_smep_smap(void); // same, silent + returns bit0=SMEP bit1=SMAP (APs use this)
 void* kmalloc(size_t size);
