@@ -311,7 +311,9 @@ extern uint64_t user_cr3;
 #define PT_ADDR_2M 0x000FFFFFFFE00000ULL
 #define PT_ADDR_1G 0x000FFFFFC0000000ULL
 
-static uint64_t user_v2p(uint64_t vaddr) {
+/* Non-static: do_futex (process.c) keys its wait queue by the word's physical address,
+ * so every task sharing the page agrees on the key. */
+uint64_t user_v2p(uint64_t vaddr) {
     if (!user_cr3) return 0;
     uint64_t* pml4 = (uint64_t*)(user_cr3 & PT_ADDR_4K);
     uint64_t e = pml4[(vaddr >> 39) & 0x1FF];
@@ -746,6 +748,17 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
             printf("[EXEC] Loaded %s as PID %lu\n", path, new_proc->pid);
             return (uint64_t)new_proc->pid;
         }
+        case SYS_CLONE:
+            // clone(fn, stack, arg, flags): with CLONE_VM this starts a THREAD — a
+            // scheduled ring-3 task SHARING our address space (same PML4, no COW copy)
+            // that runs fn(arg) on the caller-supplied stack with its own kernel stack.
+            // Returns the new tid, or -1 (including when CLONE_VM is absent: use fork).
+            return (uint64_t)(int64_t)do_clone(a1, a2, a3, a4);
+        case SYS_FUTEX:
+            // futex(uaddr, op, val): FUTEX_WAIT blocks while *uaddr == val (returning at
+            // once if it already differs — that compare-and-sleep is what makes a lock
+            // race-free); FUTEX_WAKE wakes up to `val` waiters and returns how many.
+            return (uint64_t)(int64_t)do_futex(a1, (int)a2, (uint32_t)a3);
         case SYS_FORK:
             // COW-clone the caller. Returns the child's pid to the parent and 0 in
             // the child (baked into the child's resume frame by do_fork), -1 on error.

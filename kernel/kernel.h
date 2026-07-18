@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.8.86"
+#define KERNEL_VERSION "5.8.87"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -123,6 +123,24 @@ typedef __builtin_va_list va_list;
 #define SYS_GETPPID  47   /* getppid() */
 #define SYS_DUP      48   /* dup(oldfd) — lowest-available fd aliasing oldfd */
 #define SYS_RENAME   49   /* rename(oldpath, newpath) — VFS move/rename */
+#define SYS_CLONE    50   /* clone(fn, stack, arg, flags) — CLONE_VM thread */
+#define SYS_FUTEX    51   /* futex(uaddr, op, val) — FUTEX_WAIT / FUTEX_WAKE */
+
+/* ------------------------------------------------------------------ */
+/*  Threads (v5.8.87) — clone(CLONE_VM) + futex                        */
+/* ------------------------------------------------------------------ */
+/* CLONE_VM: the new task SHARES the caller's address space (same PML4) instead of
+ * getting a COW copy — i.e. a real thread. It runs `fn(arg)` on the caller-supplied
+ * `stack` (top of a userspace-allocated block) with its own kernel stack. Without
+ * CLONE_VM, clone() is refused (use fork() for a separate address space). */
+#define CLONE_VM     0x00000100UL
+
+/* futex ops. WAIT blocks the caller while *uaddr == val (returns immediately if it
+ * differs — the classic race-free compare-and-block); WAKE wakes up to `val` waiters
+ * on that address. The wait queue is keyed by the PHYSICAL address of the word, so it
+ * works across every task sharing the page. */
+#define FUTEX_WAIT   0
+#define FUTEX_WAKE   1
 
 /* SYS_TTYMODE modes. Canonical: read(0) returns a full line, echoed + backspace-
  * edited by the kernel. Raw: read(0) returns bytes as they arrive, NO echo, and
@@ -318,6 +336,7 @@ typedef struct process {
                              // resume it on the KERNEL CR3, since -mcmodel=large kernel
                              // code runs at low link addresses only mapped there
     uint32_t wake_tick;      // tick_count to wake a sleep()-blocked proc (0 = not sleeping)
+    uint64_t futex_key;      // physical address this proc is FUTEX_WAIT-blocked on (0 = not)
     uint32_t stop_sig;       // job control: signal that stopped us (SIGTSTP/SIGSTOP), 0 = not stopped
     uint32_t stopped_reported; // 1 = this stop was already reported to the parent's waitpid(WUNTRACED)
     uint32_t sched_weight;   // ticks per turn in the weighted round-robin (0 => 1)
@@ -732,7 +751,7 @@ void init_idt(void);
 void idt_set_gate(uint8_t num, uint64_t base, uint16_t sel, uint8_t flags);
 void idt_set_gate_ist(uint8_t num, uint64_t base, uint16_t sel, uint8_t flags, uint8_t ist);
 
-// User ring-3 stack (v5.8.86: demand-grown with a guard page). The TOP page is at
+// User ring-3 stack (v5.8.87: demand-grown with a guard page). The TOP page is at
 // USER_STACK_TOP (the SysV entry frame sits at its top); the stack grows DOWN. Only
 // USER_STACK_INIT_PAGES are committed at load (elf_load_image / create_user_process);
 // vm_handle_fault materialises further pages on touch, down to a floor of
@@ -902,6 +921,12 @@ void preempt_enable(void);
 int  spawn_user_path(const char* path);
 int  spawn_user_path_args(const char* path, char* const* argv, int argc); // spawn + forward argv
 void reap_zombies(void);
+int do_clone(uint64_t fn, uint64_t stack, uint64_t arg, uint64_t flags); // CLONE_VM thread
+int do_futex(uint64_t uaddr, int op, uint32_t val);                     // FUTEX_WAIT/WAKE
+// Does any live task OTHER than `except` still use this address space? CLONE_VM threads
+// share one PML4, so only the last one out may free_page_directory() it.
+int addr_space_shared(void* pml4, struct process* except);
+uint64_t user_v2p(uint64_t vaddr);   // user VA -> physical (syscall.c); futex queue key
 // Block the current thread until child `pid` exits; returns its exit code (or -1
 // if there is no such process). Used by `exec` to run a foreground job.
 int  kwait(uint32_t pid);

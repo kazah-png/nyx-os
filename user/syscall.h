@@ -51,6 +51,14 @@
 #define SYS_GETPPID  47
 #define SYS_DUP      48
 #define SYS_RENAME   49
+#define SYS_CLONE    50
+#define SYS_FUTEX    51
+
+/* Threads (v5.8.87). CLONE_VM makes the new task SHARE this address space — a real
+ * thread — instead of getting fork()'s copy-on-write duplicate. */
+#define CLONE_VM     0x00000100UL
+#define FUTEX_WAIT   0
+#define FUTEX_WAKE   1
 
 #define TTY_CANON   0   /* kernel line discipline: echoed, backspace-edited lines */
 #define TTY_RAW     1   /* byte-at-a-time, no echo, arrows as ESC [ A/B/C/D */
@@ -413,6 +421,26 @@ static inline int dup(int oldfd) {
  * Returns 0, or -1 if the source is missing or the move didn't land. */
 static inline int rename(const char* oldpath, const char* newpath) {
     return (int)syscall2(SYS_RENAME, (long)oldpath, (long)newpath);
+}
+
+/* --- Threads (clone + futex) ----------------------------------------------- */
+/* clone(fn, stack_top, arg, CLONE_VM): start a THREAD sharing this address space.
+ * It runs fn(arg) on `stack_top` (the HIGH end of a block you own — the stack grows
+ * down from there; 16-byte alignment keeps the SysV ABI happy). Returns the new tid,
+ * or -1. The thread must finish with exit() — it never "returns" anywhere.
+ * Without CLONE_VM this fails: use fork() for a separate address space. */
+static inline int clone(void* fn, void* stack_top, void* arg, unsigned long flags) {
+    return (int)syscall4(SYS_CLONE, (long)fn, (long)stack_top, (long)arg, (long)flags);
+}
+
+/* futex_wait(uaddr, val): sleep while *uaddr == val. Returns immediately (0) if the
+ * value already differs — that compare-and-sleep is what makes a lock race-free. */
+static inline int futex_wait(volatile int* uaddr, int val) {
+    return (int)syscall3(SYS_FUTEX, (long)uaddr, FUTEX_WAIT, (long)val);
+}
+/* futex_wake(uaddr, n): wake up to n waiters on uaddr; returns how many were woken. */
+static inline int futex_wake(volatile int* uaddr, int n) {
+    return (int)syscall3(SYS_FUTEX, (long)uaddr, FUTEX_WAKE, (long)n);
 }
 
 /* --- TCP sockets (SOCK_STREAM only for now) -------------------------------- */

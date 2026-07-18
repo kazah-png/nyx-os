@@ -283,6 +283,160 @@ int do_fork(void) {
     return (int)child->pid;
 }
 
+// Build a THREAD's kernel stack: like init_user_task_stack, but the ring-3 context
+// starts at `entry` on the caller-supplied `user_stack_top` with RDI = arg, so the
+// thread enters as fn(arg) under the SysV ABI. The 15-GPR SAVE_REGS block is pushed
+// high->low (rax,rbx,rcx,rdx,rsi,rdi,rbp,r8..r15), so RDI is the 6th push.
+static int init_thread_task_stack(process_t* proc, void* entry, void* user_stack_top,
+                                  uint64_t arg) {
+    void* stack_mem = kmalloc(4096);
+    if (!stack_mem) return -1;
+    uint64_t* sp = (uint64_t*)((uintptr_t)stack_mem + 4096);
+
+    *--sp = USER_DS;                                   // ss
+    *--sp = (uint64_t)(uintptr_t)user_stack_top;       // rsp = the thread's own stack
+    *--sp = 0x202;                                     // rflags (IF set)
+    *--sp = USER_CS;                                   // cs
+    *--sp = (uint64_t)(uintptr_t)entry;                // rip = fn
+    *--sp = 0;                                         // error code
+    *--sp = 32;                                        // int number (irq0)
+
+    *--sp = 0;      // rax
+    *--sp = 0;      // rbx
+    *--sp = 0;      // rcx
+    *--sp = 0;      // rdx
+    *--sp = 0;      // rsi
+    *--sp = arg;    // rdi <- fn's first argument
+    *--sp = 0;      // rbp
+    *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0;        // r8..r11
+    *--sp = 0; *--sp = 0; *--sp = 0; *--sp = 0;        // r12..r15
+
+    // Higher-half alias, same reasoning as init_user_task_stack (we resume on the
+    // thread's own CR3, where only the PML4[511] kernel mirror maps kernel memory).
+    proc->stack = (void*)((uintptr_t)sp + KERNEL_BASE);
+    proc->kernel_stack = (void*)((uintptr_t)stack_mem + 4096);
+    return 0;
+}
+
+// With CLONE_VM, several process_t entries share ONE address space (the same PML4).
+// Only the LAST task out may release it, so every free_page_directory site asks this
+// first: does any OTHER live entry still point at this PML4?
+int addr_space_shared(void* pml4, process_t* except) {
+    if (!pml4) return 0;
+    for (int i = 0; i < process_count; i++) {
+        process_t* p = process_table[i];
+        if (p && p != except && p->page_directory == pml4) return 1;
+    }
+    return 0;
+}
+
+// clone(fn, stack, arg, CLONE_VM) — create a THREAD: a scheduled ring-3 task that
+// SHARES the caller's address space instead of getting a COW copy, running fn(arg) on
+// the caller-supplied stack with its own kernel stack. Returns the new tid (pid), or
+// -1. Without CLONE_VM we refuse (fork() is the separate-address-space primitive).
+int do_clone(uint64_t fn, uint64_t stack, uint64_t arg, uint64_t flags) {
+    process_t* self = get_current_process();
+    if (!self || !self->page_directory) return -1;      // ring-3 tasks only
+    if (!(flags & CLONE_VM)) return -1;                  // threads only for now
+    if (!fn || !stack) return -1;
+    if (process_count >= MAX_PROCESSES) return -1;
+
+    process_t* t = (process_t*)kmalloc(sizeof(process_t));
+    if (!t) return -1;
+    memset_asm(t, 0, sizeof(process_t));
+    t->pid   = next_pid++;
+    t->ppid  = self->pid;
+    t->state = PROC_RUN;
+    t->page_directory = self->page_directory;   // <- THE thread property: shared VM
+    t->program_break  = self->program_break;
+    t->heap_start     = self->heap_start;
+    strncpy(t->comm, self->comm, 31); t->comm[31] = '\0';
+    for (int i = 0; i < NSIG; i++) t->sig_handlers[i] = self->sig_handlers[i];
+    t->sig_mask       = self->sig_mask;
+    t->sig_trampoline = self->sig_trampoline;
+    // Copy the VMA table so the thread can demand-fault mappings that already exist in
+    // the shared space, but hand it NO file_buf ownership: those snapshot buffers belong
+    // to the creator, and a sibling's munmap/exit must not double-free them.
+    for (int i = 0; i < PROC_MAX_VMAS; i++) {
+        t->mmap_vmas[i] = self->mmap_vmas[i];
+        t->mmap_vmas[i].file_buf = 0;
+        t->mmap_vmas[i].file_size = 0;
+    }
+    t->mmap_next = self->mmap_next;
+    strncpy(t->cwd, self->cwd, sizeof(t->cwd) - 1);
+    t->cwd[sizeof(t->cwd) - 1] = '\0';
+    // Inherit pipe fds with a refcount bump, exactly as fork does.
+    for (int i = 0; i < PROC_MAX_FDS; i++) {
+        if (self->ufd_inuse[i] && (self->ufd_handle[i] & UFD_PIPE_FLAG)) {
+            t->ufd_inuse[i]  = 1;
+            t->ufd_handle[i] = self->ufd_handle[i];
+            t->ufd_offset[i] = 0;
+            pipe_incref(UFD_PIPE_ID(self->ufd_handle[i]),
+                        UFD_PIPE_IS_WRITE(self->ufd_handle[i]));
+        }
+    }
+
+    if (init_thread_task_stack(t, (void*)fn, (void*)stack, arg) < 0) { kfree(t); return -1; }
+
+    self->sched_managed = 1;
+    t->sched_managed    = 1;
+    t->sched_weight     = self->sched_weight;
+    process_table[process_count++] = t;
+    sched_enable();
+    return (int)t->pid;
+}
+
+// futex(uaddr, op, val) — the sleep/wake primitive threads build mutexes on.
+//   FUTEX_WAIT: block while *uaddr == val (returns at once if it already differs, which
+//               is what makes the lock's compare-and-sleep race-free).
+//   FUTEX_WAKE: wake up to `val` waiters, returning how many were woken.
+// The queue is keyed by the word's PHYSICAL address (user_v2p), so every task mapping
+// that page agrees on the key. The word itself is read through the identity map — the
+// same supervisor path copy_to_user uses, so this stays SMEP/SMAP-clean.
+int do_futex(uint64_t uaddr, int op, uint32_t val) {
+    extern uint64_t user_cr3, user_rsp;
+    process_t* self = get_current_process();
+    if (!self || !self->page_directory) return -1;
+    if (uaddr & 3) return -1;                       // futex words must be 4-byte aligned
+    uint64_t key = user_v2p(uaddr);
+    if (!key) return -1;                            // unmapped user word
+
+    if (op == FUTEX_WAKE) {
+        int woken = 0;
+        for (int i = 0; i < process_count && woken < (int)val; i++) {
+            process_t* p = process_table[i];
+            if (p && p->state == PROC_BLOCKED && p->futex_key == key) {
+                p->futex_key = 0;
+                p->state     = PROC_RUN;
+                woken++;
+            }
+        }
+        return woken;
+    }
+    if (op != FUTEX_WAIT) return -1;
+
+    // Compare-and-block. We are inside a syscall with interrupts masked, so the compare
+    // and the park are atomic w.r.t. a waker on this core — no lost wakeup. Parking
+    // sti's, so save/restore the shared user_cr3/user_rsp globals around it exactly like
+    // do_waitpid, or another task's syscall would clobber our return path.
+    uint64_t saved_cr3 = user_cr3, saved_rsp = user_rsp;
+    for (;;) {
+        __asm__ volatile("cli");
+        if (*(volatile uint32_t*)key != val) { __asm__ volatile("sti"); break; }  // changed
+        self->blocked_in_kernel = 1;                // resume us on the KERNEL CR3
+        self->state     = PROC_BLOCKED;
+        self->futex_key = key;
+        __asm__ volatile("sti; hlt");
+        self->blocked_in_kernel = 0;
+        if (self->futex_key == 0) break;            // a real FUTEX_WAKE released us
+    }
+    self->futex_key = 0;
+    self->state     = PROC_RUN;
+    user_cr3 = saved_cr3;
+    user_rsp = saved_rsp;
+    return 0;
+}
+
 // SYS_EXECVE core: replace the calling process's image with the ELF in [data,size).
 // Set p->comm to the basename of `path`, dropping any leading directories and a
 // trailing ".elf" — so `ps` and `/proc/<pid>/status` show "spin"/"ps"/"init"
@@ -401,7 +555,8 @@ int do_execve(const uint8_t* data, uint32_t size, char* const* kargv, int argc,
     }
     self->mmap_next = 0;
     self->tty_raw = 0;           // new image gets the canonical stdin discipline
-    if (old_pd) free_page_directory(old_pd);
+    // Only release the old space if no sibling CLONE_VM thread is still running in it.
+    if (old_pd && !addr_space_shared(old_pd, self)) free_page_directory(old_pd);
 
     // Build the argv+envp frame on the NEW stack. copy_to_user translates through
     // user_cr3, so point it at the new pd first; the writes land in the fresh
@@ -497,7 +652,8 @@ void reap_user_process(process_t* proc) {
         }
     }
     mmap_free_bufs(proc);
-    if (proc->page_directory) free_page_directory((uint64_t*)proc->page_directory);
+    if (proc->page_directory && !addr_space_shared(proc->page_directory, proc))
+        free_page_directory((uint64_t*)proc->page_directory);
     if (proc->kernel_stack) kfree((void*)((uintptr_t)proc->kernel_stack - 4096));
     kfree(proc);
 }
@@ -703,7 +859,8 @@ void reap_zombies(void) {
         if (par && par->page_directory && par->state != PROC_ZOMBIE) continue;
         close_proc_fds(p);                              // close any fds it left open
         mmap_free_bufs(p);
-        if (p->page_directory) free_page_directory((uint64_t*)p->page_directory);
+        if (p->page_directory && !addr_space_shared(p->page_directory, p))
+            free_page_directory((uint64_t*)p->page_directory);
         if (p->kernel_stack) kfree((void*)((uintptr_t)p->kernel_stack - 4096));
         // Swap-remove, keeping current_idx pointing at the same live proc if the
         // one we moved happened to be the current thread.
@@ -767,7 +924,8 @@ int do_waitpid(int wpid, int* out_code, int options) {
             result = (int)child->pid;
             close_proc_fds(child);
             mmap_free_bufs(child);
-            if (child->page_directory) free_page_directory((uint64_t*)child->page_directory);
+            if (child->page_directory && !addr_space_shared(child->page_directory, child))
+                free_page_directory((uint64_t*)child->page_directory);
             if (child->kernel_stack) kfree((void*)((uintptr_t)child->kernel_stack - 4096));
             int last = --process_count;                   // swap-remove, keeping current_idx valid
             process_table[zi] = process_table[last];
