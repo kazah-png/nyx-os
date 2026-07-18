@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.8.87"
+#define KERNEL_VERSION "5.8.88"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -127,7 +127,7 @@ typedef __builtin_va_list va_list;
 #define SYS_FUTEX    51   /* futex(uaddr, op, val) — FUTEX_WAIT / FUTEX_WAKE */
 
 /* ------------------------------------------------------------------ */
-/*  Threads (v5.8.87) — clone(CLONE_VM) + futex                        */
+/*  Threads (v5.8.88) — clone(CLONE_VM) + futex                        */
 /* ------------------------------------------------------------------ */
 /* CLONE_VM: the new task SHARES the caller's address space (same PML4) instead of
  * getting a COW copy — i.e. a real thread. It runs `fn(arg)` on the caller-supplied
@@ -337,6 +337,10 @@ typedef struct process {
                              // code runs at low link addresses only mapped there
     uint32_t wake_tick;      // tick_count to wake a sleep()-blocked proc (0 = not sleeping)
     uint64_t futex_key;      // physical address this proc is FUTEX_WAIT-blocked on (0 = not)
+    uint32_t tgid;           // thread group: pid of the LEADER that owns this group's shared
+                             // heap/VMA state (0 or == own pid => this task IS the leader).
+                             // CLONE_VM threads defer to it via tg_leader(), so sbrk/mmap
+                             // performed by ANY thread are seen by all of them.
     uint32_t stop_sig;       // job control: signal that stopped us (SIGTSTP/SIGSTOP), 0 = not stopped
     uint32_t stopped_reported; // 1 = this stop was already reported to the parent's waitpid(WUNTRACED)
     uint32_t sched_weight;   // ticks per turn in the weighted round-robin (0 => 1)
@@ -751,7 +755,7 @@ void init_idt(void);
 void idt_set_gate(uint8_t num, uint64_t base, uint16_t sel, uint8_t flags);
 void idt_set_gate_ist(uint8_t num, uint64_t base, uint16_t sel, uint8_t flags, uint8_t ist);
 
-// User ring-3 stack (v5.8.87: demand-grown with a guard page). The TOP page is at
+// User ring-3 stack (v5.8.88: demand-grown with a guard page). The TOP page is at
 // USER_STACK_TOP (the SysV entry frame sits at its top); the stack grows DOWN. Only
 // USER_STACK_INIT_PAGES are committed at load (elf_load_image / create_user_process);
 // vm_handle_fault materialises further pages on touch, down to a floor of
@@ -927,6 +931,10 @@ int do_futex(uint64_t uaddr, int op, uint32_t val);                     // FUTEX
 // share one PML4, so only the last one out may free_page_directory() it.
 int addr_space_shared(void* pml4, struct process* except);
 uint64_t user_v2p(uint64_t vaddr);   // user VA -> physical (syscall.c); futex queue key
+// Resolve the task that owns this thread group's SHARED heap/VMA state. A CLONE_VM
+// thread returns its leader; anything else returns itself. Every sbrk/mmap/VMA lookup
+// goes through this, so the whole group sees one heap and one mmap table.
+struct process* tg_leader(struct process* p);
 // Block the current thread until child `pid` exits; returns its exit code (or -1
 // if there is no such process). Used by `exec` to run a foreground job.
 int  kwait(uint32_t pid);

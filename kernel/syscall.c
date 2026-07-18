@@ -657,7 +657,11 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
             return cur ? cur->pid : 0;
         }
         case SYS_SBRK: {
-            process_t* cur = get_cur_proc();
+            // Resolve to the thread-group leader: every CLONE_VM thread shares ONE heap,
+            // so a sbrk from any of them must move — and be seen through — the same break.
+            // Without this each thread bumped its own copy and they handed out overlapping
+            // regions (multi-threaded malloc corruption).
+            process_t* cur = tg_leader(get_cur_proc());
             if (!cur) return -1;
             int64_t inc = (int64_t)a1;
             uint64_t old_brk = cur->program_break;

@@ -316,8 +316,11 @@ int vm_handle_fault(uint64_t cr2, uint64_t err) {
     // moved the break without allocating, so materialise a fresh zeroed page now.
     // This runs BEFORE the pte_ptr walk below because a brand-new heap page has no
     // page-table entry (nor intermediate tables) yet; map_page_dir creates them.
-    if ((err & 0x4) && !(err & 0x1) && p && p->page_directory &&
-        cr2 >= p->heap_start && cr2 < p->program_break) {
+    // The heap window belongs to the THREAD GROUP: a page sbrk'd by one thread must
+    // fault in for any sibling that touches it, so test the leader's window, not ours.
+    process_t* mm = tg_leader(p);
+    if ((err & 0x4) && !(err & 0x1) && p && p->page_directory && mm &&
+        cr2 >= mm->heap_start && cr2 < mm->program_break) {
         void* page = alloc_page();
         if (!page) return 0;
         memset_asm((void*)(uint64_t)page, 0, PAGE_SIZE);

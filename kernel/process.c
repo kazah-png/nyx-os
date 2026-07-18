@@ -330,6 +330,42 @@ int addr_space_shared(void* pml4, process_t* except) {
     return 0;
 }
 
+// The task owning this thread group's SHARED heap/VMA state. Threads carry the leader's
+// pid in `tgid` (a pid, not a pointer, so an exited leader can never dangle); resolving
+// by lookup falls back to self if the leader is already gone.
+process_t* tg_leader(process_t* p) {
+    if (!p || !p->tgid || p->tgid == p->pid) return p;
+    process_t* l = find_process(p->tgid);
+    return l ? l : p;
+}
+
+// Called just before a task is freed. If it led a thread group, hand the shared heap +
+// mmap state (including file_buf OWNERSHIP, so the dying leader won't free it out from
+// under them) to a surviving member and re-point the rest at that heir — the group stays
+// coherent even when the main thread exits first.
+static void tg_reassign_leader(process_t* dying) {
+    if (!dying) return;
+    process_t* heir = NULL;
+    for (int i = 0; i < process_count; i++) {
+        process_t* p = process_table[i];
+        if (p && p != dying && p->tgid == dying->pid) { heir = p; break; }
+    }
+    if (!heir) return;                       // no surviving threads: nothing to hand over
+    heir->program_break = dying->program_break;
+    heir->heap_start    = dying->heap_start;
+    for (int i = 0; i < PROC_MAX_VMAS; i++) {
+        heir->mmap_vmas[i] = dying->mmap_vmas[i];   // heir takes the buffers...
+        dying->mmap_vmas[i].file_buf  = 0;          // ...so mmap_free_bufs must skip them
+        dying->mmap_vmas[i].file_size = 0;
+    }
+    heir->mmap_next = dying->mmap_next;
+    for (int i = 0; i < process_count; i++) {
+        process_t* p = process_table[i];
+        if (p && p != dying && p->tgid == dying->pid) p->tgid = heir->pid;
+    }
+    heir->tgid = 0;                          // the heir leads the group now
+}
+
 // clone(fn, stack, arg, CLONE_VM) — create a THREAD: a scheduled ring-3 task that
 // SHARES the caller's address space instead of getting a COW copy, running fn(arg) on
 // the caller-supplied stack with its own kernel stack. Returns the new tid (pid), or
@@ -348,6 +384,11 @@ int do_clone(uint64_t fn, uint64_t stack, uint64_t arg, uint64_t flags) {
     t->ppid  = self->pid;
     t->state = PROC_RUN;
     t->page_directory = self->page_directory;   // <- THE thread property: shared VM
+    // Join the creator's thread group (a thread cloning a thread still points at the one
+    // leader). The heap/VMA fields below are only a fallback snapshot: every sbrk/mmap/VMA
+    // lookup resolves through tg_leader(), so the WHOLE group shares one heap and one
+    // mmap table — that's what makes malloc/mmap coherent across threads.
+    t->tgid           = tg_leader(self)->pid;
     t->program_break  = self->program_break;
     t->heap_start     = self->heap_start;
     strncpy(t->comm, self->comm, 31); t->comm[31] = '\0';
@@ -651,6 +692,7 @@ void reap_user_process(process_t* proc) {
             break;
         }
     }
+    tg_reassign_leader(proc);      // hand shared heap/VMA state to a surviving thread first
     mmap_free_bufs(proc);
     if (proc->page_directory && !addr_space_shared(proc->page_directory, proc))
         free_page_directory((uint64_t*)proc->page_directory);
@@ -858,6 +900,7 @@ void reap_zombies(void) {
         process_t* par = find_process(p->ppid);
         if (par && par->page_directory && par->state != PROC_ZOMBIE) continue;
         close_proc_fds(p);                              // close any fds it left open
+        tg_reassign_leader(p);
         mmap_free_bufs(p);
         if (p->page_directory && !addr_space_shared(p->page_directory, p))
             free_page_directory((uint64_t*)p->page_directory);
@@ -923,6 +966,7 @@ int do_waitpid(int wpid, int* out_code, int options) {
             if (out_code) *out_code = child->exit_code;
             result = (int)child->pid;
             close_proc_fds(child);
+            tg_reassign_leader(child);
             mmap_free_bufs(child);
             if (child->page_directory && !addr_space_shared(child->page_directory, child))
                 free_page_directory((uint64_t*)child->page_directory);

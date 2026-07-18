@@ -28,6 +28,7 @@ void mmap_free_bufs(process_t* p) {
 
 /* Find the VMA containing `addr`, or NULL. Called from the #PF handler. */
 vma_t* vma_find(process_t* p, uint64_t addr) {
+    p = tg_leader(p);          /* CLONE_VM threads share the leader's mmap table */
     if (!p) return 0;
     for (int i = 0; i < PROC_MAX_VMAS; i++) {
         vma_t* v = &p->mmap_vmas[i];
@@ -43,7 +44,9 @@ vma_t* vma_find(process_t* p, uint64_t addr) {
 uint64_t do_mmap(uint64_t addr, uint64_t length, int prot, int flags,
                  int file_handle, uint32_t file_size, uint32_t file_off) {
     (void)addr; (void)flags;
-    process_t* p = get_current_process();
+    /* Allocate out of the thread group's SHARED mmap table, so two threads can never
+     * be handed the same region and either can munmap what the other mapped. */
+    process_t* p = tg_leader(get_current_process());
     if (!p || length == 0) return (uint64_t)-1;
     length = (length + 0xFFF) & ~0xFFFULL;              /* round up to whole pages */
     if (p->mmap_next < MMAP_BASE) p->mmap_next = MMAP_BASE;   /* lazy first-use init */
@@ -81,7 +84,8 @@ uint64_t do_mmap(uint64_t addr, uint64_t length, int prot, int flags,
  * stored in overlapping VMAs so pages faulted in later get the new protection.
  * v1 note: a partial mprotect updates the whole overlapping VMA's prot. */
 int do_mprotect(uint64_t addr, uint64_t length, int prot) {
-    process_t* p = get_current_process();
+    /* VMA table is the thread group's (page_directory is shared either way) */
+    process_t* p = tg_leader(get_current_process());
     if (!p || !p->page_directory || length == 0) return -1;
     addr &= ~0xFFFULL;
     length = (length + 0xFFF) & ~0xFFFULL;
@@ -100,7 +104,8 @@ int do_mprotect(uint64_t addr, uint64_t length, int prot) {
  * not supported in v1 — the pages are freed but the VMA record is left intact. */
 int do_munmap(uint64_t addr, uint64_t length) {
     extern void vm_free_range(uint64_t* pml4, uint64_t start, uint64_t end);
-    process_t* p = get_current_process();
+    /* unmap from the group's shared table: a thread may release what a sibling mapped */
+    process_t* p = tg_leader(get_current_process());
     if (!p || !p->page_directory || length == 0) return -1;
     addr &= ~0xFFFULL;
     length = (length + 0xFFF) & ~0xFFFULL;
