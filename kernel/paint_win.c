@@ -5,7 +5,7 @@
 
 #define SWATCH_SIZE 20
 #define SWATCH_PAD 4
-#define COLOR_START_X 120
+#define COLOR_START_X 150
 #define CANVAS_OFFSET_Y (PAINT_TOOLBAR_H + PAINT_STATUS_H)
 
 static uint32_t preset_colors[PAINT_NUM_COLORS];
@@ -27,13 +27,17 @@ static void init_preset_colors(void) {
 }
 
 static void draw_circle(paint_win_t* pw, int cx, int cy, int r) {
+    uint32_t s = 0;
     for (int dy = -r; dy <= r; dy++) {
         for (int dx = -r; dx <= r; dx++) {
             if (dx * dx + dy * dy <= r * r) {
                 int px = cx + dx;
                 int py = cy + dy;
-                if (px >= 0 && px < PAINT_CANVAS_W && py >= 0 && py < PAINT_CANVAS_H)
-                    pw->canvas[py * PAINT_CANVAS_W + px] = pw->brush_color;
+                if (px >= 0 && px < PAINT_CANVAS_W && py >= 0 && py < PAINT_CANVAS_H) {
+                    if (!pw->brush_style) { s = ((px / 8) + (py / 8)) & 1 ? fb_rgb(200,200,200) : fb_rgb(240,240,240); }
+                    else if (pw->brush_style == 1) { s = pw->brush_color; }
+                    pw->canvas[py * PAINT_CANVAS_W + px] = s;
+                }
             }
         }
     }
@@ -61,6 +65,7 @@ paint_win_t* paint_create_ctx(void) {
                 ? fb_rgb(200,200,200) : fb_rgb(240,240,240);
     pw->brush_size = 4;
     pw->brush_color = fb_rgb(0,0,0);
+    pw->brush_style = 1;
     pw->drawing = 0;
     pw->last_x = 0; pw->last_y = 0;
     snprintf(pw->status, sizeof(pw->status), "Brush: %dpx", pw->brush_size);
@@ -101,9 +106,15 @@ void paint_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
 
     // Clear button
     int clr_x = cx + COLOR_START_X + PAINT_NUM_COLORS * (SWATCH_SIZE + SWATCH_PAD) + 10;
-    int clr_w = 60;
+    int clr_w = BUTTONS_WIDTH;
     fb_fill_rect(clr_x, cy + 4, clr_w, PAINT_TOOLBAR_H - 8, fb_rgb(120,40,40));
     font_draw_string(clr_x + 8, cy + (PAINT_TOOLBAR_H - FONT_HEIGHT) / 2, "Clear", fb_rgb(255,220,220), fb_rgb(120,40,40));
+
+    // Erase button
+    int ers_x = cx + COLOR_START_X + PAINT_NUM_COLORS * (SWATCH_SIZE + SWATCH_PAD) + 20 + clr_w;
+    int ers_w = BUTTONS_WIDTH;
+    fb_fill_rect(ers_x, cy + 4, ers_w, PAINT_TOOLBAR_H - 8, fb_rgb(120,40,40));
+    font_draw_string(ers_x + 8, cy + (PAINT_TOOLBAR_H - FONT_HEIGHT) / 2, "Erase", fb_rgb(255,220,220), fb_rgb(120,40,40));
 
     // Canvas area
     int canvas_x = cx + (int)(cw - PAINT_CANVAS_W) / 2;
@@ -136,7 +147,7 @@ void paint_win_click(window_t* win, int mx, int my, int btn) {
     // Left click
     if (btn == 1) {
         // Toolbar clicks
-        if (my >= cy && my < cy + PAINT_TOOLBAR_H) {
+        if (my >= cy && my < cy + PAINT_TOOLBAR_H + TITLE_H) {
             int rx = mx - cx;
 
             // [-] button at 90
@@ -169,6 +180,19 @@ void paint_win_click(window_t* win, int mx, int my, int btn) {
                 snprintf(pw->status, sizeof(pw->status), "Canvas cleared");
                 return;
             }
+
+            // Erase button
+            int ers_x = COLOR_START_X + PAINT_NUM_COLORS * (SWATCH_SIZE + SWATCH_PAD) + 20 + BUTTONS_WIDTH;
+            if (rx >= ers_x && rx < ers_x + BUTTONS_WIDTH) {
+                if (pw->brush_style) {
+                    snprintf(pw->status, sizeof(pw->status), "Erase mode: on");
+                    pw->brush_style = 0;
+                } else {
+                    snprintf(pw->status, sizeof(pw->status), "Erase mode: off");
+                    pw->brush_style = 1;
+                }
+                return;
+            }
             return;
         }
 
@@ -181,9 +205,8 @@ void paint_win_click(window_t* win, int mx, int my, int btn) {
         if (mx >= canvas_x && mx < canvas_x + PAINT_CANVAS_W &&
             my >= canvas_y && my < canvas_y + PAINT_CANVAS_H) {
             int px = mx - canvas_x;
-            int py = my - canvas_y;
+            int py = my - canvas_y - TITLE_H;
             draw_circle(pw, px, py, pw->brush_size / 2);
-            pw->drawing = 1;
             pw->last_x = px;
             pw->last_y = py;
         }
@@ -216,7 +239,7 @@ void paint_win_key(window_t* win, int key) {
 void paint_win_mousemove(window_t* win, int mx, int my, int btns) {
     (void)btns;
     paint_win_t* pw = (paint_win_t*)win->reserved;
-    if (!pw || !pw->drawing) return;
+    if (!pw) return;
     int cx = win->x, cy = win->y;
     uint32_t cw = win->w;
 
@@ -228,7 +251,7 @@ void paint_win_mousemove(window_t* win, int mx, int my, int btns) {
     if (mx >= canvas_x && mx < canvas_x + PAINT_CANVAS_W &&
         my >= canvas_y && my < canvas_y + PAINT_CANVAS_H) {
         int px = mx - canvas_x;
-        int py = my - canvas_y;
+        int py = my - canvas_y - TITLE_H;
         draw_line(pw, pw->last_x, pw->last_y, px, py);
         pw->last_x = px;
         pw->last_y = py;

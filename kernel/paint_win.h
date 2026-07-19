@@ -11,11 +11,13 @@
 #define PAINT_MIN_BRUSH 1
 #define PAINT_MAX_BRUSH 20
 #define PAINT_NUM_COLORS 10
+#define BUTTONS_WIDTH 60
 
 typedef struct {
     uint32_t canvas[PAINT_CANVAS_W * PAINT_CANVAS_H];
     int brush_size;
     uint32_t brush_color;
+    int brush_style;
     int drawing;
     int last_x, last_y;
     char status[64];

@@ -711,7 +711,7 @@ static void do_start_menu_action(int idx) {
                     if (pwin->reserved) {
                         pwin->on_click = paint_win_click;
                         pwin->on_key = paint_win_key;
-                        pwin->on_mousemove = paint_win_mousemove;
+                        pwin->on_pressed = paint_win_mousemove;
                     }
                 }
             }
