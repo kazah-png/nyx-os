@@ -288,29 +288,42 @@ static void pchar(char c) {
     write(1, &ch, 1);
 }
 
-static void print_u64(unsigned long long val, int base, int pad, char padchar) {
+// `left` (the '-' flag) right-pads with spaces instead of left-padding, so the
+// value is left-justified within the field width.
+static void print_u64(unsigned long long val, int base, int pad, char padchar, int left) {
     char buf[32];
-    int i = 0;
-    if (val == 0) { buf[i++] = '0'; }
-    while (val > 0 && i < 31) {
+    int n = 0;
+    if (val == 0) { buf[n++] = '0'; }
+    while (val > 0 && n < 31) {
         int d = val % base;
-        buf[i++] = (d < 10) ? ('0' + d) : ('a' + d - 10);
+        buf[n++] = (d < 10) ? ('0' + d) : ('a' + d - 10);
         val /= base;
     }
-    while (i < pad) buf[i++] = padchar;
-    while (i > 0) pchar(buf[--i]);
+    int digits = n;
+    if (left) {
+        while (n > 0) pchar(buf[--n]);
+        for (int i = digits; i < pad; i++) pchar(' ');
+    } else {
+        for (int i = digits; i < pad; i++) pchar(padchar);
+        while (n > 0) pchar(buf[--n]);
+    }
 }
 
-static void print_int(long long val, int pad, char padchar) {
+static void print_int(long long val, int pad, char padchar, int left) {
     if (val < 0) { pchar('-'); val = -val; }
-    print_u64((unsigned long long)val, 10, pad, padchar);
+    print_u64((unsigned long long)val, 10, pad, padchar, left);
 }
 
-static void print_string(const char* s, int pad, char padchar) {
+static void print_string(const char* s, int pad, char padchar, int left) {
     if (!s) s = "(null)";
     int len = (int)strlen(s);
-    for (int i = 0; i < pad - len; i++) pchar(padchar);
-    for (int i = 0; i < len; i++) pchar(s[i]);
+    if (left) {
+        for (int i = 0; i < len; i++) pchar(s[i]);
+        for (int i = len; i < pad; i++) pchar(' ');
+    } else {
+        for (int i = 0; i < pad - len; i++) pchar(padchar);
+        for (int i = 0; i < len; i++) pchar(s[i]);
+    }
 }
 
 int printf(const char* fmt, ...) {
@@ -321,24 +334,36 @@ int printf(const char* fmt, ...) {
         fmt++;
         int pad = 0;
         char padchar = ' ';
-        if (*fmt == '0') { padchar = '0'; fmt++; }
+        int left = 0;
+        // Flags: '-' (left-justify) and '0' (zero-pad), in any order.
+        for (;;) {
+            if (*fmt == '-') { left = 1; fmt++; }
+            else if (*fmt == '0') { padchar = '0'; fmt++; }
+            else break;
+        }
         while (*fmt >= '0' && *fmt <= '9') { pad = pad * 10 + (*fmt - '0'); fmt++; }
+        if (left) padchar = ' ';   // '-' overrides '0' zero-padding (C standard)
         switch (*fmt) {
             case 'd':
-            case 'i': { int v = va_arg(args, int); print_int(v, pad, padchar); break; }
-            case 'u': { unsigned int v = va_arg(args, unsigned int); print_u64(v, 10, pad, padchar); break; }
+            case 'i': { int v = va_arg(args, int); print_int(v, pad, padchar, left); break; }
+            case 'u': { unsigned int v = va_arg(args, unsigned int); print_u64(v, 10, pad, padchar, left); break; }
+            case 'o': { unsigned int v = va_arg(args, unsigned int); print_u64(v, 8, pad, padchar, left); break; }
             case 'x':
-            case 'X': { unsigned int v = va_arg(args, unsigned int); print_u64(v, 16, pad, padchar); break; }
+            case 'X': { unsigned int v = va_arg(args, unsigned int); print_u64(v, 16, pad, padchar, left); break; }
             case 'l': {
                 fmt++;
-                if (*fmt == 'u') { unsigned long v = va_arg(args, unsigned long); print_u64(v, 10, pad, padchar); }
-                else if (*fmt == 'x' || *fmt == 'X') { unsigned long v = va_arg(args, unsigned long); print_u64(v, 16, pad, padchar); }
-                else if (*fmt == 'd' || *fmt == 'i') { long v = va_arg(args, long); print_int(v, pad, padchar); }
+                if (*fmt == 'u') { unsigned long v = va_arg(args, unsigned long); print_u64(v, 10, pad, padchar, left); }
+                else if (*fmt == 'x' || *fmt == 'X') { unsigned long v = va_arg(args, unsigned long); print_u64(v, 16, pad, padchar, left); }
+                else if (*fmt == 'o') { unsigned long v = va_arg(args, unsigned long); print_u64(v, 8, pad, padchar, left); }
+                else if (*fmt == 'd' || *fmt == 'i') { long v = va_arg(args, long); print_int(v, pad, padchar, left); }
                 break;
             }
-            case 'p': { unsigned long v = va_arg(args, unsigned long); pchar('0'); pchar('x'); print_u64(v, 16, pad - 2, padchar); break; }
-            case 's': { const char* s = va_arg(args, const char*); print_string(s, pad, padchar); break; }
-            case 'c': { int c = va_arg(args, int); pchar((char)c); for (int i = 1; i < pad; i++) pchar(padchar); break; }
+            case 'p': { unsigned long v = va_arg(args, unsigned long); pchar('0'); pchar('x'); print_u64(v, 16, pad - 2, padchar, left); break; }
+            case 's': { const char* s = va_arg(args, const char*); print_string(s, pad, padchar, left); break; }
+            case 'c': { int c = va_arg(args, int);
+                if (left) { pchar((char)c); for (int i = 1; i < pad; i++) pchar(' '); }
+                else { for (int i = 1; i < pad; i++) pchar(padchar); pchar((char)c); }
+                break; }
             case '%': pchar('%'); break;
             default: pchar('%'); pchar(*fmt); break;
         }
