@@ -1153,6 +1153,14 @@ static void settings_win_click(window_t* win, int mx, int my, int btn) {
                     printf("[SETTINGS] Switching to %ux%u...\n", res_modes[i].w, res_modes[i].h);
                     vbe_set_mode(res_modes[i].w, res_modes[i].h, 32);
                     fb_init(res_modes[i].w, res_modes[i].h, 32, (void*)0xE0000000);
+                    // Re-flow the desktop icons for the new width. Without this the
+                    // layout kept the OLD screen's coordinates, so shrinking the
+                    // resolution stranded icons off the right edge with no way to
+                    // reach them. A full re-flow (rather than clamping each icon
+                    // back inside) is what desktops conventionally do on a mode
+                    // change, and it cannot leave two icons stacked on one another
+                    // the way clamping to the edge would.
+                    init_desktop_icons();
                 }
                 return;
             }
@@ -1188,10 +1196,26 @@ static int desktop_icon_actions[] = {0, 3, 1, 2, 4, 7, 8, 11, 12};
 static int desktop_icon_x[NUM_DESKTOP_ICONS];
 static int desktop_icon_y[NUM_DESKTOP_ICONS];
 
+// Lay the icons out as a GRID that wraps on the screen width, instead of the one
+// fixed row this used to be. That row was `20 + i * 76` with no bound: the ninth
+// icon ("Mines") spans x=628..692, so at the 640x480 mode Settings offers it was
+// drawn past the right edge — invisible AND unclickable, since the hit test reads
+// the same coordinates. Nothing shrank the row and nothing re-ran on a mode
+// change, so there was no way to get it back.
+//
+// At 1024x768 this computes 13 columns, so all nine still sit in one row and the
+// default desktop looks exactly as before; only the narrow modes actually wrap.
+#define ICON_CELL_W (ICON_SIZE + ICON_PAD)
+#define ICON_CELL_H (ICON_SIZE + 16 + ICON_PAD)   /* icon + label strip + pad */
+#define ICON_MARGIN 20
+
 static void init_desktop_icons(void) {
+    int fw = (int)fb_get_width();
+    int cols = (fw - ICON_MARGIN) / ICON_CELL_W;
+    if (cols < 1) cols = 1;                       // absurdly narrow: single column
     for (int i = 0; i < NUM_DESKTOP_ICONS; i++) {
-        desktop_icon_x[i] = 20 + i * (ICON_SIZE + ICON_PAD);
-        desktop_icon_y[i] = 20;
+        desktop_icon_x[i] = ICON_MARGIN + (i % cols) * ICON_CELL_W;
+        desktop_icon_y[i] = ICON_MARGIN + (i / cols) * ICON_CELL_H;
     }
 }
 
