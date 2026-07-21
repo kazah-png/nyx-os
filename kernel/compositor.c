@@ -568,7 +568,7 @@ static void draw_workspace_indicator(void) {
     uint32_t fw = fb_get_width(), fh = fb_get_height();
     int y = fh - TASKBAR_H - 10;
     for (int i = 0; i < WORKSPACE_COUNT; i++) {
-        uint32_t c = (i == current_workspace) ? fb_rgb(100,200,100) : fb_rgb(80,80,80);
+        uint32_t c = (i == current_workspace) ? THEME_INDICATOR_ON : THEME_INDICATOR_OFF;
         fb_fill_rect(fw - CLOCK_W - 4 + i * 18, y, 14, 6, c);
     }
 }
@@ -1032,7 +1032,7 @@ static void demo_draw_fn(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch
 
 static void about_draw_fn(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     (void)win; (void)cw; (void)ch;
-    font_draw_string(cx + 10, cy + 10, "NyxOS Desktop", fb_rgb(100,200,100), fb_rgb(35,35,40));
+    font_draw_string(cx + 10, cy + 10, "NyxOS Desktop", THEME_ACCENT, fb_rgb(35,35,40));
     font_draw_string(cx + 10, cy + 30, "Version 0.2.0", fb_rgb(200,200,200), fb_rgb(35,35,40));
     font_draw_string(cx + 10, cy + 60, "A lightweight desktop OS", fb_rgb(160,160,160), fb_rgb(35,35,40));
     font_draw_string(cx + 10, cy + 80, "NyxOS Nightfall", fb_rgb(160,160,160), fb_rgb(35,35,40));

@@ -38,6 +38,16 @@
 #define THEME_TASKBAR_FG    fb_rgb(220, 220, 220)
 #define THEME_TASKBAR_HL    THEME_ACCENT           /* active Menu / focused window */
 
+/* --- Overlays drawn ON the wallpaper -------------------------------------
+ * The workspace indicator sits on the desktop, NOT on the taskbar, and the
+ * wallpaper's base colour is user-selectable (11 options in the Wallpaper app).
+ * So these must NOT use the accent: brand purple on the default purple
+ * wallpaper made the ACTIVE marker nearly invisible while the inactive greys
+ * stood out — exactly backwards. Caught by zooming a screenshot, not by reading
+ * the diff. Light-vs-dark is the only pair that survives every wallpaper. */
+#define THEME_INDICATOR_ON  fb_rgb(240, 240, 245)
+#define THEME_INDICATOR_OFF fb_rgb( 80,  80,  80)
+
 /* --- Selection / text ---------------------------------------------------- */
 #define THEME_SELECTION     THEME_ACCENT
 #define THEME_TEXT          fb_rgb(230, 230, 240)
