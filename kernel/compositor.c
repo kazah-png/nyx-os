@@ -1,5 +1,6 @@
 #include "kernel.h"
 #include "compositor.h"
+#include "theme.h"
 #include "font.h"
 #include "terminal_win.h"
 #include "fileman_win.h"
@@ -344,14 +345,15 @@ static void draw_start_menu(void) {
     uint32_t fh = fb_get_height();
     int sm_x = 2, sm_y = fh - TASKBAR_H - START_H;
 
-    fb_fill_rect(sm_x, sm_y, START_W, START_H, fb_rgb(45,45,50));
-    fb_fill_rect(sm_x, sm_y, START_W, 1, fb_rgb(100,100,100));
-    fb_fill_rect(sm_x, sm_y + START_H - 1, START_W, 1, fb_rgb(100,100,100));
-    fb_fill_rect(sm_x, sm_y, 1, START_H, fb_rgb(100,100,100));
-    fb_fill_rect(sm_x + START_W - 1, sm_y, 1, START_H, fb_rgb(100,100,100));
+    fb_fill_rect(sm_x, sm_y, START_W, START_H, THEME_WINDOW_BG);
+    fb_fill_rect(sm_x, sm_y, START_W, 1, THEME_BORDER);
+    fb_fill_rect(sm_x, sm_y + START_H - 1, START_W, 1, THEME_BORDER);
+    fb_fill_rect(sm_x, sm_y, 1, START_H, THEME_BORDER);
+    fb_fill_rect(sm_x + START_W - 1, sm_y, 1, START_H, THEME_BORDER);
 
-    fb_fill_rect(sm_x, sm_y, START_W, START_HDR_H, fb_rgb(60,120,60));
-    font_draw_string(sm_x + 8, sm_y + 4, "NyxOS Menu", fb_rgb(255,255,255), fb_rgb(60,120,60));
+    // Brand header — the accent purple, not the old placeholder green.
+    fb_fill_rect(sm_x, sm_y, START_W, START_HDR_H, THEME_ACCENT);
+    font_draw_string(sm_x + 8, sm_y + 4, "NyxOS Menu", THEME_ON_ACCENT, THEME_ACCENT);
 
     // Index order here IS the argument do_start_menu_action() switches on, and
     // start_menu_item_hit() computes that index from the same START_ITEM_*
@@ -365,9 +367,9 @@ static void draw_start_menu(void) {
     for (int i = 0; i < START_ITEM_N; i++) {
         int iy = sm_y + START_ITEM_Y + i * START_ITEM_H;
         if ((uint32_t)(iy + START_ITEM_H) > fh - TASKBAR_H) break;
-        fb_fill_rect(sm_x + 4, iy, START_W - 8, START_ITEM_H - 2, fb_rgb(45,45,50));
-        font_draw_string(sm_x + 12, iy + 5, items[i], fb_rgb(220,220,220), fb_rgb(45,45,50));
-        fb_fill_rect(sm_x + 4, iy + START_ITEM_H - 1, START_W - 8, 1, fb_rgb(55,55,60));
+        fb_fill_rect(sm_x + 4, iy, START_W - 8, START_ITEM_H - 2, THEME_WINDOW_BG);
+        font_draw_string(sm_x + 12, iy + 5, items[i], THEME_TEXT, THEME_WINDOW_BG);
+        fb_fill_rect(sm_x + 4, iy + START_ITEM_H - 1, START_W - 8, 1, THEME_ROW_DIV);
     }
 }
 
@@ -576,6 +578,32 @@ static void draw_workspace_indicator(void) {
 // brightness from ~45% at the top to ~115% at the bottom (clamped), which reads as a
 // soft top-to-bottom glow in whatever hue is selected. The Wallpaper app changes the
 // base color (wallpaper_base_color) and the compositor repaints this on the next frame.
+// Integer sqrt — the kernel has no libm, and the Nightfall moon needs a circle.
+static uint32_t bg_isqrt(uint32_t x) {
+    uint32_t r = 0, b = 1u << 30;
+    while (b > x) b >>= 2;
+    while (b) { if (x >= r + b) { x -= r + b; r = (r >> 1) + b; } else r >>= 1; b >>= 2; }
+    return r;
+}
+
+// Filled circle by horizontal spans (clipped to the framebuffer).
+static void bg_fill_circle(int cx, int cy, int rad, uint32_t col) {
+    uint32_t fw = fb_get_width(), fh = fb_get_height();
+    for (int dy = -rad; dy <= rad; dy++) {
+        int yy = cy + dy;
+        if (yy < 0 || yy >= (int)fh) continue;
+        int dx = (int)bg_isqrt((uint32_t)(rad * rad - dy * dy));
+        int x0 = cx - dx, x1 = cx + dx;
+        if (x0 < 0) x0 = 0;
+        if (x1 >= (int)fw) x1 = (int)fw - 1;
+        if (x1 >= x0) fb_fill_rect(x0, yy, x1 - x0 + 1, 1, col);
+    }
+}
+
+// The desktop: a "Nightfall" sky — the user's wallpaper hue as a soft vertical
+// gradient, overlaid with a glowing moon and a deterministic field of stars.
+// Drawn first each frame, behind the icons and windows. The star layout is
+// seeded by a fixed constant so it is identical on every repaint (no flicker).
 static void draw_background(void) {
     uint32_t fw = fb_get_width(), fh = fb_get_height();
     uint32_t base = wallpaper_base_color();
@@ -589,6 +617,35 @@ static void draw_background(void) {
         int g = bg * pct / 100; if (g > 255) g = 255;
         int b = bb * pct / 100; if (b > 255) b = 255;
         fb_fill_rect(0, i * band_h, fw, band_h, fb_rgb((uint8_t)r, (uint8_t)g, (uint8_t)b));
+    }
+
+    // Moon in the upper-right, with a soft halo (concentric rings fading inward).
+    int mx = (int)fw - 130, my = 96, mr = 40;
+    bg_fill_circle(mx, my, mr + 14, fb_rgb(70,  60,  104));
+    bg_fill_circle(mx, my, mr + 8,  fb_rgb(104, 92,  150));
+    bg_fill_circle(mx, my, mr + 3,  fb_rgb(150, 138, 196));
+    bg_fill_circle(mx, my, mr,      fb_rgb(214, 202, 244));
+    // Faint craters for a little character.
+    bg_fill_circle(mx - 12, my - 8,  6, fb_rgb(196, 184, 228));
+    bg_fill_circle(mx + 10, my + 12, 8, fb_rgb(198, 186, 230));
+    bg_fill_circle(mx + 4,  my - 16, 4, fb_rgb(200, 188, 232));
+
+    // Stars — deterministic LCG, upper ~3/4 of the screen, kept clear of the moon.
+    uint32_t seed = 0x9E3779B1u;
+    uint32_t star_zone = fh * 3 / 4;
+    for (int i = 0; i < 110; i++) {
+        seed = seed * 1103515245u + 12345u;
+        int sx = (int)((seed >> 9) % fw);
+        seed = seed * 1103515245u + 12345u;
+        int sy = (int)((seed >> 9) % star_zone);
+        int ex = sx - mx, ey = sy - my;
+        if (ex * ex + ey * ey < (mr + 18) * (mr + 18)) continue;   // don't scatter over the moon
+        int shade = (int)((seed >> 20) & 3);
+        uint32_t sc = (shade == 0) ? fb_rgb(120, 112, 156)
+                    : (shade == 1) ? fb_rgb(168, 158, 202)
+                                   : fb_rgb(214, 208, 240);
+        int sz = (shade >= 2) ? 2 : 1;
+        fb_fill_rect(sx, sy, sz, sz, sc);
     }
 }
 
@@ -802,9 +859,9 @@ void compositor_init(void) {
     window_count = 0; next_id = 100; focused_id = 0; drag_id = 0; resize_id = 0; quit = 0;
     current_workspace = 0; start_menu_open = 0; user_menu_open = 0; cursor_saved = 0;
 
-    taskbar_bg = fb_rgb(40,45,55);
-    taskbar_fg = fb_rgb(220,220,220);
-    taskbar_hl = fb_rgb(65,75,95);
+    taskbar_bg = THEME_TASKBAR_BG;
+    taskbar_fg = THEME_TASKBAR_FG;
+    taskbar_hl = THEME_TASKBAR_HL;   // active Menu button + focused window = brand accent
     desktop_bg = fb_rgb(30,35,50);
     title_active = fb_rgb(60,130,200);
     title_inactive = fb_rgb(80,85,95);
