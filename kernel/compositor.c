@@ -867,8 +867,8 @@ void compositor_init(void) {
     taskbar_fg = THEME_TASKBAR_FG;
     taskbar_hl = THEME_TASKBAR_HL;   // active Menu button + focused window = brand accent
     desktop_bg = fb_rgb(30,35,50);
-    title_active = fb_rgb(60,130,200);
-    title_inactive = fb_rgb(80,85,95);
+    title_active = THEME_TITLE_ACTIVE;      // was an off-brand blue (60,130,200)
+    title_inactive = THEME_TITLE_INACTIVE;
     init_desktop_icons();
 }
 

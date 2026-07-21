@@ -1,3 +1,4 @@
+#include "theme.h"
 #include "kernel.h"
 #include "compositor.h"
 #include "fileman_win.h"
@@ -256,28 +257,28 @@ void fileman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     fb_fill_rect(cx, tb_y + TOOLBAR_H - 1, cw, 1, fb_rgb(70,70,80));
 
     int bx = cx + 4;
-    fb_fill_rect(bx, tb_y + 2, 80, TOOLBAR_H - 4, fb_rgb(60,70,80));
-    font_draw_string(bx + (80 - strlen("New File") * FONT_WIDTH) / 2, tb_y + (TOOLBAR_H - FONT_HEIGHT) / 2, "New File", fb_rgb(220,220,220), fb_rgb(60,70,80));
+    fb_fill_rect(bx, tb_y + 2, 80, TOOLBAR_H - 4, THEME_BUTTON);
+    font_draw_string(bx + (80 - strlen("New File") * FONT_WIDTH) / 2, tb_y + (TOOLBAR_H - FONT_HEIGHT) / 2, "New File", THEME_TEXT, THEME_BUTTON);
     bx += 84;
-    fb_fill_rect(bx, tb_y + 2, 80, TOOLBAR_H - 4, fb_rgb(60,70,80));
-    font_draw_string(bx + (80 - strlen("New Dir") * FONT_WIDTH) / 2, tb_y + (TOOLBAR_H - FONT_HEIGHT) / 2, "New Dir", fb_rgb(220,220,220), fb_rgb(60,70,80));
+    fb_fill_rect(bx, tb_y + 2, 80, TOOLBAR_H - 4, THEME_BUTTON);
+    font_draw_string(bx + (80 - strlen("New Dir") * FONT_WIDTH) / 2, tb_y + (TOOLBAR_H - FONT_HEIGHT) / 2, "New Dir", THEME_TEXT, THEME_BUTTON);
     bx += 84;
     fb_fill_rect(bx, tb_y + 2, 80, TOOLBAR_H - 4, fb_rgb(80,50,50));
-    font_draw_string(bx + (80 - strlen("Delete") * FONT_WIDTH) / 2, tb_y + (TOOLBAR_H - FONT_HEIGHT) / 2, "Delete", fb_rgb(220,220,220), fb_rgb(80,50,50));
+    font_draw_string(bx + (80 - strlen("Delete") * FONT_WIDTH) / 2, tb_y + (TOOLBAR_H - FONT_HEIGHT) / 2, "Delete", THEME_TEXT, fb_rgb(80,50,50));
     bx += 84;
-    fb_fill_rect(bx, tb_y + 2, 80, TOOLBAR_H - 4, fb_rgb(60,70,80));
-    font_draw_string(bx + (80 - strlen("Go Up") * FONT_WIDTH) / 2, tb_y + (TOOLBAR_H - FONT_HEIGHT) / 2, "Go Up", fb_rgb(220,220,220), fb_rgb(60,70,80));
+    fb_fill_rect(bx, tb_y + 2, 80, TOOLBAR_H - 4, THEME_BUTTON);
+    font_draw_string(bx + (80 - strlen("Go Up") * FONT_WIDTH) / 2, tb_y + (TOOLBAR_H - FONT_HEIGHT) / 2, "Go Up", THEME_TEXT, THEME_BUTTON);
     bx += 84;
-    fb_fill_rect(bx, tb_y + 2, 80, TOOLBAR_H - 4, fb_rgb(60,70,80));
-    font_draw_string(bx + (80 - strlen("Refresh") * FONT_WIDTH) / 2, tb_y + (TOOLBAR_H - FONT_HEIGHT) / 2, "Refresh", fb_rgb(220,220,220), fb_rgb(60,70,80));
+    fb_fill_rect(bx, tb_y + 2, 80, TOOLBAR_H - 4, THEME_BUTTON);
+    font_draw_string(bx + (80 - strlen("Refresh") * FONT_WIDTH) / 2, tb_y + (TOOLBAR_H - FONT_HEIGHT) / 2, "Refresh", THEME_TEXT, THEME_BUTTON);
     bx += 84;
-    fb_fill_rect(bx, tb_y + 2, 60, TOOLBAR_H - 4, fm->search_active ? fb_rgb(80,70,40) : fb_rgb(60,70,80));
-    font_draw_string(bx + (60 - strlen("Find") * FONT_WIDTH) / 2, tb_y + (TOOLBAR_H - FONT_HEIGHT) / 2, "Find", fb_rgb(220,220,220), fm->search_active ? fb_rgb(80,70,40) : fb_rgb(60,70,80));
+    fb_fill_rect(bx, tb_y + 2, 60, TOOLBAR_H - 4, fm->search_active ? fb_rgb(80,70,40) : THEME_BUTTON);
+    font_draw_string(bx + (60 - strlen("Find") * FONT_WIDTH) / 2, tb_y + (TOOLBAR_H - FONT_HEIGHT) / 2, "Find", THEME_TEXT, fm->search_active ? fb_rgb(80,70,40) : THEME_BUTTON);
 
     // Directory path bar
     int path_y = tb_y + TOOLBAR_H;
-    fb_fill_rect(cx, path_y, cw, HEADER_H, fb_rgb(40,45,55));
-    font_draw_string(cx + 4, path_y + (HEADER_H - char_h) / 2, fm->cwd, fb_rgb(200,200,255), fb_rgb(40,45,55));
+    fb_fill_rect(cx, path_y, cw, HEADER_H, THEME_PANEL_HEADER);
+    font_draw_string(cx + 4, path_y + (HEADER_H - char_h) / 2, fm->cwd, fb_rgb(200,200,255), THEME_PANEL_HEADER);
 
     // Search bar (visible when search_active)
     int search_bar_h = fm->search_active ? HEADER_H : 0;
@@ -308,13 +309,13 @@ void fileman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
         int row = i - fm->scroll_offset;
         int ei = fm->search_active ? fm->search_indices[i] : i;
         int ey = list_y + row * char_h;
-        uint32_t bg = (ei == fm->sel_index) ? fb_rgb(60,80,120) : fb_rgb(30,30,35);
+        uint32_t bg = (ei == fm->sel_index) ? THEME_SELECTION : fb_rgb(30,30,35);
         fb_fill_rect(cx + 2, ey, (uint32_t)(list_w - 4), char_h, bg);
 
         char prefix = fm->entry_types[ei] ? '/' : ' ';
         char display[68];
         snprintf(display, sizeof(display), "%c %s", prefix, fm->entries[ei]);
-        uint32_t fg = fm->entry_types[ei] ? fb_rgb(100,200,255) : fb_rgb(220,220,220);
+        uint32_t fg = fm->entry_types[ei] ? fb_rgb(100,200,255) : THEME_TEXT;
         font_draw_string(cx + 4, ey, display, fg, bg);
     }
 
@@ -336,15 +337,15 @@ void fileman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
 
     // Status bar
     int status_y = cy + ch - HEADER_H;
-    fb_fill_rect(cx, status_y, cw, HEADER_H, fb_rgb(40,45,55));
+    fb_fill_rect(cx, status_y, cw, HEADER_H, THEME_PANEL_HEADER);
 
     if (fm->input_mode) {
         // Show input prompt
         char prompt[128];
         snprintf(prompt, sizeof(prompt), "%s %s_", fm->status, fm->input_buf);
-        font_draw_string(cx + 4, status_y + (HEADER_H - char_h) / 2, prompt, fb_rgb(255,255,100), fb_rgb(40,45,55));
+        font_draw_string(cx + 4, status_y + (HEADER_H - char_h) / 2, prompt, fb_rgb(255,255,100), THEME_PANEL_HEADER);
     } else {
-        font_draw_string(cx + 4, status_y + (HEADER_H - char_h) / 2, fm->status, fb_rgb(180,180,180), fb_rgb(40,45,55));
+        font_draw_string(cx + 4, status_y + (HEADER_H - char_h) / 2, fm->status, fb_rgb(180,180,180), THEME_PANEL_HEADER);
     }
 
     // Drag ghost
@@ -354,7 +355,7 @@ void fileman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
         int gw = 180, gh = FONT_HEIGHT + 6;
         if (gx + gw > (int)fb_get_width()) gx = (int)fb_get_width() - gw;
         if (gy + gh > (int)fb_get_height()) gy = (int)fb_get_height() - gh;
-        fb_fill_rect(gx, gy, (uint32_t)gw, (uint32_t)gh, fb_rgb(60,80,120));
+        fb_fill_rect(gx, gy, (uint32_t)gw, (uint32_t)gh, THEME_SELECTION);
         fb_fill_rect(gx, gy, (uint32_t)gw, 1, fb_rgb(140,180,255));
         fb_fill_rect(gx, gy + gh - 1, (uint32_t)gw, 1, fb_rgb(140,180,255));
         fb_fill_rect(gx, gy, 1, (uint32_t)gh, fb_rgb(140,180,255));
@@ -365,7 +366,7 @@ void fileman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
             (drag_ei >= 0 && drag_ei < fm->entry_count && fm->entry_types[drag_ei]) ? '/' : ' ',
             drag_ei >= 0 && drag_ei < fm->entry_count ? fm->entries[drag_ei] : "?",
             fm->drag_mode == 2 ? "COPY" : "MOVE");
-        font_draw_string(gx + 4, gy + 3, label, fb_rgb(255,255,255), fb_rgb(60,80,120));
+        font_draw_string(gx + 4, gy + 3, label, fb_rgb(255,255,255), THEME_SELECTION);
     }
 
     // Context menu
@@ -388,9 +389,9 @@ void fileman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
             fb_fill_rect(cmx + 2, iy, cmw - 4, CTX_ITEM_H, bg);
             // Disable paste if clipboard empty
             if (i == 3 && (fm->clipboard_mode == 0 || !fm->clipboard_path[0]))
-                font_draw_string(cmx + 10, iy + 2, ctx_items[i], fb_rgb(100,100,100), bg);
+                font_draw_string(cmx + 10, iy + 2, ctx_items[i], THEME_BORDER, bg);
             else
-                font_draw_string(cmx + 10, iy + 2, ctx_items[i], fb_rgb(220,220,220), bg);
+                font_draw_string(cmx + 10, iy + 2, ctx_items[i], THEME_TEXT, bg);
         }
     }
 }

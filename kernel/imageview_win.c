@@ -1,3 +1,4 @@
+#include "theme.h"
 #include "kernel.h"
 #include "compositor.h"
 #include "imageview_win.h"
@@ -79,9 +80,9 @@ void imageview_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch)
     if (!iv || !iv->pixels) return;
 
     // Toolbar
-    fb_fill_rect(cx, cy, cw, TOOLBAR_H, fb_rgb(55,55,60));
+    fb_fill_rect(cx, cy, cw, TOOLBAR_H, THEME_ROW_DIV);
     font_draw_string(cx + 8, cy + (TOOLBAR_H - FONT_HEIGHT) / 2, iv->filename,
-                     fb_rgb(200,200,220), fb_rgb(55,55,60));
+                     fb_rgb(200,200,220), THEME_ROW_DIV);
 
     int area_y = cy + TOOLBAR_H;
     int area_h = (int)ch - TOOLBAR_H - STATUS_H;
@@ -115,10 +116,10 @@ void imageview_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch)
 
     // Status bar
     int status_y = cy + (int)ch - STATUS_H;
-    fb_fill_rect(cx, status_y, cw, STATUS_H, fb_rgb(45,45,50));
+    fb_fill_rect(cx, status_y, cw, STATUS_H, THEME_WINDOW_BG);
     char st[64];
     snprintf(st, sizeof(st), "%s | zoom: %d%%", iv->status, (int)(iv->zoom * 100));
-    font_draw_string(cx + 4, (uint32_t)status_y + 2, st, fb_rgb(180,200,220), fb_rgb(45,45,50));
+    font_draw_string(cx + 4, (uint32_t)status_y + 2, st, fb_rgb(180,200,220), THEME_WINDOW_BG);
 }
 
 void imageview_win_key(window_t* win, int key) {

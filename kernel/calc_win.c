@@ -1,3 +1,4 @@
+#include "theme.h"
 #include "kernel.h"
 #include "compositor.h"
 #include "calc_win.h"
@@ -110,10 +111,10 @@ void calc_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     fb_fill_rect(cx, cy, cw, ch, fb_rgb(40, 40, 50));
     uint32_t disp_w = CALC_COLS * (CALC_BTN_W + CALC_GAP) - CALC_GAP;
     fb_fill_rect(x0, y0, disp_w, CALC_DISP_H, fb_rgb(210, 220, 190));
-    fb_fill_rect(x0, y0, disp_w, 1, fb_rgb(100, 100, 100));
-    fb_fill_rect(x0, y0 + CALC_DISP_H - 1, disp_w, 1, fb_rgb(100, 100, 100));
-    fb_fill_rect(x0, y0, 1, CALC_DISP_H, fb_rgb(100, 100, 100));
-    fb_fill_rect(x0 + disp_w - 1, y0, 1, CALC_DISP_H, fb_rgb(100, 100, 100));
+    fb_fill_rect(x0, y0, disp_w, 1, THEME_BORDER);
+    fb_fill_rect(x0, y0 + CALC_DISP_H - 1, disp_w, 1, THEME_BORDER);
+    fb_fill_rect(x0, y0, 1, CALC_DISP_H, THEME_BORDER);
+    fb_fill_rect(x0 + disp_w - 1, y0, 1, CALC_DISP_H, THEME_BORDER);
 
     int text_x = x0 + 6;
     int text_y = y0 + (CALC_DISP_H - 16) / 2;

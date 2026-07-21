@@ -1,3 +1,4 @@
+#include "theme.h"
 #include "kernel.h"
 #include "compositor.h"
 #include "editor_win.h"
@@ -181,13 +182,13 @@ void editor_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     if (!ed) return;
 
     // Toolbar
-    fb_fill_rect(cx, cy, cw, TOOLBAR_H, fb_rgb(55,55,60));
+    fb_fill_rect(cx, cy, cw, TOOLBAR_H, THEME_ROW_DIV);
     // Open button
-    fb_fill_rect(cx + 4, cy + 3, BTN_W, BTN_H, fb_rgb(60,90,130));
-    font_draw_string(cx + 4 + (BTN_W - 3*FONT_WIDTH)/2, cy + 3 + (BTN_H - FONT_HEIGHT)/2, "Open", fb_rgb(255,255,255), fb_rgb(60,90,130));
+    fb_fill_rect(cx + 4, cy + 3, BTN_W, BTN_H, THEME_SELECTION);
+    font_draw_string(cx + 4 + (BTN_W - 3*FONT_WIDTH)/2, cy + 3 + (BTN_H - FONT_HEIGHT)/2, "Open", fb_rgb(255,255,255), THEME_SELECTION);
     // Save button
-    fb_fill_rect(cx + 64, cy + 3, BTN_W, BTN_H, fb_rgb(60,90,130));
-    font_draw_string(cx + 64 + (BTN_W - 4*FONT_WIDTH)/2, cy + 3 + (BTN_H - FONT_HEIGHT)/2, "Save", fb_rgb(255,255,255), fb_rgb(60,90,130));
+    fb_fill_rect(cx + 64, cy + 3, BTN_W, BTN_H, THEME_SELECTION);
+    font_draw_string(cx + 64 + (BTN_W - 4*FONT_WIDTH)/2, cy + 3 + (BTN_H - FONT_HEIGHT)/2, "Save", fb_rgb(255,255,255), THEME_SELECTION);
     // Filename
     char name_buf[56];
     snprintf(name_buf, sizeof(name_buf), "%s%s",
@@ -195,7 +196,7 @@ void editor_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
              ed->modified ? " *" : "");
     uint32_t name_x = cx + 128;
     uint32_t name_y = cy + (TOOLBAR_H - FONT_HEIGHT) / 2;
-    font_draw_string(name_x, name_y, name_buf, fb_rgb(200,200,220), fb_rgb(55,55,60));
+    font_draw_string(name_x, name_y, name_buf, fb_rgb(200,200,220), THEME_ROW_DIV);
 
     // Text area
     int text_area_y = cy + TOOLBAR_H;
@@ -221,7 +222,7 @@ void editor_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
         font_draw_string(cx + 2, draw_y, ln, fb_rgb(100,120,140), line_bg);
         // Text
         if (draw_x < (int)(cx + cw))
-            font_draw_string((uint32_t)draw_x, (uint32_t)draw_y, ed->lines[idx], fb_rgb(220,220,220), line_bg);
+            font_draw_string((uint32_t)draw_x, (uint32_t)draw_y, ed->lines[idx], THEME_TEXT, line_bg);
     }
 
     // Cursor (blink)
@@ -235,8 +236,8 @@ void editor_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
 
     // Status bar
     int status_y = cy + (int)ch - STATUS_H;
-    fb_fill_rect(cx, status_y, cw, STATUS_H, fb_rgb(45,45,50));
-    font_draw_string(cx + 4, (uint32_t)status_y + 2, ed->status, fb_rgb(180,200,220), fb_rgb(45,45,50));
+    fb_fill_rect(cx, status_y, cw, STATUS_H, THEME_WINDOW_BG);
+    font_draw_string(cx + 4, (uint32_t)status_y + 2, ed->status, fb_rgb(180,200,220), THEME_WINDOW_BG);
 }
 
 void editor_win_click(window_t* win, int mx, int my, int btn) {

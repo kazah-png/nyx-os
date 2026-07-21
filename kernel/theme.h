@@ -33,6 +33,21 @@
 #define THEME_BORDER        fb_rgb(100, 100, 100)  /* 1px window / menu border */
 #define THEME_ROW_DIV       fb_rgb( 55,  55,  60)  /* row separator            */
 
+/* --- Window chrome ------------------------------------------------------- */
+/* The focused title bar is the ACCENT: safe here (unlike the workspace marker
+ * below) because a title bar is painted on the window frame, a surface WE
+ * control, never on the user-chosen wallpaper. */
+#define THEME_TITLE_ACTIVE   THEME_ACCENT
+#define THEME_TITLE_INACTIVE fb_rgb( 80,  85,  95)
+#define THEME_TITLE_TEXT     fb_rgb(255, 255, 255)
+
+/* --- Shared app chrome ---------------------------------------------------
+ * Roles the *_win.c apps kept re-inventing as literals: the header strip at the
+ * top of a panel (12 copies) and a raised button face (10 copies). Named here so
+ * the ten apps stop each owning their own idea of "a button". */
+#define THEME_PANEL_HEADER  fb_rgb( 40,  45,  55)
+#define THEME_BUTTON        fb_rgb( 60,  70,  80)
+
 /* --- Taskbar ------------------------------------------------------------- */
 #define THEME_TASKBAR_BG    fb_rgb( 40,  45,  55)
 #define THEME_TASKBAR_FG    fb_rgb(220, 220, 220)

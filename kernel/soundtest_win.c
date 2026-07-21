@@ -1,3 +1,4 @@
+#include "theme.h"
 #include "kernel.h"
 #include "compositor.h"
 #include "soundtest_win.h"
@@ -90,7 +91,7 @@ void soundtest_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch)
     font_draw_string(x, y, "PC Speaker:", fb_rgb(180,200,220), fb_rgb(35,37,42));
     y += FONT_HEIGHT + 6;
 
-    uint32_t btn_color = fb_rgb(60,90,130);
+    uint32_t btn_color = THEME_SELECTION;
     uint32_t btn_text = fb_rgb(255,255,255);
 
     fb_fill_rect(x, y, bw, bh, btn_color);
@@ -110,7 +111,7 @@ void soundtest_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch)
 
     int sb16_ok = sb16_is_initialized();
 
-    btn_color = sb16_ok ? fb_rgb(60,90,130) : fb_rgb(60,60,60);
+    btn_color = sb16_ok ? THEME_SELECTION : fb_rgb(60,60,60);
     fb_fill_rect(x, y, bw, bh, btn_color);
     font_draw_string(x + (bw - 11*FONT_WIDTH)/2, y + (bh - FONT_HEIGHT)/2,
                      sb16_ok ? "Sine 440Hz" : "N/A (no SB16)", btn_text, btn_color);
@@ -126,8 +127,8 @@ void soundtest_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch)
                      sb16_ok ? "Sweep 200-3kHz" : "", btn_text, sb16_ok ? fb_rgb(80,60,60) : fb_rgb(60,60,60));
 
     int status_y = cy + (int)ch - STATUS_H;
-    fb_fill_rect(cx, status_y, cw, STATUS_H, fb_rgb(45,45,50));
-    font_draw_string(cx + 4, (uint32_t)status_y + 2, st->status, fb_rgb(180,200,220), fb_rgb(45,45,50));
+    fb_fill_rect(cx, status_y, cw, STATUS_H, THEME_WINDOW_BG);
+    font_draw_string(cx + 4, (uint32_t)status_y + 2, st->status, fb_rgb(180,200,220), THEME_WINDOW_BG);
 }
 
 void soundtest_win_click(window_t* win, int mx, int my, int btn) {

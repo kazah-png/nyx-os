@@ -9,7 +9,7 @@
   <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.9.0-LTS">
     <img src="https://img.shields.io/badge/release-v5.9.0--LTS-825AD2?style=flat" />
   </a>
-  <img src="https://img.shields.io/badge/status-v5.9.1-825AD2?style=flat" />
+  <img src="https://img.shields.io/badge/status-v5.9.2-825AD2?style=flat" />
   <img src="https://img.shields.io/badge/TCP-yes-825AD2?style=flat" />
   <img src="https://img.shields.io/badge/GUI-window%20compositor-825AD2?style=flat" />
   <img src="https://img.shields.io/badge/%F0%9F%8C%99%20NyxC-runtime-8b5cf6?style=flat" />
@@ -38,7 +38,7 @@ nyx:root$ nyxfetch
     .:oo.. :o.              -----------------
   :oo:.oo.o:                OS:         NyxOS x86_64
  .#o:.   :.                 Host:       QEMU Standard PC
- #:::....:                  Kernel:     NyxOS 5.9.1 (Full Suite)
+ #:::....:                  Kernel:     NyxOS 5.9.2 (Full Suite)
 o#::. . o.                  Uptime:     00:00:11
 o#.o:   :o                  Resolution: 1024 x 768
 o###o   o#                  CPU:        QEMU Virtual CPU version 2.5+ (1)
@@ -59,7 +59,7 @@ o###o   o#                  CPU:        QEMU Virtual CPU version 2.5+ (1)
 The project implements core kernel primitives, a custom network stack (RTL8139 NIC + ARP/IP/UDP/ICMP/DHCP + TCP with retransmission and passive open), userspace TCP/UDP sockets with `poll()` I/O multiplexing, a window compositor GUI, and a Sound Blaster 16 audio driver — all written in C and x86_64 Assembly with no external libraries.
 
 <div align="center">
-  <img src="gui.png?v=3" alt="NyxOS Desktop v5.9.1" width="700" />
+  <img src="gui.png?v=3" alt="NyxOS Desktop v5.9.2" width="700" />
   <p><em>NyxOS Desktop — app icons, purple wallpaper, windows and a taskbar</em></p>
 </div>
 
@@ -176,7 +176,7 @@ nyx:root$ ls /
 bin/   dev/   etc/   home/  mnt/   root/  tmp/   usr/   var/
 
 nyx:root$ uname
-NyxOS 5.9.1 (Full Suite) x86_64
+NyxOS 5.9.2 (Full Suite) x86_64
 
 nyx:root$ mem
 Physical memory: 256 MB total, 252 MB free
@@ -495,7 +495,7 @@ See the full **[NyxOS Status Report](https://github.com/kazah-png/nyx-os/issues/
 - ✅ SMP stage 2 — **real spinlocks + per-CPU syscall state**. The physical page allocator, the kernel heap and the slab caches are now behind `spinlock_t` (taken with interrupts off) instead of `preempt_disable()`, which only ever stopped a context switch on the local core and meant nothing to another one. Proven under genuine contention by `smpstress`: every core hammers alloc/free at once — ~900k operations, 0 integrity failures, and the machine-wide free-page count returns exactly balanced. The syscall entry path's `user_rsp`/`user_cr3`/`kernel_rsp`/`syscall_frame_ptr` moved out of global memory into the per-CPU block, reached through GS so `syscall_entry` needs no free register. Next: a per-CPU scheduler on the APs (stage 3a)
 - ✅ SMP stage 3a — **the APs run scheduled kernel threads, in parallel with the BSP**. The AP timer is now a real context-switching ISR feeding a per-CPU scheduler, and `process_t.sched_cpu` pins a task to one core — which is the whole mutual-exclusion argument, since no other core will even consider it. `smpthreads` wakes one worker per AP and reports the iteration count each core *actually executed*: 30.9M / 28.0M / 25.7M on CPUs 1/2/3 while the BSP, asleep, counted zero. Next: user processes on the APs (stage 3b)
 - ✅ SMP stage 3b — **user processes run in ring 3 on the APs**. Each core now has its own TSS descriptor in the GDT (a TSS may be busy on only one core, which is why APs previously skipped `ltr`), so a ring3 → ring0 entry lands on the kernel stack of the process *that core* is running. The AP scheduler needed no new logic — it calls the BSP's existing `sched_target()`, whose every slot became per-CPU in stages 2 and 3a. `smpuser` spreads processes round-robin (opt-in; default placement is unchanged) and shows an AP executing `spin` in ring 3. Thread groups stay pinned to one core, since they share page tables
-- ✅ TLB shootdown IPIs (mechanism) — `tlb_shootdown()` broadcasts vector 0x41 and waits for every core to acknowledge, with the lock deliberately taken *without* disabling interrupts so two concurrent shootdowns can't deadlock each other. `tlbtest` proves it the only way that means anything: it first shows CPU 1 reading a **stale** value after a remap with no IPI, then the fresh one after it. It is now called from the paths that remove or restrict a mapping (`munmap`, `mprotect`), which run with interrupts disabled — so the shootdown enables them for its duration and restores the caller's flag, or two cores unmapping at once would each wait on the other. The COW remap shoots down too, since it replaces a translation a sibling thread may hold. **Known limits, measured:** thread groups stay pinned to one core, and process balancing is safe for long-lived processes but wedges under fork/exec churn — the blocker there is now a **#GP at RIP 0x10049f** in the ring-transition path, reached only once threads are spread (v5.9.1 removed the earlier silent wedge by making `get_current_process()` per-CPU — it was answering with the BSP’s task for anything running on an AP). That is the next piece of work, along with locking the VFS and terminal
+- ✅ TLB shootdown IPIs (mechanism) — `tlb_shootdown()` broadcasts vector 0x41 and waits for every core to acknowledge, with the lock deliberately taken *without* disabling interrupts so two concurrent shootdowns can't deadlock each other. `tlbtest` proves it the only way that means anything: it first shows CPU 1 reading a **stale** value after a remap with no IPI, then the fresh one after it. It is now called from the paths that remove or restrict a mapping (`munmap`, `mprotect`), which run with interrupts disabled — so the shootdown enables them for its duration and restores the caller's flag, or two cores unmapping at once would each wait on the other. The COW remap shoots down too, since it replaces a translation a sibling thread may hold. **Known limits, measured:** thread groups stay pinned to one core, and process balancing is safe for long-lived processes but wedges under fork/exec churn — the blocker there is now a **#GP at RIP 0x10049f** in the ring-transition path, reached only once threads are spread (v5.8.97 removed the earlier silent wedge by making `get_current_process()` per-CPU — it was answering with the BSP’s task for anything running on an AP). That is the next piece of work, along with locking the VFS and terminal
 - ✅ Demand paging + copy-on-write via the #PF handler (verified with the `cowtest` self-test; CR0.WP enabled)
 - ✅ Copy-on-write `fork()` (`SYS_FORK`): physical page refcounting + COW address-space clone; child resumes with `fork()==0`, both round-robin (verified in `/init.elf` — parent/child diverge on a shared variable)
 - ✅ `waitpid()` (`SYS_WAITPID`): a parent reaps a child and collects its exit code from ring 3 (verified: child `exit(123)` → parent `waitpid` → code 123, no leaked zombie)

@@ -1,3 +1,4 @@
+#include "theme.h"
 #include "kernel.h"
 #include "compositor.h"
 #include "minesweeper_win.h"
@@ -218,7 +219,7 @@ static void ms_draw_mine(int x, int y) {
     fb_fill_rect(mx - 3, my - 4, 6, 8, k);
     fb_fill_rect(mx - 6, my - 1, 12, 2, k);     // horizontal spike
     fb_fill_rect(mx - 1, my - 6, 2, 12, k);     // vertical spike
-    fb_fill_rect(mx - 2, my - 2, 2, 2, fb_rgb(220, 220, 220)); // glint
+    fb_fill_rect(mx - 2, my - 2, 2, 2, THEME_TEXT); // glint
 }
 
 static void ms_draw_cross(int x, int y) {   // "wrong flag" marker on a loss

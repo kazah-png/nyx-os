@@ -1,3 +1,4 @@
+#include "theme.h"
 #include "kernel.h"
 #include "compositor.h"
 #include "taskman_win.h"
@@ -33,13 +34,13 @@ void taskman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     if (!tm) return;
 
     // Header background
-    fb_fill_rect(cx, cy, cw, HEADER_H, fb_rgb(40,45,55));
+    fb_fill_rect(cx, cy, cw, HEADER_H, THEME_PANEL_HEADER);
 
     // Header columns
-    font_draw_string(cx + 4, cy + 2, "PID", fb_rgb(255,200,100), fb_rgb(40,45,55));
-    font_draw_string(cx + COL_PID + 4, cy + 2, "Name", fb_rgb(255,200,100), fb_rgb(40,45,55));
-    font_draw_string(cx + COL_NAME + 4, cy + 2, "State", fb_rgb(255,200,100), fb_rgb(40,45,55));
-    font_draw_string(cx + COL_STATE + 4, cy + 2, "CPU", fb_rgb(255,200,100), fb_rgb(40,45,55));
+    font_draw_string(cx + 4, cy + 2, "PID", fb_rgb(255,200,100), THEME_PANEL_HEADER);
+    font_draw_string(cx + COL_PID + 4, cy + 2, "Name", fb_rgb(255,200,100), THEME_PANEL_HEADER);
+    font_draw_string(cx + COL_NAME + 4, cy + 2, "State", fb_rgb(255,200,100), THEME_PANEL_HEADER);
+    font_draw_string(cx + COL_STATE + 4, cy + 2, "CPU", fb_rgb(255,200,100), THEME_PANEL_HEADER);
 
     // Process list area
     int list_y = cy + HEADER_H;
@@ -55,12 +56,12 @@ void taskman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
         if (!p) continue;
 
         int ry = list_y + i * ROW_H;
-        uint32_t bg = (i & 1) ? fb_rgb(50,50,55) : fb_rgb(45,45,50);
+        uint32_t bg = (i & 1) ? fb_rgb(50,50,55) : THEME_WINDOW_BG;
         fb_fill_rect(cx, ry, cw, ROW_H, bg);
 
         char pid_str[8];
         snprintf(pid_str, sizeof(pid_str), "%u", p->pid);
-        font_draw_string(cx + 4, ry + 1, pid_str, fb_rgb(220,220,220), bg);
+        font_draw_string(cx + 4, ry + 1, pid_str, THEME_TEXT, bg);
 
         // Truncate name to fit column
         char name[25];
@@ -77,7 +78,7 @@ void taskman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
 
     // Status bar at bottom
     int status_y = cy + (int)ch - HEADER_H;
-    fb_fill_rect(cx, status_y, cw, HEADER_H, fb_rgb(40,45,55));
+    fb_fill_rect(cx, status_y, cw, HEADER_H, THEME_PANEL_HEADER);
 
     char status[128];
     uint64_t free_mem = memory_total > memory_used ? memory_total - memory_used : 0;
@@ -85,7 +86,7 @@ void taskman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
              (uint32_t)(free_mem / (1024 * 1024)),
              (uint32_t)(memory_total / (1024 * 1024)),
              process_count, get_ticks() / 1000);
-    font_draw_string(cx + 4, status_y + 2, status, fb_rgb(180,200,220), fb_rgb(40,45,55));
+    font_draw_string(cx + 4, status_y + 2, status, fb_rgb(180,200,220), THEME_PANEL_HEADER);
 }
 
 void taskman_win_click(window_t* win, int mx, int my, int btn) {

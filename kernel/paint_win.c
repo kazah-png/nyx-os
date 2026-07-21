@@ -1,3 +1,4 @@
+#include "theme.h"
 #include "kernel.h"
 #include "compositor.h"
 #include "paint_win.h"
@@ -78,12 +79,12 @@ void paint_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     if (!pw) return;
 
     // Toolbar background
-    fb_fill_rect(cx, cy, cw, PAINT_TOOLBAR_H, fb_rgb(55,55,60));
+    fb_fill_rect(cx, cy, cw, PAINT_TOOLBAR_H, THEME_ROW_DIV);
 
     // Brush size label and +/- buttons
     char buf[32];
     snprintf(buf, sizeof(buf), "Brush: %d", pw->brush_size);
-    font_draw_string(cx + 6, cy + (PAINT_TOOLBAR_H - FONT_HEIGHT) / 2, buf, fb_rgb(220,220,220), fb_rgb(55,55,60));
+    font_draw_string(cx + 6, cy + (PAINT_TOOLBAR_H - FONT_HEIGHT) / 2, buf, THEME_TEXT, THEME_ROW_DIV);
 
     // [-] button
     int bx = cx + 90, by = cy + 4;
@@ -126,15 +127,15 @@ void paint_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     fb_blit(pw->canvas, 0, 0, PAINT_CANVAS_W, PAINT_CANVAS_H, canvas_x, canvas_y);
 
     // Canvas border
-    fb_fill_rect(canvas_x - 1, canvas_y - 1, PAINT_CANVAS_W + 2, 1, fb_rgb(100,100,100));
-    fb_fill_rect(canvas_x - 1, canvas_y + PAINT_CANVAS_H, PAINT_CANVAS_W + 2, 1, fb_rgb(100,100,100));
-    fb_fill_rect(canvas_x - 1, canvas_y, 1, PAINT_CANVAS_H, fb_rgb(100,100,100));
-    fb_fill_rect(canvas_x + PAINT_CANVAS_W, canvas_y, 1, PAINT_CANVAS_H, fb_rgb(100,100,100));
+    fb_fill_rect(canvas_x - 1, canvas_y - 1, PAINT_CANVAS_W + 2, 1, THEME_BORDER);
+    fb_fill_rect(canvas_x - 1, canvas_y + PAINT_CANVAS_H, PAINT_CANVAS_W + 2, 1, THEME_BORDER);
+    fb_fill_rect(canvas_x - 1, canvas_y, 1, PAINT_CANVAS_H, THEME_BORDER);
+    fb_fill_rect(canvas_x + PAINT_CANVAS_W, canvas_y, 1, PAINT_CANVAS_H, THEME_BORDER);
 
     // Status bar
     int status_y = cy + CANVAS_OFFSET_Y + PAINT_CANVAS_H;
-    fb_fill_rect(cx, status_y, cw, PAINT_STATUS_H, fb_rgb(45,45,50));
-    font_draw_string(cx + 4, status_y + 2, pw->status, fb_rgb(180,180,200), fb_rgb(45,45,50));
+    fb_fill_rect(cx, status_y, cw, PAINT_STATUS_H, THEME_WINDOW_BG);
+    font_draw_string(cx + 4, status_y + 2, pw->status, fb_rgb(180,180,200), THEME_WINDOW_BG);
 }
 
 void paint_win_click(window_t* win, int mx, int my, int btn) {
