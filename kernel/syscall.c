@@ -446,6 +446,20 @@ static int copy_path_from_user(char* out, int outsz, uint64_t uptr) {
     return 0;
 }
 
+// Broken-down RTC time -> Unix epoch seconds. Civil-days algorithm (valid for any
+// Gregorian date); the RTC carries no timezone, so it is treated as UTC. Backs
+// SYS_GETTIMEOFDAY.
+static int64_t rtc_to_epoch(const rtc_time_t* t) {
+    int y = (int)t->year, m = (int)t->month, d = (int)t->day;
+    y -= (m <= 2);
+    int64_t era = (y >= 0 ? y : y - 399) / 400;
+    int yoe = (int)(y - era * 400);                      // [0, 399]
+    int doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;   // [0, 365]
+    int doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;     // [0, 146096]
+    int64_t days = era * 146097 + (int64_t)doe - 719468; // days since 1970-01-01
+    return days * 86400 + (int64_t)t->hour * 3600 + (int64_t)t->minute * 60 + (int64_t)t->second;
+}
+
 uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
                          uint64_t a4, uint64_t a5, uint64_t a6) {
     switch (no) {
@@ -1245,6 +1259,45 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
             if (a1 != 0 && !find_process((uint32_t)a1)) return -1;
             g_foreground_pid = (uint32_t)a1;
             return 0;
+        }
+        case SYS_GETTIMEOFDAY: {
+            // gettimeofday(struct timeval* tv, void* tz): wall-clock time since the
+            // Unix epoch as two longs {tv_sec, tv_usec}. Seconds come from the RTC
+            // (treated as UTC); microseconds from the 1000 Hz tick within the current
+            // second — the finest the timer resolves. tz (a2) is obsolete and ignored.
+            // Returns 0, or -1 on a bad pointer.
+            if (a1) {
+                extern volatile uint32_t tick_count;
+                long tv[2];
+                if (!user_ptr_ok(a1, sizeof(tv))) return -1;
+                rtc_time_t rt;
+                rtc_read_time(&rt);
+                tv[0] = (long)rtc_to_epoch(&rt);
+                tv[1] = (long)((tick_count % 1000) * 1000);
+                if (copy_to_user(a1, tv, sizeof(tv)) != 0) return -1;
+            }
+            return 0;
+        }
+        case SYS_NANOSLEEP: {
+            // nanosleep(const struct timespec* req, struct timespec* rem): sub-second
+            // sleep. req is two longs {tv_sec, tv_nsec}; converted to milliseconds (the
+            // timer's resolution — any sub-ms remainder rounds up to 1 ms) and blocked
+            // on the timer wait queue via do_sleep_ms. rem (a2, may be NULL) receives
+            // the time left if a signal cuts the sleep short; we don't track a precise
+            // remainder, so it is zeroed. Returns 0, -EINTR if interrupted, or -1 on a
+            // bad pointer / invalid timespec.
+            long req[2];
+            if (!user_ptr_ok(a1, sizeof(req))) return -1;
+            if (copy_from_user(req, a1, sizeof(req)) != 0) return -1;
+            if (req[0] < 0 || req[1] < 0 || req[1] >= 1000000000L) return -1;   // EINVAL
+            uint64_t ms = (uint64_t)req[0] * 1000 + ((uint64_t)req[1] + 999999) / 1000000;
+            if (ms > 0xFFFFFFFFULL) ms = 0xFFFFFFFFULL;
+            int r = do_sleep_ms((uint32_t)ms);
+            if (a2 && user_ptr_ok(a2, sizeof(req))) {
+                long rem[2] = { 0, 0 };
+                copy_to_user(a2, rem, sizeof(rem));
+            }
+            return (uint64_t)(int64_t)r;
         }
         default:
             printf("[SYSCALL] Unknown syscall %lu\n", no);

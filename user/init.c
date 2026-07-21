@@ -542,12 +542,25 @@ int main(void) {
     else
         printf("  time() failed\n");
 
+    /* gettimeofday (SYS_GETTIMEOFDAY): wall-clock seconds + microseconds since the
+     * Unix epoch — the same RTC, but in the POSIX form ported tools expect. */
+    struct timeval tvv;
+    if (gettimeofday(&tvv, 0) == 0)
+        printf("  gettimeofday() -> %ld.%06ld (epoch sec.usec)\n", tvv.tv_sec, tvv.tv_usec);
+    else
+        printf("  gettimeofday() failed\n");
+
     /* sleep (SYS_SLEEP): block ~200ms on the timer wait queue and return 0. The
      * shell demonstrates a longer, visible `sleep 2` — here we just confirm it
      * returns without hanging or panicking. */
     printf("Testing sleep (SYS_SLEEP, ~200ms)...\n");
     long sr = sleep_ms(200);
     printf("  sleep_ms(200) -> %ld (returned, expect 0)\n", sr);
+
+    /* nanosleep (SYS_NANOSLEEP): sub-second sleep, finer-grained than SYS_SLEEP. */
+    struct timespec ts = { 0, 50 * 1000 * 1000 };   /* 50 ms */
+    long nr = nanosleep(&ts, 0);
+    printf("  nanosleep(50ms) -> %ld (returned, expect 0)\n", nr);
 
     /* Environment inheritance: fork a child, execve /env.elf with a 2-var envp, and
      * let it print the environment. Exercises the full round-trip — the kernel copies
