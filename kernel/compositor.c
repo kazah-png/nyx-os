@@ -143,27 +143,34 @@ static void draw_titlebar(window_t* win) {
     fb_fill_rect(win->x, win->y, win->w, TITLE_H, bg);
 
     int y_off = win->y + (TITLE_H - FONT_HEIGHT) / 2;
-    font_draw_string(win->x + 4, y_off, win->title, fb_rgb(255,255,255), bg);
+    font_draw_string(win->x + 4, y_off, win->title, THEME_TITLE_TEXT, bg);
 
     int bx = win->x + win->w - CLOSE_W - 2;
     if (win->has_close) {
-        draw_x_button(bx, win->y + 3, CLOSE_W, fb_rgb(255,255,255));
+        draw_x_button(bx, win->y + 3, CLOSE_W, THEME_TITLE_TEXT);
         bx -= CLOSE_W + 2;
     }
     if (win->has_max) {
-        draw_max_button(bx, win->y + 3, CLOSE_W, fb_rgb(255,255,255));
+        draw_max_button(bx, win->y + 3, CLOSE_W, THEME_TITLE_TEXT);
         bx -= CLOSE_W + 2;
     }
     if (win->has_min) {
-        draw_min_button(bx, win->y + 3, CLOSE_W, fb_rgb(255,255,255));
+        draw_min_button(bx, win->y + 3, CLOSE_W, THEME_TITLE_TEXT);
     }
 }
 
 static void draw_window_frame(window_t* win) {
-    fb_fill_rect(win->x - 1, win->y - 1, win->w + 2, 1, fb_rgb(180,180,180));
-    fb_fill_rect(win->x - 1, win->y + TITLE_H + win->h, win->w + 2, 1, fb_rgb(80,80,80));
-    fb_fill_rect(win->x - 1, win->y, 1, win->h + TITLE_H, fb_rgb(180,180,180));
-    fb_fill_rect(win->x + win->w, win->y, 1, win->h + TITLE_H, fb_rgb(80,80,80));
+    // The frame carries the focus state too, not just the title bar: a focused
+    // window is outlined in the accent so its border and title strip read as one
+    // continuous edge. Previously this bevel was identical on every window, so a
+    // window buried under others gave no focus cue at all once its title bar was
+    // covered.
+    uint32_t hi = win->focused ? THEME_ACCENT     : THEME_FRAME_HI;
+    uint32_t lo = win->focused ? THEME_ACCENT_DIM : THEME_FRAME_LO;
+    fb_fill_rect(win->x - 1, win->y - 1, win->w + 2, 1, hi);
+    fb_fill_rect(win->x - 1, win->y + TITLE_H + win->h, win->w + 2, 1, lo);
+    fb_fill_rect(win->x - 1, win->y, 1, win->h + TITLE_H, hi);
+    fb_fill_rect(win->x + win->w, win->y, 1, win->h + TITLE_H, lo);
 }
 
 static int titlebar_hit(window_t* win, int mx, int my) {

@@ -41,6 +41,14 @@
 #define THEME_TITLE_INACTIVE fb_rgb( 80,  85,  95)
 #define THEME_TITLE_TEXT     fb_rgb(255, 255, 255)
 
+/* The 1px window frame. Unfocused windows keep the neutral 3D bevel (light top +
+ * left, dark bottom + right); a FOCUSED window swaps both for the accent pair, so
+ * its border joins its title bar into one continuous coloured edge. That makes
+ * focus readable from the window outline alone, not just the 22px title strip —
+ * which matters when a window is mostly covered by another. */
+#define THEME_FRAME_HI       fb_rgb(180, 180, 180)  /* top + left, unfocused  */
+#define THEME_FRAME_LO       fb_rgb( 80,  80,  80)  /* bottom + right, unfoc. */
+
 /* --- Shared app chrome ---------------------------------------------------
  * Roles the *_win.c apps kept re-inventing as literals: the header strip at the
  * top of a panel (12 copies) and a raised button face (10 copies). Named here so
