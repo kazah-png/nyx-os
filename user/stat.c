@@ -6,7 +6,9 @@
  * Auto-execs by bare name from the shell (`stat /file`). */
 
 int main(int argc, char** argv) {
-    printf("pid=%d ppid=%d\n", getpid(), getppid());
+    /* getpid() returns long, getppid() returns int — match each conversion to its
+     * argument type (%d on a long is a vararg type mismatch). */
+    printf("pid=%ld ppid=%d\n", getpid(), getppid());
 
     if (argc < 2) { printf("usage: stat <path>\n"); return 0; }
     const char* path = argv[1];
