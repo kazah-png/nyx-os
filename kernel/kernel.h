@@ -125,6 +125,8 @@ typedef __builtin_va_list va_list;
 #define SYS_RENAME   49   /* rename(oldpath, newpath) — VFS move/rename */
 #define SYS_CLONE    50   /* clone(fn, stack, arg, flags) — CLONE_VM thread */
 #define SYS_FUTEX    51   /* futex(uaddr, op, val) — FUTEX_WAIT / FUTEX_WAKE */
+#define SYS_GETTIMEOFDAY 52 /* gettimeofday(struct timeval*, tz) — epoch sec+usec */
+#define SYS_NANOSLEEP 53  /* nanosleep(const timespec* req, timespec* rem) — sub-second sleep */
 
 /* ------------------------------------------------------------------ */
 /*  Threads (v5.8.89) — clone(CLONE_VM) + futex                        */

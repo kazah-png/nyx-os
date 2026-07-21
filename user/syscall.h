@@ -53,6 +53,8 @@
 #define SYS_RENAME   49
 #define SYS_CLONE    50
 #define SYS_FUTEX    51
+#define SYS_GETTIMEOFDAY 52
+#define SYS_NANOSLEEP 53
 
 /* Threads (v5.8.87). CLONE_VM makes the new task SHARE this address space — a real
  * thread — instead of getting fork()'s copy-on-write duplicate. */
@@ -394,6 +396,31 @@ static inline long sleep_ms(long ms) {
 }
 static inline long sleep_sec(long s) {
     return syscall1(SYS_SLEEP, s * 1000);
+}
+
+/* Wall-clock time (gettimeofday) and sub-second sleep (nanosleep). The field order
+ * MUST match the kernel's 2-long fill in SYS_GETTIMEOFDAY / SYS_NANOSLEEP. `long` is
+ * 64-bit here, so tv_sec is y2038-safe. */
+struct timeval  { long tv_sec; long tv_usec; };
+struct timespec { long tv_sec; long tv_nsec; };
+
+/* gettimeofday(tv, tz): wall-clock seconds + microseconds since the Unix epoch
+ * (seconds from the RTC as UTC; microseconds from the 1000 Hz tick). tz is obsolete
+ * and ignored. Returns 0, or -1 on a bad pointer. */
+static inline int gettimeofday(struct timeval* tv, void* tz) {
+    return (int)syscall2(SYS_GETTIMEOFDAY, (long)tv, (long)tz);
+}
+
+/* nanosleep(req, rem): sleep req->tv_sec + req->tv_nsec, rounded UP to the 1 ms
+ * timer tick (its finest resolution). rem (may be NULL) is zeroed — no precise
+ * remainder is tracked. Returns 0, or a negative value (-EINTR) if a signal cut it
+ * short. usleep(usec) is the microsecond convenience form. */
+static inline int nanosleep(const struct timespec* req, struct timespec* rem) {
+    return (int)syscall2(SYS_NANOSLEEP, (long)req, (long)rem);
+}
+static inline int usleep(long usec) {
+    struct timespec req = { usec / 1000000L, (usec % 1000000L) * 1000L };
+    return nanosleep(&req, 0);
 }
 
 /* setfg(pid): make `pid` the terminal foreground process, so keyboard signals (Ctrl-C
