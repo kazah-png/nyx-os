@@ -67,7 +67,6 @@ paint_win_t* paint_create_ctx(void) {
     pw->brush_size = 4;
     pw->brush_color = fb_rgb(0,0,0);
     pw->brush_style = 1;
-    pw->drawing = 0;
     pw->last_x = 0; pw->last_y = 0;
     snprintf(pw->status, sizeof(pw->status), "Brush: %dpx", pw->brush_size);
     return pw;
@@ -206,7 +205,7 @@ void paint_win_click(window_t* win, int mx, int my, int btn) {
         if (mx >= canvas_x && mx < canvas_x + PAINT_CANVAS_W &&
             my >= canvas_y && my < canvas_y + PAINT_CANVAS_H) {
             int px = mx - canvas_x;
-            int py = my - canvas_y - TITLE_H;
+            int py = my - canvas_y;
             draw_circle(pw, px, py, pw->brush_size / 2);
             pw->last_x = px;
             pw->last_y = py;
@@ -237,10 +236,10 @@ void paint_win_key(window_t* win, int key) {
     }
 }
 
-void paint_win_mousemove(window_t* win, int mx, int my, int btns) {
+void paint_win_pressed(window_t* win, int mx, int my, int btns) {
     (void)btns;
     paint_win_t* pw = (paint_win_t*)win->reserved;
-    if (!pw || !pw->drawing) return;
+    if (!pw) return;
     int cx = WIN_CLIENT_X(win), cy = WIN_CLIENT_Y(win);
     uint32_t cw = win->w;
 
@@ -252,11 +251,9 @@ void paint_win_mousemove(window_t* win, int mx, int my, int btns) {
     if (mx >= canvas_x && mx < canvas_x + PAINT_CANVAS_W &&
         my >= canvas_y && my < canvas_y + PAINT_CANVAS_H) {
         int px = mx - canvas_x;
-        int py = my - canvas_y - TITLE_H;
+        int py = my - canvas_y;
         draw_line(pw, pw->last_x, pw->last_y, px, py);
         pw->last_x = px;
         pw->last_y = py;
-    } else {
-        pw->drawing = 0;
     }
 }
