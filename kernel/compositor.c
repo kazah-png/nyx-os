@@ -894,8 +894,35 @@ window_t* window_create(int x, int y, uint32_t w, uint32_t h, const char* title,
     // garbage value passes that guard and is then CALLED, so opening a window
     // could jump to an arbitrary address. Zero first, assign after.
     memset_asm(win, 0, sizeof(window_t));
-    win->x = x; win->y = y; win->w = w < MIN_WIN_W ? MIN_WIN_W : w;
+    win->w = w < MIN_WIN_W ? MIN_WIN_W : w;
     win->h = h < MIN_WIN_H ? MIN_WIN_H : h;
+
+    // Clamp the new window INTO the framebuffer. Callers pass fixed geometry —
+    // the two demo windows are literally window_create(200,120,450,200,...), which
+    // spans x=200..650 and so hangs off the right edge of the 640x480 mode Settings
+    // offers. A window born partly off-screen is not just ugly, it can be
+    // unreachable: the title bar is the drag handle, so if that is what went off
+    // the edge there is no way to pull the window back. Clamping here rather than
+    // at each call site means no future caller can reintroduce it either.
+    //
+    // Order matters: cap the SIZE against the usable area first, then move the
+    // window back inside, then floor at the origin — repositioning before capping
+    // would just push an oversized window off the opposite edge.
+    {
+        int fw = (int)fb_get_width();
+        int usable_h = (int)fb_get_height() - TASKBAR_H - TITLE_H;
+        if ((int)win->w > fw)       win->w = (uint32_t)fw;
+        if ((int)win->h > usable_h && usable_h > 0) win->h = (uint32_t)usable_h;
+        if (x + (int)win->w > fw)   x = fw - (int)win->w;
+        if (y + (int)win->h + TITLE_H > (int)fb_get_height() - TASKBAR_H)
+            y = (int)fb_get_height() - TASKBAR_H - (int)win->h - TITLE_H;
+        if (x < 0) x = 0;
+        if (y < 0) y = 0;
+    }
+    win->x = x; win->y = y;
+    // normal_* is what un-maximising restores to, so it must record the CLAMPED
+    // geometry — copying the caller's raw request would send the window straight
+    // back off-screen the first time it was maximised and restored.
     win->normal_x = x; win->normal_y = y; win->normal_w = win->w; win->normal_h = win->h;
     win->z_order = window_count;
     win->visible = 1; win->state = WSTATE_NORMAL;
