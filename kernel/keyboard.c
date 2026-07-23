@@ -10,6 +10,7 @@ static int shift_pressed = 0;
 static int altgr_pressed = 0;      // Alt derecho (AltGr)
 static int caps_lock = 0;
 static int ctrl_pressed = 0;
+static int alt_pressed = 0;        // Left Alt — tracked for window-management chords
 static int e0_prefix = 0;          // Flag para el prefijo 0xE0
 
 // ------------------------------------------------------------
@@ -80,6 +81,8 @@ void init_keyboard(void) {
     }
     shift_pressed = 0;
     altgr_pressed = 0;
+    ctrl_pressed = 0;
+    alt_pressed = 0;
     caps_lock = 0;
     e0_prefix = 0;
 }
@@ -144,11 +147,38 @@ char scancode_to_ascii(uint8_t sc) {
         return 0;
     }
     if (sc == 0x38) { // Alt izquierdo (no AltGr)
+        alt_pressed = pressed;
         return 0;
     }
     if (sc == 0x1D) { // Left Ctrl
         ctrl_pressed = pressed;
         return 0;
+    }
+
+    // Function keys F1-F12. These produce no character, so before this they were
+    // simply dropped; the compositor needs F4 to reach it for the Alt+F4 close
+    // chord, and routing the whole bank keeps the mapping uniform. Enqueued as
+    // keycodes on the same ring as the arrows, press-edge only.
+    {
+        int fkey = 0;
+        switch (sc) {
+            case 0x3B: fkey = KEY_F1;  break;  case 0x3C: fkey = KEY_F2;  break;
+            case 0x3D: fkey = KEY_F3;  break;  case 0x3E: fkey = KEY_F4;  break;
+            case 0x3F: fkey = KEY_F5;  break;  case 0x40: fkey = KEY_F6;  break;
+            case 0x41: fkey = KEY_F7;  break;  case 0x42: fkey = KEY_F8;  break;
+            case 0x43: fkey = KEY_F9;  break;  case 0x44: fkey = KEY_F10; break;
+            case 0x57: fkey = KEY_F11; break;  case 0x58: fkey = KEY_F12; break;
+        }
+        if (fkey) {
+            if (pressed) {
+                int next = (kbd_kc_head + 1) % KBD_BUFFER_SIZE;
+                if (next != kbd_kc_tail) {
+                    kbd_keycodes[kbd_kc_head] = fkey;
+                    kbd_kc_head = next;
+                }
+            }
+            return 0;
+        }
     }
 
     // Si es una tecla liberada, no generar carácter
@@ -269,4 +299,8 @@ void set_keyboard_layout(int layout) {
 
 int is_ctrl_pressed(void) {
     return ctrl_pressed;
+}
+
+int is_alt_pressed(void) {
+    return alt_pressed;
 }

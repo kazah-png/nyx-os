@@ -1127,6 +1127,29 @@ static void focus_next_window(void) {
     }
 }
 
+// Alt+Tab: focus the next window in a stable, repeatable cycle.
+//
+// Deliberately NOT focus_next_window()'s highest-z-order pick. That is the right
+// choice on destroy (fall back to whatever is on top), but as a cycler it would
+// only ever toggle the top two windows, because focusing one bumps its z-order
+// above the other. Walking the array in SLOT order instead — slots are stable
+// for a window's whole life — makes repeated Alt+Tab visit every eligible window
+// in a fixed rotation and come back round, which is what a cycler should do.
+static void window_cycle_focus(void) {
+    int start = -1;
+    for (int i = 0; i < MAX_WINDOWS; i++)
+        if (windows[i] && windows[i]->id == focused_id) { start = i; break; }
+    // start == -1 (nothing focused) makes the first probe land on slot 0.
+    for (int step = 1; step <= MAX_WINDOWS; step++) {
+        int i = (start + step) % MAX_WINDOWS;
+        window_t* w = windows[i];
+        if (!w || !w->visible || w->state == WSTATE_MINIMIZED) continue;
+        if (w->workspace != current_workspace) continue;
+        window_focus(w->id);
+        return;
+    }
+}
+
 void window_destroy(int id) {
     window_t* win = find_window(id);
     if (!win) return;
@@ -1226,11 +1249,13 @@ static void demo_draw_fn(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch
     font_draw_string(cx + 5, cy + 25, "Drag title bar to move", fb_rgb(160,160,160), fb_rgb(35,35,40));
     font_draw_string(cx + 5, cy + 45, "Resize from edges", fb_rgb(160,160,160), fb_rgb(35,35,40));
     font_draw_string(cx + 5, cy + 65, "Minimize/Maximize/Close", fb_rgb(160,160,160), fb_rgb(35,35,40));
+    font_draw_string(cx + 5, cy + 85, "Alt+Tab switch  Alt+F4 close", fb_rgb(160,160,160), fb_rgb(35,35,40));
+    font_draw_string(cx + 5, cy + 105, "Alt+Up/Down maximize/min", fb_rgb(160,160,160), fb_rgb(35,35,40));
     char buf[32];
     snprintf(buf, sizeof(buf), "ID: %d", win->id);
-    font_draw_string(cx + 5, cy + 85, buf, fb_rgb(255,255,0), fb_rgb(35,35,40));
+    font_draw_string(cx + 5, cy + 125, buf, fb_rgb(255,255,0), fb_rgb(35,35,40));
     snprintf(buf, sizeof(buf), "WS: %d", win->workspace);
-    font_draw_string(cx + 5, cy + 105, buf, fb_rgb(255,255,0), fb_rgb(35,35,40));
+    font_draw_string(cx + 5, cy + 145, buf, fb_rgb(255,255,0), fb_rgb(35,35,40));
 }
 
 static void about_draw_fn(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
@@ -1453,7 +1478,9 @@ static void draw_desktop_icons(void) {
 }
 
 static void draw_welcome_windows(void) {
-    window_create(80, 40, 400, 280, "Welcome to NyxOS", demo_draw_fn);
+    // 320 tall (was 280) so the two added keyboard-shortcut lines still clear the
+    // bottom edge at 640x480, where design-grid scaling shrinks this to ~0.625.
+    window_create(80, 40, 400, 320, "Welcome to NyxOS", demo_draw_fn);
     window_create(200, 120, 450, 200, "About NyxOS", about_draw_fn);
     {
         window_t* twin = window_create(300, 200, 640, 400, "Terminal", terminal_win_draw);
@@ -1864,6 +1891,41 @@ void compositor_run(void) {
                 current_workspace = k - '1';
                 redraw = 1;
                 goto done_click;
+            }
+
+            // Window-management chords. Checked BEFORE the key is routed to the
+            // focused window, and each ends in `goto done_click`, so a maximised
+            // Terminal never also receives the Tab/arrow as input. Alt+Tab works
+            // even with nothing focused (it picks the first window); the rest
+            // need a target, so they no-op when focused_id is 0.
+            if (is_alt_pressed()) {
+                if (k == '\t') {                       // Alt+Tab: cycle focus
+                    window_cycle_focus();
+                    redraw = 1;
+                    goto done_click;
+                }
+                window_t* awin = find_window(focused_id);
+                if (awin) {
+                    if (k == KEY_F4) {                 // Alt+F4: close
+                        window_destroy(awin->id);
+                        redraw = 1;
+                        goto done_click;
+                    }
+                    if (k == KEY_UP) {                 // Alt+Up: maximise
+                        if (awin->state != WSTATE_MAXIMIZED)
+                            window_maximize(awin->id);
+                        redraw = 1;
+                        goto done_click;
+                    }
+                    if (k == KEY_DOWN) {               // Alt+Down: restore, else minimise
+                        if (awin->state == WSTATE_MAXIMIZED)
+                            window_restore(awin->id);
+                        else
+                            window_minimize(awin->id);
+                        redraw = 1;
+                        goto done_click;
+                    }
+                }
             }
 
             // Route all keys to focused window's key handler

@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.9.6"
+#define KERNEL_VERSION "5.9.7"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -282,6 +282,19 @@ typedef struct {
 // the focused window's on_key like any other key (scrollback nav in the terminal).
 #define KEY_WHEEL_UP   0x8A
 #define KEY_WHEEL_DOWN 0x8B
+// Function keys F1-F12. Contiguous so `KEY_F1 + n` indexes Fn.
+#define KEY_F1      0x90
+#define KEY_F2      0x91
+#define KEY_F3      0x92
+#define KEY_F4      0x93
+#define KEY_F5      0x94
+#define KEY_F6      0x95
+#define KEY_F7      0x96
+#define KEY_F8      0x97
+#define KEY_F9      0x98
+#define KEY_F10     0x99
+#define KEY_F11     0x9A
+#define KEY_F12     0x9B
 
 // CR4 flags
 #define CR4_PAE     (1 << 5)
@@ -1029,6 +1042,7 @@ int  keyboard_has_input(void);               // poll(): 1 if a key/serial byte i
 int  getkey_poll(void);
 void keyboard_irq_handler(void* unused);
 int is_ctrl_pressed(void);
+int is_alt_pressed(void);
 
 void init_screen(void);
 int putchar(int c);
