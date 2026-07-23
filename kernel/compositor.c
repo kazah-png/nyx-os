@@ -368,7 +368,7 @@ static int start_menu_hit(int mx, int my) {
  *
  * Same lesson as the TITLE_H family in compositor.h — the fix is one definition
  * both sides read, not two derivations that have to be kept in agreement. */
-#define START_HDR_H   24    /* green header band */
+#define START_HDR_H   24    /* accent brand header band */
 #define START_ITEM_Y  28    /* first entry's top, relative to the menu top */
 #define START_ITEM_H  28    /* entry pitch: 26 px body + 1 px separator + 1 */
 #define START_ITEM_N  13    /* entries in the menu (indices 0..12) */
@@ -450,15 +450,27 @@ static void draw_start_menu(void) {
     uint32_t fh = fb_get_height();
     int sm_x = 2, sm_y = fh - TASKBAR_H - START_H;
 
-    fb_fill_rect(sm_x, sm_y, START_W, START_H, THEME_WINDOW_BG);
-    fb_fill_rect(sm_x, sm_y, START_W, 1, THEME_BORDER);
-    fb_fill_rect(sm_x, sm_y + START_H - 1, START_W, 1, THEME_BORDER);
-    fb_fill_rect(sm_x, sm_y, 1, START_H, THEME_BORDER);
-    fb_fill_rect(sm_x + START_W - 1, sm_y, 1, START_H, THEME_BORDER);
+    int R = WIN_RADIUS;
 
-    // Brand header — the accent purple, not the old placeholder green.
-    fb_fill_rect(sm_x, sm_y, START_W, START_HDR_H, THEME_ACCENT);
-    font_draw_string(sm_x + 8, sm_y + 4, "NyxOS Menu", THEME_ON_ACCENT, THEME_ACCENT);
+    // Rounded-top body. The bottom sits flush on the taskbar, so it stays square
+    // there — the menu reads as growing out of the bar. Corner-outside pixels are
+    // left unpainted (same technique as the window title bars), showing whatever
+    // is behind the menu through the curve.
+    for (int row = 0; row < START_H; row++) {
+        int inset = (row < R) ? corner_inset(row, R) : 0;
+        fb_fill_rect(sm_x + inset, sm_y + row, START_W - 2 * inset, 1, THEME_WINDOW_BG);
+    }
+
+    // Brand header: accent gradient (matching the taskbar Menu button and title
+    // bars), rounded to the same top corners, with a transparent label so the
+    // gradient shows through the text.
+    uint32_t hg_t = col_lighten(THEME_ACCENT, 14), hg_b = col_darken(THEME_ACCENT, 12);
+    for (int row = 0; row < START_HDR_H; row++) {
+        int inset = (row < R) ? corner_inset(row, R) : 0;
+        fb_fill_rect(sm_x + inset, sm_y + row, START_W - 2 * inset, 1,
+                     vgrad_row(hg_t, hg_b, row, START_HDR_H));
+    }
+    font_draw_string_trans(sm_x + 8, sm_y + 4, "NyxOS Menu", THEME_ON_ACCENT);
 
     // Index order here IS the argument do_start_menu_action() switches on, and
     // start_menu_item_hit() computes that index from the same START_ITEM_*
@@ -469,12 +481,36 @@ static void draw_start_menu(void) {
         "Paint", "Sound Test", "About", "Shutdown", "Calculator",
         "Minesweeper",
     };
+    // The entry under the pointer is highlighted with the accent, like a hovered
+    // menu item (the event loop recomposites on pointer move while the menu is
+    // open, so this tracks the cursor).
+    int hov = -1, hi;
+    if (start_menu_item_hit(mouse_x, mouse_y, &hi)) hov = hi;
+
     for (int i = 0; i < START_ITEM_N; i++) {
         int iy = sm_y + START_ITEM_Y + i * START_ITEM_H;
         if ((uint32_t)(iy + START_ITEM_H) > fh - TASKBAR_H) break;
-        fb_fill_rect(sm_x + 4, iy, START_W - 8, START_ITEM_H - 2, THEME_WINDOW_BG);
-        font_draw_string(sm_x + 12, iy + 5, items[i], THEME_TEXT, THEME_WINDOW_BG);
+        if (i == hov) {
+            fb_fill_vgrad(sm_x + 4, iy, START_W - 8, START_ITEM_H - 2,
+                          col_lighten(THEME_ACCENT, 12), col_darken(THEME_ACCENT, 14));
+            font_draw_string_trans(sm_x + 12, iy + 5, items[i], THEME_ON_ACCENT);
+        } else {
+            fb_fill_rect(sm_x + 4, iy, START_W - 8, START_ITEM_H - 2, THEME_WINDOW_BG);
+            font_draw_string(sm_x + 12, iy + 5, items[i], THEME_TEXT, THEME_WINDOW_BG);
+        }
         fb_fill_rect(sm_x + 4, iy + START_ITEM_H - 1, START_W - 8, 1, THEME_ROW_DIV);
+    }
+
+    // Border: rounded top corners to match the body, straight sides, square bottom
+    // where it meets the taskbar.
+    fb_fill_rect(sm_x + R, sm_y, START_W - 2 * R, 1, THEME_BORDER);              // top
+    fb_fill_rect(sm_x, sm_y + START_H - 1, START_W, 1, THEME_BORDER);           // bottom
+    fb_fill_rect(sm_x, sm_y + R, 1, START_H - R, THEME_BORDER);                 // left
+    fb_fill_rect(sm_x + START_W - 1, sm_y + R, 1, START_H - R, THEME_BORDER);   // right
+    for (int row = 0; row < R; row++) {
+        int inset = corner_inset(row, R);
+        fb_put_pixel((uint32_t)(sm_x + inset),              (uint32_t)(sm_y + row), THEME_BORDER);
+        fb_put_pixel((uint32_t)(sm_x + START_W - 1 - inset), (uint32_t)(sm_y + row), THEME_BORDER);
     }
 }
 
@@ -2205,6 +2241,11 @@ done_click:
         int moved = (mx != mouse_x || my != mouse_y);
         mouse_x = mx; mouse_y = my;
         mouse_btns = btns;
+
+        // While the start menu is open, a bare pointer move must recomposite so
+        // the hovered-entry highlight tracks the cursor (a move alone only re-blits
+        // the existing frame + cursor, which would leave the highlight frozen).
+        if (moved && start_menu_open) redraw = 1;
 
         uint32_t now = get_ticks();
         if (now - clock_tick > 1000) {
