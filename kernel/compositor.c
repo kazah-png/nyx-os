@@ -102,14 +102,6 @@ static void draw_cursor(int mx, int my) {
     }
 }
 
-static void draw_button(int x, int y, int w, int h, uint32_t bg, uint32_t fg, const char* label) {
-    fb_fill_rect(x, y, w, h, bg);
-    if (label) {
-        uint32_t tw = strlen(label) * FONT_WIDTH;
-        font_draw_string(x + (w - tw) / 2, y + (h - FONT_HEIGHT) / 2, label, fg, bg);
-    }
-}
-
 static void draw_x_button(int x, int y, int size, uint32_t color) {
     fb_fill_rect(x, y, size, size, fb_rgb(200,40,40));
     int pad = 4;
@@ -187,6 +179,18 @@ static uint32_t col_lighten(uint32_t c, int pct) {
 static uint32_t col_darken(uint32_t c, int pct) {
     int r = (c >> 16) & 0xFF, g = (c >> 8) & 0xFF, b = c & 0xFF;
     return fb_rgb(r - r * pct / 100, g - g * pct / 100, b - b * pct / 100);
+}
+
+// A button filled with the same top-lit vertical gradient the title bars use,
+// centred on `base` (±amt), with a transparent-background label so the text sits
+// directly on the gradient. Used for the taskbar's Menu button and window tabs.
+static void draw_grad_button(int x, int y, int w, int h, uint32_t base, uint32_t fg,
+                             const char* label, int amt) {
+    fb_fill_vgrad(x, y, w, h, col_lighten(base, amt), col_darken(base, amt));
+    if (label) {
+        int tw = (int)strlen(label) * FONT_WIDTH;
+        font_draw_string_trans(x + (w - tw) / 2, y + (h - FONT_HEIGHT) / 2, label, fg);
+    }
 }
 
 static void draw_titlebar(window_t* win) {
@@ -386,10 +390,16 @@ static void draw_taskbar(void) {
     uint32_t fw = fb_get_width(), fh = fb_get_height();
     int tb_y = fh - TASKBAR_H;
 
-    fb_fill_rect(0, tb_y, fw, TASKBAR_H, taskbar_bg);
-    fb_fill_rect(0, tb_y, fw, 1, fb_rgb(100,100,100));
+    // Subtle top-lit gradient bar with a 1px highlight along its top edge, to sit
+    // with the windows' gradient title bars rather than reading as a flat slab.
+    fb_fill_vgrad(0, tb_y, fw, TASKBAR_H, col_lighten(taskbar_bg, 12), col_darken(taskbar_bg, 10));
+    fb_fill_rect(0, tb_y, fw, 1, col_lighten(taskbar_bg, 34));
 
-    draw_button(2, tb_y + 4, 80, TASKBAR_H - 8, start_menu_open ? taskbar_hl : taskbar_bg, fb_rgb(255,255,255), "Menu");
+    // The Menu button is the brand launcher, so it always wears the accent (dimmed
+    // when the menu is closed, full-strength when open) instead of blending in.
+    draw_grad_button(2, tb_y + 4, 80, TASKBAR_H - 8,
+                     start_menu_open ? THEME_ACCENT : col_darken(THEME_ACCENT, 22),
+                     fb_rgb(255, 255, 255), "Menu", 16);
 
     // Reserve room for the logged-in user badge (avatar + name), left of the clock.
     int av_s = TASKBAR_H - 14;
@@ -404,24 +414,27 @@ static void draw_taskbar(void) {
         int bw = 150;
         if (bx + bw > right_limit) bw = right_limit - bx;
         if (bw < 40) break;
-        uint32_t bbg = windows[i]->focused ? taskbar_hl : taskbar_bg;
-        fb_fill_rect(bx, tb_y + 4, bw, TASKBAR_H - 8, bbg);
-        if (windows[i]->state == WSTATE_MINIMIZED) {
-            fb_fill_rect(bx, tb_y + 4, bw, TASKBAR_H - 8, fb_rgb(50,50,55));
-        }
-        if (windows[i]->title[0]) {
-            int tw = strlen(windows[i]->title) * FONT_WIDTH;
-            if (tw > bw - 8) tw = bw - 8;
-            font_draw_string(bx + 4, tb_y + (TASKBAR_H - FONT_HEIGHT) / 2, windows[i]->title, fb_rgb(220,220,220), bbg);
-        }
+        // Focused window tab wears the accent gradient (matching its title bar);
+        // an unfocused one gets a quiet bar gradient; a minimized one a flatter,
+        // greyer fill so it reads as dormant.
+        int bh = TASKBAR_H - 8;
+        if (windows[i]->state == WSTATE_MINIMIZED)
+            fb_fill_vgrad(bx, tb_y + 4, bw, bh, fb_rgb(58, 58, 64), fb_rgb(44, 44, 50));
+        else if (windows[i]->focused)
+            fb_fill_vgrad(bx, tb_y + 4, bw, bh, col_lighten(taskbar_hl, 16), col_darken(taskbar_hl, 16));
+        else
+            fb_fill_vgrad(bx, tb_y + 4, bw, bh, col_lighten(taskbar_bg, 10), col_darken(taskbar_bg, 10));
+        if (windows[i]->title[0])
+            font_draw_string_trans(bx + 4, tb_y + (TASKBAR_H - FONT_HEIGHT) / 2,
+                                   windows[i]->title, fb_rgb(230, 230, 235));
         bx += bw + 2;
     }
 
     // Logged-in user badge: profile picture + username.
     int ubx = (int)(fw - CLOCK_W - 8) - ublock_w + 4;
     draw_avatar(ubx, tb_y + 7, av_s, g_login_avatar, 0);
-    font_draw_string(ubx + av_s + 6, tb_y + (TASKBAR_H - FONT_HEIGHT) / 2,
-                     g_login_user, fb_rgb(215, 215, 235), taskbar_bg);
+    font_draw_string_trans(ubx + av_s + 6, tb_y + (TASKBAR_H - FONT_HEIGHT) / 2,
+                           g_login_user, fb_rgb(215, 215, 235));
 
     rtc_time_t rt;
     rtc_read_time(&rt);
