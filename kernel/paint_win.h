@@ -18,7 +18,6 @@ typedef struct {
     int brush_size;
     uint32_t brush_color;
     int brush_style;
-    int drawing;
     int last_x, last_y;
     char status[64];
 } paint_win_t;
@@ -27,6 +26,6 @@ paint_win_t* paint_create_ctx(void);
 void paint_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch);
 void paint_win_click(window_t* win, int mx, int my, int btn);
 void paint_win_key(window_t* win, int key);
-void paint_win_mousemove(window_t* win, int mx, int my, int btns);
+void paint_win_pressed(window_t* win, int mx, int my, int btns);
 
 #endif
