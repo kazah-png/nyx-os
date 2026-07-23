@@ -138,6 +138,44 @@ static void draw_max_button(int x, int y, int size, uint32_t color) {
     }
 }
 
+// Corner-rounding radius for window title bars.
+#define WIN_RADIUS 7
+
+static uint32_t bg_isqrt(uint32_t x);   // integer sqrt, defined lower (the moon uses it too)
+
+// Horizontal inset of a rounded corner of radius R at vertical distance `d` from
+// the rounded end (d = 0 is the very edge row, fully cut; d = R-1 is nearly
+// square). Pixels nearer the corner than this inset lie outside the arc and are
+// simply not painted, so whatever was drawn beneath (wallpaper or a lower window)
+// shows through — there is no saved pre-window buffer to carve against, so the
+// only clean option is to never touch those pixels.
+static int corner_inset(int d, int R) {
+    if (R <= 0 || d >= R) return 0;
+    int dy = R - d;                                   // 1..R
+    return R - (int)bg_isqrt((uint32_t)(R * R - dy * dy));
+}
+
+// The radius a given window can actually use: shrink it so a minimum-size window
+// (120x80) never rounds so hard the two corners meet.
+static int win_radius(window_t* win) {
+    int r = WIN_RADIUS;
+    if (r > (int)win->w / 2) r = (int)win->w / 2;
+    if (r > TITLE_H)         r = TITLE_H;             // rounding lives in the title bar
+    return r < 0 ? 0 : r;
+}
+
+// One row of a vertical gradient: linear interpolation from `top` (i=0) to
+// `bottom` (i=n-1). Split out from fb_fill_vgrad so the title bar can drive the
+// fill row by row and inset the rounded top corners.
+static uint32_t vgrad_row(uint32_t top, uint32_t bottom, int i, int n) {
+    int tr = (top >> 16) & 0xFF, tg = (top >> 8) & 0xFF, tb = top & 0xFF;
+    int dr = (int)((bottom >> 16) & 0xFF) - tr;
+    int dg = (int)((bottom >>  8) & 0xFF) - tg;
+    int db = (int)( bottom        & 0xFF) - tb;
+    int den = n > 1 ? n - 1 : 1;
+    return fb_rgb(tr + dr * i / den, tg + dg * i / den, tb + db * i / den);
+}
+
 // Shift a colour a percentage toward white / black. Proportional (not a flat
 // per-channel add) so the hue is preserved as it lightens or darkens.
 static uint32_t col_lighten(uint32_t c, int pct) {
@@ -159,8 +197,18 @@ static void draw_titlebar(window_t* win) {
     // text is drawn with a transparent background over it, so no flat panel breaks
     // the gradient. Focused bars get a touch more sheen than inactive ones.
     int amt = win->focused ? 16 : 8;
-    fb_fill_vgrad(win->x, win->y, win->w, TITLE_H,
-                  col_lighten(base, amt), col_darken(base, amt));
+    uint32_t gtop = col_lighten(base, amt), gbot = col_darken(base, amt);
+    // Draw the gradient row by row so the top two corners can be rounded: the
+    // first R rows are inset by the arc, leaving the corner pixels unpainted for
+    // the desktop/lower window to show through. Only the TOP is rounded — the
+    // bottom of the title bar meets the (square) body, and app draw callbacks
+    // fill the body edge-to-edge, so rounding there would just be squared off.
+    int R = win_radius(win);
+    for (uint32_t row = 0; row < TITLE_H; row++) {
+        int inset = (row < (uint32_t)R) ? corner_inset((int)row, R) : 0;
+        fb_fill_rect(win->x + inset, win->y + row, win->w - 2 * inset, 1,
+                     vgrad_row(gtop, gbot, (int)row, TITLE_H));
+    }
 
     int y_off = win->y + (TITLE_H - FONT_HEIGHT) / 2;
     font_draw_string_trans(win->x + 4, y_off, win->title, THEME_TITLE_TEXT);
@@ -187,10 +235,23 @@ static void draw_window_frame(window_t* win) {
     // covered.
     uint32_t hi = win->focused ? THEME_ACCENT     : THEME_FRAME_HI;
     uint32_t lo = win->focused ? THEME_ACCENT_DIM : THEME_FRAME_LO;
-    fb_fill_rect(win->x - 1, win->y - 1, win->w + 2, 1, hi);
-    fb_fill_rect(win->x - 1, win->y + TITLE_H + win->h, win->w + 2, 1, lo);
-    fb_fill_rect(win->x - 1, win->y, 1, win->h + TITLE_H, hi);
-    fb_fill_rect(win->x + win->w, win->y, 1, win->h + TITLE_H, lo);
+    int x = win->x, y = win->y, w = (int)win->w, H = (int)win_total_h(win);
+    int R = win_radius(win);
+
+    // Straight edges. Top runs between the rounded corners; the sides start below
+    // the top arc; the bottom is square (the body isn't rounded — see draw_titlebar).
+    fb_fill_rect(x + R, y - 1, w - 2 * R, 1, hi);   // top
+    fb_fill_rect(x - 1, y + H, w + 2,     1, lo);   // bottom
+    fb_fill_rect(x - 1, y + R, 1, H - R, hi);       // left
+    fb_fill_rect(x + w, y + R, 1, H - R, lo);       // right
+
+    // Top corner arcs, one pixel outside the title bar's rounded corners so the
+    // border hugs the same curve the fill leaves.
+    for (int row = 0; row < R; row++) {
+        int inset = corner_inset(row, R);
+        fb_put_pixel((uint32_t)(x + inset - 1),  (uint32_t)(y + row), hi);   // top-left
+        fb_put_pixel((uint32_t)(x + w - inset),  (uint32_t)(y + row), hi);   // top-right
+    }
 }
 
 static int titlebar_hit(window_t* win, int mx, int my) {
@@ -707,9 +768,14 @@ static void draw_window_shadow(window_t* win) {
     // behind it or off-screen: pure wasted work. Snapped/normal windows all cast.
     if (win->state == WSTATE_MAXIMIZED) return;
     int rx = win->x + SHADOW_OFFSET;
-    int ry = win->y + SHADOW_OFFSET;
+    // Start the shadow BELOW the rounded title-bar top, not at the window top.
+    // The top corners are cut away (see draw_titlebar), so a shadow drawn up there
+    // shows through the cutout as a stray dark step at the top-right; beginning it
+    // at the title/body junction keeps it out of the rounded region entirely while
+    // leaving the visible drop (the body's right edge and bottom) untouched.
+    int ry = win->y + TITLE_H;
     int rw = (int)win->w;
-    int rh = (int)win_total_h(win);       // title bar + body
+    int rh = (int)win_total_h(win) + SHADOW_OFFSET - TITLE_H;   // reach to below the window bottom
     for (int r = SHADOW_RADIUS; r >= 1; r--) {
         uint8_t shade = (uint8_t)(SHADOW_CORE * (SHADOW_RADIUS - r + 1) / SHADOW_RADIUS);
         int x = rx - r, y = ry - r, w = rw + 2 * r, h = rh + 2 * r;
