@@ -153,6 +153,36 @@ void fb_clear(uint32_t color) {
     fb_fill_rect(0, 0, fb_width, fb_height, color);
 }
 
+// Darken a rectangle in place by mixing its pixels toward black. `shade` is the
+// black overlay's alpha, 0..255 (0 = no change, 255 = solid black). Reads the
+// current draw target, so it composites over whatever was already drawn there —
+// this is what makes window drop shadows fall onto the desktop and lower windows.
+// 32bpp only; a no-op otherwise (shadows are a cosmetic layer, not correctness).
+// Coordinates are signed and clipped, so a shadow feathered past the top-left
+// origin (x-2, y-2) is fine.
+void fb_darken_rect(int x, int y, int w, int h, uint8_t shade) {
+    if (!fb_addr || fb_bpp != 32 || shade == 0 || w <= 0 || h <= 0) return;
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x >= (int)fb_width || y >= (int)fb_height) return;
+    if (x + w > (int)fb_width)  w = (int)fb_width  - x;
+    if (y + h > (int)fb_height) h = (int)fb_height - y;
+    if (w <= 0 || h <= 0) return;
+
+    uint32_t keep = 255 - shade;   // how much of the original survives, 0..255
+    uint32_t* ptr = (uint32_t*)fb_addr + (uint32_t)y * fb_width + (uint32_t)x;
+    for (int row = 0; row < h; row++) {
+        for (int col = 0; col < w; col++) {
+            uint32_t p = ptr[col];
+            uint32_t r = ((p >> 16) & 0xFF) * keep / 255;
+            uint32_t g = ((p >>  8) & 0xFF) * keep / 255;
+            uint32_t b = ( p        & 0xFF) * keep / 255;
+            ptr[col] = (p & 0xFF000000) | (r << 16) | (g << 8) | b;
+        }
+        ptr += fb_width;
+    }
+}
+
 uint32_t fb_get_width(void) { return fb_width; }
 uint32_t fb_get_height(void) { return fb_height; }
 void* fb_get_addr(void) { return fb_addr; }

@@ -664,6 +664,42 @@ static void init_desktop_icons(void);
 static void draw_desktop_icons(void);
 static void settings_draw_fn(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch);
 
+// Drop-shadow geometry. OFFSET is how far down-right the shadow sits; RADIUS is
+// how far it feathers out past the window edge; CORE is the darkening (0..255) of
+// the innermost ring, fading linearly to nothing at the outermost.
+#define SHADOW_OFFSET 6
+#define SHADOW_RADIUS 12
+#define SHADOW_CORE   100
+
+// Cast a soft drop shadow for one window onto whatever has already been drawn
+// beneath it. Called from the back-to-front composite loop right before the
+// window itself, so the shadow lands on the desktop and any lower windows, and
+// the window is then painted opaque on top — leaving only the soft band past the
+// bottom and right edges visible, which is the drop-shadow look.
+//
+// Drawn as concentric 1px OUTLINES growing outward from the offset window rect,
+// darkest (SHADOW_CORE) nearest the window and fading to zero at RADIUS. Outlines
+// rather than filled rects means each pixel is darkened exactly once (a clean
+// gradient, no compounding) and the cost is perimeter, not area — a handful of
+// thin strips per window instead of RADIUS full-window fills.
+static void draw_window_shadow(window_t* win) {
+    // A maximized window fills the usable area, so its shadow would be entirely
+    // behind it or off-screen: pure wasted work. Snapped/normal windows all cast.
+    if (win->state == WSTATE_MAXIMIZED) return;
+    int rx = win->x + SHADOW_OFFSET;
+    int ry = win->y + SHADOW_OFFSET;
+    int rw = (int)win->w;
+    int rh = (int)win_total_h(win);       // title bar + body
+    for (int r = SHADOW_RADIUS; r >= 1; r--) {
+        uint8_t shade = (uint8_t)(SHADOW_CORE * (SHADOW_RADIUS - r + 1) / SHADOW_RADIUS);
+        int x = rx - r, y = ry - r, w = rw + 2 * r, h = rh + 2 * r;
+        fb_darken_rect(x,         y,         w, 1, shade);   // top edge
+        fb_darken_rect(x,         y + h - 1, w, 1, shade);   // bottom edge
+        fb_darken_rect(x,         y + 1,     1, h - 2, shade);   // left edge
+        fb_darken_rect(x + w - 1, y + 1,     1, h - 2, shade);   // right edge
+    }
+}
+
 static void redraw_all(void) {
     draw_background();
     draw_desktop_icons();
@@ -684,6 +720,7 @@ static void redraw_all(void) {
 
     for (int i = 0; i < n; i++) {
         window_t* win = sorted[i];
+        draw_window_shadow(win);      // cast onto lower windows/desktop, before this window paints
         fb_fill_rect(win->x, win->y + TITLE_H, win->w, win->h, fb_rgb(35,35,40));
         draw_window_frame(win);
         draw_titlebar(win);
