@@ -138,12 +138,32 @@ static void draw_max_button(int x, int y, int size, uint32_t color) {
     }
 }
 
+// Shift a colour a percentage toward white / black. Proportional (not a flat
+// per-channel add) so the hue is preserved as it lightens or darkens.
+static uint32_t col_lighten(uint32_t c, int pct) {
+    int r = (c >> 16) & 0xFF, g = (c >> 8) & 0xFF, b = c & 0xFF;
+    return fb_rgb(r + (255 - r) * pct / 100,
+                  g + (255 - g) * pct / 100,
+                  b + (255 - b) * pct / 100);
+}
+static uint32_t col_darken(uint32_t c, int pct) {
+    int r = (c >> 16) & 0xFF, g = (c >> 8) & 0xFF, b = c & 0xFF;
+    return fb_rgb(r - r * pct / 100, g - g * pct / 100, b - b * pct / 100);
+}
+
 static void draw_titlebar(window_t* win) {
-    uint32_t bg = win->focused ? title_active : title_inactive;
-    fb_fill_rect(win->x, win->y, win->w, TITLE_H, bg);
+    uint32_t base = win->focused ? title_active : title_inactive;
+    // A subtle top-lit vertical gradient gives the bar some dimension to sit with
+    // the drop shadows. It is centred on `base` (lighten top, darken bottom by the
+    // same amount), so the mid rows — where the title text sits — are ~base; the
+    // text is drawn with a transparent background over it, so no flat panel breaks
+    // the gradient. Focused bars get a touch more sheen than inactive ones.
+    int amt = win->focused ? 16 : 8;
+    fb_fill_vgrad(win->x, win->y, win->w, TITLE_H,
+                  col_lighten(base, amt), col_darken(base, amt));
 
     int y_off = win->y + (TITLE_H - FONT_HEIGHT) / 2;
-    font_draw_string(win->x + 4, y_off, win->title, THEME_TITLE_TEXT, bg);
+    font_draw_string_trans(win->x + 4, y_off, win->title, THEME_TITLE_TEXT);
 
     int bx = win->x + win->w - CLOSE_W - 2;
     if (win->has_close) {

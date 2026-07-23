@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.9.10"
+#define KERNEL_VERSION "5.9.11"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -1165,6 +1165,7 @@ void fb_init(uint32_t width, uint32_t height, uint32_t bpp, void* addr);
 void fb_put_pixel(uint32_t x, uint32_t y, uint32_t color);
 void fb_fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color);
 void fb_darken_rect(int x, int y, int w, int h, uint8_t shade);  // mix rect toward black (drop shadows)
+void fb_fill_vgrad(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t top, uint32_t bottom);  // vertical gradient fill
 void fb_blit(const void* src, uint32_t sx, uint32_t sy, uint32_t w, uint32_t h, uint32_t dx, uint32_t dy);
 void fb_clear(uint32_t color);
 int  fb_enable_backbuffer(void);   // opt-in double buffering (compositor)
@@ -1185,6 +1186,7 @@ void mouse_set_pos(int x, int y);
 
 void font_draw_char(uint32_t x, uint32_t y, unsigned char c, uint32_t fg, uint32_t bg);
 void font_draw_string(uint32_t x, uint32_t y, const char* str, uint32_t fg, uint32_t bg);
+void font_draw_string_trans(uint32_t x, uint32_t y, const char* str, uint32_t fg);  // transparent bg
 void font_draw_char_scaled(uint32_t x, uint32_t y, unsigned char c, uint32_t fg, uint32_t bg, uint32_t scale);
 void font_draw_string_scaled(uint32_t x, uint32_t y, const char* str, uint32_t fg, uint32_t bg, uint32_t scale);
 uint32_t font_get_width(void);

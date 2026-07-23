@@ -153,6 +153,27 @@ void fb_clear(uint32_t color) {
     fb_fill_rect(0, 0, fb_width, fb_height, color);
 }
 
+// Fill a rectangle with a vertical gradient: `top` at the first row, `bottom` at
+// the last, linearly interpolated per row. 32bpp only; falls back to a flat
+// `top` fill otherwise. Colours are the 32bpp BGRX form fb_rgb() produces, so the
+// channels sit at <<16 (R), <<8 (G), <<0 (B) with the alpha byte forced opaque.
+void fb_fill_vgrad(uint32_t x, uint32_t y, uint32_t w, uint32_t h,
+                   uint32_t top, uint32_t bottom) {
+    if (fb_bpp != 32 || h == 0) { fb_fill_rect(x, y, w, h, top); return; }
+    int tr = (int)((top >> 16) & 0xFF), tg = (int)((top >> 8) & 0xFF), tb = (int)(top & 0xFF);
+    int dr = (int)((bottom >> 16) & 0xFF) - tr;
+    int dg = (int)((bottom >>  8) & 0xFF) - tg;
+    int db = (int)( bottom        & 0xFF) - tb;
+    int den = (h > 1) ? (int)(h - 1) : 1;
+    for (uint32_t row = 0; row < h; row++) {
+        int r = tr + dr * (int)row / den;
+        int g = tg + dg * (int)row / den;
+        int b = tb + db * (int)row / den;
+        fb_fill_rect(x, y + row, w, 1,
+                     (0xFFu << 24) | ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b);
+    }
+}
+
 // Darken a rectangle in place by mixing its pixels toward black. `shade` is the
 // black overlay's alpha, 0..255 (0 = no change, 255 = solid black). Reads the
 // current draw target, so it composites over whatever was already drawn there —

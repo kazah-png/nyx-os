@@ -284,6 +284,30 @@ void font_draw_string(uint32_t x, uint32_t y, const char* str, uint32_t fg, uint
     }
 }
 
+// Draw a string with a TRANSPARENT background: only the glyph (fg) pixels are
+// written, so whatever is already in the framebuffer shows between and around the
+// letters. Needed for text over a gradient or image — the title bar's vertical
+// gradient would otherwise be flattened to a solid rectangle behind the text.
+void font_draw_string_trans(uint32_t x, uint32_t y, const char* str, uint32_t fg) {
+    uint32_t w = fb_get_width(), h = fb_get_height();
+    uint32_t* fb = (uint32_t*)fb_get_addr();
+    if (!fb) return;
+    while (*str) {
+        const uint8_t* glyph = font_data[(unsigned char)*str];
+        if (x + FONT_WIDTH <= w && y + FONT_HEIGHT <= h) {
+            for (uint32_t row = 0; row < FONT_HEIGHT; row++) {
+                uint32_t rb = glyph[row];
+                if (!rb) continue;
+                for (uint32_t col = 0; col < FONT_WIDTH; col++)
+                    if ((rb >> (7 - col)) & 1)
+                        fb[(y + row) * w + (x + col)] = fg;
+            }
+        }
+        x += FONT_WIDTH;
+        str++;
+    }
+}
+
 // Scaled glyph draw: each font pixel becomes a scale x scale block. Used by the
 // panic screen for the big ":(" face and headings (the font is a fixed 8x16, so
 // this is the only way to get larger text). Draws every cell pixel (fg or bg).
