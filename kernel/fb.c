@@ -97,6 +97,39 @@ void fb_put_pixel(uint32_t x, uint32_t y, uint32_t color) {
     }
 }
 
+// ---- Rounded-bottom clip region -------------------------------------------
+// When enabled, fb_fill_rect / fb_blit mask their writes to a rectangle whose two
+// BOTTOM corners are rounded to radius clip_r (the top stays square — a window's
+// top is rounded by its title bar instead). The compositor turns it on around a
+// window's body + app-content draws so that content can't square off the rounded
+// bottom the frame traces. Off by default, and the clip-off path in each
+// primitive is kept byte-identical to before.
+static int clip_on = 0;
+static int clip_x0, clip_y0, clip_x1, clip_y1, clip_r;
+
+void fb_set_round_clip(int x, int y, int w, int h, int r) {
+    clip_on = 1;
+    clip_x0 = x; clip_y0 = y;
+    clip_x1 = x + w - 1; clip_y1 = y + h - 1;
+    clip_r = r;
+}
+void fb_clear_clip(void) { clip_on = 0; }
+
+// Allowed horizontal span [*lo, *hi) for row `py` under the active clip: empty if
+// the row is outside it, narrowed by the arc inset within clip_r of the bottom.
+static void clip_span(int py, int* lo, int* hi) {
+    if (py < clip_y0 || py > clip_y1) { *lo = *hi = 0; return; }
+    int l = clip_x0, r = clip_x1 + 1;               // [l, r)
+    int from_bottom = clip_y1 - py;
+    if (from_bottom < clip_r) {
+        int inset = fb_corner_inset(from_bottom, clip_r);   // fb.c, declared in kernel.h
+        l += inset; r -= inset;
+    }
+    if (l < 0) l = 0;
+    if (r > (int)fb_width) r = (int)fb_width;
+    *lo = l; *hi = r;
+}
+
 void fb_fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color) {
     if (!fb_addr) return;
     if (x >= fb_width || y >= fb_height) return;
@@ -104,11 +137,25 @@ void fb_fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color
     if (y + h > fb_height) h = fb_height - y;
 
     if (fb_bpp == 32) {
-        uint32_t* ptr = (uint32_t*)fb_addr + y * fb_width + x;
-        for (uint32_t row = 0; row < h; row++) {
-            for (uint32_t col = 0; col < w; col++)
-                ptr[col] = color;
-            ptr += fb_width;
+        if (!clip_on) {
+            uint32_t* ptr = (uint32_t*)fb_addr + y * fb_width + x;
+            for (uint32_t row = 0; row < h; row++) {
+                for (uint32_t col = 0; col < w; col++)
+                    ptr[col] = color;
+                ptr += fb_width;
+            }
+        } else {
+            for (uint32_t row = 0; row < h; row++) {
+                int py = (int)(y + row), lo, hi;
+                clip_span(py, &lo, &hi);
+                int a = (int)x, b = (int)(x + w);
+                if (a < lo) a = lo;
+                if (b > hi) b = hi;
+                if (a >= b) continue;
+                uint32_t* ptr = (uint32_t*)fb_addr + (uint32_t)py * fb_width + (uint32_t)a;
+                for (int col = 0; col < b - a; col++)
+                    ptr[col] = color;
+            }
         }
     } else if (fb_bpp == 8) {
         uint8_t* ptr = (uint8_t*)fb_addr + y * fb_width + x;
@@ -141,8 +188,18 @@ void fb_blit(const void* src, uint32_t sx, uint32_t sy, uint32_t w, uint32_t h,
         uint32_t* dst = (uint32_t*)fb_addr + dy * fb_width + dx;
         uint32_t* src32 = (uint32_t*)src + sy * src_stride + sx;
         for (uint32_t row = 0; row < h; row++) {
-            for (uint32_t col = 0; col < w; col++)
-                dst[col] = src32[col];
+            if (!clip_on) {
+                for (uint32_t col = 0; col < w; col++)
+                    dst[col] = src32[col];
+            } else {
+                int lo, hi;
+                clip_span((int)(dy + row), &lo, &hi);
+                int a = (int)dx, b = (int)(dx + w);
+                if (a < lo) a = lo;
+                if (b > hi) b = hi;
+                for (int c = a - (int)dx; c < b - (int)dx; c++)
+                    dst[c] = src32[c];
+            }
             dst += fb_width;
             src32 += src_stride;
         }

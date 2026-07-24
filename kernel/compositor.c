@@ -232,12 +232,21 @@ static void draw_window_frame(window_t* win) {
     int x = win->x, y = win->y, w = (int)win->w, H = (int)win_total_h(win);
     int R = win_radius(win);
 
-    // Straight edges. Top runs between the rounded corners; the sides start below
-    // the top arc; the bottom is square (the body isn't rounded — see draw_titlebar).
-    fb_fill_rect(x + R, y - 1, w - 2 * R, 1, hi);   // top
-    fb_fill_rect(x - 1, y + H, w + 2,     1, lo);   // bottom
-    fb_fill_rect(x - 1, y + R, 1, H - R, hi);       // left
-    fb_fill_rect(x + w, y + R, 1, H - R, lo);       // right
+    // Straight edges run BETWEEN the rounded corners on all four sides now (the
+    // body's bottom is rounded by the clip in redraw_all, so the frame traces that
+    // arc to match the top).
+    fb_fill_rect(x + R, y - 1, w - 2 * R, 1, hi);        // top
+    fb_fill_rect(x + R, y + H, w - 2 * R, 1, lo);        // bottom
+    fb_fill_rect(x - 1, y + R, 1, H - 2 * R, hi);        // left
+    fb_fill_rect(x + w, y + R, 1, H - 2 * R, lo);        // right
+
+    // Bottom corner arcs (lo), mirroring the top: one pixel outside the curve the
+    // clip leaves in the body at the bottom.
+    for (int row = 0; row < R; row++) {
+        int inset = fb_corner_inset(row, R);
+        fb_put_pixel((uint32_t)(x + inset - 1), (uint32_t)(y + H - 1 - row), lo);   // bottom-left
+        fb_put_pixel((uint32_t)(x + w - inset), (uint32_t)(y + H - 1 - row), lo);   // bottom-right
+    }
 
     // Top corner arcs, one pixel outside the title bar's rounded corners so the
     // border hugs the same curve the fill leaves.
@@ -862,11 +871,18 @@ static void redraw_all(void) {
     for (int i = 0; i < n; i++) {
         window_t* win = sorted[i];
         draw_window_shadow(win);      // cast onto lower windows/desktop, before this window paints
+        // Clip the body + app content to the window's rounded-bottom shape, so an
+        // app that fills its client rect edge-to-edge can't square off the corners
+        // the frame rounds. Frame + title bar draw AFTER, unclipped: the frame
+        // traces the arc, and the title bar rounds the top itself.
+        int wr = win_radius(win);
+        fb_set_round_clip(win->x, win->y, (int)win->w, (int)win_total_h(win), wr);
         fb_fill_rect(win->x, win->y + TITLE_H, win->w, win->h, fb_rgb(35,35,40));
-        draw_window_frame(win);
-        draw_titlebar(win);
         if (win->draw)
             win->draw(win, win->x, win->y + TITLE_H, win->w, win->h);
+        fb_clear_clip();
+        draw_window_frame(win);
+        draw_titlebar(win);
     }
 
     draw_workspace_indicator();

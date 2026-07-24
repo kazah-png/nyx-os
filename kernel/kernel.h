@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.9.17"
+#define KERNEL_VERSION "5.9.18"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -1170,6 +1170,8 @@ uint32_t fb_isqrt(uint32_t x);                                          // integ
 int  fb_corner_inset(int d, int R);                                     // rounded-corner row inset
 void fb_fill_round_rect(int x, int y, int w, int h, int R, uint32_t col);    // all-4-corner rounded fill
 void fb_stroke_round_rect(int x, int y, int w, int h, int R, uint32_t col);  // matching rounded outline
+void fb_set_round_clip(int x, int y, int w, int h, int r);  // mask fills/blits to a rect w/ rounded bottom corners
+void fb_clear_clip(void);
 void fb_blit(const void* src, uint32_t sx, uint32_t sy, uint32_t w, uint32_t h, uint32_t dx, uint32_t dy);
 void fb_clear(uint32_t color);
 int  fb_enable_backbuffer(void);   // opt-in double buffering (compositor)
