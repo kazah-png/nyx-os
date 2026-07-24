@@ -24,6 +24,7 @@ for f in "$SRC"/*.c; do
 done
 $CC $CF -c "$ROOT/user/doomgeneric_nyxos.c" -o "$OUT/doomgeneric_nyxos.o"
 $CC $CF -c "$ROOT/user/doom_userlibc.c"     -o "$OUT/doom_userlibc.o"
+$CC $CF -c "$ROOT/user/doom_nullsound.c"    -o "$OUT/doom_nullsound.o"
 $LD -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o "$ROOT/user/doom.elf" \
   "$ROOT/user/crt0.o" "$OUT"/*.o
 echo "built user/doom.elf ($(stat -c%s "$ROOT/user/doom.elf" 2>/dev/null || echo ?) bytes)"

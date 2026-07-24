@@ -2140,6 +2140,26 @@ void enable_smep_smap(void) {
            (f & 2) ? "on" : "unavailable");
 }
 
+// Enable the x87 FPU and SSE so ring-3 programs built with the stock x86_64 codegen —
+// which uses XMM registers for float math AND for 16-byte struct/mem copies (movups) —
+// can run. The boot path only turns on PAE/long-mode/paging, leaving CR4.OSFXSR clear,
+// so any SSE instruction #UDs. NyxOS's own kernel and coreutils are all built -mno-sse,
+// so nothing else ever touches XMM/x87: DOOM (the sole SSE user) therefore keeps its
+// vector state across context switches for free, without per-task fxsave/fxrstor. If a
+// second SSE userspace program is ever added, this must grow into an fxsave-on-switch
+// (or lazy-FPU) scheme. Added v5.9.34 for the DOOM port.
+static void enable_sse_fpu(void) {
+    uint64_t cr0 = read_cr0();
+    cr0 &= ~(1ULL << 2);        // CR0.EM = 0: use the real x87 FPU, don't emulate/trap it
+    cr0 |=  (1ULL << 1);        // CR0.MP = 1: monitor coprocessor
+    write_cr0(cr0);
+    uint64_t cr4 = read_cr4();
+    cr4 |= (1ULL << 9);         // CR4.OSFXSR:     OS supports fxsave/fxrstor -> enables SSE
+    cr4 |= (1ULL << 10);        // CR4.OSXMMEXCPT: unmasked SIMD FP faults raise #XF, not #UD
+    write_cr4(cr4);
+    __asm__ volatile ("fninit"); // bring the x87 unit to a known state
+}
+
 void kernel_main(uint64_t magic, void* mboot_ptr) {
     (void)magic;
     saved_mboot_ptr = mboot_ptr;
@@ -2151,6 +2171,7 @@ void kernel_main(uint64_t magic, void* mboot_ptr) {
     printf("[INIT] Interrupt Service Routines...\n"); init_isr();
     printf("[INIT] Interrupt Requests...\n"); init_irq();
     printf("[INIT] Serial Port...\n"); init_serial();
+    printf("[INIT] SSE/FPU for userspace...\n"); enable_sse_fpu();
 
     uint64_t mem_total = 0;
     if (mboot_ptr) {

@@ -21,8 +21,9 @@ static long dsys(long n, long a, long b, long c) {
 uint8_t* doom_wad_data = 0;
 uint32_t doom_wad_size = 0;
 int doom_quit_requested = 0;
-void* DG_sound_module = 0;
-void* DG_music_module = 0;
+// DG_sound_module / DG_music_module are real structs the engine dereferences; the
+// no-op backends live in doom_nullsound.c (NOT here — a void* stub had the wrong
+// layout and the engine called a garbage function pointer). See that file.
 int   use_libsamplerate = 0;
 float libsamplerate_scale = 1.0f;
 void serial_puts(const char* s) { long n = 0; while (s[n]) n++; dsys(DSYS_WRITE, 2, (long)s, n); }
@@ -300,6 +301,11 @@ FILE *fopen(const char *path, const char *mode) {
     long _fsz = dsys(DSYS_LSEEK, fd, 0, 2);       /* SEEK_END -> size */
     dsys(DSYS_LSEEK, fd, 0, 0);                    /* SEEK_SET */
     uint8_t* _buf = (uint8_t*)malloc(_fsz > 0 ? (size_t)_fsz : 1);
+    /* Pre-fault every page of the buffer: the kernel's copy_to_user (SYS_READ) walks
+     * the user page tables and CANNOT fault a not-yet-present lazy sbrk page in, so an
+     * untouched malloc'd buffer fails the copy (see the getdents note in syscall.c).
+     * Touching it first — exactly what `ls` does — makes every SYS_READ land. */
+    if (_buf && _fsz > 0) memset(_buf, 0, (size_t)_fsz);
     long _got = 0;
     while (_buf && _got < _fsz) {
         long _r = dsys(DSYS_READ, fd, (long)(_buf + _got), _fsz - _got);

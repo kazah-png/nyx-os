@@ -46,6 +46,10 @@ Thumbs.db
 # === EXT2 disk image ===
 ext2-test.img
 
+# === DOOM assets (WAD is a ~4 MB binary; it lives on the ext2 disk, never in git) ===
+*.wad
+*.WAD
+
 # === Font generator ===
 kernel/genfont.py
 
@@ -55,8 +59,8 @@ kernel/genfont.py
 # === Test / debug artifacts ===
 qemu_serial.txt
 qemu_err.txt
-screen.png
-screen.ppm
+screen*.png
+screen*.ppm
 
 # === Dev-only scripts (not for distribution) ===
 kernel/build.sh

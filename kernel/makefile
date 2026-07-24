@@ -84,7 +84,8 @@ USER_ELFS = $(USER_DIR)/hello.elf $(USER_DIR)/init.elf $(USER_DIR)/spin.elf $(US
             $(USER_DIR)/sockdemo.elf $(USER_DIR)/srvdemo.elf $(USER_DIR)/udpdemo.elf \
             $(USER_DIR)/nc.elf $(USER_DIR)/sigrec.elf $(USER_DIR)/alarmdemo.elf \
             $(USER_DIR)/polldemo.elf $(USER_DIR)/wget.elf $(USER_DIR)/netstorm.elf $(USER_DIR)/stat.elf \
-            $(USER_DIR)/vfsfill.elf $(USER_DIR)/fsx.elf $(USER_DIR)/stacktest.elf $(USER_DIR)/threads.elf $(USER_DIR)/vmtest.elf $(USER_DIR)/munmaptest.elf $(USER_DIR)/mprotecttest.elf $(USER_DIR)/fbtest.elf $(USER_DIR)/keyevtest.elf
+            $(USER_DIR)/vfsfill.elf $(USER_DIR)/fsx.elf $(USER_DIR)/stacktest.elf $(USER_DIR)/threads.elf $(USER_DIR)/vmtest.elf $(USER_DIR)/munmaptest.elf $(USER_DIR)/mprotecttest.elf $(USER_DIR)/fbtest.elf $(USER_DIR)/keyevtest.elf \
+            $(USER_DIR)/doom.elf
 
 # Flags for Nyx C output (GCC: statement-exprs, __auto_type). -mno-red-zone is mandatory.
 NYXCFLAGS = -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR)
@@ -491,6 +492,15 @@ disk: ../ext2-test.img
 
 clean:
 	rm -f *.o *.d *.bin initramfs_data.h initramfs_data.h.tmp trampoline.bin $(USER_DIR)/*.o $(USER_DIR)/*.elf $(USER_DIR)/hello.o
+	rm -rf $(USER_DIR)/doom_obj
+
+# doom.elf: the recovered doomgeneric engine (kernel/doom_src) built into a userspace
+# ELF by an out-of-makefile recipe — it compiles ~80 engine TUs + the NyxOS platform
+# layer + doom_userlibc (the syscall-backed libc) with system gcc and links crt0 with
+# NO libc.so. See user/build_doom.sh; it self-locates, so `make` triggers it here and
+# mkinitramfs then globs the resulting user/doom.elf into the image as `/doom.elf`.
+$(USER_DIR)/doom.elf: $(USER_DIR)/doomgeneric_nyxos.c $(USER_DIR)/doom_userlibc.c $(USER_DIR)/doom_nullsound.c $(USER_DIR)/build_doom.sh $(USER_DIR)/crt0.o
+	bash $(USER_DIR)/build_doom.sh
 
 # munmaptest: partial-munmap VMA split/trim test (v5.9.27)
 $(USER_DIR)/munmaptest.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/munmaptest.o

@@ -94,7 +94,23 @@ int DG_GetKey(int* pressed, unsigned char* doomKey) {
 void DG_SetWindowTitle(const char* title) { (void)title; }
 
 int main(int argc, char** argv) {
-    doomgeneric_Create(argc, argv);
+    // Launched as bare `doom` from the shell, argc==1 and the engine would not know
+    // where its IWAD lives. Inject `-iwad /mnt/doom1.wad` (the shareware WAD sits on
+    // the ext2 disk mounted at /mnt) unless the caller already passed one. argv[0]
+    // must stay the program name so M_CheckParm's index-1 scan sees the flag.
+    static char* dargv[16];
+    int dargc = 0, has_iwad = 0;
+    dargv[dargc++] = (argc > 0 && argv) ? argv[0] : "doom";
+    for (int i = 1; argv && i < argc && dargc < 14; i++) {
+        char* a = argv[i];
+        dargv[dargc++] = a;
+        if (a[0]=='-' && a[1]=='i' && a[2]=='w' && a[3]=='a' && a[4]=='d') has_iwad = 1;
+    }
+    if (!has_iwad) {
+        dargv[dargc++] = "-iwad";
+        dargv[dargc++] = "/mnt/doom1.wad";
+    }
+    doomgeneric_Create(dargc, dargv);
     for (;;) doomgeneric_Tick();
     return 0;
 }
