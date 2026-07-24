@@ -11,6 +11,18 @@
 static mount_entry_t mount_table[MAX_MOUNT_POINTS];
 static int mount_count = 0;
 
+// SMP: mount_table is append-only — vfs_mount only ever fills the next free slot
+// and bumps mount_count; nothing removes or rewrites an entry (there is no
+// vfs_unmount), so a mount_entry_t* returned by vfs_find_mount stays valid for the
+// life of the system. This lock serializes the writer against two hazards once
+// smpbalance spreads work across cores: a second concurrent vfs_mount clobbering
+// the same slot, and a reader iterating [0, mount_count) while the count is bumped
+// past a half-filled entry. The pointer handed back is then used UNLOCKED by
+// callers — safe precisely because of the append-only + immutable invariant above.
+// Leaf lock: vfs_mount releases it before ensure_mount_stub (which takes
+// node_pool_lock), so the two VFS locks are never nested. (T1 track, v5.9.22.)
+static spinlock_t mount_table_lock = SPINLOCK_INIT;
+
 #define VFS_MOUNT_DIRENTS 64   // max entries loaded per mounted directory open
 
 typedef struct vfs_node {
@@ -871,7 +883,11 @@ static void ensure_mount_stub(const char* mount_point) {
 
 int vfs_mount(const char* mount_point, int fs_type, void* fs_data) {
     (void)fs_data;
-    if (mount_count >= MAX_MOUNT_POINTS) return -1;
+    uint64_t fl = spin_lock_irqsave(&mount_table_lock);
+    if (mount_count >= MAX_MOUNT_POINTS) {
+        spin_unlock_irqrestore(&mount_table_lock, fl);
+        return -1;
+    }
     mount_entry_t* me = &mount_table[mount_count];
     strncpy(me->mount_point, mount_point, MAX_PATH - 1);
     me->type = fs_type;
@@ -891,21 +907,27 @@ int vfs_mount(const char* mount_point, int fs_type, void* fs_data) {
         me->unlink     = fs_unlink;
     }
 
-    mount_count++;
+    mount_count++;   // publish: the entry is fully written before it's counted
+    spin_unlock_irqrestore(&mount_table_lock, fl);
+
+    // Ramdisk-tree side effect only (touches no mount_table state); done outside the
+    // lock so node_pool_lock is never nested under mount_table_lock.
     ensure_mount_stub(mount_point);   // so the mount shows up when browsing "/"
     return 0;
 }
 
 mount_entry_t* vfs_find_mount(const char* path) {
     if (!path) return NULL;
+    mount_entry_t* found = NULL;
+    uint64_t fl = spin_lock_irqsave(&mount_table_lock);
     for (int i = 0; i < mount_count; i++) {
         int len = strlen(mount_table[i].mount_point);
         if (strncmp(path, mount_table[i].mount_point, len) == 0) {
-            if (path[len] == '\0' || path[len] == '/')
-                return &mount_table[i];
+            if (path[len] == '\0' || path[len] == '/') { found = &mount_table[i]; break; }
         }
     }
-    return NULL;
+    spin_unlock_irqrestore(&mount_table_lock, fl);
+    return found;   // entry is immutable once counted, so it's safe to use unlocked
 }
 
 // ==================== New helper functions ====================
