@@ -79,10 +79,25 @@ uint64_t do_mmap(uint64_t addr, uint64_t length, int prot, int flags,
     return base;                                        /* pages fault in on first touch */
 }
 
+/* Fill a free VMA slot with an anonymous [start,end) mapping at prot. The caller's
+ * feasibility check guarantees a slot exists. */
+static void vma_add_anon(process_t* p, uint64_t start, uint64_t end, uint32_t prot) {
+    for (int j = 0; j < PROC_MAX_VMAS; j++) {
+        if (!p->mmap_vmas[j].used) {
+            vma_t* w = &p->mmap_vmas[j];
+            w->start = start; w->end = end; w->prot = prot;
+            w->file_buf = 0; w->file_size = 0; w->used = 1;
+            return;
+        }
+    }
+}
+
 /* SYS_MPROTECT: change the protection of [addr, addr+length). Rewrites the flags of
- * present pages (writable per PROT_WRITE, NX unless PROT_EXEC) and updates the prot
- * stored in overlapping VMAs so pages faulted in later get the new protection.
- * v1 note: a partial mprotect updates the whole overlapping VMA's prot. */
+ * present pages (writable per PROT_WRITE, NX unless PROT_EXEC) and updates the VMAs
+ * so pages faulted in later get the right protection. A PARTIAL mprotect now SPLITS
+ * the overlapping VMA (v5.9.28) so only the affected sub-range carries the new prot
+ * and the rest keeps the old — before, it set the whole overlapping VMA's prot, so a
+ * later fault OUTSIDE the mprotected range materialised with the wrong protection. */
 int do_mprotect(uint64_t addr, uint64_t length, int prot) {
     /* VMA table is the thread group's (page_directory is shared either way) */
     process_t* p = tg_leader(get_current_process());
@@ -102,11 +117,59 @@ int do_mprotect(uint64_t addr, uint64_t length, int prot) {
     // The bound is the one user_v2p and the ELF loader use; one definition, in
     // kernel.h, so it cannot drift between the places that enforce it.
     if (end <= addr || addr < USER_SPACE_MIN || end > USER_SPACE_END) return -1;
+
+    // Feasibility pass — reject before touching state. A partial mprotect splits the
+    // overlapping VMA (a back/front carve: +1 record, a middle carve: +2). A
+    // file-backed VMA can't be split — its pages copy from file_buf[page - v->start]
+    // and a new piece with a shifted start would misalign that shared snapshot — so
+    // a partial mprotect of one is refused (a full-cover mprotect, which only rewrites
+    // prot without moving anything, is fine). Also confirm enough free slots exist.
+    int slots_needed = 0, free_slots = 0;
     for (int i = 0; i < PROC_MAX_VMAS; i++) {
         vma_t* v = &p->mmap_vmas[i];
-        if (v->used && v->start < end && v->end > addr) v->prot = (uint32_t)prot;
+        if (!v->used) { free_slots++; continue; }
+        if (!(v->start < end && v->end > addr)) continue;
+        int full = (v->start >= addr && v->end <= end);
+        if (full) continue;
+        if (v->file_buf) return -1;                     // partial mprotect of file-backed: unsupported
+        int middle = (v->start < addr && v->end > end);
+        slots_needed += middle ? 2 : 1;
     }
+    if (slots_needed > free_slots) return -1;
+
+    // Page tables first (precise to [addr, end)); then the VMA bookkeeping. Snapshot
+    // the original overlapping VMAs before splitting — the new-prot pieces added below
+    // DO overlap [addr, end), so a live re-scan would reprocess them.
     vm_protect_range((uint64_t*)p->page_directory, addr, end, prot);
+
+    int todo[PROC_MAX_VMAS], ntodo = 0;
+    for (int i = 0; i < PROC_MAX_VMAS; i++) {
+        vma_t* v = &p->mmap_vmas[i];
+        if (v->used && v->start < end && v->end > addr) todo[ntodo++] = i;
+    }
+    for (int t = 0; t < ntodo; t++) {
+        vma_t* v = &p->mmap_vmas[todo[t]];
+        uint32_t oldp = v->prot;
+        int full   = (v->start >= addr && v->end <= end);
+        int middle = (v->start <  addr && v->end >  end);
+        int back   = (v->start <  addr && v->end <= end);
+        if (full) {
+            v->prot = (uint32_t)prot;
+        } else if (back) {                              // mprotect covers the back
+            uint64_t oe = v->end;
+            v->end = addr;                              // head [start, addr) keeps old prot
+            vma_add_anon(p, addr, oe, (uint32_t)prot);  // tail [addr, oe) gets new prot
+        } else if (middle) {                            // a band of new prot in the middle
+            uint64_t oe = v->end;
+            v->end = addr;                              // head [start, addr) old
+            vma_add_anon(p, addr, end, (uint32_t)prot); // mid  [addr, end) new
+            vma_add_anon(p, end, oe, oldp);             // tail [end, oe)  old
+        } else {                                        // front: mprotect covers the front
+            uint64_t os = v->start;
+            v->start = end;                             // tail [end, v->end) keeps old prot
+            vma_add_anon(p, os, end, (uint32_t)prot);   // front [os, end) gets new prot
+        }
+    }
     return 0;
 }
 
