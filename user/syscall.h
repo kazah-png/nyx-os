@@ -55,6 +55,8 @@
 #define SYS_FUTEX    51
 #define SYS_GETTIMEOFDAY 52
 #define SYS_NANOSLEEP 53
+#define SYS_FBINFO    54
+#define SYS_FBPRESENT 55
 
 /* Threads (v5.8.87). CLONE_VM makes the new task SHARE this address space — a real
  * thread — instead of getting fork()'s copy-on-write duplicate. */
@@ -195,6 +197,19 @@ static inline long write(int fd, const void* buf, long len) {
 
 static inline void print(const char* s) {
     syscall1(SYS_PRINT, (long)s);
+}
+
+/* Framebuffer for fullscreen apps (v5.9.29 — the DOOM graphics enabler). fbinfo()
+ * fills out[0..2] = screen {width, height, bpp}. fbpresent() blits a w*h 32bpp
+ * (0x00RRGGBB, i.e. BGRX in memory) buffer to the screen, nearest-neighbour scaled
+ * to fullscreen; call it once per frame. While a program keeps calling fbpresent()
+ * it owns the whole screen (the desktop compositor yields); the desktop returns
+ * shortly after it stops (exits). */
+static inline int fbinfo(unsigned int out3[3]) {
+    return (int)syscall1(SYS_FBINFO, (long)out3);
+}
+static inline int fbpresent(const void* buf, unsigned int w, unsigned int h) {
+    return (int)syscall3(SYS_FBPRESENT, (long)buf, (long)w, (long)h);
 }
 
 static inline long open(const char* path, int flags, int mode) {

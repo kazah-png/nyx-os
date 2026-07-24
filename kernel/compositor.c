@@ -2280,6 +2280,15 @@ done_click:
             redraw = 0;
         }
 
+        // A fullscreen userspace app (SYS_FBPRESENT) owns the screen and fb_present()
+        // yields to it. When it stops presenting (exits) and ownership lapses, force
+        // one recomposite so the desktop returns rather than leaving the app's last
+        // frame frozen on screen.
+        static int comp_was_fs = 0;
+        int comp_fs = fb_fullscreen_active();
+        if (comp_was_fs && !comp_fs) redraw_all();
+        comp_was_fs = comp_fs;
+
         save_cursor_bg(mouse_x, mouse_y);
         draw_cursor(mouse_x, mouse_y);
         // Publish the finished frame in one blit — only when something actually

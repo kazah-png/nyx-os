@@ -1302,6 +1302,35 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
             }
             return (uint64_t)(int64_t)r;
         }
+        case SYS_FBINFO: {
+            // fbinfo(uint32_t out[3]): screen width, height, bpp — so a fullscreen app
+            // can size its render buffer (DOOM's DG_Init).
+            uint32_t info[3] = { 0, 0, 0 };
+            fb_query(&info[0], &info[1], &info[2]);
+            if (!user_ptr_ok(a1, sizeof(info))) return -1;
+            return (copy_to_user(a1, info, sizeof(info)) == 0) ? 0 : (uint64_t)-1;
+        }
+        case SYS_FBPRESENT: {
+            // fbpresent(const void* buf, uint32_t w, uint32_t h): blit a w x h 32bpp
+            // buffer to the screen, scaled to fullscreen, taking screen ownership so the
+            // compositor yields. The user buffer is copied into a reusable kernel scratch
+            // (validated) before the blit, so fb_present_kbuf never touches a user VA.
+            // Bounded to 8 MB so a bogus w/h can't request a huge allocation.
+            static uint8_t* fbp_scratch = 0;
+            static uint64_t fbp_scratch_sz = 0;
+            uint32_t w = (uint32_t)a2, h = (uint32_t)a3;
+            uint64_t bytes = (uint64_t)w * h * 4;
+            if (w == 0 || h == 0 || bytes > (8u * 1024 * 1024)) return (uint64_t)-1;
+            if (!user_ptr_ok(a1, bytes)) return (uint64_t)-1;
+            if (bytes > fbp_scratch_sz) {                 // grow the reusable scratch
+                uint8_t* n = (uint8_t*)krealloc(fbp_scratch, bytes);
+                if (!n) return (uint64_t)-1;
+                fbp_scratch = n; fbp_scratch_sz = bytes;
+            }
+            if (copy_from_user(fbp_scratch, a1, bytes) != 0) return (uint64_t)-1;
+            fb_present_kbuf((const uint32_t*)fbp_scratch, w, h);
+            return 0;
+        }
         default:
             printf("[SYSCALL] Unknown syscall %lu\n", no);
             return -1;

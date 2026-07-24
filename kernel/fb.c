@@ -18,6 +18,18 @@ static int   fb_back_wanted = 0;   // re-establish the back buffer after a mode 
 
 int  fb_enable_backbuffer(void);   // fwd
 
+// Fullscreen userspace ownership (v5.9.29 — the DOOM-milestone graphics enabler).
+// A program that calls SYS_FBPRESENT is driving the whole screen; while it keeps
+// presenting, the compositor's fb_present() yields so the desktop doesn't overwrite
+// the app's frames. Self-releasing: fb_fs_last is the tick of the last present, and
+// ownership lapses FB_FS_TIMEOUT_MS after the app stops presenting (i.e. exits), at
+// which point the desktop returns — no reap hook or explicit release needed.
+#define FB_FS_TIMEOUT_MS 500
+static volatile uint32_t fb_fs_last = 0;
+int fb_fullscreen_active(void) {
+    return fb_fs_last != 0 && (get_ticks() - fb_fs_last) < FB_FS_TIMEOUT_MS;
+}
+
 void fb_init(uint32_t width, uint32_t height, uint32_t bpp, void* addr) {
     fb_width = width;
     fb_height = height;
@@ -64,6 +76,7 @@ int fb_enable_backbuffer(void) {
 // Blit the finished back buffer to the hardware framebuffer in one pass. No-op
 // when double buffering isn't enabled (drawing already went straight to the LFB).
 void fb_present(void) {
+    if (fb_fullscreen_active()) return;   // a userspace app owns the screen — don't clobber it
     if (!fb_back || !fb_hw) return;
     // Publishing only makes sense while drawing is actually GOING to the back
     // buffer. Once fb_use_lfb_direct() has repointed drawing at the hardware
@@ -73,6 +86,37 @@ void fb_present(void) {
     // makes it meaningful rather than trusting every caller to know.
     if (fb_addr != fb_back) return;
     memcpy_asm(fb_hw, fb_back, (size_t)fb_width * fb_height * 4);
+}
+
+// SYS_FBINFO: hand the screen geometry to a userspace program so it can size its
+// render buffer (DOOM's DG_Init reads this).
+void fb_query(uint32_t* w, uint32_t* h, uint32_t* bpp) {
+    if (w)   *w   = fb_width;
+    if (h)   *h   = fb_height;
+    if (bpp) *bpp = fb_bpp;
+}
+
+// SYS_FBPRESENT: blit a 32bpp source buffer (sw x sh) straight to the hardware
+// framebuffer, nearest-neighbour scaled to the full screen, and take fullscreen
+// ownership so the compositor yields. `src` is a KERNEL buffer — the syscall handler
+// copies the user buffer in first (validated) so this never dereferences user VAs.
+// Nearest-neighbour keeps it a single integer-only pass with no per-pixel division
+// in the inner loop (the source x/y steps are precomputed per column/row could be,
+// but the div is cheap enough here and keeps it obviously correct).
+void fb_present_kbuf(const uint32_t* src, uint32_t sw, uint32_t sh) {
+    if (!fb_hw || fb_bpp != 32 || !src || sw == 0 || sh == 0) return;
+    uint32_t* dst = (uint32_t*)fb_hw;
+    for (uint32_t y = 0; y < fb_height; y++) {
+        uint32_t sy = (uint32_t)((uint64_t)y * sh / fb_height);
+        const uint32_t* srow = src + (uint64_t)sy * sw;
+        uint32_t* drow = dst + (uint64_t)y * fb_width;
+        for (uint32_t x = 0; x < fb_width; x++) {
+            uint32_t sx = (uint32_t)((uint64_t)x * sw / fb_width);
+            drow[x] = srow[sx];
+        }
+    }
+    uint32_t t = get_ticks();
+    fb_fs_last = t ? t : 1;                 // nonzero => fb_fullscreen_active() sees it
 }
 
 // Repoint all drawing straight at the hardware framebuffer. The panic screen

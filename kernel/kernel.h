@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.9.28"
+#define KERNEL_VERSION "5.9.29"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -127,6 +127,8 @@ typedef __builtin_va_list va_list;
 #define SYS_FUTEX    51   /* futex(uaddr, op, val) — FUTEX_WAIT / FUTEX_WAKE */
 #define SYS_GETTIMEOFDAY 52 /* gettimeofday(struct timeval*, tz) — epoch sec+usec */
 #define SYS_NANOSLEEP 53  /* nanosleep(const timespec* req, timespec* rem) — sub-second sleep */
+#define SYS_FBINFO    54  /* fbinfo(uint32_t out[3]) — screen width/height/bpp for a fullscreen app */
+#define SYS_FBPRESENT 55  /* fbpresent(buf, w, h) — blit a 32bpp buffer to the screen, scaled */
 
 /* ------------------------------------------------------------------ */
 /*  Threads (v5.8.89) — clone(CLONE_VM) + futex                        */
@@ -1176,6 +1178,9 @@ void fb_blit(const void* src, uint32_t sx, uint32_t sy, uint32_t w, uint32_t h, 
 void fb_clear(uint32_t color);
 int  fb_enable_backbuffer(void);   // opt-in double buffering (compositor)
 void fb_present(void);             // blit the back buffer to the LFB (one frame)
+int  fb_fullscreen_active(void);   // a userspace app is driving the whole screen right now
+void fb_query(uint32_t* w, uint32_t* h, uint32_t* bpp);              // SYS_FBINFO
+void fb_present_kbuf(const uint32_t* src, uint32_t sw, uint32_t sh); // scale+blit a KERNEL buffer
 void fb_use_lfb_direct(void);      // repoint drawing at the hardware LFB (panic screen)
 uint32_t fb_get_width(void);
 uint32_t fb_get_height(void);
