@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.9.29"
+#define KERNEL_VERSION "5.9.30"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -129,6 +129,7 @@ typedef __builtin_va_list va_list;
 #define SYS_NANOSLEEP 53  /* nanosleep(const timespec* req, timespec* rem) — sub-second sleep */
 #define SYS_FBINFO    54  /* fbinfo(uint32_t out[3]) — screen width/height/bpp for a fullscreen app */
 #define SYS_FBPRESENT 55  /* fbpresent(buf, w, h) — blit a 32bpp buffer to the screen, scaled */
+#define SYS_GETKEYEVENT 56 /* getkeyevent() — next raw key event (pressed<<8)|scancode, or -1 */
 
 /* ------------------------------------------------------------------ */
 /*  Threads (v5.8.89) — clone(CLONE_VM) + futex                        */
@@ -1042,6 +1043,7 @@ char getchar(void);
 char getchar_poll(void);
 int  keyboard_has_input(void);               // poll(): 1 if a key/serial byte is waiting
 int  getkey_poll(void);
+int  keyboard_next_event(void);              // SYS_GETKEYEVENT: raw key make/break, or -1
 void keyboard_irq_handler(void* unused);
 int is_ctrl_pressed(void);
 int is_alt_pressed(void);

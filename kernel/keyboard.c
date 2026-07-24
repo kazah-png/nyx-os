@@ -26,6 +26,17 @@ static volatile int kbd_keycodes[KBD_BUFFER_SIZE];
 static volatile int kbd_kc_head = 0;
 static volatile int kbd_kc_tail = 0;
 
+// Raw key-EVENT ring (v5.9.30 — the DOOM DG_GetKey enabler). Unlike the two rings
+// above (cooked ASCII / press-only keycodes), this carries EVERY make AND break so a
+// fullscreen app / game knows when a key is released. Codes are LAYOUT-INDEPENDENT
+// Set-1 scancodes (physical key positions): bits 0-6 the scancode, bit 7 = E0-extended
+// (arrows / nav). Packed event = (pressed << 8) | code. Filled by the IRQ handler and
+// drained by keyboard_next_event() -> SYS_GETKEYEVENT, guarded by the same kbd_lock.
+static volatile uint16_t kbd_events[KBD_BUFFER_SIZE];
+static volatile int kbd_ev_head = 0;
+static volatile int kbd_ev_tail = 0;
+static int kbd_ev_e0 = 0;                  // E0 seen on the previous scancode byte
+
 // SMP: both rings above (chars for stdin, keycodes for window management) and the
 // modifier state machine inside scancode_to_ascii become shared the moment
 // smpbalance spreads work off the BSP. The producer is the IRQ1 handler; consumers
@@ -233,6 +244,20 @@ void keyboard_irq_handler(void* unused) {
     // AFTER the lock is released (signal_send_foreground walks the process table).
     int sig = 0;
     uint64_t fl = spin_lock_irqsave(&kbd_lock);
+
+    // Raw key-event ring: record every make/break (with the E0 flag for extended
+    // keys) so a fullscreen app polling SYS_GETKEYEVENT sees press AND release. This
+    // is independent of the cooked char decode below — a game wants physical keys.
+    if (sc == 0xE0) {
+        kbd_ev_e0 = 1;                              // extended-key prefix; next byte is the key
+    } else {
+        uint16_t code = (uint16_t)((kbd_ev_e0 ? 0x80 : 0x00) | (sc & 0x7F));
+        uint16_t ev   = (uint16_t)(((sc & 0x80) ? 0 : 0x100) | code);   // bit 8 = pressed
+        kbd_ev_e0 = 0;
+        int en = (kbd_ev_head + 1) % KBD_BUFFER_SIZE;
+        if (en != kbd_ev_tail) { kbd_events[kbd_ev_head] = ev; kbd_ev_head = en; }
+    }
+
     char c = scancode_to_ascii(sc);
     if (c) {
         if (ctrl_pressed && (c == 'c' || c == 'C')) {
@@ -321,6 +346,20 @@ int getkey_poll(void) {
     char c = getchar_poll();
     if (c) return c;
     return 0;
+}
+
+// SYS_GETKEYEVENT: pop the next raw key event, or -1 if the ring is empty. The value
+// is (pressed << 8) | code, where code is a Set-1 scancode with bit 7 flagging an
+// E0-extended (arrow / nav) key. Non-blocking — a fullscreen app polls it each frame.
+int keyboard_next_event(void) {
+    uint64_t fl = spin_lock_irqsave(&kbd_lock);
+    int r = -1;
+    if (kbd_ev_tail != kbd_ev_head) {
+        r = (int)kbd_events[kbd_ev_tail];
+        kbd_ev_tail = (kbd_ev_tail + 1) % KBD_BUFFER_SIZE;
+    }
+    spin_unlock_irqrestore(&kbd_lock, fl);
+    return r;
 }
 
 // ============================================================

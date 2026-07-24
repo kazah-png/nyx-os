@@ -84,7 +84,7 @@ USER_ELFS = $(USER_DIR)/hello.elf $(USER_DIR)/init.elf $(USER_DIR)/spin.elf $(US
             $(USER_DIR)/sockdemo.elf $(USER_DIR)/srvdemo.elf $(USER_DIR)/udpdemo.elf \
             $(USER_DIR)/nc.elf $(USER_DIR)/sigrec.elf $(USER_DIR)/alarmdemo.elf \
             $(USER_DIR)/polldemo.elf $(USER_DIR)/wget.elf $(USER_DIR)/netstorm.elf $(USER_DIR)/stat.elf \
-            $(USER_DIR)/vfsfill.elf $(USER_DIR)/fsx.elf $(USER_DIR)/stacktest.elf $(USER_DIR)/threads.elf $(USER_DIR)/vmtest.elf $(USER_DIR)/munmaptest.elf $(USER_DIR)/mprotecttest.elf $(USER_DIR)/fbtest.elf
+            $(USER_DIR)/vfsfill.elf $(USER_DIR)/fsx.elf $(USER_DIR)/stacktest.elf $(USER_DIR)/threads.elf $(USER_DIR)/vmtest.elf $(USER_DIR)/munmaptest.elf $(USER_DIR)/mprotecttest.elf $(USER_DIR)/fbtest.elf $(USER_DIR)/keyevtest.elf
 
 # Flags for Nyx C output (GCC: statement-exprs, __auto_type). -mno-red-zone is mandatory.
 NYXCFLAGS = -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR)
@@ -508,4 +508,10 @@ $(USER_DIR)/mprotecttest.o: $(USER_DIR)/mprotecttest.c $(USER_DIR)/libc.h $(USER
 $(USER_DIR)/fbtest.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/fbtest.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/fbtest.o
 $(USER_DIR)/fbtest.o: $(USER_DIR)/fbtest.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
+	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+
+# keyevtest: raw key-event path test (v5.9.30 DOOM DG_GetKey enabler)
+$(USER_DIR)/keyevtest.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/keyevtest.o
+	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/keyevtest.o
+$(USER_DIR)/keyevtest.o: $(USER_DIR)/keyevtest.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
 	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@

@@ -57,6 +57,7 @@
 #define SYS_NANOSLEEP 53
 #define SYS_FBINFO    54
 #define SYS_FBPRESENT 55
+#define SYS_GETKEYEVENT 56
 
 /* Threads (v5.8.87). CLONE_VM makes the new task SHARE this address space — a real
  * thread — instead of getting fork()'s copy-on-write duplicate. */
@@ -210,6 +211,19 @@ static inline int fbinfo(unsigned int out3[3]) {
 }
 static inline int fbpresent(const void* buf, unsigned int w, unsigned int h) {
     return (int)syscall3(SYS_FBPRESENT, (long)buf, (long)w, (long)h);
+}
+
+/* getkeyevent(pressed, code): non-blocking raw key event for a fullscreen app
+ * (DOOM's DG_GetKey). Returns 1 and fills *pressed (1=down, 0=up) and *code (a
+ * layout-independent Set-1 scancode; bit 7 flags an E0-extended arrow/nav key) if an
+ * event was waiting, else 0 (ring empty). Poll it each frame; keys arrive as both a
+ * press and a release. */
+static inline int getkeyevent(int* pressed, int* code) {
+    long r = syscall1(SYS_GETKEYEVENT, 0);
+    if (r < 0) return 0;
+    if (pressed) *pressed = (int)((r >> 8) & 1);
+    if (code)    *code    = (int)(r & 0xFF);
+    return 1;
 }
 
 static inline long open(const char* path, int flags, int mode) {

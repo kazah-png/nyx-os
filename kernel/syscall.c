@@ -1331,6 +1331,10 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
             fb_present_kbuf((const uint32_t*)fbp_scratch, w, h);
             return 0;
         }
+        case SYS_GETKEYEVENT:
+            // Next raw key make/break for a fullscreen app (DOOM's DG_GetKey): returns
+            // (pressed<<8)|scancode, or -1 if the event ring is empty. Non-blocking.
+            return (uint64_t)(int64_t)keyboard_next_event();
         default:
             printf("[SYSCALL] Unknown syscall %lu\n", no);
             return -1;
