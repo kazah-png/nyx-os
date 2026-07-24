@@ -1,5 +1,6 @@
 #include "kernel.h"
 #include "ext2.h"
+#include "spinlock.h"
 
 #define MAX_INODES    256   // total node pool (was 128 — root alone holds ~58)
 #define MAX_NAME      64
@@ -80,11 +81,18 @@ static vfs_node_t* current_dir = NULL;
 static vfs_node_t* free_nodes[MAX_INODES];
 static int free_node_count = 0;
 
+// The node pool + free-list are shared across cores now: with smpbalance on, a
+// process on any CPU can open/close a file and reach alloc_node/free_node. This is
+// a real lock, not the old preempt_disable() — that stops a context switch on THIS
+// core but means nothing to another core, which could read the same free_node_count
+// and hand the same node to two files (the exact race free_node's comment warns of).
+// It's a leaf lock (no other lock or allocator is taken while it's held), and
+// irqsave also covers the single-core reentrancy preempt_disable used to: cli
+// blocks the preempting timer tick. (T1 SMP-locking track, v5.9.21.)
+static spinlock_t node_pool_lock = SPINLOCK_INIT;
+
 static vfs_node_t* alloc_node(void) {
-    // preempt_disable: the node pool + free-list are not reentrant. A preemptive
-    // context switch mid-update (to another FS caller) would corrupt
-    // free_node_count / hand two callers the same node.
-    preempt_disable();
+    uint64_t fl = spin_lock_irqsave(&node_pool_lock);
     vfs_node_t* node = NULL;
     if (free_node_count > 0) {
         node = free_nodes[--free_node_count];
@@ -95,7 +103,7 @@ static vfs_node_t* alloc_node(void) {
         memset_asm(node, 0, sizeof(vfs_node_t));
         node->node_id = (uint32_t)(node - nodes);
     }
-    preempt_enable();
+    spin_unlock_irqrestore(&node_pool_lock, fl);
     return node;
 }
 
@@ -105,12 +113,12 @@ static vfs_node_t* alloc_node(void) {
  * could reach this twice for the same node (a close racing proc_sync, an unlink
  * of a still-open file), so the guard belongs here rather than at each caller. */
 static void free_node(vfs_node_t* n) {
-    preempt_disable();
+    uint64_t fl = spin_lock_irqsave(&node_pool_lock);
     if (n && !n->on_free_list && free_node_count < MAX_INODES) {
         n->on_free_list = 1;
         free_nodes[free_node_count++] = n;
     }
-    preempt_enable();
+    spin_unlock_irqrestore(&node_pool_lock, fl);
 }
 
 /* Release a node's storage and return it to the pool — but only once nobody
