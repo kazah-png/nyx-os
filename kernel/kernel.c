@@ -1118,6 +1118,12 @@ static void cmd_df(int argc, char** argv) {
            total * bs_kb, used * bs_kb, freeb * bs_kb, pct);
     printf("Inodes: %u total, %u free\n",
            ext2_fs.sb.total_inodes, ext2_fs.sb.free_inodes);
+    uint64_t chits = 0, cmisses = 0;
+    ext2_cache_stats(&chits, &cmisses);
+    uint64_t ctot = chits + cmisses;
+    uint32_t hitpct = ctot ? (uint32_t)((chits * 100u) / ctot) : 0;
+    printf("Block cache: %u hits, %u misses (%u%% hit rate)\n",
+           (uint32_t)chits, (uint32_t)cmisses, hitpct);
 }
 
 static void cmd_tcptest(int argc, char** argv) {

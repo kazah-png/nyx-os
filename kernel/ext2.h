@@ -144,4 +144,7 @@ int  ext2_unlink(const char* path);
 uint64_t ext2_lock_acquire(void);
 void     ext2_lock_release(uint64_t flags);
 
+// Sector-cache hit/miss counters (v5.9.26), for `df`.
+void ext2_cache_stats(uint64_t* hits, uint64_t* misses);
+
 #endif

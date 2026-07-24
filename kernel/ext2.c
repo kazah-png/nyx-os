@@ -29,8 +29,52 @@ void     ext2_lock_release(uint64_t fl) { spin_unlock_irqrestore(&ext2_lock, fl)
 #define EXT2_DIRENT_HDR   8u
 
 
+// ---- Sector cache (v5.9.26) -------------------------------------------------
+// Every disk access funnels through read_sectors / write_sectors, so a cache here
+// is coherent BY CONSTRUCTION: a write refreshes the cached line in place and a read
+// consults it first, so there is no higher-level invalidation to get wrong — the
+// class of bug that makes FS caches dangerous. Direct-mapped by sector number,
+// write-through (the disk is always current, so nothing to flush and a crash can't
+// lose a cached write). It removes the driver's biggest cost: ext2 re-reads the same
+// metadata blocks (superblock, group descriptors, inode tables, bitmaps) on every
+// single path resolution, and each block was fetched A SECTOR AT A TIME over PIO.
+// Guarded by ext2_lock like the rest of the driver (read/write_sectors run only
+// under it, except boot mount which is single-core), so the lines need no lock of
+// their own. 256 lines x 512 B = 128 KB of static BSS (zero-init, not in the binary).
+#define SC_LINES 256
+static uint8_t  sc_data[SC_LINES][512];
+static uint32_t sc_tag[SC_LINES];       // FS-relative sector number cached in this line
+static uint8_t  sc_valid[SC_LINES];
+static uint64_t sc_hits = 0, sc_misses = 0;
+
+static void sc_read1(uint32_t lba, void* buf) {
+    uint32_t i = lba % SC_LINES;
+    if (sc_valid[i] && sc_tag[i] == lba) {              // hit: serve from cache, no disk
+        __builtin_memcpy(buf, sc_data[i], 512);
+        sc_hits++;
+        return;
+    }
+    ata_read_sectors(ext2_fs.drive, ext2_fs.part_start_lba + lba, 1, buf);
+    __builtin_memcpy(sc_data[i], buf, 512);
+    sc_tag[i] = lba; sc_valid[i] = 1;
+    sc_misses++;
+}
+
+static void sc_write1(uint32_t lba, const void* buf) {
+    ata_write_sectors(ext2_fs.drive, ext2_fs.part_start_lba + lba, 1, buf);
+    uint32_t i = lba % SC_LINES;
+    __builtin_memcpy(sc_data[i], buf, 512);            // write-through: keep the line coherent
+    sc_tag[i] = lba; sc_valid[i] = 1;
+}
+
 static void read_sectors(uint32_t lba, uint8_t count, void* buf) {
-    ata_read_sectors(ext2_fs.drive, ext2_fs.part_start_lba + lba, count, buf);
+    for (uint8_t i = 0; i < count; i++) sc_read1(lba + i, (uint8_t*)buf + (uint32_t)i * 512);
+}
+
+// Cache stats for `df`.
+void ext2_cache_stats(uint64_t* hits, uint64_t* misses) {
+    if (hits)   *hits   = sc_hits;
+    if (misses) *misses = sc_misses;
 }
 
 static uint32_t block_to_lba(uint32_t block) {
@@ -345,7 +389,7 @@ int ext2_read_file(const char* path, void* buf, uint32_t maxlen) {
 // ========== EXT2 Write Operations ==========
 
 static void write_sectors(uint32_t lba, uint8_t count, const void* buf) {
-    ata_write_sectors(ext2_fs.drive, ext2_fs.part_start_lba + lba, count, buf);
+    for (uint8_t i = 0; i < count; i++) sc_write1(lba + i, (const uint8_t*)buf + (uint32_t)i * 512);
 }
 
 int ext2_write_block(uint32_t block, const void* buf) {
