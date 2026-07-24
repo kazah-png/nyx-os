@@ -2215,15 +2215,25 @@ void kernel_main(uint64_t magic, void* mboot_ptr) {
         printf("[INIT] VBE mode set failed, staying in text mode\n");
     }
     bootsplash_update(1, 23, "Setting up exception stacks...");
-    printf("[INIT] IST stacks...\n");
-    void* ist_pages = kmalloc(IST_STACK_SIZE * 2);
+    printf("[INIT] IST stacks (per-CPU)...\n");
+    // One double-fault + one NMI IST stack PER online core, so a fault on one core
+    // can't scribble on another core's exception stack (smp_init ran above, so
+    // cpu_count is known). IST stacks grow down, hence the stack TOP is the high
+    // end of each 8 KB region.
+    uint32_t nist = cpu_count ? cpu_count : 1;
+    void* ist_pages = kmalloc(IST_STACK_SIZE * 2 * nist);
     if (ist_pages) {
-        uint64_t df_stack = (uint64_t)ist_pages + IST_STACK_SIZE;
-        uint64_t nmi_stack = (uint64_t)ist_pages + IST_STACK_SIZE * 2;
-        tss_set_ist(IST_DOUBLE_FAULT, df_stack + KERNEL_BASE);
-        tss_set_ist(2, nmi_stack + KERNEL_BASE);
-        printf("[INIT] IST1 (double fault) at 0x%lx, IST2 (NMI) at 0x%lx\n",
-               df_stack + KERNEL_BASE, nmi_stack + KERNEL_BASE);
+        uint64_t base = (uint64_t)ist_pages;
+        for (uint32_t c = 0; c < nist; c++) {
+            uint64_t df  = base + (uint64_t)IST_STACK_SIZE * (2 * c + 1);   // top of CPU c's DF stack
+            uint64_t nmi = base + (uint64_t)IST_STACK_SIZE * (2 * c + 2);   // top of CPU c's NMI stack
+            tss_set_ist_cpu(c, IST_DOUBLE_FAULT, df  + KERNEL_BASE);
+            tss_set_ist_cpu(c, 2,                nmi + KERNEL_BASE);
+        }
+        // Log CPU0 and the last CPU's DF stack so the boot record shows they differ.
+        printf("[INIT] IST stacks: %u CPU(s) x 2 (DF+NMI); CPU0 DF=0x%lx CPU%u DF=0x%lx\n",
+               nist, base + IST_STACK_SIZE + KERNEL_BASE,
+               nist - 1, base + (uint64_t)IST_STACK_SIZE * (2 * (nist - 1) + 1) + KERNEL_BASE);
     }
     printf("[INIT] Timer (1000 Hz, interrupt-driven)...\n"); init_timer(1000);
     bootsplash_update(2, 23, "Initializing timer...");

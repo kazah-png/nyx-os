@@ -41,21 +41,22 @@ void tss_set_stack(uint64_t rsp0) {
     tss[me->cpu_number < MAX_CPUS ? me->cpu_number : 0].rsp0 = rsp0;
 }
 
-// IST stacks are set once at boot, before any AP could fault, and are written
-// into EVERY core's TSS. They are genuinely shared: two cores taking a double
-// fault at the same instant would collide on one stack. That is an accepted
-// limit of an already-fatal path, not something the scheduler can hit.
-void tss_set_ist(uint8_t ist_idx, uint64_t stack_top) {
-    for (int c = 0; c < MAX_CPUS; c++) {
-        switch (ist_idx) {
-            case 1: tss[c].ist1 = stack_top; break;
-            case 2: tss[c].ist2 = stack_top; break;
-            case 3: tss[c].ist3 = stack_top; break;
-            case 4: tss[c].ist4 = stack_top; break;
-            case 5: tss[c].ist5 = stack_top; break;
-            case 6: tss[c].ist6 = stack_top; break;
-            case 7: tss[c].ist7 = stack_top; break;
-        }
+// Set ONE core's IST slot. Each core is given its own exception stacks (see the
+// per-CPU allocation in kmain), so two cores taking a double fault or NMI at the
+// same instant land on separate stacks instead of colliding on one. Before
+// v5.9.20 a single stack was broadcast into every core's TSS — an "accepted
+// limit" that this removes: a fault on one core can no longer corrupt another
+// core's exception stack mid-recovery.
+void tss_set_ist_cpu(uint32_t cpu, uint8_t ist_idx, uint64_t stack_top) {
+    if (cpu >= MAX_CPUS) return;
+    switch (ist_idx) {
+        case 1: tss[cpu].ist1 = stack_top; break;
+        case 2: tss[cpu].ist2 = stack_top; break;
+        case 3: tss[cpu].ist3 = stack_top; break;
+        case 4: tss[cpu].ist4 = stack_top; break;
+        case 5: tss[cpu].ist5 = stack_top; break;
+        case 6: tss[cpu].ist6 = stack_top; break;
+        case 7: tss[cpu].ist7 = stack_top; break;
     }
 }
 
