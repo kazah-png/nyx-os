@@ -1,8 +1,27 @@
 #include "kernel.h"
 #include "ata.h"
 #include "ext2.h"
+#include "spinlock.h"
 
 ext2_fs_t ext2_fs;
+
+// SMP FS lock (T1 track, v5.9.25). The role-split scratch buffers below
+// (ext2_bufs[5]) make the driver safe against SAME-THREAD nested block reads — but
+// they are global, so two cores running ext2 operations at once (a /mnt file op on
+// one core, a login passwd check on another) would trample all five and corrupt
+// on-disk metadata — the exact class of bug the buffer comment warns can "survive a
+// reboot". The preempt_disable() in the vfs.c wrappers was a single-core FS lock,
+// meaningless to another core. This is the real one: every EXTERNAL entry into the
+// driver (the vfs.c fs_* mount wrappers and auth.c's passwd helpers) wraps its
+// ext2_* call in ext2_lock_acquire/release. ext2.c itself never takes it — the
+// public functions call each other (write_file/mkdir/unlink -> ext2_resolve), so an
+// inner acquire would self-deadlock; the caller's hold is what serializes. Held
+// across the whole op including PIO block I/O (the ATA path is polled — no ATA IRQ
+// handler — so interrupts-off is safe). ext2_mount runs once at boot on the BSP
+// before any AP or user process, so it is intentionally left unlocked.
+static spinlock_t ext2_lock = SPINLOCK_INIT;
+uint64_t ext2_lock_acquire(void)        { return spin_lock_irqsave(&ext2_lock); }
+void     ext2_lock_release(uint64_t fl) { spin_unlock_irqrestore(&ext2_lock, fl); }
 
 /* Bytes an on-disk directory entry occupies before its name: inode + rec_len +
  * name_len + file_type. `de->name` lives at +8, not +4 — the driver had that

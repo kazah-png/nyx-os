@@ -178,12 +178,17 @@ static int fallback_add(const char* user, const char* pass, int avatar) {
 /* ------------------------------------------------------------------ */
 static int passwd_exists(void) {
     if (ext2_fs.block_size == 0) return 0;
-    return ext2_resolve(AUTH_PATH) != 0;
+    uint64_t fl = ext2_lock_acquire();     // shares the ext2 driver with /mnt ops
+    int r = (ext2_resolve(AUTH_PATH) != 0);
+    ext2_lock_release(fl);
+    return r;
 }
 
 static int read_passwd(char* buf, uint32_t sz) {
     if (ext2_fs.block_size == 0) return -1;
+    uint64_t fl = ext2_lock_acquire();
     int r = ext2_read_file(AUTH_PATH, buf, sz);
+    ext2_lock_release(fl);                 // xor is local CPU work, no lock needed
     if (r > 0) xor_buf(buf, r);
     return r;
 }
@@ -197,9 +202,14 @@ static int write_passwd(const char* buf, uint32_t len) {
     // A freshly-mkfs'd ext2 disk has only lost+found, so ensure the parent dir
     // exists before creating the file. ext2_mkdir is a harmless no-op (returns
     // -1) if /etc already exists, and ext2_create_file no-ops if the file does.
+    // The three ext2 ops run under one ext2_lock section so the passwd write is
+    // atomic against a concurrent /mnt op on another core.
+    uint64_t fl = ext2_lock_acquire();
     ext2_mkdir("/etc");
     ext2_create_file(AUTH_PATH);
-    return ext2_write_file(AUTH_PATH, tmp, cplen);
+    int r = ext2_write_file(AUTH_PATH, tmp, cplen);
+    ext2_lock_release(fl);
+    return r;
 }
 
 /* ------------------------------------------------------------------ */

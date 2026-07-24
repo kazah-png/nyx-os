@@ -137,4 +137,11 @@ int  ext2_create_file(const char* path);
 int  ext2_mkdir(const char* path);
 int  ext2_unlink(const char* path);
 
+// SMP FS lock. External callers (vfs.c fs_* mount wrappers, auth.c passwd helpers)
+// hold this around every ext2_* call — the driver's scratch buffers are shared
+// across cores. ext2.c never takes it internally (its public fns call each other).
+// v5.9.25.
+uint64_t ext2_lock_acquire(void);
+void     ext2_lock_release(uint64_t flags);
+
 #endif

@@ -831,35 +831,34 @@ dirent_t* vfs_readdir(int fd) {
 // ==================== Mount table ====================
 
 // --- FS re-entrancy guard ---------------------------------------------------
-// EXT2 shares ONE global scratch buffer (`block_buf` in ext2.c) across an entire
-// operation, and the VFS node pool above isn't reentrant either. User-process FS
-// syscalls already run with interrupts masked (atomic), but a kernel-context FS
-// caller — a shell command / file-manager action on the compositor thread — runs
-// with interrupts on and can be preempted mid-operation; if a scheduled process
-// then makes an FS syscall, the two trample the same buffer. We close the gap by
-// running each EXT2 operation with preemption disabled (the scheduler keeps the
-// current thread — a coarse but correct single-core "FS lock"). These thin
-// wrappers sit on the mount function-pointers so ext2.c needs no changes.
+// EXT2 shares global scratch buffers (`ext2_bufs[5]` in ext2.c) across an entire
+// operation, so the driver is non-reentrant. preempt_disable() here used to be a
+// coarse single-core "FS lock" — it kept the local thread from switching mid-op,
+// but meant nothing to another core, which under smpbalance enters the driver at
+// the same instant and tramples the same buffers. ext2_lock (v5.9.25) is the real
+// cross-core lock; auth.c's passwd helpers take it too, so a login credential check
+// and a /mnt file op serialize against each other. These thin wrappers still sit on
+// the mount function-pointers, so ext2.c needs no internal changes.
 static uint32_t fs_resolve(const char* p) {
-    preempt_disable(); uint32_t r = ext2_resolve(p);   preempt_enable(); return r;
+    uint64_t fl = ext2_lock_acquire(); uint32_t r = ext2_resolve(p);   ext2_lock_release(fl); return r;
 }
 static uint32_t fs_get_size(const char* p) {
-    preempt_disable(); uint32_t r = ext2_get_size(p);  preempt_enable(); return r;
+    uint64_t fl = ext2_lock_acquire(); uint32_t r = ext2_get_size(p);  ext2_lock_release(fl); return r;
 }
 static int fs_read_file(const char* p, void* b, uint32_t n) {
-    preempt_disable(); int r = ext2_read_file(p, b, n); preempt_enable(); return r;
+    uint64_t fl = ext2_lock_acquire(); int r = ext2_read_file(p, b, n); ext2_lock_release(fl); return r;
 }
 static int fs_write_file(const char* p, const void* b, uint32_t n) {
-    preempt_disable(); int r = ext2_write_file(p, b, n); preempt_enable(); return r;
+    uint64_t fl = ext2_lock_acquire(); int r = ext2_write_file(p, b, n); ext2_lock_release(fl); return r;
 }
 static int fs_readdir(const char* p, dirent_t* e, uint32_t m) {
-    preempt_disable(); int r = ext2_readdir(p, e, m);  preempt_enable(); return r;
+    uint64_t fl = ext2_lock_acquire(); int r = ext2_readdir(p, e, m);  ext2_lock_release(fl); return r;
 }
 static int fs_mkdir(const char* p) {
-    preempt_disable(); int r = ext2_mkdir(p);          preempt_enable(); return r;
+    uint64_t fl = ext2_lock_acquire(); int r = ext2_mkdir(p);          ext2_lock_release(fl); return r;
 }
 static int fs_unlink(const char* p) {
-    preempt_disable(); int r = ext2_unlink(p);         preempt_enable(); return r;
+    uint64_t fl = ext2_lock_acquire(); int r = ext2_unlink(p);         ext2_lock_release(fl); return r;
 }
 
 // Make a mount point visible in the ramdisk tree, so directory listings that
