@@ -28,10 +28,11 @@ static long dg_syscall3(long n, long a, long b, long c) {
 }
 
 // ---- the frame buffer the engine renders into ----
+// The engine owns DG_ScreenBuffer (declared extern in doomgeneric.h, defined in
+// doomgeneric.c); we just point it at our buffer so there's no double definition.
 static pixel_t nyx_screen[DOOMGENERIC_RESX * DOOMGENERIC_RESY];
-pixel_t* DG_ScreenBuffer = nyx_screen;
 
-void DG_Init(void) { /* the compositor yields to us on the first present */ }
+void DG_Init(void) { DG_ScreenBuffer = nyx_screen; }
 
 void DG_DrawFrame(void) {
     dg_syscall3(SYS_FBPRESENT, (long)DG_ScreenBuffer, DOOMGENERIC_RESX, DOOMGENERIC_RESY);
