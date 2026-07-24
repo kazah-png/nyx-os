@@ -57,11 +57,23 @@ if (!(Get-Command qemu-system-x86_64 -ErrorAction SilentlyContinue)) {
 
 $argsList = @(
     "-cdrom", $iso,
-    "-m", "256M",
+    "-m", "512M",
     "-smp", "$Cpus",
     "-no-reboot",
     "-cpu", "qemu64"
 )
+
+# Attach the ext2 data disk. NyxOS auto-mounts it at /mnt on boot, and the DOOM WAD
+# (doom1.wad) lives there. Without it, doom (command or desktop icon) cannot find
+# /mnt/doom1.wad and quits immediately. Attach only if the image exists so a machine
+# without it still boots. RAM raised 256M to 512M for the DOOM zone + WAD buffers.
+$disk = "$root\ext2-test.img"
+if (Test-Path $disk) {
+    $argsList += "-hda", $disk
+    Write-Host "[disk] /mnt from ext2-test.img (doom1.wad)" -ForegroundColor Gray
+} else {
+    Write-Host "[disk] ext2-test.img not found; /mnt unavailable, DOOM has no WAD" -ForegroundColor Yellow
+}
 
 switch ($Mode) {
     'gui'    { $argsList += "-display", "sdl"; $argsList += "-serial", "file:qemu_serial.txt" }
