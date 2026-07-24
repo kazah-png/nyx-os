@@ -1050,6 +1050,13 @@ static void do_start_menu_action(int idx) {
                 }
             }
             break;
+        case 13: // DOOM — launch the userspace game from its desktop icon (v5.9.35).
+                 // Every other action opens an in-kernel window; DOOM is a real ring-3
+                 // ELF, so spawn it into the scheduler. It takes the framebuffer over
+                 // SYS_FBPRESENT and the compositor yields; on exit the desktop returns.
+                 // main() injects `-iwad /mnt/doom1.wad` when launched with no args.
+            spawn_user_path("/doom.elf");
+            break;
     }
     redraw_all();
 }
@@ -1692,13 +1699,15 @@ static void settings_win_click(window_t* win, int mx, int my, int btn) {
     }
 }
 
-#define NUM_DESKTOP_ICONS 9
+#define NUM_DESKTOP_ICONS 10
 #define ICON_SIZE 64
 #define ICON_PAD 12
 static const char* desktop_icon_names[] = {
-    "Files", "Terminal", "Editor", "Viewer", "Settings", "Paint", "Sounds", "Calc", "Mines"
+    "Files", "Terminal", "Editor", "Viewer", "Settings", "Paint", "Sounds", "Calc", "Mines", "DOOM"
 };
-static int desktop_icon_actions[] = {0, 3, 1, 2, 4, 7, 8, 11, 12};
+// Action 13 is DOOM: unlike every other entry (which opens an in-kernel GUI window),
+// it spawns the userspace doom.elf game. See do_start_menu_action's case 13.
+static int desktop_icon_actions[] = {0, 3, 1, 2, 4, 7, 8, 11, 12, 13};
 static int desktop_icon_x[NUM_DESKTOP_ICONS];
 static int desktop_icon_y[NUM_DESKTOP_ICONS];
 
@@ -1750,8 +1759,11 @@ static void draw_icon_at(int i) {
         fb_rgb(70,160,230), fb_rgb(0,220,0), fb_rgb(230,60,60),
         fb_rgb(220,220,50), fb_rgb(100,220,100), fb_rgb(220,100,220)
     };
-    // Icon background (rounded square)
-    fb_fill_rect(x+8, y+6, ICON_SIZE-16, ICON_SIZE-16, icon_color[i % 6]);
+    // Icon background (rounded square). DOOM gets a distinctive hell-red so the game
+    // stands out from the positional rainbow the other apps cycle through.
+    uint32_t icon_bg = icon_color[i % 6];
+    if (strcmp(desktop_icon_names[i], "DOOM") == 0) icon_bg = fb_rgb(200,30,20);
+    fb_fill_rect(x+8, y+6, ICON_SIZE-16, ICON_SIZE-16, icon_bg);
     // Subtle inner highlight
     uint32_t hi = fb_rgb(255,255,255);
     fb_fill_rect(x+12, y+10, ICON_SIZE-24, 2, hi);
