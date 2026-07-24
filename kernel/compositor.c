@@ -133,19 +133,9 @@ static void draw_max_button(int x, int y, int size, uint32_t color) {
 // Corner-rounding radius for window title bars.
 #define WIN_RADIUS 7
 
-static uint32_t bg_isqrt(uint32_t x);   // integer sqrt, defined lower (the moon uses it too)
-
-// Horizontal inset of a rounded corner of radius R at vertical distance `d` from
-// the rounded end (d = 0 is the very edge row, fully cut; d = R-1 is nearly
-// square). Pixels nearer the corner than this inset lie outside the arc and are
-// simply not painted, so whatever was drawn beneath (wallpaper or a lower window)
-// shows through — there is no saved pre-window buffer to carve against, so the
-// only clean option is to never touch those pixels.
-static int corner_inset(int d, int R) {
-    if (R <= 0 || d >= R) return 0;
-    int dy = R - d;                                   // 1..R
-    return R - (int)bg_isqrt((uint32_t)(R * R - dy * dy));
-}
+// Rounded-corner primitives (fb_corner_inset / fb_fill_round_rect /
+// fb_stroke_round_rect) and the integer sqrt now live in fb.c, shared with the
+// login screen. This file keeps only the window-specific pieces below.
 
 // The radius a given window can actually use: shrink it so a minimum-size window
 // (120x80) never rounds so hard the two corners meet.
@@ -166,40 +156,6 @@ static uint32_t vgrad_row(uint32_t top, uint32_t bottom, int i, int n) {
     int db = (int)( bottom        & 0xFF) - tb;
     int den = n > 1 ? n - 1 : 1;
     return fb_rgb(tr + dr * i / den, tg + dg * i / den, tb + db * i / den);
-}
-
-// Fill a rectangle with ALL FOUR corners rounded to radius R (corner-outside
-// pixels left unpainted). For floating menus that don't anchor to an edge, unlike
-// the title bars / start menu which round only the top.
-static void fill_round_rect(int x, int y, int w, int h, int R, uint32_t col) {
-    if (w <= 0 || h <= 0) return;
-    if (R * 2 > w) R = w / 2;
-    if (R * 2 > h) R = h / 2;
-    for (int row = 0; row < h; row++) {
-        int d = -1;
-        if (row < R)            d = row;
-        else if (row >= h - R)  d = h - 1 - row;
-        int inset = (d >= 0) ? corner_inset(d, R) : 0;
-        fb_fill_rect(x + inset, y + row, w - 2 * inset, 1, col);
-    }
-}
-
-// 1px rounded outline matching fill_round_rect's shape.
-static void stroke_round_rect(int x, int y, int w, int h, int R, uint32_t col) {
-    if (w <= 0 || h <= 0) return;
-    if (R * 2 > w) R = w / 2;
-    if (R * 2 > h) R = h / 2;
-    fb_fill_rect(x + R, y,         w - 2 * R, 1, col);   // top
-    fb_fill_rect(x + R, y + h - 1, w - 2 * R, 1, col);   // bottom
-    fb_fill_rect(x,         y + R, 1, h - 2 * R, col);   // left
-    fb_fill_rect(x + w - 1, y + R, 1, h - 2 * R, col);   // right
-    for (int row = 0; row < R; row++) {
-        int inset = corner_inset(row, R);
-        fb_put_pixel((uint32_t)(x + inset),          (uint32_t)(y + row),         col);   // TL
-        fb_put_pixel((uint32_t)(x + w - 1 - inset),  (uint32_t)(y + row),         col);   // TR
-        fb_put_pixel((uint32_t)(x + inset),          (uint32_t)(y + h - 1 - row), col);   // BL
-        fb_put_pixel((uint32_t)(x + w - 1 - inset),  (uint32_t)(y + h - 1 - row), col);   // BR
-    }
 }
 
 // Shift a colour a percentage toward white / black. Proportional (not a flat
@@ -243,7 +199,7 @@ static void draw_titlebar(window_t* win) {
     // fill the body edge-to-edge, so rounding there would just be squared off.
     int R = win_radius(win);
     for (uint32_t row = 0; row < TITLE_H; row++) {
-        int inset = (row < (uint32_t)R) ? corner_inset((int)row, R) : 0;
+        int inset = (row < (uint32_t)R) ? fb_corner_inset((int)row, R) : 0;
         fb_fill_rect(win->x + inset, win->y + row, win->w - 2 * inset, 1,
                      vgrad_row(gtop, gbot, (int)row, TITLE_H));
     }
@@ -286,7 +242,7 @@ static void draw_window_frame(window_t* win) {
     // Top corner arcs, one pixel outside the title bar's rounded corners so the
     // border hugs the same curve the fill leaves.
     for (int row = 0; row < R; row++) {
-        int inset = corner_inset(row, R);
+        int inset = fb_corner_inset(row, R);
         fb_put_pixel((uint32_t)(x + inset - 1),  (uint32_t)(y + row), hi);   // top-left
         fb_put_pixel((uint32_t)(x + w - inset),  (uint32_t)(y + row), hi);   // top-right
     }
@@ -491,7 +447,7 @@ static void draw_start_menu(void) {
     // left unpainted (same technique as the window title bars), showing whatever
     // is behind the menu through the curve.
     for (int row = 0; row < START_H; row++) {
-        int inset = (row < R) ? corner_inset(row, R) : 0;
+        int inset = (row < R) ? fb_corner_inset(row, R) : 0;
         fb_fill_rect(sm_x + inset, sm_y + row, START_W - 2 * inset, 1, THEME_WINDOW_BG);
     }
 
@@ -500,7 +456,7 @@ static void draw_start_menu(void) {
     // gradient shows through the text.
     uint32_t hg_t = col_lighten(THEME_ACCENT, 14), hg_b = col_darken(THEME_ACCENT, 12);
     for (int row = 0; row < START_HDR_H; row++) {
-        int inset = (row < R) ? corner_inset(row, R) : 0;
+        int inset = (row < R) ? fb_corner_inset(row, R) : 0;
         fb_fill_rect(sm_x + inset, sm_y + row, START_W - 2 * inset, 1,
                      vgrad_row(hg_t, hg_b, row, START_HDR_H));
     }
@@ -542,7 +498,7 @@ static void draw_start_menu(void) {
     fb_fill_rect(sm_x, sm_y + R, 1, START_H - R, THEME_BORDER);                 // left
     fb_fill_rect(sm_x + START_W - 1, sm_y + R, 1, START_H - R, THEME_BORDER);   // right
     for (int row = 0; row < R; row++) {
-        int inset = corner_inset(row, R);
+        int inset = fb_corner_inset(row, R);
         fb_put_pixel((uint32_t)(sm_x + inset),              (uint32_t)(sm_y + row), THEME_BORDER);
         fb_put_pixel((uint32_t)(sm_x + START_W - 1 - inset), (uint32_t)(sm_y + row), THEME_BORDER);
     }
@@ -570,13 +526,13 @@ static void draw_user_menu(void) {
     if (!user_menu_open) return;
     int x, y, h; user_menu_rect(&x, &y, &h);
     int R = 6;
-    fill_round_rect(x, y, USERMENU_W, h, R, THEME_WINDOW_BG);
+    fb_fill_round_rect(x, y, USERMENU_W, h, R, THEME_WINDOW_BG);
 
     // header: accent gradient (rounded to the body's top corners) carrying the
     // logged-in user's avatar + name, with a transparent label.
     uint32_t hg_t = col_lighten(THEME_ACCENT, 14), hg_b = col_darken(THEME_ACCENT, 12);
     for (int row = 0; row < USERMENU_HDR; row++) {
-        int inset = (row < R) ? corner_inset(row, R) : 0;
+        int inset = (row < R) ? fb_corner_inset(row, R) : 0;
         fb_fill_rect(x + inset, y + row, USERMENU_W - 2 * inset, 1,
                      vgrad_row(hg_t, hg_b, row, USERMENU_HDR));
     }
@@ -598,7 +554,7 @@ static void draw_user_menu(void) {
                              usermenu_items[i], THEME_TEXT, THEME_WINDOW_BG);
         }
     }
-    stroke_round_rect(x, y, USERMENU_W, h, R, THEME_BORDER);
+    fb_stroke_round_rect(x, y, USERMENU_W, h, R, THEME_BORDER);
 }
 
 // The taskbar user badge (avatar + name, left of the clock) is clickable; this
@@ -657,7 +613,7 @@ static void draw_ctx_menu(void) {
     if (x + CTX_MENU_W > (int)fw) x = (int)fw - CTX_MENU_W - 2;
     if (y + CTX_MENU_H > (int)fh - TASKBAR_H) y = (int)fh - TASKBAR_H - CTX_MENU_H - 2;
     int R = 6;
-    fill_round_rect(x, y, CTX_MENU_W, CTX_MENU_H, R, THEME_WINDOW_BG);
+    fb_fill_round_rect(x, y, CTX_MENU_W, CTX_MENU_H, R, THEME_WINDOW_BG);
 
     int hov = -1, hi;
     if (ctx_menu_item_hit(mouse_x, mouse_y, &hi)) hov = hi;
@@ -671,7 +627,7 @@ static void draw_ctx_menu(void) {
             font_draw_string(x + 12, iy + 3, ctx_menu_items[i], THEME_TEXT, THEME_WINDOW_BG);
         }
     }
-    stroke_round_rect(x, y, CTX_MENU_W, CTX_MENU_H, R, THEME_BORDER);
+    fb_stroke_round_rect(x, y, CTX_MENU_W, CTX_MENU_H, R, THEME_BORDER);
 }
 
 static int ctx_menu_hit(int mx, int my) {
@@ -776,21 +732,14 @@ static void draw_workspace_indicator(void) {
 // brightness from ~45% at the top to ~115% at the bottom (clamped), which reads as a
 // soft top-to-bottom glow in whatever hue is selected. The Wallpaper app changes the
 // base color (wallpaper_base_color) and the compositor repaints this on the next frame.
-// Integer sqrt — the kernel has no libm, and the Nightfall moon needs a circle.
-static uint32_t bg_isqrt(uint32_t x) {
-    uint32_t r = 0, b = 1u << 30;
-    while (b > x) b >>= 2;
-    while (b) { if (x >= r + b) { x -= r + b; r = (r >> 1) + b; } else r >>= 1; b >>= 2; }
-    return r;
-}
-
-// Filled circle by horizontal spans (clipped to the framebuffer).
+// Filled circle by horizontal spans (clipped to the framebuffer). Uses fb_isqrt
+// (the kernel has no libm) — the same integer sqrt the rounded corners rely on.
 static void bg_fill_circle(int cx, int cy, int rad, uint32_t col) {
     uint32_t fw = fb_get_width(), fh = fb_get_height();
     for (int dy = -rad; dy <= rad; dy++) {
         int yy = cy + dy;
         if (yy < 0 || yy >= (int)fh) continue;
-        int dx = (int)bg_isqrt((uint32_t)(rad * rad - dy * dy));
+        int dx = (int)fb_isqrt((uint32_t)(rad * rad - dy * dy));
         int x0 = cx - dx, x1 = cx + dx;
         if (x0 < 0) x0 = 0;
         if (x1 >= (int)fw) x1 = (int)fw - 1;

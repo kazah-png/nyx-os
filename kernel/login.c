@@ -146,61 +146,21 @@ static void draw_field(int x, int y, int w, int active, const char* text, int ma
 #define BOX_W 380
 #define BOX_H 300
 
-// Local rounded-rect helpers. login.c is a standalone pre-compositor screen and
-// cannot see the compositor's static corner code, but the pieces are small pure
-// maths over fb_fill_rect / fb_put_pixel. (A shared gfx primitive would remove
-// this and the compositor's copy — noted as a future cleanup.)
-static uint32_t li_isqrt(uint32_t x) {
-    uint32_t r = 0, b = 1u << 30;
-    while (b > x) b >>= 2;
-    while (b) { if (x >= r + b) { x -= r + b; r = (r >> 1) + b; } else r >>= 1; b >>= 2; }
-    return r;
-}
-static int li_inset(int d, int R) {
-    if (R <= 0 || d >= R) return 0;
-    int dy = R - d;
-    return R - (int)li_isqrt((uint32_t)(R * R - dy * dy));
-}
-static void li_fill_round(int x, int y, int w, int h, int R, uint32_t col) {
-    if (w <= 0 || h <= 0) return;
-    if (R * 2 > w) R = w / 2;
-    if (R * 2 > h) R = h / 2;
-    for (int row = 0; row < h; row++) {
-        int d = -1;
-        if (row < R) d = row; else if (row >= h - R) d = h - 1 - row;
-        int in = (d >= 0) ? li_inset(d, R) : 0;
-        fb_fill_rect(x + in, y + row, w - 2 * in, 1, col);
-    }
-}
-static void li_stroke_round(int x, int y, int w, int h, int R, uint32_t col) {
-    if (w <= 0 || h <= 0) return;
-    if (R * 2 > w) R = w / 2;
-    if (R * 2 > h) R = h / 2;
-    fb_fill_rect(x + R, y, w - 2 * R, 1, col);
-    fb_fill_rect(x + R, y + h - 1, w - 2 * R, 1, col);
-    fb_fill_rect(x, y + R, 1, h - 2 * R, col);
-    fb_fill_rect(x + w - 1, y + R, 1, h - 2 * R, col);
-    for (int row = 0; row < R; row++) {
-        int in = li_inset(row, R);
-        fb_put_pixel((uint32_t)(x + in), (uint32_t)(y + row), col);
-        fb_put_pixel((uint32_t)(x + w - 1 - in), (uint32_t)(y + row), col);
-        fb_put_pixel((uint32_t)(x + in), (uint32_t)(y + h - 1 - row), col);
-        fb_put_pixel((uint32_t)(x + w - 1 - in), (uint32_t)(y + h - 1 - row), col);
-    }
-}
+// Rounded-corner helpers (fb_corner_inset / fb_fill_round_rect /
+// fb_stroke_round_rect) live in fb.c, shared with the compositor.
 
 // Repaint the whole login/create panel for the current state.
 static void draw_panel(int px, int py, int mode, int field, int avatar,
                        const char* user, const char* pass, const char* msg) {
     uint32_t bg = fb_rgb(30, 24, 46);
     const int R = 8, HDR = 34;
-    li_fill_round(px, py, BOX_W, BOX_H, R, bg);
+    fb_fill_round_rect(px, py, BOX_W, BOX_H, R, bg);
 
     // Accent brand header carrying the title, a top-lit purple gradient rounded to
     // the card's top corners (transparent title so the gradient shows through). The
     // old flat title + divider lived in this same 34px band, so nothing below moves.
     for (int row = 0; row < HDR; row++) {
-        int in = (row < R) ? li_inset(row, R) : 0;
+        int in = (row < R) ? fb_corner_inset(row, R) : 0;
         int t = (HDR > 1) ? row * 255 / (HDR - 1) : 0;
         uint32_t r = (uint32_t)(150 + (112 - 150) * t / 255);
         uint32_t g = (uint32_t)(108 + ( 74 - 108) * t / 255);
@@ -241,7 +201,7 @@ static void draw_panel(int px, int py, int mode, int field, int avatar,
     const char* hint = mode ? "TAB: back to login" : "TAB: create account    guest: nyx / nyx";
     font_draw_string(px + (BOX_W - (int)strlen(hint) * 8) / 2, py + BOX_H - 20, hint, fb_rgb(130, 120, 160), bg);
 
-    li_stroke_round(px, py, BOX_W, BOX_H, R, fb_rgb(100, 82, 150));   // rounded brand-purple border
+    fb_stroke_round_rect(px, py, BOX_W, BOX_H, R, fb_rgb(100, 82, 150));   // rounded brand-purple border
 }
 
 // Redraw ONLY the field currently being typed into. Typing changes just the field

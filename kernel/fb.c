@@ -204,6 +204,60 @@ void fb_darken_rect(int x, int y, int w, int h, uint8_t shade) {
     }
 }
 
+// Integer square root (no libm in the kernel). Shared by the rounded-corner
+// helpers below and the desktop/login circles.
+uint32_t fb_isqrt(uint32_t x) {
+    uint32_t r = 0, b = 1u << 30;
+    while (b > x) b >>= 2;
+    while (b) { if (x >= r + b) { x -= r + b; r = (r >> 1) + b; } else r >>= 1; b >>= 2; }
+    return r;
+}
+
+// Horizontal inset of a rounded corner of radius R at vertical distance `d` from
+// the rounded end (d = 0 is the very edge row, fully cut; d = R-1 is nearly
+// square). Pixels nearer the corner than this inset lie outside the arc and are
+// simply not painted, so whatever was drawn beneath shows through — there is no
+// saved backing store to carve against, so the only clean option is to never
+// touch those pixels. Callers that round only some corners (a title bar's top)
+// use this directly, row by row; the two helpers below use it for all four.
+int fb_corner_inset(int d, int R) {
+    if (R <= 0 || d >= R) return 0;
+    int dy = R - d;
+    return R - (int)fb_isqrt((uint32_t)(R * R - dy * dy));
+}
+
+// Fill a rectangle with all four corners rounded to radius R.
+void fb_fill_round_rect(int x, int y, int w, int h, int R, uint32_t col) {
+    if (w <= 0 || h <= 0) return;
+    if (R * 2 > w) R = w / 2;
+    if (R * 2 > h) R = h / 2;
+    for (int row = 0; row < h; row++) {
+        int d = -1;
+        if (row < R)            d = row;
+        else if (row >= h - R)  d = h - 1 - row;
+        int in = (d >= 0) ? fb_corner_inset(d, R) : 0;
+        fb_fill_rect(x + in, y + row, w - 2 * in, 1, col);
+    }
+}
+
+// 1px rounded outline matching fb_fill_round_rect's shape.
+void fb_stroke_round_rect(int x, int y, int w, int h, int R, uint32_t col) {
+    if (w <= 0 || h <= 0) return;
+    if (R * 2 > w) R = w / 2;
+    if (R * 2 > h) R = h / 2;
+    fb_fill_rect(x + R, y,         w - 2 * R, 1, col);
+    fb_fill_rect(x + R, y + h - 1, w - 2 * R, 1, col);
+    fb_fill_rect(x,         y + R, 1, h - 2 * R, col);
+    fb_fill_rect(x + w - 1, y + R, 1, h - 2 * R, col);
+    for (int row = 0; row < R; row++) {
+        int in = fb_corner_inset(row, R);
+        fb_put_pixel((uint32_t)(x + in),         (uint32_t)(y + row),         col);
+        fb_put_pixel((uint32_t)(x + w - 1 - in), (uint32_t)(y + row),         col);
+        fb_put_pixel((uint32_t)(x + in),         (uint32_t)(y + h - 1 - row), col);
+        fb_put_pixel((uint32_t)(x + w - 1 - in), (uint32_t)(y + h - 1 - row), col);
+    }
+}
+
 uint32_t fb_get_width(void) { return fb_width; }
 uint32_t fb_get_height(void) { return fb_height; }
 void* fb_get_addr(void) { return fb_addr; }
