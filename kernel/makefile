@@ -84,7 +84,7 @@ USER_ELFS = $(USER_DIR)/hello.elf $(USER_DIR)/init.elf $(USER_DIR)/spin.elf $(US
             $(USER_DIR)/sockdemo.elf $(USER_DIR)/srvdemo.elf $(USER_DIR)/udpdemo.elf \
             $(USER_DIR)/nc.elf $(USER_DIR)/sigrec.elf $(USER_DIR)/alarmdemo.elf \
             $(USER_DIR)/polldemo.elf $(USER_DIR)/wget.elf $(USER_DIR)/netstorm.elf $(USER_DIR)/stat.elf \
-            $(USER_DIR)/vfsfill.elf $(USER_DIR)/fsx.elf $(USER_DIR)/stacktest.elf $(USER_DIR)/threads.elf $(USER_DIR)/vmtest.elf
+            $(USER_DIR)/vfsfill.elf $(USER_DIR)/fsx.elf $(USER_DIR)/stacktest.elf $(USER_DIR)/threads.elf $(USER_DIR)/vmtest.elf $(USER_DIR)/munmaptest.elf
 
 # Flags for Nyx C output (GCC: statement-exprs, __auto_type). -mno-red-zone is mandatory.
 NYXCFLAGS = -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR)
@@ -491,3 +491,9 @@ disk: ../ext2-test.img
 
 clean:
 	rm -f *.o *.d *.bin initramfs_data.h initramfs_data.h.tmp trampoline.bin $(USER_DIR)/*.o $(USER_DIR)/*.elf $(USER_DIR)/hello.o
+
+# munmaptest: partial-munmap VMA split/trim test (v5.9.27)
+$(USER_DIR)/munmaptest.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/munmaptest.o
+	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/munmaptest.o
+$(USER_DIR)/munmaptest.o: $(USER_DIR)/munmaptest.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
+	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@

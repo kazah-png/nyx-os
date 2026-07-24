@@ -112,8 +112,17 @@ int do_mprotect(uint64_t addr, uint64_t length, int prot) {
 
 /* SYS_MUNMAP: release [addr, addr+length). Frees every present page in the range
  * (free_page is refcount-aware, so a COW-shared page just drops a reference) and
- * drops any VMA fully covered by the range. Partial unmaps (splitting a VMA) are
- * not supported in v1 — the pages are freed but the VMA record is left intact. */
+ * updates the VMA table so the unmapped range no longer resolves. A partial unmap
+ * now SPLITS or TRIMS the affected VMA (v5.9.27); before, only a fully-covered VMA
+ * was dropped and a partial unmap left the record intact — so the "unmapped" range
+ * still had a covering VMA and vm_handle_fault would re-materialise a zero page
+ * there on the next touch. The four overlap cases (a 2x2 on which ends are inside
+ * the unmap range) are: full cover (drop), back trim (v->end = addr), front trim
+ * (v->start = end), and a hole in the middle (shrink to the head, add a new VMA
+ * for the tail). File-backed VMAs copy each page from file_buf[page - v->start], so
+ * moving v->start (front trim / middle split) would misalign that shared snapshot —
+ * those two cases are refused for file-backed maps; full-cover and back-trim, which
+ * leave v->start put, are fine. */
 int do_munmap(uint64_t addr, uint64_t length) {
     extern void vm_free_range(uint64_t* pml4, uint64_t start, uint64_t end);
     /* unmap from the group's shared table: a thread may release what a sibling mapped */
@@ -135,13 +144,50 @@ int do_munmap(uint64_t addr, uint64_t length) {
     // kernel.h, so it cannot drift between the places that enforce it.
     if (end <= addr || addr < USER_SPACE_MIN || end > USER_SPACE_END) return -1;
 
+    // Feasibility pass — reject cleanly BEFORE freeing anything: a file-backed VMA
+    // needing a front trim or a middle split can't be re-based, and a middle split
+    // needs a free slot for the new tail VMA.
+    int splits_needed = 0, free_slots = 0;
+    for (int i = 0; i < PROC_MAX_VMAS; i++) {
+        vma_t* v = &p->mmap_vmas[i];
+        if (!v->used) { free_slots++; continue; }
+        if (!(v->start < end && v->end > addr)) continue;          // no overlap
+        int full   = (v->start >= addr && v->end <= end);
+        int middle = (v->start <  addr && v->end >  end);
+        int front  = (v->start >= addr && v->end >  end);
+        if (full) continue;
+        if (v->file_buf && (front || middle)) return -1;           // unsupported for file-backed
+        if (middle) splits_needed++;
+    }
+    if (splits_needed > free_slots) return -1;
+
     vm_free_range((uint64_t*)p->page_directory, addr, end);
 
     for (int i = 0; i < PROC_MAX_VMAS; i++) {
         vma_t* v = &p->mmap_vmas[i];
-        if (v->used && v->start >= addr && v->end <= end) {
+        if (!v->used) continue;
+        if (!(v->start < end && v->end > addr)) continue;          // new tail starts at `end`, so excluded
+        int full   = (v->start >= addr && v->end <= end);
+        int middle = (v->start <  addr && v->end >  end);
+        int front  = (v->start >= addr && v->end >  end);
+        if (full) {
             if (v->file_buf) { kfree(v->file_buf); v->file_buf = 0; v->file_size = 0; }
             v->used = 0;
+        } else if (middle) {                                       // punch a hole: head + new tail
+            uint64_t old_end = v->end;
+            v->end = addr;                                         // head keeps [start, addr)
+            for (int j = 0; j < PROC_MAX_VMAS; j++) {
+                if (!p->mmap_vmas[j].used) {                       // feasibility guaranteed a slot
+                    vma_t* w = &p->mmap_vmas[j];
+                    w->start = end; w->end = old_end; w->prot = v->prot;
+                    w->file_buf = 0; w->file_size = 0; w->used = 1; // anonymous only (checked above)
+                    break;
+                }
+            }
+        } else if (front) {
+            v->start = end;                                        // tail [end, v->end) survives
+        } else {                                                  // back trim
+            v->end = addr;                                         // head [v->start, addr) survives
         }
     }
     return 0;
