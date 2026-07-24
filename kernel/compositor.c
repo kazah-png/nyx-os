@@ -168,6 +168,40 @@ static uint32_t vgrad_row(uint32_t top, uint32_t bottom, int i, int n) {
     return fb_rgb(tr + dr * i / den, tg + dg * i / den, tb + db * i / den);
 }
 
+// Fill a rectangle with ALL FOUR corners rounded to radius R (corner-outside
+// pixels left unpainted). For floating menus that don't anchor to an edge, unlike
+// the title bars / start menu which round only the top.
+static void fill_round_rect(int x, int y, int w, int h, int R, uint32_t col) {
+    if (w <= 0 || h <= 0) return;
+    if (R * 2 > w) R = w / 2;
+    if (R * 2 > h) R = h / 2;
+    for (int row = 0; row < h; row++) {
+        int d = -1;
+        if (row < R)            d = row;
+        else if (row >= h - R)  d = h - 1 - row;
+        int inset = (d >= 0) ? corner_inset(d, R) : 0;
+        fb_fill_rect(x + inset, y + row, w - 2 * inset, 1, col);
+    }
+}
+
+// 1px rounded outline matching fill_round_rect's shape.
+static void stroke_round_rect(int x, int y, int w, int h, int R, uint32_t col) {
+    if (w <= 0 || h <= 0) return;
+    if (R * 2 > w) R = w / 2;
+    if (R * 2 > h) R = h / 2;
+    fb_fill_rect(x + R, y,         w - 2 * R, 1, col);   // top
+    fb_fill_rect(x + R, y + h - 1, w - 2 * R, 1, col);   // bottom
+    fb_fill_rect(x,         y + R, 1, h - 2 * R, col);   // left
+    fb_fill_rect(x + w - 1, y + R, 1, h - 2 * R, col);   // right
+    for (int row = 0; row < R; row++) {
+        int inset = corner_inset(row, R);
+        fb_put_pixel((uint32_t)(x + inset),          (uint32_t)(y + row),         col);   // TL
+        fb_put_pixel((uint32_t)(x + w - 1 - inset),  (uint32_t)(y + row),         col);   // TR
+        fb_put_pixel((uint32_t)(x + inset),          (uint32_t)(y + h - 1 - row), col);   // BL
+        fb_put_pixel((uint32_t)(x + w - 1 - inset),  (uint32_t)(y + h - 1 - row), col);   // BR
+    }
+}
+
 // Shift a colour a percentage toward white / black. Proportional (not a flat
 // per-channel add) so the hue is preserved as it lightens or darkens.
 static uint32_t col_lighten(uint32_t c, int pct) {
@@ -529,25 +563,42 @@ static void user_menu_rect(int* rx, int* ry, int* rh) {
     *rx = x; *ry = (int)(fh - TASKBAR_H) - h; if (rh) *rh = h;
 }
 
+static int user_menu_item_hit(int mx, int my, int* idx);   // defined below
+static int ctx_menu_item_hit(int mx, int my, int* idx);    // defined below
+
 static void draw_user_menu(void) {
     if (!user_menu_open) return;
     int x, y, h; user_menu_rect(&x, &y, &h);
-    fb_fill_rect(x, y, USERMENU_W, h, fb_rgb(45,45,50));
-    fb_fill_rect(x, y, USERMENU_W, 1, fb_rgb(100,100,100));
-    fb_fill_rect(x, y + h - 1, USERMENU_W, 1, fb_rgb(100,100,100));
-    fb_fill_rect(x, y, 1, h, fb_rgb(100,100,100));
-    fb_fill_rect(x + USERMENU_W - 1, y, 1, h, fb_rgb(100,100,100));
-    // header: the logged-in user's avatar + name
-    fb_fill_rect(x, y, USERMENU_W, USERMENU_HDR, fb_rgb(60,60,90));
+    int R = 6;
+    fill_round_rect(x, y, USERMENU_W, h, R, THEME_WINDOW_BG);
+
+    // header: accent gradient (rounded to the body's top corners) carrying the
+    // logged-in user's avatar + name, with a transparent label.
+    uint32_t hg_t = col_lighten(THEME_ACCENT, 14), hg_b = col_darken(THEME_ACCENT, 12);
+    for (int row = 0; row < USERMENU_HDR; row++) {
+        int inset = (row < R) ? corner_inset(row, R) : 0;
+        fb_fill_rect(x + inset, y + row, USERMENU_W - 2 * inset, 1,
+                     vgrad_row(hg_t, hg_b, row, USERMENU_HDR));
+    }
     draw_avatar(x + 5, y + 3, USERMENU_HDR - 6, g_login_avatar, 0);
-    font_draw_string(x + USERMENU_HDR + 6, y + (USERMENU_HDR - FONT_HEIGHT) / 2,
-                     g_login_user, fb_rgb(255,255,255), fb_rgb(60,60,90));
+    font_draw_string_trans(x + USERMENU_HDR + 6, y + (USERMENU_HDR - FONT_HEIGHT) / 2,
+                           g_login_user, THEME_ON_ACCENT);
+
+    int hov = -1, hi;
+    if (user_menu_item_hit(mouse_x, mouse_y, &hi)) hov = hi;
     for (int i = 0; i < USERMENU_N; i++) {
         int iy = y + USERMENU_HDR + i * USERMENU_ITH;
-        fb_fill_rect(x + 3, iy, USERMENU_W - 6, USERMENU_ITH - 1, fb_rgb(45,45,50));
-        font_draw_string(x + 12, iy + (USERMENU_ITH - FONT_HEIGHT) / 2,
-                         usermenu_items[i], fb_rgb(220,220,220), fb_rgb(45,45,50));
+        if (i == hov) {
+            fb_fill_vgrad(x + 3, iy, USERMENU_W - 6, USERMENU_ITH - 1,
+                          col_lighten(THEME_ACCENT, 12), col_darken(THEME_ACCENT, 14));
+            font_draw_string_trans(x + 12, iy + (USERMENU_ITH - FONT_HEIGHT) / 2,
+                                   usermenu_items[i], THEME_ON_ACCENT);
+        } else {
+            font_draw_string(x + 12, iy + (USERMENU_ITH - FONT_HEIGHT) / 2,
+                             usermenu_items[i], THEME_TEXT, THEME_WINDOW_BG);
+        }
     }
+    stroke_round_rect(x, y, USERMENU_W, h, R, THEME_BORDER);
 }
 
 // The taskbar user badge (avatar + name, left of the clock) is clickable; this
@@ -605,16 +656,22 @@ static void draw_ctx_menu(void) {
     uint32_t fw = fb_get_width(), fh = fb_get_height();
     if (x + CTX_MENU_W > (int)fw) x = (int)fw - CTX_MENU_W - 2;
     if (y + CTX_MENU_H > (int)fh - TASKBAR_H) y = (int)fh - TASKBAR_H - CTX_MENU_H - 2;
-    fb_fill_rect(x, y, CTX_MENU_W, CTX_MENU_H, fb_rgb(45,45,50));
-    fb_fill_rect(x, y, CTX_MENU_W, 1, fb_rgb(100,100,100));
-    fb_fill_rect(x, y + CTX_MENU_H - 1, CTX_MENU_W, 1, fb_rgb(100,100,100));
-    fb_fill_rect(x, y, 1, CTX_MENU_H, fb_rgb(100,100,100));
-    fb_fill_rect(x + CTX_MENU_W - 1, y, 1, CTX_MENU_H, fb_rgb(100,100,100));
+    int R = 6;
+    fill_round_rect(x, y, CTX_MENU_W, CTX_MENU_H, R, THEME_WINDOW_BG);
+
+    int hov = -1, hi;
+    if (ctx_menu_item_hit(mouse_x, mouse_y, &hi)) hov = hi;
     for (int i = 0; i < CTX_MENU_N; i++) {
         int iy = y + 4 + i * 24;
-        fb_fill_rect(x + 4, iy, CTX_MENU_W - 8, 22, fb_rgb(45,45,50));
-        font_draw_string(x + 12, iy + 3, ctx_menu_items[i], fb_rgb(220,220,220), fb_rgb(45,45,50));
+        if (i == hov) {
+            fb_fill_vgrad(x + 4, iy, CTX_MENU_W - 8, 22,
+                          col_lighten(THEME_ACCENT, 12), col_darken(THEME_ACCENT, 14));
+            font_draw_string_trans(x + 12, iy + 3, ctx_menu_items[i], THEME_ON_ACCENT);
+        } else {
+            font_draw_string(x + 12, iy + 3, ctx_menu_items[i], THEME_TEXT, THEME_WINDOW_BG);
+        }
     }
+    stroke_round_rect(x, y, CTX_MENU_W, CTX_MENU_H, R, THEME_BORDER);
 }
 
 static int ctx_menu_hit(int mx, int my) {
@@ -2242,10 +2299,10 @@ done_click:
         mouse_x = mx; mouse_y = my;
         mouse_btns = btns;
 
-        // While the start menu is open, a bare pointer move must recomposite so
-        // the hovered-entry highlight tracks the cursor (a move alone only re-blits
-        // the existing frame + cursor, which would leave the highlight frozen).
-        if (moved && start_menu_open) redraw = 1;
+        // While any menu is open, a bare pointer move must recomposite so the
+        // hovered-entry highlight tracks the cursor (a move alone only re-blits the
+        // existing frame + cursor, which would leave the highlight frozen).
+        if (moved && (start_menu_open || ctx_menu_open || user_menu_open)) redraw = 1;
 
         uint32_t now = get_ticks();
         if (now - clock_tick > 1000) {
