@@ -135,9 +135,12 @@ static void ufd_release(int ufd) {
 /* A read() on an EMPTY fd 0 slot reads the keyboard: it drains the IRQ-fed
  * ASCII ring via getchar_poll(), echoing each key (putchar mirrors to the
  * terminal capture hook and the serial console) and handling backspace, and
- * returns when Enter arrives (the line includes the '\n'). This is safe from
- * contention because the compositor — the ring's usual consumer — is parked in
- * kwait() while a foreground process runs.
+ * returns when Enter arrives (the line includes the '\n'). The assembled line
+ * lives in the caller's per-invocation kbuf, so the line discipline itself holds
+ * no shared state. On a single core the ring is contention-free too, because the
+ * compositor — its usual consumer — is parked in kwait() while a foreground
+ * process runs; but under `smpbalance on` the two can run on different cores at
+ * once, so the ring is now guarded by kbd_lock inside getchar_poll (v5.9.23).
  *
  * Blocking while the ring is empty uses the v5.8.2 mid-syscall discipline: the
  * caller stays PROC_RUN and sleeps one timeslice per `sti;hlt` (the timer keeps

@@ -2,6 +2,7 @@
 // keyboard.c - Controlador de teclado PS/2 (interrupt-driven)
 // ============================================================
 #include "kernel.h"
+#include "spinlock.h"
 
 // ------------------------------------------------------------
 // Estados del teclado
@@ -24,6 +25,18 @@ volatile int kbd_tail = 0;
 static volatile int kbd_keycodes[KBD_BUFFER_SIZE];
 static volatile int kbd_kc_head = 0;
 static volatile int kbd_kc_tail = 0;
+
+// SMP: both rings above (chars for stdin, keycodes for window management) and the
+// modifier state machine inside scancode_to_ascii become shared the moment
+// smpbalance spreads work off the BSP. The producer is the IRQ1 handler; consumers
+// (getchar_poll, getkey_poll) can run on any AP, and getchar_poll's hardware-poll
+// fallback re-enters scancode_to_ascii from a second context — so two cores could
+// race the same head/tail (handing one keystroke to two readers, or corrupting an
+// index). preempt_disable() never covered this: it means nothing to another core.
+// One lock guards all of it — the leaf of the input path. Held only across the
+// ring/state touch, never across a blocking wait (getchar hlts with it released) or
+// signal delivery. (T1 SMP-locking track, v5.9.23.)
+static spinlock_t kbd_lock = SPINLOCK_INIT;
 
 // ------------------------------------------------------------
 // Variable global de layout (definida aquí)
@@ -90,6 +103,10 @@ void init_keyboard(void) {
 // ============================================================
 // Conversión de scancode a carácter
 // ============================================================
+// CALLER MUST HOLD kbd_lock: this updates the shared modifier state machine
+// (shift/ctrl/alt/caps/altgr/e0) and enqueues into the keycode ring, and it runs
+// from both the IRQ handler and getchar_poll's poll-direct fallback — i.e. from
+// potentially two cores once smpbalance is on.
 char scancode_to_ascii(uint8_t sc) {
     // --- 0xE0 prefix (extended keys) ---
     // Checked on the RAW byte, before the press-bit masking below: 0xE0 & 0x7F is
@@ -208,18 +225,21 @@ char scancode_to_ascii(uint8_t sc) {
 void keyboard_irq_handler(void* unused) {
     (void)unused;
     uint8_t st = inb(0x64);
-    if ((st & 0x21) == 0x01) {  // OBF=1, mouse bit=0 → keyboard data
-        uint8_t sc = inb(0x60);
-        char c = scancode_to_ascii(sc);
-        if (c) {
-            if (ctrl_pressed && (c == 'c' || c == 'C')) {   // Ctrl-C -> SIGINT
-                signal_send_foreground(SIGINT);             // to the foreground process
-                return;                                     // consume it (don't buffer 'c')
-            }
-            if (ctrl_pressed && (c == 'z' || c == 'Z')) {   // Ctrl-Z -> SIGTSTP (job stop)
-                signal_send_foreground(SIGTSTP);
-                return;                                     // consume it (don't buffer 'z')
-            }
+    if ((st & 0x21) != 0x01) return;   // OBF=1, mouse bit=0 → keyboard data; else ignore
+    uint8_t sc = inb(0x60);
+
+    // Decode + buffer under kbd_lock so a consumer on another core can't race the
+    // char ring or the modifier state. Ctrl-C/Ctrl-Z resolve to a signal delivered
+    // AFTER the lock is released (signal_send_foreground walks the process table).
+    int sig = 0;
+    uint64_t fl = spin_lock_irqsave(&kbd_lock);
+    char c = scancode_to_ascii(sc);
+    if (c) {
+        if (ctrl_pressed && (c == 'c' || c == 'C')) {
+            sig = SIGINT;                                   // don't buffer 'c'
+        } else if (ctrl_pressed && (c == 'z' || c == 'Z')) {
+            sig = SIGTSTP;                                  // don't buffer 'z'
+        } else {
             // Ctrl+letter -> the ASCII control char (Ctrl-A=0x01 .. Ctrl-Z=0x1A), so
             // TUI programs can bind commands (nano-style Ctrl-O save / Ctrl-X exit).
             if (ctrl_pressed && ((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z')))
@@ -231,6 +251,9 @@ void keyboard_irq_handler(void* unused) {
             }
         }
     }
+    spin_unlock_irqrestore(&kbd_lock, fl);
+
+    if (sig) signal_send_foreground(sig);   // to the foreground process, lock released
 }
 
 // ============================================================
@@ -247,19 +270,28 @@ static inline char kbd_poll_direct(void) {
 // poll(): 1 if getchar_poll() would return a byte now (a buffered key, an i8042
 // scancode, or serial input) without consuming it — for stdin (fd 0) readiness.
 int keyboard_has_input(void) {
-    if (kbd_tail != kbd_head) return 1;      // software ring has a key
+    uint64_t fl = spin_lock_irqsave(&kbd_lock);
+    int ring = (kbd_tail != kbd_head);       // consistent snapshot of the software ring
+    spin_unlock_irqrestore(&kbd_lock, fl);
+    if (ring) return 1;
     if (inb(0x64) & 0x01) return 1;          // i8042 output buffer full (scancode waiting)
     if (inb(0x3FD) & 0x01) return 1;         // COM1 LSR bit 0: serial input available
     return 0;
 }
 
 char getchar_poll(void) {
+    uint64_t fl = spin_lock_irqsave(&kbd_lock);
     if (kbd_tail != kbd_head) {
         char c = kbd_buffer[kbd_tail];
         kbd_tail = (kbd_tail + 1) % KBD_BUFFER_SIZE;
+        spin_unlock_irqrestore(&kbd_lock, fl);
         return c;
     }
+    // Ring empty: the hardware-poll fallback re-enters scancode_to_ascii (modifier
+    // state + keycode ring), so it stays under the lock; serial touches no keyboard
+    // state, so release first.
     char c = kbd_poll_direct();
+    spin_unlock_irqrestore(&kbd_lock, fl);
     if (c) return c;
     c = serial_getchar_nonblock();
     if (c == 0x7F) return '\b';
@@ -278,11 +310,14 @@ char getchar(void) {
 // Returns extended keycodes (> 0x7F) from the keycode buffer,
 // or ASCII chars from the standard buffer, or 0 if nothing.
 int getkey_poll(void) {
+    uint64_t fl = spin_lock_irqsave(&kbd_lock);
     if (kbd_kc_tail != kbd_kc_head) {
         int kc = kbd_keycodes[kbd_kc_tail];
         kbd_kc_tail = (kbd_kc_tail + 1) % KBD_BUFFER_SIZE;
+        spin_unlock_irqrestore(&kbd_lock, fl);
         return kc;
     }
+    spin_unlock_irqrestore(&kbd_lock, fl);   // release before getchar_poll re-locks
     char c = getchar_poll();
     if (c) return c;
     return 0;
