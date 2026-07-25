@@ -21,6 +21,7 @@ static uint8_t tls_rx[16384];       // raw bytes received
 static uint8_t tls_hd[16384];       // reassembled handshake message stream
 static uint8_t tls_client_random[32];   // saved from our ClientHello (for the key schedule)
 static uint8_t tls_server_random[32];   // parsed from the ServerHello
+static uint8_t tls_ts[20480];           // handshake transcript (hashed for the Finished verify_data)
 
 // Non-cryptographic PRNG for the ClientHello random. This is fine ONLY because this
 // step doesn't derive keys yet; a real handshake needs a CSPRNG (a later concern).
@@ -275,8 +276,7 @@ int tls_hello(const char* host, int iface_idx) {
         else if ((int32_t)(now - (last + 1200)) >= 0) break;   // stream went quiet
         if ((int32_t)(now - (start + 12000)) >= 0) break;
     }
-    tcp_close(conn);
-    if (total == 0) { printf("TLS: no response from %s\n", host); return -1; }
+    if (total == 0) { printf("TLS: no response from %s\n", host); tcp_close(conn); return -1; }
 
     // Walk TLS records: gather handshake bytes, catch an Alert.
     uint32_t hn = 0, o = 0; int alert = 0, alert_level = 0, alert_desc = 0;
@@ -295,7 +295,7 @@ int tls_hello(const char* host, int iface_idx) {
     if (alert) {
         printf("TLS: %s sent an Alert (level %d, description %d) — handshake refused\n",
                host, alert_level, alert_desc);
-        return -1;
+        tcp_close(conn); return -1;
     }
 
     // Parse the handshake messages.
@@ -338,7 +338,7 @@ int tls_hello(const char* host, int iface_idx) {
         h += 4 + mlen;
     }
 
-    if (!got_sh) { printf("TLS: no ServerHello in %u bytes from %s\n", total, host); return -1; }
+    if (!got_sh) { printf("TLS: no ServerHello in %u bytes from %s\n", total, host); tcp_close(conn); return -1; }
     printf("TLS: ServerHello OK — negotiated cipher suite 0x%x\n", cipher);
     if (got_cert) printf("TLS: Certificate chain — %d cert(s), leaf %u bytes\n", ncerts, (unsigned)cert0);
     if (got_ske)  printf("TLS: ServerKeyExchange present (ephemeral ECDHE key, curve 0x%x)\n", ske_curve);
@@ -355,20 +355,95 @@ int tls_hello(const char* host, int iface_idx) {
         memcpy(seed, tls_client_random, 32); memcpy(seed + 32, tls_server_random, 32);
         tls12_prf(premaster, 32, "master secret", seed, 64, master, 48);
         memcpy(seed, tls_server_random, 32); memcpy(seed + 32, tls_client_random, 32);
-        tls12_prf(master, 48, "key expansion", seed, 64, keyblock, 40);
+        tls12_prf(master, 48, "key expansion", seed, 64, keyblock, 40);   // client_key|server_key|client_iv|server_iv
+        const uint8_t* ckey = keyblock;              const uint8_t* skey = keyblock + 16;
+        const uint8_t* civ  = keyblock + 32;         const uint8_t* siv  = keyblock + 36;
+        printf("TLS: ECDHE(x25519) — pre-master secret computed; master secret + AES-128-GCM keys derived\n");
 
-        printf("TLS: ECDHE(x25519) — computed the 32-byte pre-master secret from the server's key\n");
-        tls_print_hex("TLS:   pre-master = ", premaster, 32);
-        tls_print_hex("TLS:   master     = ", master, 48);
-        printf("TLS: derived the AES-128-GCM key block (client_key[16] server_key[16] "
-               "client_iv[4] server_iv[4])\n");
-        tls_print_hex("TLS:   client_write_key = ", keyblock, 16);
-        tls_print_hex("TLS:   server_write_key = ", keyblock + 16, 16);
-        printf("TLS: key exchange complete — next: AES-128-GCM record protection + Finished.\n");
-        printf("TLS: [note] the ephemeral key uses a NON-crypto RNG for now; a CSPRNG is a later step.\n");
+        // ---- Finished exchange (v5.9.54) ------------------------------------------------
+        // The transcript is every handshake-layer message, in order, with no record headers:
+        // ClientHello || ServerHello..ServerHelloDone || our ClientKeyExchange (+ our Finished).
+        if ((uint32_t)(chlen - 5) + hn + 37 + 16 > sizeof(tls_ts)) {
+            printf("TLS: handshake transcript too large to buffer — skipping Finished\n");
+            tcp_close(conn); return -1;
+        }
+        uint32_t tn = 0;
+        memcpy(tls_ts + tn, tls_hs + 5, (uint32_t)chlen - 5); tn += (uint32_t)chlen - 5;   // ClientHello
+        memcpy(tls_ts + tn, tls_hd, hn); tn += hn;                                         // server flight
+
+        uint8_t cke[37];                             // ClientKeyExchange (type 16): len 33 = pointlen(1) + point(32)
+        cke[0] = 0x10; cke[1] = 0; cke[2] = 0; cke[3] = 0x21;
+        cke[4] = 0x20; memcpy(cke + 5, eph_pub, 32);
+        memcpy(tls_ts + tn, cke, 37); tn += 37;
+
+        uint8_t cvd[12], cfin[16];                   // client Finished = verify_data over the transcript so far
+        tls_verify_data(master, "client finished", tls_ts, tn, cvd);
+        cfin[0] = 0x14; cfin[1] = 0; cfin[2] = 0; cfin[3] = 0x0c; memcpy(cfin + 4, cvd, 12);
+        memcpy(tls_ts + tn, cfin, 16); tn += 16;
+
+        uint8_t svd_exp[12];                         // the value the server's Finished must carry
+        tls_verify_data(master, "server finished", tls_ts, tn, svd_exp);
+
+        uint8_t out[128]; uint32_t on = 0;           // flight 2: ClientKeyExchange + ChangeCipherSpec + Finished
+        out[on++] = 0x16; out[on++] = 0x03; out[on++] = 0x03; out[on++] = 0x00; out[on++] = 0x25;   // CKE record
+        memcpy(out + on, cke, 37); on += 37;
+        out[on++] = 0x14; out[on++] = 0x03; out[on++] = 0x03; out[on++] = 0x00; out[on++] = 0x01; out[on++] = 0x01;  // CCS
+        uint8_t sealed[64];
+        int sl = tls_seal_record(ckey, civ, 0, 0x16, cfin, 16, sealed);   // GCM-seal the Finished, client seq 0
+        out[on++] = 0x16; out[on++] = 0x03; out[on++] = 0x03; out[on++] = (uint8_t)(sl >> 8); out[on++] = (uint8_t)sl;
+        memcpy(out + on, sealed, (uint32_t)sl); on += (uint32_t)sl;
+
+        printf("TLS: sending ClientKeyExchange + ChangeCipherSpec + encrypted Finished...\n");
+        if (tcp_send(conn, out, (int)on) < 0) { printf("TLS: flight-2 send failed\n"); tcp_close(conn); return -1; }
+
+        uint32_t t2 = 0, s2 = get_ticks(), l2 = s2;  // read the server's ChangeCipherSpec + Finished
+        for (;;) {
+            kernel_poll_net();
+            int n = tcp_recv(conn, tls_rx + t2, (uint32_t)sizeof(tls_rx) - t2 - 1);
+            if (n > 0) { t2 += (uint32_t)n; l2 = get_ticks(); }
+            else if (n < 0) break;
+            uint32_t now = get_ticks();
+            if (t2 == 0) { if ((int32_t)(now - (s2 + 5000)) >= 0) break; }
+            else if ((int32_t)(now - (l2 + 1000)) >= 0) break;
+            if ((int32_t)(now - (s2 + 10000)) >= 0) break;
+        }
+
+        int verified = 0, sawccs = 0, s_alert = 0, s_desc = 0;
+        uint32_t pp = 0;
+        while (pp + 5 <= t2) {
+            uint8_t rt = tls_rx[pp];
+            uint16_t rl = (uint16_t)((tls_rx[pp+3] << 8) | tls_rx[pp+4]);
+            if (pp + 5 + rl > t2) break;
+            if (rt == 20) { sawccs = 1; }                       // ChangeCipherSpec
+            else if (rt == 21 && rl >= 2 && !sawccs) { s_alert = 1; s_desc = tls_rx[pp+6]; }  // plaintext alert
+            else if (rt == 22 && sawccs) {                      // the encrypted Finished
+                uint8_t fin[64];
+                int pl = tls_open_record(skey, siv, 0, 0x16, tls_rx + pp + 5, rl, fin);   // server seq 0
+                if (pl == 16 && fin[0] == 0x14) {
+                    if (tls_eq(fin + 4, svd_exp, 12)) verified = 1;
+                    else printf("TLS: server Finished verify_data MISMATCH — transcript/keys disagree\n");
+                } else if (pl < 0) {
+                    printf("TLS: could not decrypt the server Finished (bad key or tag)\n");
+                }
+            }
+            pp += 5 + rl;
+        }
+        tcp_close(conn);
+
+        if (s_alert) {
+            printf("TLS: %s sent an Alert (description %d) after our Finished — handshake rejected\n", host, s_desc);
+            return -1;
+        }
+        if (verified) {
+            printf("TLS: *** HANDSHAKE COMPLETE — server Finished verified; secure channel established with %s ***\n", host);
+            printf("TLS: [note] the ephemeral key still uses a NON-crypto RNG, and the certificate is not verified yet.\n");
+            return 0;
+        }
+        printf("TLS: handshake did not complete — no verified server Finished received\n");
+        return -1;
     } else if (got_ske) {
-        printf("TLS: server chose curve 0x%x; only x25519 (0x001d) is wired up so far — "
-               "no key agreement this run.\n", ske_curve);
+        printf("TLS: server chose curve 0x%x; only x25519 (0x001d) is wired up so far — no key agreement this run.\n", ske_curve);
     }
+    tcp_close(conn);
     return 0;
 }
