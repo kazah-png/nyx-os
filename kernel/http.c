@@ -142,6 +142,49 @@ int http_get(const char* host, uint16_t port, const char* path,
     if (content_length > 0 && content_length < body_avail)
         body_avail = content_length;
 
+    // Transfer-Encoding: chunked — decode the chunk framing (hex-size line, data,
+    // CRLF, ... , 0) so callers see the real body, not "22f...0" chunk markers.
+    int chunked = 0;
+    char* te = strstr((char*)buf, "Transfer-Encoding:");
+    if (!te || te >= headers_end) te = strstr((char*)buf, "transfer-encoding:");
+    if (te && te < headers_end) {
+        char* teol = strstr(te, "\r\n");
+        if ((strstr(te, "chunked") && (!teol || strstr(te, "chunked") < teol)))
+            chunked = 1;
+    }
+
+    if (chunked) {
+        uint8_t* out = (uint8_t*)kmalloc(body_avail + 1);
+        if (!out) { kfree(buf); return -1; }
+        uint32_t olen = 0;
+        char* p = body_start;
+        char* end = (char*)buf + total;
+        while (p < end) {
+            uint32_t sz = 0; int any = 0;
+            while (p < end) {
+                char c = *p;
+                int d;
+                if (c >= '0' && c <= '9') d = c - '0';
+                else if (c >= 'a' && c <= 'f') d = (c - 'a') + 10;
+                else if (c >= 'A' && c <= 'F') d = (c - 'A') + 10;
+                else break;
+                sz = sz * 16 + (uint32_t)d; p++; any = 1;
+            }
+            while (p < end && *p != '\n') p++;      // skip chunk-ext + CR up to LF
+            if (p < end) p++;                        // consume LF
+            if (!any || sz == 0) break;              // 0-size chunk terminates
+            if (olen + sz > body_avail) sz = body_avail - olen;
+            for (uint32_t k = 0; k < sz && p < end; k++) out[olen++] = (uint8_t)*p++;
+            if (p < end && *p == '\r') p++;          // trailing CRLF after data
+            if (p < end && *p == '\n') p++;
+        }
+        out[olen] = '\0';
+        resp->body = out;
+        resp->body_len = olen;
+        kfree(buf);
+        return 0;
+    }
+
     resp->body = (uint8_t*)kmalloc(body_avail + 1);
     if (!resp->body) { kfree(buf); return -1; }
     __builtin_memcpy(resp->body, body_start, body_avail);

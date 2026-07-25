@@ -15,6 +15,7 @@
 #include "snake_win.h"
 #include "tetris_win.h"
 #include "games_win.h"
+#include "selene_win.h"
 #include "wallpaper_win.h"
 #include "rtc.h"
 #include "login.h"
@@ -1034,6 +1035,19 @@ void launch_minesweeper(void) {
     }
 }
 
+// Open Selene, the NyxOS web browser (selene_win.c). Fetches its default page right
+// away (selene_first_load) so it opens showing a real site rather than a blank view.
+void launch_selene(void) {
+    int px = ((int)fb_get_width()  - SELENE_W) / 2;            if (px < 0) px = 0;
+    int py = ((int)fb_get_height() - SELENE_H - TITLE_H) / 2;  if (py < 0) py = 0;
+    window_t* w = window_create(px, py, SELENE_W, SELENE_H, "Selene", selene_win_draw);
+    if (!w) return;
+    w->reserved = selene_create_ctx();
+    if (!w->reserved) { window_destroy(w->id); return; }
+    w->on_key = selene_win_key;
+    selene_first_load(w);      // blocks briefly while it fetches (http_get drives the net)
+}
+
 // Open the "Games" desktop folder — a window listing Minesweeper, DOOM and Pong as
 // clickable emblems (games_win.c). Its click handler calls the three launchers above.
 void launch_games_folder(void) {
@@ -1169,8 +1183,11 @@ static void do_start_menu_action(int idx) {
                  // v5.9.37: run it in a WINDOW (not fullscreen) via launch_doom_windowed.
             launch_doom_windowed();
             break;
-        case 14: // Games folder — a desktop shelf listing Minesweeper, DOOM and Pong
+        case 14: // Games folder — a desktop shelf of the built-in games
             launch_games_folder();
+            break;
+        case 15: // Selene — the NyxOS web browser
+            launch_selene();
             break;
     }
     redraw_all();
@@ -1814,17 +1831,15 @@ static void settings_win_click(window_t* win, int mx, int my, int btn) {
     }
 }
 
-#define NUM_DESKTOP_ICONS 9
+#define NUM_DESKTOP_ICONS 10
 #define ICON_SIZE 64
 #define ICON_PAD 12
 static const char* desktop_icon_names[] = {
-    "Files", "Terminal", "Editor", "Viewer", "Settings", "Paint", "Sounds", "Calc", "Games"
+    "Files", "Terminal", "Editor", "Viewer", "Settings", "Paint", "Sounds", "Calc", "Games", "Selene"
 };
-// Action 14 is the "Games" folder: the three games (Minesweeper=12, DOOM=13, Pong)
-// used to be Mines/DOOM standalone icons here; v5.9.40 gathered them into one
-// desktop folder so Pong gets an icon "like DOOM" and the shelf stays tidy. It opens
-// an in-kernel window (launch_games_folder) whose own icons dispatch to 12/13/Pong.
-static int desktop_icon_actions[] = {0, 3, 1, 2, 4, 7, 8, 11, 14};
+// Action 14 is the "Games" folder (v5.9.40, gathers Minesweeper/DOOM/Pong/Snake/Tetris);
+// action 15 is Selene, the web browser (v5.9.44). Both open an in-kernel window.
+static int desktop_icon_actions[] = {0, 3, 1, 2, 4, 7, 8, 11, 14, 15};
 static int desktop_icon_x[NUM_DESKTOP_ICONS];
 static int desktop_icon_y[NUM_DESKTOP_ICONS];
 
@@ -1936,6 +1951,23 @@ static void emblem_sounds(int x, int y) {             // speaker + sound waves
     fb_fill_rect(x+48, y+18, 2, 24, fb_rgb(120,200,255));
 }
 
+// A filled disc (integer span fill), for the moon emblems.
+static void icon_disc(int ccx, int ccy, int r, uint32_t col) {
+    for (int dy = -r; dy <= r; dy++) {
+        int w = 0;
+        while ((w + 1) * (w + 1) + dy * dy <= r * r) w++;
+        fb_fill_rect(ccx - w, ccy + dy, 2 * w + 1, 1, col);
+    }
+}
+
+static void emblem_selene(int x, int y) {             // the browser: a crescent moon + a star
+    fb_fill_rect(x + 8, y + 6, ICON_SIZE - 16, ICON_SIZE - 16, fb_rgb(38, 30, 66)); // night sky
+    icon_disc(x + 30, y + 32, 14, fb_rgb(232, 230, 248));   // moon
+    icon_disc(x + 36, y + 29, 12, fb_rgb(38, 30, 66));      // carve the crescent
+    fb_fill_rect(x + 44, y + 16, 2, 2, fb_rgb(240, 240, 255)); // a star
+    fb_fill_rect(x + 18, y + 44, 2, 2, fb_rgb(220, 220, 245)); // a star
+}
+
 static void emblem_calc(int x, int y) {               // calculator: LCD + button grid
     fb_fill_rect(x+12, y+8,  40, 44, fb_rgb(60,66,80));        // body
     fb_fill_rect(x+16, y+12, 32, 10, fb_rgb(160,220,180));     // green LCD
@@ -1973,6 +2005,7 @@ static void draw_icon_at(int i) {
     else if (strcmp(nm, "Paint")    == 0) emblem_paint(x, y);
     else if (strcmp(nm, "Sounds")   == 0) emblem_sounds(x, y);
     else if (strcmp(nm, "Calc")     == 0) emblem_calc(x, y);
+    else if (strcmp(nm, "Selene")   == 0) emblem_selene(x, y);
     else {
         fb_fill_rect(x+8, y+6, ICON_SIZE-16, ICON_SIZE-16, icon_bg);
         fb_fill_rect(x+12, y+10, ICON_SIZE-24, 2, fb_rgb(255,255,255));  // highlight
