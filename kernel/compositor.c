@@ -12,6 +12,7 @@
 #include "soundtest_win.h"
 #include "calc_win.h"
 #include "minesweeper_win.h"
+#include "snake_win.h"
 #include "games_win.h"
 #include "wallpaper_win.h"
 #include "rtc.h"
@@ -991,6 +992,19 @@ void launch_pong(void) {
     w->on_key       = pong_win_key;
     w->on_mousemove = pong_win_mousemove;
     w->on_tick      = pong_win_tick;
+}
+
+// Open a Snake window. In-kernel game like Pong: the compositor's game-tick steps it via
+// on_tick, arrows / WASD steer. Used by the `snake` command and the Games folder.
+void launch_snake(void) {
+    int px = ((int)fb_get_width()  - SNAKE_W) / 2;              if (px < 0) px = 0;
+    int py = ((int)fb_get_height() - SNAKE_H - TITLE_H) / 2;    if (py < 0) py = 0;
+    window_t* w = window_create(px, py, SNAKE_W, SNAKE_H, "Snake", snake_win_draw);
+    if (!w) return;
+    w->reserved = snake_create_ctx();
+    if (!w->reserved) { window_destroy(w->id); return; }
+    w->on_key  = snake_win_key;
+    w->on_tick = snake_win_tick;
 }
 
 // Open the Minesweeper window. Extracted from do_start_menu_action's case 12 so the

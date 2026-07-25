@@ -57,7 +57,24 @@ static void draw_pong_emblem(int x, int y) {
     fb_fill_rect(x + s / 2 - 3, y + 34, 6, 6, fb_rgb(240, 240, 245)); // ball
 }
 
-static const char* g_names[GAMES_COUNT] = { "Minesweeper", "DOOM", "Pong" };
+static void draw_snake_emblem(int x, int y) {
+    int s = GAMES_ICON;
+    fb_fill_rect(x, y, s, s, fb_rgb(16, 20, 16));            // board
+    for (int g = 1; g < 4; g++) {                           // faint grid
+        fb_fill_rect(x + g * s / 4, y, 1, s, fb_rgb(24, 30, 24));
+        fb_fill_rect(x, y + g * s / 4, s, 1, fb_rgb(24, 30, 24));
+    }
+    static const int gx[7] = { 1, 2, 3, 3, 3, 2, 1 };       // a coiled snake body
+    static const int gy[7] = { 1, 1, 1, 2, 3, 3, 3 };
+    int c = 12;
+    for (int i = 0; i < 7; i++) {
+        uint32_t col = (i == 6) ? fb_rgb(150, 240, 140) : fb_rgb(70, 190, 90); // head brighter
+        fb_fill_rect(x + 4 + gx[i] * c, y + 4 + gy[i] * c, c - 2, c - 2, col);
+    }
+    fb_fill_rect(x + 4 + c + 3, y + 4 + 2 * c + 3, c - 6, c - 6, fb_rgb(235, 80, 70)); // food
+}
+
+static const char* g_names[GAMES_COUNT] = { "Minesweeper", "DOOM", "Pong", "Snake" };
 
 void games_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     (void)win;
@@ -70,6 +87,7 @@ void games_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
             case 0: draw_mines_emblem(ix, iy); break;
             case 1: draw_doom_emblem(ix, iy);  break;
             case 2: draw_pong_emblem(ix, iy);  break;
+            case 3: draw_snake_emblem(ix, iy); break;
         }
         int cell_x = cx + GAMES_MARGIN_X + i * GAMES_CELL_W;
         int tw = (int)strlen(g_names[i]) * FONT_WIDTH;
@@ -93,6 +111,7 @@ void games_win_click(window_t* win, int mx, int my, int btn) {
                 case 0: launch_minesweeper();   break;
                 case 1: launch_doom_windowed(); break;  // blocks (foreground pump) until DOOM quits
                 case 2: launch_pong();          break;
+                case 3: launch_snake();         break;
             }
             return;
         }

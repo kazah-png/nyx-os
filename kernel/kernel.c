@@ -107,6 +107,7 @@ static void cmd_exec(int argc, char** argv);
 static void cmd_spawn(int argc, char** argv);
 static void cmd_doom(int argc, char** argv);
 static void cmd_pong(int argc, char** argv);
+static void cmd_snake(int argc, char** argv);
 static void cmd_jobs(int argc, char** argv);
 static void cmd_wait(int argc, char** argv);
 static void cmd_nice(int argc, char** argv);
@@ -188,6 +189,7 @@ static const command_t commands[] = {
     {"spawn",     cmd_spawn,     "Run ELF in background: spawn <file>", false},
     {"doom",      cmd_doom,      "Play DOOM in a window (Ctrl-C to quit)", false},
     {"pong",      cmd_pong,      "Play Pong (mouse or arrows)", false},
+    {"snake",     cmd_snake,     "Play Snake (arrows/WASD)", false},
     {"jobs",      cmd_jobs,      "List background jobs", false},
     {"wait",      cmd_wait,      "Wait for background jobs: wait [pid]", false},
     {"nice",      cmd_nice,      "Spawn ELF at a scheduler weight: nice <weight> <file>", false},
@@ -929,6 +931,12 @@ static void cmd_doom(int argc, char** argv) {
 static void cmd_pong(int argc, char** argv) {
     (void)argc; (void)argv;
     launch_pong();
+}
+
+// `snake` — open a Snake game window (in-kernel, compositor.c).
+static void cmd_snake(int argc, char** argv) {
+    (void)argc; (void)argv;
+    launch_snake();
 }
 
 static void cmd_spawn(int argc, char** argv) {
