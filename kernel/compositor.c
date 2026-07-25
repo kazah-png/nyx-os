@@ -925,6 +925,52 @@ window_t* compositor_open_editor(const char* path) {
     return ewin;
 }
 
+// ---- DOOM windowed rendering (v5.9.37) -------------------------------------------
+// DOOM normally drives the whole framebuffer via SYS_FBPRESENT (fullscreen). To run it
+// in a WINDOW instead, launch_doom_windowed() opens a plain compositor window and the
+// SYS_FBPRESENT handler is rerouted (doom_window_present) to copy each frame into
+// doom_frame rather than blitting fullscreen — so fb_fullscreen_active() stays false and
+// the compositor keeps publishing the desktop. The window's draw callback scales that
+// frame into its client area. DOOM runs FOREGROUND (gui_launch_elf); run_foreground_elf's
+// redraw pump repaints the window, and Ctrl-C exits (SIGINT to the foreground pid).
+static uint32_t doom_frame[320 * 200];
+static int      doom_win_id = -1;
+
+// Called from the SYS_FBPRESENT handler. Returns 1 if a DOOM window is up (frame stored,
+// caller must NOT go fullscreen); 0 to fall back to the fullscreen blit.
+int doom_window_present(const uint32_t* src, uint32_t w, uint32_t h) {
+    if (doom_win_id < 0 || !src || w != 320 || h != 200) return 0;
+    for (int i = 0; i < 320 * 200; i++) doom_frame[i] = src[i];
+    return 1;
+}
+
+// Draw callback: nearest-neighbour scale the 320x200 frame into the window client.
+static void doom_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
+    (void)win;
+    if (cw == 0 || ch == 0) return;
+    for (uint32_t y = 0; y < ch; y++) {
+        const uint32_t* srow = doom_frame + (uint64_t)(y * 200 / ch) * 320;
+        for (uint32_t x = 0; x < cw; x++)
+            fb_put_pixel((uint32_t)(cx + (int)x), (uint32_t)(cy + (int)y), srow[x * 320 / cw]);
+    }
+}
+
+// Open a DOOM window and run the game inside it (foreground). Blocks until DOOM exits,
+// then tears the window down. Used by both the desktop icon and the `doom` command.
+void launch_doom_windowed(void) {
+    if (doom_win_id >= 0) return;                            // already playing
+    const int W = 640, H = 400;                              // 2x the native 320x200
+    int px = ((int)fb_get_width()  - W) / 2;                 if (px < 0) px = 0;
+    int py = ((int)fb_get_height() - H - TITLE_H) / 2;       if (py < 0) py = 0;
+    window_t* w = window_create(px, py, W, H, "DOOM  -  Ctrl-C to quit", doom_win_draw);
+    if (!w) { gui_launch_elf("/doom.elf"); return; }         // no slot: fall back to fullscreen
+    doom_win_id = w->id;
+    for (int i = 0; i < 320 * 200; i++) doom_frame[i] = 0;   // black until the first frame
+    gui_launch_elf("/doom.elf");                             // foreground: pump repaints us
+    doom_win_id = -1;
+    window_destroy(w->id);
+}
+
 static void do_start_menu_action(int idx) {
     start_menu_open = 0;
     redraw_all();
@@ -1057,7 +1103,8 @@ static void do_start_menu_action(int idx) {
                  // foreground-run (spawn + pump the desktop + block until exit), so DOOM
                  // is actually scheduled and its SYS_FBPRESENT takeover is serviced.
                  // main() injects `-iwad /mnt/doom1.wad` when launched with no args.
-            gui_launch_elf("/doom.elf");
+                 // v5.9.37: run it in a WINDOW (not fullscreen) via launch_doom_windowed.
+            launch_doom_windowed();
             break;
     }
     redraw_all();

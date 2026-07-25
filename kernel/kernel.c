@@ -105,6 +105,7 @@ static void cmd_play(int argc, char** argv);
 static void cmd_sb16play(int argc, char** argv);
 static void cmd_exec(int argc, char** argv);
 static void cmd_spawn(int argc, char** argv);
+static void cmd_doom(int argc, char** argv);
 static void cmd_jobs(int argc, char** argv);
 static void cmd_wait(int argc, char** argv);
 static void cmd_nice(int argc, char** argv);
@@ -184,6 +185,7 @@ static const command_t commands[] = {
     {"sb16play",  cmd_sb16play,  "Test SB16 playback: sb16play [freq] [ms]", false},
     {"exec",      cmd_exec,      "Run ELF in foreground (waits): exec <file>", false},
     {"spawn",     cmd_spawn,     "Run ELF in background: spawn <file>", false},
+    {"doom",      cmd_doom,      "Play DOOM in a window (Ctrl-C to quit)", false},
     {"jobs",      cmd_jobs,      "List background jobs", false},
     {"wait",      cmd_wait,      "Wait for background jobs: wait [pid]", false},
     {"nice",      cmd_nice,      "Spawn ELF at a scheduler weight: nice <weight> <file>", false},
@@ -914,6 +916,13 @@ static void cmd_exec(int argc, char** argv) {
 
 // Run an ELF as a BACKGROUND job: spawn it and return immediately. It runs
 // preemptively alongside the desktop; 'ps' lists it and it's reaped when it exits.
+// `doom` — run DOOM inside a compositor window (v5.9.37). The heavy lifting is in the
+// compositor (launch_doom_windowed opens the window + foreground-runs /doom.elf).
+static void cmd_doom(int argc, char** argv) {
+    (void)argc; (void)argv;
+    launch_doom_windowed();
+}
+
 static void cmd_spawn(int argc, char** argv) {
     if (argc < 2) { printf("Usage: spawn <file> [args...]\n"); return; }
     int pid = spawn_user_path_args(argv[1], &argv[1], argc - 1);   // forward argv

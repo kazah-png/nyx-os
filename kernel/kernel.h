@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.9.36"
+#define KERNEL_VERSION "5.9.37"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -1010,6 +1010,8 @@ void preempt_enable(void);
 int  spawn_user_path(const char* path);
 int  spawn_user_path_args(const char* path, char* const* argv, int argc); // spawn + forward argv
 void gui_launch_elf(const char* path);  // desktop-icon launch: foreground-run an ELF (kernel.c)
+int  doom_window_present(const uint32_t* src, uint32_t w, uint32_t h); // reroute DOOM's frame into its window (compositor.c)
+void launch_doom_windowed(void);        // run DOOM inside a compositor window (compositor.c)
 void reap_zombies(void);
 int do_clone(uint64_t fn, uint64_t stack, uint64_t arg, uint64_t flags); // CLONE_VM thread
 int do_futex(uint64_t uaddr, int op, uint32_t val);                     // FUTEX_WAIT/WAKE

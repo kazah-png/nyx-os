@@ -1328,7 +1328,10 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
                 fbp_scratch = n; fbp_scratch_sz = bytes;
             }
             if (copy_from_user(fbp_scratch, a1, bytes) != 0) return (uint64_t)-1;
-            fb_present_kbuf((const uint32_t*)fbp_scratch, w, h);
+            // If a DOOM window is open, route the frame into it (windowed, v5.9.37);
+            // otherwise blit it fullscreen as before.
+            if (!doom_window_present((const uint32_t*)fbp_scratch, w, h))
+                fb_present_kbuf((const uint32_t*)fbp_scratch, w, h);
             return 0;
         }
         case SYS_GETKEYEVENT:
