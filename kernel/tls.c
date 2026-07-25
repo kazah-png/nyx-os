@@ -103,6 +103,18 @@ static void tls_print_hex(const char* label, const uint8_t* b, int n) {
     printf("\n");
 }
 
+// Print up to `max` bytes as text, replacing non-printables (except tab/newlines) with '.'.
+static void tls_print_text(const uint8_t* b, uint32_t n, uint32_t max) {
+    if (n > max) n = max;
+    char one[2]; one[1] = 0;
+    for (uint32_t i = 0; i < n; i++) {
+        uint8_t c = b[i];
+        one[0] = (c == '\n' || c == '\r' || c == '\t' || (c >= 32 && c < 127)) ? (char)c : '.';
+        printf("%s", one);
+    }
+    printf("\n");
+}
+
 static int tls_hexval(char c) {
     if (c >= '0' && c <= '9') return c - '0';
     if (c >= 'a' && c <= 'f') return c - 'a' + 10;
@@ -428,19 +440,68 @@ int tls_hello(const char* host, int iface_idx) {
             }
             pp += 5 + rl;
         }
-        tcp_close(conn);
-
         if (s_alert) {
             printf("TLS: %s sent an Alert (description %d) after our Finished — handshake rejected\n", host, s_desc);
-            return -1;
+            tcp_close(conn); return -1;
         }
-        if (verified) {
-            printf("TLS: *** HANDSHAKE COMPLETE — server Finished verified; secure channel established with %s ***\n", host);
-            printf("TLS: [note] the ephemeral key still uses a NON-crypto RNG, and the certificate is not verified yet.\n");
-            return 0;
+        if (!verified) {
+            printf("TLS: handshake did not complete — no verified server Finished received\n");
+            tcp_close(conn); return -1;
         }
-        printf("TLS: handshake did not complete — no verified server Finished received\n");
-        return -1;
+        printf("TLS: *** HANDSHAKE COMPLETE — server Finished verified; secure channel established with %s ***\n", host);
+
+        // ---- Encrypted https GET over the established channel (v5.9.55) -----------------
+        // Our client Finished was record seq 0, so this GET is client seq 1; the server's
+        // Finished was seq 0, so its first application-data reply is server seq 1.
+        uint8_t req[320]; uint32_t reqn = 0;
+        const char* g1 = "GET / HTTP/1.1\r\nHost: ";
+        const char* g2 = "\r\nConnection: close\r\nUser-Agent: NyxOS-Selene\r\n\r\n";
+        for (const char* s = g1; *s; s++) req[reqn++] = (uint8_t)*s;
+        for (const char* s = host; *s && reqn < sizeof(req) - 64; s++) req[reqn++] = (uint8_t)*s;
+        for (const char* s = g2; *s; s++) req[reqn++] = (uint8_t)*s;
+
+        uint8_t grec[5 + 320 + 24];                  // one application-data record (type 0x17)
+        int gl = tls_seal_record(ckey, civ, 1, 0x17, req, reqn, grec + 5);   // client seq 1
+        grec[0] = 0x17; grec[1] = 0x03; grec[2] = 0x03; grec[3] = (uint8_t)(gl >> 8); grec[4] = (uint8_t)gl;
+        printf("TLS: sending an encrypted \"GET /\" over the channel...\n");
+        if (tcp_send(conn, grec, 5 + gl) < 0) { printf("TLS: GET send failed\n"); tcp_close(conn); return -1; }
+
+        uint32_t r3 = 0, s3 = get_ticks(), l3 = s3;  // read the encrypted response
+        for (;;) {
+            kernel_poll_net();
+            int n = tcp_recv(conn, tls_rx + r3, (uint32_t)sizeof(tls_rx) - r3 - 1);
+            if (n > 0) { r3 += (uint32_t)n; l3 = get_ticks(); if (r3 >= sizeof(tls_rx) - 1) break; }
+            else if (n < 0) break;                   // server closed (Connection: close)
+            uint32_t now = get_ticks();
+            if (r3 == 0) { if ((int32_t)(now - (s3 + 8000)) >= 0) break; }
+            else if ((int32_t)(now - (l3 + 1500)) >= 0) break;
+            if ((int32_t)(now - (s3 + 15000)) >= 0) break;
+        }
+        tcp_close(conn);
+
+        uint32_t pn = 0; uint64_t sseq = 1;          // decrypt each application-data record in turn
+        uint32_t q = 0;
+        while (q + 5 <= r3) {
+            uint8_t rt = tls_rx[q];
+            uint16_t rl2 = (uint16_t)((tls_rx[q+3] << 8) | tls_rx[q+4]);
+            if (q + 5 + rl2 > r3) break;
+            if (rt == 0x17) {                        // application data
+                if (pn + rl2 > sizeof(tls_hd)) break;
+                int pl = tls_open_record(skey, siv, sseq, 0x17, tls_rx + q + 5, rl2, tls_hd + pn);
+                if (pl < 0) { printf("TLS: could not decrypt application-data record %u\n", (unsigned)sseq); break; }
+                pn += (uint32_t)pl; sseq++;
+            } else if (rt == 0x15) { break; }        // encrypted close_notify alert — end of stream
+            q += 5 + rl2;
+        }
+
+        if (pn == 0) { printf("TLS: no application data decrypted\n"); return -1; }
+        printf("TLS: decrypted %u bytes of https response:\n", pn);
+        printf("------------------------------------------------------------\n");
+        tls_print_text(tls_hd, pn, 480);
+        printf("------------------------------------------------------------\n");
+        printf("TLS: *** https fetch over TLS succeeded for %s ***\n", host);
+        printf("TLS: [note] ephemeral key still uses a NON-crypto RNG; the certificate is not verified yet.\n");
+        return 0;
     } else if (got_ske) {
         printf("TLS: server chose curve 0x%x; only x25519 (0x001d) is wired up so far — no key agreement this run.\n", ske_curve);
     }
