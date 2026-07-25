@@ -3,6 +3,7 @@
 #include "theme.h"
 #include "font.h"
 #include "terminal_win.h"
+#include "pong_win.h"
 #include "fileman_win.h"
 #include "paint_win.h"
 #include "taskman_win.h"
@@ -113,20 +114,26 @@ static void draw_x_button(int x, int y, int size, uint32_t color) {
     }
 }
 
+// All three glyphs share the SAME inner box — [x+P, x+E] x [y+P, y+E] with P=4 — so the
+// dash, the square and the X read as one consistent set on every title bar. (The old
+// max button drew its top/bottom edges out to x+size-1 while the verticals stopped at
+// x+size-4, so the square had two stubs poking out the right — a few px off on every
+// window. The dash was also 2px wider than the X. Fixed by centring all three the same.)
 static void draw_min_button(int x, int y, int size, uint32_t color) {
     fb_fill_rect(x, y, size, size, fb_rgb(60,60,60));
-    int cy = y + size / 2;
-    for (int i = 0; i < size - 6; i++)
-        compositor_draw_pixel(x + 3 + i, cy, color);
+    int p = 4;
+    for (int i = 0; i < size - 2 * p; i++)
+        compositor_draw_pixel(x + p + i, y + size / 2, color);      // centred dash
 }
 
 static void draw_max_button(int x, int y, int size, uint32_t color) {
     fb_fill_rect(x, y, size, size, fb_rgb(60,120,60));
-    for (int i = 1; i < size - 3; i++) {
-        compositor_draw_pixel(x + 3 + i, y + 3, color);
-        compositor_draw_pixel(x + 3 + i, y + size - 4, color);
-        compositor_draw_pixel(x + 3, y + 3 + i, color);
-        compositor_draw_pixel(x + size - 4, y + 3 + i, color);
+    int p = 4, e = size - 1 - p;                                     // inner square [p, e]
+    for (int i = 0; i <= e - p; i++) {
+        compositor_draw_pixel(x + p + i, y + p,     color);         // top edge
+        compositor_draw_pixel(x + p + i, y + e,     color);         // bottom edge
+        compositor_draw_pixel(x + p,     y + p + i, color);         // left edge
+        compositor_draw_pixel(x + e,     y + p + i, color);         // right edge
     }
 }
 
@@ -969,6 +976,20 @@ void launch_doom_windowed(void) {
     gui_launch_elf("/doom.elf");                             // foreground: pump repaints us
     doom_win_id = -1;
     window_destroy(w->id);
+}
+
+// Open a Pong window. In-kernel game: the compositor's game-tick animates it via on_tick,
+// the player's paddle follows the mouse. Used by the `pong` command and the Games folder.
+void launch_pong(void) {
+    int px = ((int)fb_get_width()  - PONG_W) / 2;              if (px < 0) px = 0;
+    int py = ((int)fb_get_height() - PONG_H - TITLE_H) / 2;    if (py < 0) py = 0;
+    window_t* w = window_create(px, py, PONG_W, PONG_H, "Pong", pong_win_draw);
+    if (!w) return;
+    w->reserved = pong_create_ctx();
+    if (!w->reserved) { window_destroy(w->id); return; }
+    w->on_key       = pong_win_key;
+    w->on_mousemove = pong_win_mousemove;
+    w->on_tick      = pong_win_tick;
 }
 
 static void do_start_menu_action(int idx) {
@@ -2334,6 +2355,18 @@ done_click:
         if (now - clock_tick > 1000) {
             clock_tick = now;
             redraw = 1;
+        }
+
+        // Game-animation tick (~30 fps): drive any window that registered an on_tick
+        // (Pong). Kept separate from the 1 Hz clock so the ball moves smoothly.
+        static uint32_t game_tick_ms = 0;
+        if (now - game_tick_ms >= 33) {
+            game_tick_ms = now;
+            for (int gi = 0; gi < MAX_WINDOWS; gi++)
+                if (windows[gi] && windows[gi]->on_tick && windows[gi]->visible) {
+                    windows[gi]->on_tick(windows[gi]);
+                    redraw = 1;
+                }
         }
 
         if (redraw) {

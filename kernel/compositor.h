@@ -82,6 +82,7 @@ struct window {
     void (*on_click)(struct window* win, int mx, int my, int btn);
     void (*on_pressed)(struct window* win, int mx, int my, int btn);
     void (*on_mousemove)(struct window* win, int mx, int my, int btns);
+    void (*on_tick)(struct window* win);   // periodic ~30fps animation tick (e.g. Pong)
     void* reserved;
 };
 
