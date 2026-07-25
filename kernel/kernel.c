@@ -2348,6 +2348,18 @@ void kernel_main(uint64_t magic, void* mboot_ptr) {
     bootsplash_update(11, 23, "Starting network stack...");
     printf("[INIT] TCP...\n"); tcp_init(); tcp_echo_init();
     bootsplash_update(12, 23, "Initializing TCP...");
+    // Auto-DHCP: if a NIC came up, lease an IP now so the network is ready for
+    // everything (Selene, httpget, ping) without a manual `dhcp`. dhcp_request drives
+    // the net itself and returns fast when a server answers; skipped entirely when no
+    // NIC is present (diskless/netless boot), so it never stalls the boot.
+    for (int ai = 0; ai < 8; ai++) {
+        if (net_interfaces[ai].name[0] && strcmp(net_interfaces[ai].name, "lo") != 0) {
+            bootsplash_update(12, 23, "Requesting an IP via DHCP...");
+            printf("[INIT] Auto-DHCP on %s...\n", net_interfaces[ai].name);
+            dhcp_request(ai);
+            break;
+        }
+    }
     init_background_tasks();
     bootsplash_update(13, 23, "Registering background tasks...");
 
