@@ -833,7 +833,7 @@ void AM_Ticker (void)
 //
 void AM_clearFB(int color)
 {
-    memset(fb, color, f_w*f_h);
+    memset(fb, color, (size_t)f_w*f_h);   // 64-bit multiply: f_w*f_h in int can overflow before widening to memset's size_t
 }
 
 
