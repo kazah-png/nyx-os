@@ -19,6 +19,7 @@
 #include "rsa.h"
 #include "sha256.h"
 #include "sha512.h"
+#include "rtc.h"
 
 // The trust anchor NyxOS pins: the SSL.com TLS ECC Root CA 2022 public key (NIST P-384, the
 // uncompressed EC point 0x04||X||Y). A chain is trusted only when its topmost certificate carries
@@ -147,6 +148,56 @@ int x509_verify_chain(const uint8_t* const* certs, const uint32_t* lens, int n,
     return X509_INCOMPLETE;
 }
 
+// ---- leaf checks: hostname (subjectAltName) and validity dates (v5.9.66) ------------
+
+static char lower(char c) { return (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c; }
+
+// Match a presented dNSName pattern (length patlen, not NUL-terminated) against `host`,
+// case-insensitively, honouring a single leading "*." wildcard that covers exactly one label.
+static int host_match(const char* pat, uint32_t patlen, const char* host) {
+    uint32_t hlen = 0; while (host[hlen]) hlen++;
+    if (patlen >= 2 && pat[0] == '*' && pat[1] == '.') {
+        uint32_t dot = 0; while (dot < hlen && host[dot] != '.') dot++;
+        if (dot == 0 || dot >= hlen) return 0;             // need a non-empty first label + a dot
+        const char* prest = pat + 2;  uint32_t prestlen = patlen - 2;
+        const char* hrest = host + dot + 1; uint32_t hrestlen = hlen - dot - 1;
+        if (prestlen != hrestlen) return 0;                // remaining labels must match exactly
+        for (uint32_t i = 0; i < prestlen; i++) if (lower(prest[i]) != lower(hrest[i])) return 0;
+        return 1;
+    }
+    if (patlen != hlen) return 0;
+    for (uint32_t i = 0; i < hlen; i++) if (lower(pat[i]) != lower(host[i])) return 0;
+    return 1;
+}
+
+int x509_check_host(const uint8_t* leaf, uint32_t leaf_len, const char* host) {
+    static const uint8_t OID_SAN[] = { 0x55, 0x1d, 0x11 };  // 2.5.29.17 subjectAltName
+    const uint8_t* ext; uint32_t extl;
+    if (der_x509_extension(leaf, leaf_len, OID_SAN, sizeof(OID_SAN), &ext, &extl) != 0) return -1;
+    der_t wrap = { ext, ext + extl }, san;
+    if (der_enter(&wrap, 0x30, &san) != 0) return -1;      // SubjectAltName ::= SEQUENCE OF GeneralName
+    int saw_dns = 0;
+    while (san.p < san.end) {
+        uint8_t t; const uint8_t* v; uint32_t vl;
+        if (der_read(&san, &t, &v, &vl) != 0) break;
+        if (t == 0x82) {                                   // dNSName [2] IMPLICIT IA5String
+            saw_dns = 1;
+            if (host_match((const char*)v, vl, host)) return 0;
+        }
+    }
+    return saw_dns ? 1 : -1;
+}
+
+int x509_check_validity(const uint8_t* cert, uint32_t clen) {
+    uint64_t nb, na;
+    if (der_x509_validity(cert, clen, &nb, &na) != 0) return -1;
+    rtc_time_t t; rtc_read_time(&t);
+    uint64_t now = ((((( (uint64_t)t.year *100 + t.month)*100 + t.day)*100 + t.hour)*100 + t.minute)*100 + t.second);
+    if (now < nb) return 1;                                // not yet valid
+    if (now > na) return 2;                                // expired
+    return 0;                                              // within the validity window
+}
+
 // ---- known-answer self-test ----------------------------------------------------------
 #include "x509_testchain.h"
 
@@ -181,6 +232,31 @@ int x509_selftest(void) {
         int r = x509_verify_chain(TESTCHAIN, TESTCHAIN_LEN, 3, msg, sizeof(msg));
         if (r == X509_INCOMPLETE) { pass++; printf("x509: chain without root -> NOT anchored (%s) PASS\n", msg); }
         else                        printf("x509: root-less chain wrongly returned %d FAIL\n", r);
+    }
+
+    // 4) Hostname (subjectAltName) matching on the real leaf (SAN: example.com, *.example.com).
+    total++;
+    {
+        const uint8_t* L = TESTCHAIN_0; uint32_t Ln = TESTCHAIN_LEN[0];
+        int ok = (x509_check_host(L, Ln, "example.com")     == 0) &&   // exact
+                 (x509_check_host(L, Ln, "www.example.com")  == 0) &&   // wildcard *.example.com
+                 (x509_check_host(L, Ln, "attacker.com")     == 1) &&   // different domain
+                 (x509_check_host(L, Ln, "example.org")      == 1) &&   // different TLD
+                 (x509_check_host(L, Ln, "a.b.example.com")  == 1);     // wildcard is one label only
+        if (ok) { pass++; printf("x509: hostname (SAN) match PASS (example.com + *.example.com)\n"); }
+        else      printf("x509: hostname (SAN) match FAIL\n");
+    }
+
+    // 5) Validity-date parsing on the real leaf (notBefore 2026-05-31, notAfter 2026-08-29).
+    total++;
+    {
+        uint64_t nb = 0, na = 0;
+        int ok = (der_x509_validity(TESTCHAIN_0, TESTCHAIN_LEN[0], &nb, &na) == 0) &&
+                 nb == 20260531213912ULL && na == 20260829214126ULL;
+        if (ok) { pass++; printf("x509: validity dates parsed PASS (nb=%llu na=%llu)\n",
+                                 (unsigned long long)nb, (unsigned long long)na); }
+        else      printf("x509: validity dates parse FAIL (nb=%llu na=%llu)\n",
+                         (unsigned long long)nb, (unsigned long long)na);
     }
 
     printf("x509: self-test %d/%d passed\n", pass, total);

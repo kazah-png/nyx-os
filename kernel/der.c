@@ -162,6 +162,78 @@ int der_x509_pubkey(const uint8_t* cert, uint32_t clen, der_pubkey_t* out) {
     return -1;                                              // unrecognized key algorithm
 }
 
+// Enter Certificate -> tbsCertificate, skip the optional version [0], then skip `n` more fields.
+// Leaves `tbs` positioned at the (n+1)-th tbsCertificate field. Order is: serialNumber,
+// signature, issuer, validity, subject, subjectPublicKeyInfo, [uniqueIDs], extensions.
+static int tbs_skip(const uint8_t* cert, uint32_t clen, der_t* tbs, int n) {
+    der_t top = { cert, cert + clen }, certseq;
+    if (der_enter(&top, 0x30, &certseq) != 0) return -1;
+    if (der_enter(&certseq, 0x30, tbs) != 0) return -1;
+    if (tbs->p < tbs->end && *tbs->p == 0xA0) { if (der_skip(tbs) != 0) return -1; }  // version [0]
+    for (int i = 0; i < n; i++) if (der_skip(tbs) != 0) return -1;
+    return 0;
+}
+
+// Parse a DER Time (UTCTime YYMMDDHHMMSSZ or GeneralizedTime YYYYMMDDHHMMSSZ) into a packed
+// decimal YYYYMMDDHHMMSS. Returns 0 on a malformed value.
+static uint64_t parse_time(uint8_t tag, const uint8_t* p, uint32_t vl) {
+    for (uint32_t i = 0; i < vl && i < 14; i++) if (p[i] < '0' || p[i] > '9') { if (p[i] != 'Z') return 0; }
+    uint64_t year;
+    if (tag == 0x17) {                                     // UTCTime
+        if (vl < 13) return 0;
+        int yy = (p[0]-'0')*10 + (p[1]-'0');
+        year = (yy < 50) ? 2000 + yy : 1900 + yy;          // RFC 5280 sliding window
+        p += 2;
+    } else if (tag == 0x18) {                              // GeneralizedTime
+        if (vl < 15) return 0;
+        year = (uint64_t)(p[0]-'0')*1000 + (p[1]-'0')*100 + (p[2]-'0')*10 + (p[3]-'0');
+        p += 4;
+    } else return 0;
+    uint64_t mo = (p[0]-'0')*10 + (p[1]-'0');
+    uint64_t da = (p[2]-'0')*10 + (p[3]-'0');
+    uint64_t hh = (p[4]-'0')*10 + (p[5]-'0');
+    uint64_t mi = (p[6]-'0')*10 + (p[7]-'0');
+    uint64_t se = (p[8]-'0')*10 + (p[9]-'0');
+    return ((((year*100 + mo)*100 + da)*100 + hh)*100 + mi)*100 + se;
+}
+
+int der_x509_validity(const uint8_t* cert, uint32_t clen, uint64_t* not_before, uint64_t* not_after) {
+    der_t tbs, val;
+    if (tbs_skip(cert, clen, &tbs, 3) != 0) return -1;     // skip serial, signature, issuer
+    if (der_enter(&tbs, 0x30, &val) != 0) return -1;       // validity ::= SEQUENCE { nb, na }
+    uint8_t t; const uint8_t* v; uint32_t vl;
+    if (der_read(&val, &t, &v, &vl) != 0) return -1;
+    uint64_t nb = parse_time(t, v, vl);
+    if (der_read(&val, &t, &v, &vl) != 0) return -1;
+    uint64_t na = parse_time(t, v, vl);
+    if (nb == 0 || na == 0) return -1;
+    *not_before = nb; *not_after = na;
+    return 0;
+}
+
+int der_x509_extension(const uint8_t* cert, uint32_t clen, const uint8_t* oid, uint32_t oid_len,
+                       const uint8_t** val, uint32_t* val_len) {
+    der_t tbs;
+    if (tbs_skip(cert, clen, &tbs, 6) != 0) return -1;     // skip serial..subjectPublicKeyInfo
+    while (tbs.p < tbs.end && (*tbs.p == 0x81 || *tbs.p == 0x82)) {   // issuer/subject uniqueID
+        if (der_skip(&tbs) != 0) return -1;
+    }
+    der_t extwrap, extlist;
+    if (der_enter(&tbs, 0xA3, &extwrap) != 0) return -1;   // extensions [3] EXPLICIT
+    if (der_enter(&extwrap, 0x30, &extlist) != 0) return -1;          // SEQUENCE OF Extension
+    while (extlist.p < extlist.end) {
+        der_t ext;
+        if (der_enter(&extlist, 0x30, &ext) != 0) return -1;         // Extension ::= SEQUENCE
+        uint8_t t; const uint8_t* v; uint32_t vl;
+        if (der_read(&ext, &t, &v, &vl) != 0 || t != 0x06) continue; // extnID OID
+        const uint8_t* eid = v; uint32_t eidl = vl;
+        if (ext.p < ext.end && *ext.p == 0x01) { if (der_skip(&ext) != 0) continue; }  // critical
+        if (der_read(&ext, &t, &v, &vl) != 0 || t != 0x04) continue; // extnValue OCTET STRING
+        if (eidl == oid_len && oid_match(eid, eidl, oid, oid_len)) { *val = v; *val_len = vl; return 0; }
+    }
+    return -1;                                              // extension not present
+}
+
 // ---- known-answer self-test ---------------------------------------------------------
 
 static int hv(char c) {

@@ -392,6 +392,20 @@ int tls_https_fetch(const char* host, const char* path, int iface_idx,
         } else {
             TLSP("TLS: certificate chain: %s — proceeding without a pinned anchor\n", cmsg);
         }
+
+        // Leaf hostname (subjectAltName) + validity window (v5.9.66). Reported, not enforced:
+        // NyxOS notes a wrong-host or expired certificate but still proceeds (same single-anchor
+        // stance as the chain check) — enforcement is a later hardening step.
+        int hm = x509_check_host(chain_ptr[0], chain_len[0], host);
+        if (hm == 0)      TLSP("TLS: leaf certificate covers host '%s' (subjectAltName match)\n", host);
+        else if (hm == 1) TLSP("TLS: leaf certificate does NOT cover host '%s' — wrong-host certificate\n", host);
+        else              TLSP("TLS: leaf certificate has no usable subjectAltName — host not checked\n");
+
+        int vd = x509_check_validity(chain_ptr[0], chain_len[0]);
+        if (vd == 0)      TLSP("TLS: leaf certificate is within its validity period\n");
+        else if (vd == 1) TLSP("TLS: leaf certificate is NOT yet valid (notBefore is in the future)\n");
+        else if (vd == 2) TLSP("TLS: leaf certificate has EXPIRED (past notAfter)\n");
+        else              TLSP("TLS: leaf certificate validity dates could not be parsed\n");
     }
 
     // ECDHE key agreement + the TLS 1.2 key schedule (v5.9.51). Only x25519 is implemented.

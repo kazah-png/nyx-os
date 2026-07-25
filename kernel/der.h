@@ -52,6 +52,16 @@ typedef struct {
 // Extract and classify a certificate's subjectPublicKeyInfo. Returns 0 on success, -1 otherwise.
 int der_x509_pubkey(const uint8_t* cert, uint32_t clen, der_pubkey_t* out);
 
+// Extract the notBefore / notAfter dates from a certificate's validity field, each packed as a
+// decimal YYYYMMDDHHMMSS integer (so they order by simple comparison). Handles UTCTime and
+// GeneralizedTime. Returns 0 on success, -1 otherwise.
+int der_x509_validity(const uint8_t* cert, uint32_t clen, uint64_t* not_before, uint64_t* not_after);
+
+// Find an X.509 v3 extension by its OID value bytes and return its extnValue (the OCTET STRING
+// contents). Returns 0 if found, -1 if absent or malformed.
+int der_x509_extension(const uint8_t* cert, uint32_t clen, const uint8_t* oid, uint32_t oid_len,
+                       const uint8_t** val, uint32_t* val_len);
+
 // Run the DER reader known-answer tests (TLV, long-form length, real-cert extraction).
 int der_selftest(void);
 

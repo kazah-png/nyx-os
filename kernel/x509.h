@@ -16,6 +16,15 @@
 int x509_verify_chain(const uint8_t* const* certs, const uint32_t* lens, int n,
                       char* msg, int msgcap);
 
+// Does the leaf certificate cover `host`? Matches the subjectAltName dNSName entries
+// case-insensitively, honouring a single leading "*." wildcard label. Returns 0 on a match,
+// 1 if no dNSName matches, -1 if there is no usable subjectAltName.
+int x509_check_host(const uint8_t* leaf, uint32_t leaf_len, const char* host);
+
+// Is the certificate currently within its validity window (per the RTC)? Returns 0 if valid,
+// 1 if not yet valid, 2 if expired, -1 if the dates cannot be parsed.
+int x509_check_validity(const uint8_t* cert, uint32_t clen);
+
 // Known-answer self-test: a real chain (accept), a one-byte-tampered copy (reject as forged),
 // and a root-less prefix (reject as not-anchored). Returns 0 if all pass.
 int x509_selftest(void);
