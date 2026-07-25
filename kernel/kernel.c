@@ -12,6 +12,7 @@
 #include "dns.h"
 #include "http.h"
 #include "tls.h"
+#include "curve25519.h"
 #include "smp.h"
 #include "initramfs.h"
 #include "bootsplash.h"
@@ -122,6 +123,7 @@ static void cmd_tcploop(int argc, char** argv);
 static void cmd_tcpserve(int argc, char** argv);
 static void cmd_httpget(int argc, char** argv);
 static void cmd_tls(int argc, char** argv);
+static void cmd_x25519test(int argc, char** argv);
 static void cmd_setip(int argc, char** argv);
 static void cmd_mount(int argc, char** argv);
 static void cmd_df(int argc, char** argv);
@@ -207,6 +209,7 @@ static const command_t commands[] = {
     {"tcpserve",  cmd_tcpserve,  "Serve one TCP/HTTP connection: tcpserve [port]", false},
     {"httpget",   cmd_httpget,   "HTTP GET: httpget <url>", false},
     {"tls",       cmd_tls,       "TLS handshake test: tls <host> (https :443)", false},
+    {"x25519test",cmd_x25519test,"X25519 (Curve25519) self-test — RFC 7748 vectors", false},
     {"setip",     cmd_setip,     "Set static IP: setip <ip> <mask> <gw>", false},
     {"mount",     cmd_mount,     "Mount EXT2: mount [drive] [part_lba]", false},
     {"ext2ls",    cmd_mount,     "Alias for mount", false},
@@ -1474,6 +1477,14 @@ static void cmd_tls(int argc, char** argv) {
         if (net_interfaces[i].name[0] && strcmp(net_interfaces[i].name, "lo") != 0) { iface_idx = i; break; }
     }
     tls_hello(host, iface_idx);
+}
+
+// `x25519test` — run the RFC 7748 known-answer vectors for X25519 (Curve25519 ECDH),
+// the ephemeral key exchange TLS negotiated. Pure computation; no network needed.
+static void cmd_x25519test(int argc, char** argv) {
+    (void)argc; (void)argv;
+    printf("Running X25519 (Curve25519) known-answer tests (RFC 7748)...\n");
+    curve25519_selftest();
 }
 
 // Add history entry (called from shell loop)
