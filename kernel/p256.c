@@ -42,8 +42,9 @@ static void fe_sub(fe r, const fe a, const fe b) {
     for (int i = 0; i < 4; i++) { c += (unsigned __int128)t[i] + (Pp[i] & mask); r[i] = (uint64_t)c; c >>= 64; }
 }
 
-// Montgomery multiply: r = a*b*R^-1 mod p (CIOS, n0'=1).
-static void mont_mul(fe r, const fe a, const fe b) {
+// Montgomery multiply mod `mod`: r = a*b*R^-1 mod `mod` (CIOS). n0 = -mod^-1 mod 2^64.
+// Used for both the field (mod p) and the scalar ring (mod n, for ECDSA).
+static void mont_core(fe r, const fe a, const fe b, const uint64_t mod[4], uint64_t n0) {
     uint64_t t[6] = { 0, 0, 0, 0, 0, 0 };
     for (int i = 0; i < 4; i++) {
         unsigned __int128 C = 0;
@@ -52,20 +53,21 @@ static void mont_mul(fe r, const fe a, const fe b) {
             t[j] = (uint64_t)s; C = s >> 64;
         }
         unsigned __int128 s = (unsigned __int128)t[4] + C; t[4] = (uint64_t)s; t[5] = (uint64_t)(s >> 64);
-        uint64_t m = t[0];                              // * n0' (=1)
-        C = (unsigned __int128)t[0] + (unsigned __int128)m * Pp[0]; C >>= 64;   // low limb cancels
+        uint64_t m = t[0] * n0;
+        C = (unsigned __int128)t[0] + (unsigned __int128)m * mod[0]; C >>= 64;   // low limb cancels
         for (int j = 1; j < 4; j++) {
-            unsigned __int128 s2 = (unsigned __int128)t[j] + (unsigned __int128)m * Pp[j] + C;
+            unsigned __int128 s2 = (unsigned __int128)t[j] + (unsigned __int128)m * mod[j] + C;
             t[j-1] = (uint64_t)s2; C = s2 >> 64;
         }
         unsigned __int128 s3 = (unsigned __int128)t[4] + C; t[3] = (uint64_t)s3; C = s3 >> 64;
         t[4] = t[5] + (uint64_t)C;
     }
     uint64_t s[4]; unsigned __int128 brw = 0;
-    for (int i = 0; i < 4; i++) { unsigned __int128 d = (unsigned __int128)t[i] - Pp[i] - brw; s[i] = (uint64_t)d; brw = (uint64_t)((d >> 64) & 1); }
+    for (int i = 0; i < 4; i++) { unsigned __int128 d = (unsigned __int128)t[i] - mod[i] - brw; s[i] = (uint64_t)d; brw = (uint64_t)((d >> 64) & 1); }
     uint64_t mask = 0 - (t[4] | (brw ^ 1));
     for (int i = 0; i < 4; i++) r[i] = (s[i] & mask) | (t[i] & ~mask);
 }
+static void mont_mul(fe r, const fe a, const fe b) { mont_core(r, a, b, Pp, 1); }
 
 static void fe_sqr(fe r, const fe a)      { mont_mul(r, a, a); }
 static void fe_to_mont(fe r, const fe a)  { mont_mul(r, a, FE_R2); }         // a -> a*R
@@ -82,6 +84,43 @@ static void fe_inv(fe r, const fe a) {
         if ((E[i >> 6] >> (i & 63)) & 1) mont_mul(result, result, a);
     }
     fe_copy(r, result);
+}
+
+// ---- scalar arithmetic mod n (the P-256 group order), for ECDSA -------------------------
+static const uint64_t Nn[4]   = { 0xf3b9cac2fc632551ULL, 0xbce6faada7179e84ULL,
+                                  0xffffffffffffffffULL, 0xffffffff00000000ULL };
+static const uint64_t N0      = 0xccd1c8aaee00bc4fULL;                 // -n^-1 mod 2^64
+static const fe        FE_R2N = { 0x83244c95be79eea2ULL, 0x4699799c49bd6fa6ULL,
+                                  0x2845b2392b6bec59ULL, 0x66e12d94f3d95620ULL };   // R^2 mod n
+
+static void montn_mul(fe r, const fe a, const fe b) { mont_core(r, a, b, Nn, N0); }
+static void fen_to_mont(fe r, const fe a)   { montn_mul(r, a, FE_R2N); }
+static void fen_from_mont(fe r, const fe a) { fe o = {1,0,0,0}; montn_mul(r, a, o); }
+static void fen_one_mont(fe r)              { fe o = {1,0,0,0}; fen_to_mont(r, o); }
+
+// r = a^-1 mod n  (Fermat: a^(n-2)), Montgomery form.
+static void fen_inv(fe r, const fe a) {
+    static const uint64_t E[4] = { 0xf3b9cac2fc63254fULL, 0xbce6faada7179e84ULL,
+                                   0xffffffffffffffffULL, 0xffffffff00000000ULL };   // n - 2
+    fe result; fen_one_mont(result);
+    for (int i = 255; i >= 0; i--) {
+        montn_mul(result, result, result);
+        if ((E[i >> 6] >> (i & 63)) & 1) montn_mul(result, result, a);
+    }
+    fe_copy(r, result);
+}
+
+// Reduce a value < 2n mod n (one conditional subtraction).
+static void reduce_n(fe r) {
+    uint64_t t[4]; unsigned __int128 brw = 0;
+    for (int i = 0; i < 4; i++) { unsigned __int128 d = (unsigned __int128)r[i] - Nn[i] - brw; t[i] = (uint64_t)d; brw = (uint64_t)((d >> 64) & 1); }
+    uint64_t mask = 0 - (brw ^ 1);            // take r-n iff r >= n (no borrow)
+    for (int i = 0; i < 4; i++) r[i] = (t[i] & mask) | (r[i] & ~mask);
+}
+static int fe_lt_n(const fe a) {              // 1 if a < n
+    unsigned __int128 brw = 0;
+    for (int i = 0; i < 4; i++) { unsigned __int128 d = (unsigned __int128)a[i] - Nn[i] - brw; brw = (uint64_t)((d >> 64) & 1); }
+    return (int)brw;
 }
 
 // ---- points in Jacobian coordinates (X:Y:Z), field elements in Montgomery form ----------
@@ -200,6 +239,37 @@ int p256_point_scalar(const uint8_t k[32], const uint8_t px[32], const uint8_t p
     return jac_to_affine(x, y, &R);
 }
 
+// ECDSA-P256 verify (FIPS 186): return 0 if signature (r,s) over `hash` is valid under the
+// public key Q = (Qx, Qy), -1 otherwise. All inputs are 32-byte big-endian.
+int p256_ecdsa_verify(const uint8_t Qx[32], const uint8_t Qy[32], const uint8_t hash[32],
+                      const uint8_t r_be[32], const uint8_t s_be[32]) {
+    fe r, s, e;
+    be_to_fe(r, r_be); be_to_fe(s, s_be); be_to_fe(e, hash);
+    if (fe_is_zero(r) || fe_is_zero(s) || !fe_lt_n(r) || !fe_lt_n(s)) return -1;  // r,s in [1,n-1]
+    reduce_n(e);                                        // e mod n
+
+    fe sm, wm, em, rm, u1m, u2m, u1, u2;
+    fen_to_mont(sm, s); fen_inv(wm, sm);                // w = s^-1 (Montgomery)
+    fen_to_mont(em, e); montn_mul(u1m, em, wm); fen_from_mont(u1, u1m);   // u1 = e*w mod n
+    fen_to_mont(rm, r); montn_mul(u2m, rm, wm); fen_from_mont(u2, u2m);   // u2 = r*w mod n
+
+    uint8_t u1b[32], u2b[32];
+    fe_to_be(u1b, u1); fe_to_be(u2b, u2);
+
+    jac G, Q, R1, R2, RR;                               // R = u1*G + u2*Q
+    load_affine(&G, GX, GY);
+    load_affine(&Q, Qx, Qy);
+    jac_scalar(&R1, u1b, &G);
+    jac_scalar(&R2, u2b, &Q);
+    jac_add(&RR, &R1, &R2);
+    if (jac_is_id(&RR)) return -1;
+
+    uint8_t rx[32], ry[32];
+    jac_to_affine(rx, ry, &RR);
+    fe v; be_to_fe(v, rx); reduce_n(v);                 // v = R.x mod n
+    return fe_eq(v, r) ? 0 : -1;                        // valid iff v == r
+}
+
 // ---- known-answer self-test ----------------------------------------------------------
 static int hv(char c) {
     if (c >= '0' && c <= '9') return c - '0';
@@ -234,6 +304,23 @@ int p256_selftest(void) {
         "7d1e5c3a9f00b241668899aabbccddeeff0011223344556677889900aabbccdd",
         "c0992047b0ac48a44e2cc31fd92d4e9985204d1400ca7e88c9f97172ae635c26",
         "6841657fdaeaa4c2c843870953d5dd2882cd9e11145977072e4a17fea44c779d");
+
+    // ECDSA-P256 verify: a valid signature must be accepted and a tampered one rejected.
+    {
+        uint8_t Qx[32], Qy[32], h[32], r[32], s[32];
+        unhex32(Qx, "d45922ce962ec6af8ba6d5b61881bc82dccc0b6f44d577a2e85ce6b694423170");
+        unhex32(Qy, "8f76a8304e04e81880fc646406c204b7968973c4dcee5f26763fd90c07a2ebac");
+        unhex32(h,  "c8c7e8d7111cbea0618998f6019f82b3ae3563366f27bb55a335ee4c29afaf86");
+        unhex32(r,  "3e8f0bd38f99b4e4c37a0bc3886906db56e3c47c2acf2d54178958b192f056ba");
+        unhex32(s,  "3334a07de3e40368cddae8af07245ea7704c1236d5ce84fce0f5e91e93ddc23d");
+        int good = (p256_ecdsa_verify(Qx, Qy, h, r, s) == 0);
+        h[0] ^= 0x01;                                   // tamper the hash
+        int bad = (p256_ecdsa_verify(Qx, Qy, h, r, s) == -1);
+        total++;
+        if (good && bad) { pass++; printf("p256: ECDSA-P256 verify PASS (valid accepted, tampered rejected)\n"); }
+        else               printf("p256: ECDSA-P256 verify FAIL (good=%d bad=%d)\n", good, bad);
+    }
+
     printf("p256: self-test %d/%d passed\n", pass, total);
     return (pass == total) ? 0 : -1;
 }

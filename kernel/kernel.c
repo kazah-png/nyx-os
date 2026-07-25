@@ -228,7 +228,7 @@ static const command_t commands[] = {
     {"tlsrectest",cmd_tlsrectest,"TLS record + Finished self-test (GCM records, verify_data)", false},
     {"csprngtest",cmd_csprngtest,"CSPRNG self-test — HMAC_DRBG (NIST) + hardware entropy", false},
     {"dertest",   cmd_dertest,   "DER/ASN.1 reader self-test (X.509 pubkey extraction)", false},
-    {"p256test",  cmd_p256test,  "NIST P-256 arithmetic self-test (base-point multiples)", false},
+    {"p256test",  cmd_p256test,  "NIST P-256 self-test (point multiples + ECDSA verify)", false},
     {"setip",     cmd_setip,     "Set static IP: setip <ip> <mask> <gw>", false},
     {"mount",     cmd_mount,     "Mount EXT2: mount [drive] [part_lba]", false},
     {"ext2ls",    cmd_mount,     "Alias for mount", false},
