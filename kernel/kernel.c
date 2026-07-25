@@ -19,6 +19,7 @@
 #include "der.h"
 #include "p256.h"
 #include "rsa.h"
+#include "sha512.h"
 #include "smp.h"
 #include "initramfs.h"
 #include "bootsplash.h"
@@ -138,6 +139,7 @@ static void cmd_csprngtest(int argc, char** argv);
 static void cmd_dertest(int argc, char** argv);
 static void cmd_p256test(int argc, char** argv);
 static void cmd_rsatest(int argc, char** argv);
+static void cmd_sha512test(int argc, char** argv);
 static void cmd_setip(int argc, char** argv);
 static void cmd_mount(int argc, char** argv);
 static void cmd_df(int argc, char** argv);
@@ -232,6 +234,7 @@ static const command_t commands[] = {
     {"dertest",   cmd_dertest,   "DER/ASN.1 reader self-test (X.509 pubkey extraction)", false},
     {"p256test",  cmd_p256test,  "NIST P-256 self-test (point multiples + ECDSA verify)", false},
     {"rsatest",   cmd_rsatest,   "RSA PKCS#1 v1.5 SHA-256 signature-verify self-test", false},
+    {"sha512test",cmd_sha512test,"SHA-512 / SHA-384 self-test (FIPS 180-4 vectors)", false},
     {"setip",     cmd_setip,     "Set static IP: setip <ip> <mask> <gw>", false},
     {"mount",     cmd_mount,     "Mount EXT2: mount [drive] [part_lba]", false},
     {"ext2ls",    cmd_mount,     "Alias for mount", false},
@@ -1577,6 +1580,14 @@ static void cmd_rsatest(int argc, char** argv) {
     (void)argc; (void)argv;
     printf("Running RSA PKCS#1 v1.5 SHA-256 signature-verify self-test...\n");
     rsa_selftest();
+}
+
+// `sha512test` — self-test SHA-512 and SHA-384, needed for the SHA-384 signatures in real
+// certificate chains. Pure computation; no network needed.
+static void cmd_sha512test(int argc, char** argv) {
+    (void)argc; (void)argv;
+    printf("Running SHA-512 / SHA-384 self-test (FIPS 180-4)...\n");
+    sha512_selftest();
 }
 
 // Add history entry (called from shell loop)
