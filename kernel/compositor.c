@@ -1838,6 +1838,84 @@ static int desktop_icon_hit(int mx, int my) {
 static int drag_icon_idx = -1;
 static int drag_icon_ofs_x = 0, drag_icon_ofs_y = 0;
 
+// ---- per-app desktop-icon emblems (v5.9.41) ----
+// Each draws a distinct little picture inside the icon plate at (x, y) (ICON_SIZE
+// square), so every app reads at a glance — the same treatment the Games folder
+// gave its game emblems, instead of the one generic colour-square-plus-three-bars
+// every app used to share. Drawn with fb_fill_rect within roughly the inner box
+// [x+8 .. x+56] x [y+8 .. y+52].
+
+static void emblem_files(int x, int y) {              // blue folder with a page peeking out
+    fb_fill_rect(x+24, y+12, 22, 30, fb_rgb(250,250,252));     // document
+    for (int r = 0; r < 4; r++) fb_fill_rect(x+28, y+18 + r*5, 14, 2, fb_rgb(150,160,175));
+    fb_fill_rect(x+12, y+18, 10, 6, fb_rgb(95,155,225));       // folder tab
+    fb_fill_rect(x+10, y+23, 40, 25, fb_rgb(80,140,215));      // folder front
+    fb_fill_rect(x+10, y+23, 40, 3,  fb_rgb(115,170,240));     // lip highlight
+}
+
+static void emblem_terminal(int x, int y) {           // console with a green prompt
+    fb_fill_rect(x+8,  y+8,  48, 42, fb_rgb(18,22,28));        // screen
+    fb_fill_rect(x+8,  y+8,  48, 7,  fb_rgb(44,50,60));        // title bar
+    fb_fill_rect(x+12, y+10, 3,  3,  fb_rgb(230,90,80));       // window dot
+    font_draw_string(x+11, y+22, ">", fb_rgb(90,235,130), fb_rgb(18,22,28));
+    fb_fill_rect(x+23, y+30, 12, 3, fb_rgb(90,235,130));       // cursor line
+}
+
+static void emblem_editor(int x, int y) {             // a page + a pencil across it
+    fb_fill_rect(x+14, y+8, 30, 42, fb_rgb(250,249,244));      // page
+    for (int r = 0; r < 5; r++) fb_fill_rect(x+18, y+13 + r*7, 22, 2, fb_rgb(140,140,150));
+    for (int t = 0; t < 22; t++) fb_fill_rect(x+16+t, y+44-t, 3, 3, fb_rgb(240,185,50)); // pencil body
+    fb_fill_rect(x+36, y+22, 4, 4, fb_rgb(60,55,50));          // pencil tip
+    fb_fill_rect(x+16, y+42, 4, 4, fb_rgb(235,120,120));       // eraser
+}
+
+static void emblem_viewer(int x, int y) {             // framed picture: sun over a mountain
+    fb_fill_rect(x+8,  y+10, 48, 36, fb_rgb(242,242,246));     // frame
+    fb_fill_rect(x+11, y+13, 42, 30, fb_rgb(120,190,235));     // sky
+    fb_fill_rect(x+41, y+17, 8,  8,  fb_rgb(250,220,90));      // sun
+    for (int yy = 0; yy < 16; yy++)                            // mountain
+        fb_fill_rect(x+24 - yy, y+26 + yy, 2*yy + 1, 1, fb_rgb(70,150,90));
+}
+
+static void emblem_settings(int x, int y) {           // three sliders with knobs
+    uint32_t track = fb_rgb(95,100,115), knob = fb_rgb(205,210,220);
+    int kx[3] = { x+40, x+18, x+32 };
+    for (int r = 0; r < 3; r++) {
+        int yy = y+15 + r*12;
+        fb_fill_rect(x+12, yy, 40, 3, track);
+        fb_fill_rect(kx[r], yy-4, 7, 11, knob);
+    }
+}
+
+static void emblem_paint(int x, int y) {              // palette with paint dots
+    fb_fill_rect(x+13, y+15, 36, 28, fb_rgb(228,223,213));     // palette body
+    fb_fill_rect(x+40, y+31, 8, 8, fb_rgb(55,60,75));          // thumb hole (plate colour)
+    fb_fill_rect(x+18, y+20, 6, 6, fb_rgb(232,72,72));         // red
+    fb_fill_rect(x+29, y+18, 6, 6, fb_rgb(72,150,235));        // blue
+    fb_fill_rect(x+19, y+31, 6, 6, fb_rgb(242,202,62));        // yellow
+    fb_fill_rect(x+30, y+31, 6, 6, fb_rgb(82,200,112));        // green
+}
+
+static void emblem_sounds(int x, int y) {             // speaker + sound waves
+    uint32_t sp = fb_rgb(232,232,238);
+    fb_fill_rect(x+13, y+24, 8, 12, sp);                       // speaker box
+    for (int c = 0; c < 9; c++) {                              // cone
+        int h = 12 + c*2;
+        fb_fill_rect(x+21 + c, y+30 - h/2, 2, h, sp);
+    }
+    fb_fill_rect(x+38, y+26, 2, 8,  fb_rgb(120,200,255));      // waves
+    fb_fill_rect(x+43, y+22, 2, 16, fb_rgb(120,200,255));
+    fb_fill_rect(x+48, y+18, 2, 24, fb_rgb(120,200,255));
+}
+
+static void emblem_calc(int x, int y) {               // calculator: LCD + button grid
+    fb_fill_rect(x+12, y+8,  40, 44, fb_rgb(60,66,80));        // body
+    fb_fill_rect(x+16, y+12, 32, 10, fb_rgb(160,220,180));     // green LCD
+    for (int r = 0; r < 3; r++)
+        for (int c = 0; c < 3; c++)
+            fb_fill_rect(x+16 + c*11, y+26 + r*8, 8, 6, fb_rgb(205,210,220));
+}
+
 static void draw_icon_at(int i) {
     int x = desktop_icon_x[i];
     int y = desktop_icon_y[i];
@@ -1848,21 +1926,29 @@ static void draw_icon_at(int i) {
         fb_rgb(70,160,230), fb_rgb(0,220,0), fb_rgb(230,60,60),
         fb_rgb(220,220,50), fb_rgb(100,220,100), fb_rgb(220,100,220)
     };
-    // Icon background (rounded square). "Games" is drawn as a folder instead — it is
-    // a container of games, not an app, so it should read like one on the desktop.
+    // Each app gets a distinct emblem so the desktop reads at a glance. "Games" is a
+    // folder (a container of games, not an app); the rest are little pictures of what
+    // they do. Any unnamed app falls back to the old generic colour-square-plus-bars.
+    const char* nm = desktop_icon_names[i];
     uint32_t icon_bg = icon_color[i % 6];
-    if (strcmp(desktop_icon_names[i], "Games") == 0) {
+    if      (strcmp(nm, "Games")    == 0) {
         uint32_t body = fb_rgb(235,190,70), back = fb_rgb(200,150,40);
         fb_fill_rect(x+12, y+16, 22, 8, back);                       // tab
         fb_fill_rect(x+10, y+22, ICON_SIZE-20, ICON_SIZE-34, back);  // back panel
         fb_fill_rect(x+10, y+27, ICON_SIZE-20, ICON_SIZE-39, body);  // front flap
-    } else {
+    }
+    else if (strcmp(nm, "Files")    == 0) emblem_files(x, y);
+    else if (strcmp(nm, "Terminal") == 0) emblem_terminal(x, y);
+    else if (strcmp(nm, "Editor")   == 0) emblem_editor(x, y);
+    else if (strcmp(nm, "Viewer")   == 0) emblem_viewer(x, y);
+    else if (strcmp(nm, "Settings") == 0) emblem_settings(x, y);
+    else if (strcmp(nm, "Paint")    == 0) emblem_paint(x, y);
+    else if (strcmp(nm, "Sounds")   == 0) emblem_sounds(x, y);
+    else if (strcmp(nm, "Calc")     == 0) emblem_calc(x, y);
+    else {
         fb_fill_rect(x+8, y+6, ICON_SIZE-16, ICON_SIZE-16, icon_bg);
-        // Subtle inner highlight
-        uint32_t hi = fb_rgb(255,255,255);
-        fb_fill_rect(x+12, y+10, ICON_SIZE-24, 2, hi);
-        // Content lines inside icon
-        fb_fill_rect(x+16, y+18, ICON_SIZE-32, 3, fb_rgb(255,255,255));
+        fb_fill_rect(x+12, y+10, ICON_SIZE-24, 2, fb_rgb(255,255,255));  // highlight
+        fb_fill_rect(x+16, y+18, ICON_SIZE-32, 3, fb_rgb(255,255,255));  // content lines
         fb_fill_rect(x+16, y+26, ICON_SIZE-32, 3, fb_rgb(255,255,255));
         fb_fill_rect(x+16, y+34, ICON_SIZE-32, 3, fb_rgb(255,255,255));
     }
