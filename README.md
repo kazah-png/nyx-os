@@ -70,11 +70,11 @@ The project implements core kernel primitives, a custom network stack (RTL8139 N
 <table>
 <tr>
 <td width="50%" valign="top">
-<img src="media/startup.gif" alt="NyxOS login and desktop" width="100%"/>
+<img src="media/startup.gif?v=2" alt="NyxOS login and desktop" width="100%"/>
 <p align="center"><em>Login (crescent-moon logo) → windowed desktop → <code>nyxfetch</code></em></p>
 </td>
 <td width="50%" valign="top">
-<img src="media/terminal.gif" alt="NyxOS terminal session" width="100%"/>
+<img src="media/terminal.gif?v=2" alt="NyxOS terminal session" width="100%"/>
 <p align="center"><em>Live shell in color — <code>nyxfetch</code>, <code>ls</code> (ANSI colors), <code>ps</code></em></p>
 </td>
 </tr>
