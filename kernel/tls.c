@@ -15,6 +15,7 @@
 #include "tls_prf.h"
 #include "aes_gcm.h"
 #include "sha256.h"
+#include "csprng.h"
 
 // Diagnostic prints inside tls_https_fetch are gated on its `verbose` parameter, so the
 // `tls` command shows the full handshake while Selene fetches silently. (Only valid where
@@ -28,13 +29,6 @@ static uint8_t tls_client_random[32];   // saved from our ClientHello (for the k
 static uint8_t tls_server_random[32];   // parsed from the ServerHello
 static uint8_t tls_ts[20480];           // handshake transcript (hashed for the Finished verify_data)
 
-// Non-cryptographic PRNG for the ClientHello random. This is fine ONLY because this
-// step doesn't derive keys yet; a real handshake needs a CSPRNG (a later concern).
-static uint64_t tls_rng;
-static uint8_t tls_rand_byte(void) {
-    tls_rng = tls_rng * 6364136223846793005ULL + 1442695040888963407ULL;
-    return (uint8_t)(tls_rng >> 33);
-}
 
 static void put8(uint8_t* b, int* p, uint8_t v)   { b[(*p)++] = v; }
 static void put16(uint8_t* b, int* p, uint16_t v) { b[(*p)++] = (uint8_t)(v >> 8); b[(*p)++] = (uint8_t)v; }
@@ -54,10 +48,8 @@ static int build_client_hello(const char* host) {
     int ch_start = p;
 
     put16(b, &p, 0x0303);            // client_version TLS 1.2
-    for (int i = 0; i < 32; i++) {                                       // 32-byte random
-        tls_client_random[i] = tls_rand_byte();                          // (saved for the key schedule)
-        put8(b, &p, tls_client_random[i]);
-    }
+    csprng_bytes(tls_client_random, 32);            // 32-byte random (CSPRNG; saved for the key schedule)
+    putn(b, &p, tls_client_random, 32);
     put8(b, &p, 0);                  // session_id length 0
 
     static const uint16_t suites[] = {
@@ -273,7 +265,6 @@ int tls_https_fetch(const char* host, const char* path, int iface_idx,
     }
     TLSP("TLS: TCP connected to %s:443 — sending ClientHello...\n", host);
 
-    tls_rng = ((uint64_t)get_ticks() << 16) ^ 0x9E3779B97F4A7C15ULL ^ (uint64_t)ip;
     int chlen = build_client_hello(host);
     if (tcp_send(conn, tls_hs, chlen) < 0) { TLSP("TLS: send failed\n"); tcp_close(conn); return -1; }
 
@@ -359,7 +350,7 @@ int tls_https_fetch(const char* host, const char* path, int iface_idx,
     // ECDHE key agreement + the TLS 1.2 key schedule (v5.9.51). Only x25519 is implemented.
     if (ske_curve == 0x001D && ske_pub_len == 32) {
         uint8_t eph_priv[32], eph_pub[32], premaster[32];
-        for (int i = 0; i < 32; i++) eph_priv[i] = tls_rand_byte();   // NON-crypto RNG — see note below
+        csprng_bytes(eph_priv, 32);                  // cryptographically-strong ephemeral private key
         x25519_base(eph_pub, eph_priv);              // our ephemeral public key
         x25519(premaster, eph_priv, ske_pub);        // shared secret = the pre-master secret
 
@@ -504,7 +495,7 @@ int tls_https_fetch(const char* host, const char* path, int iface_idx,
             tls_print_text(out, pn, 480);
             printf("------------------------------------------------------------\n");
             TLSP("TLS: *** https fetch over TLS succeeded for %s ***\n", host);
-            TLSP("TLS: [note] ephemeral key still uses a NON-crypto RNG; the certificate is not verified yet.\n");
+            TLSP("TLS: [note] the ephemeral key now uses a CSPRNG; the server certificate is not verified yet.\n");
         }
         return (int)pn;
     } else if (got_ske) {

@@ -15,6 +15,7 @@
 #include "curve25519.h"
 #include "tls_prf.h"
 #include "aes_gcm.h"
+#include "csprng.h"
 #include "smp.h"
 #include "initramfs.h"
 #include "bootsplash.h"
@@ -130,6 +131,7 @@ static void cmd_prftest(int argc, char** argv);
 static void cmd_tlskeytest(int argc, char** argv);
 static void cmd_gcmtest(int argc, char** argv);
 static void cmd_tlsrectest(int argc, char** argv);
+static void cmd_csprngtest(int argc, char** argv);
 static void cmd_setip(int argc, char** argv);
 static void cmd_mount(int argc, char** argv);
 static void cmd_df(int argc, char** argv);
@@ -220,6 +222,7 @@ static const command_t commands[] = {
     {"tlskeytest",cmd_tlskeytest,"TLS 1.2 key-schedule self-test (master secret + keys)", false},
     {"gcmtest",   cmd_gcmtest,   "AES-128-GCM self-test — FIPS-197 + NIST GCM vectors", false},
     {"tlsrectest",cmd_tlsrectest,"TLS record + Finished self-test (GCM records, verify_data)", false},
+    {"csprngtest",cmd_csprngtest,"CSPRNG self-test — HMAC_DRBG (NIST) + hardware entropy", false},
     {"setip",     cmd_setip,     "Set static IP: setip <ip> <mask> <gw>", false},
     {"mount",     cmd_mount,     "Mount EXT2: mount [drive] [part_lba]", false},
     {"ext2ls",    cmd_mount,     "Alias for mount", false},
@@ -1531,6 +1534,15 @@ static void cmd_tlsrectest(int argc, char** argv) {
     (void)argc; (void)argv;
     printf("Running TLS 1.2 record + Finished known-answer test...\n");
     tls_record_selftest();
+}
+
+// `csprngtest` — self-test the CSPRNG (HMAC_DRBG-SHA256) against a NIST vector and report
+// which hardware entropy sources the CPU exposes. This is what now generates the TLS
+// ephemeral key and ClientHello random. Pure computation; no network needed.
+static void cmd_csprngtest(int argc, char** argv) {
+    (void)argc; (void)argv;
+    printf("Running CSPRNG self-test (HMAC_DRBG-SHA256, NIST known-answer)...\n");
+    csprng_selftest();
 }
 
 // Add history entry (called from shell loop)
