@@ -16,6 +16,8 @@
 #include "aes_gcm.h"
 #include "sha256.h"
 #include "csprng.h"
+#include "der.h"
+#include "p256.h"
 
 // Diagnostic prints inside tls_https_fetch are gated on its `verbose` parameter, so the
 // `tls` command shows the full handshake while Selene fetches silently. (Only valid where
@@ -28,6 +30,8 @@ static uint8_t tls_hd[16384];       // reassembled handshake message stream
 static uint8_t tls_client_random[32];   // saved from our ClientHello (for the key schedule)
 static uint8_t tls_server_random[32];   // parsed from the ServerHello
 static uint8_t tls_ts[20480];           // handshake transcript (hashed for the Finished verify_data)
+static uint8_t tls_ske_params[160];     // ServerECDHParams — the data the SKE signature covers
+static uint8_t tls_ske_sig[128];        // the SKE signature (DER ECDSA-Sig-Value)
 
 
 static void put8(uint8_t* b, int* p, uint8_t v)   { b[(*p)++] = v; }
@@ -244,6 +248,14 @@ int tls_record_selftest(void) {
     return (pass == total) ? 0 : -1;
 }
 
+// Convert a DER INTEGER value (big-endian, maybe with a 0x00 sign pad or fewer than 32 bytes)
+// into a fixed 32-byte big-endian buffer (right-aligned).
+static void der_int_to_32(uint8_t out[32], const uint8_t* v, uint32_t len) {
+    while (len > 32) { v++; len--; }
+    for (int i = 0; i < 32; i++) out[i] = 0;
+    for (uint32_t i = 0; i < len; i++) out[32 - len + i] = v[i];
+}
+
 // Full https fetch: TLS 1.2 handshake with host:443, GET <path>, decrypt the response into
 // out[cap]. Returns the decrypted response length (>= 0) or -1 on failure. `verbose` gates
 // the step-by-step diagnostics (the `tls` command sets it; Selene does not).
@@ -305,6 +317,8 @@ int tls_https_fetch(const char* host, const char* path, int iface_idx,
     uint32_t h = 0; uint16_t cipher = 0;
     int got_sh = 0, got_cert = 0, ncerts = 0; uint32_t cert0 = 0; int got_ske = 0, got_shd = 0;
     uint16_t ske_curve = 0; int ske_pub_len = 0; uint8_t ske_pub[80];   // server's ECDHE public key
+    const uint8_t* leaf_ptr = 0;                                        // leaf certificate bytes (in tls_hd)
+    uint32_t ske_params_len = 0, ske_sig_len = 0; uint16_t ske_sig_alg = 0;
     while (h + 4 <= hn) {
         uint8_t mt = tls_hd[h];
         uint32_t mlen = (uint32_t)((tls_hd[h+1] << 16) | (tls_hd[h+2] << 8) | tls_hd[h+3]);
@@ -322,7 +336,7 @@ int tls_https_fetch(const char* host, const char* path, int iface_idx,
             uint32_t cq = 3;
             while (cq + 3 <= 3 + clen && cq + 3 <= mlen) {
                 uint32_t one = (uint32_t)((m[cq] << 16) | (m[cq+1] << 8) | m[cq+2]);
-                if (ncerts == 0) cert0 = one;
+                if (ncerts == 0) { cert0 = one; leaf_ptr = m + cq + 3; }   // the leaf cert
                 ncerts++; cq += 3 + one;
             }
         } else if (mt == 12) {                      // ServerKeyExchange (ECDHE parameters)
@@ -334,6 +348,13 @@ int tls_https_fetch(const char* host, const char* path, int iface_idx,
                 if ((uint32_t)(4 + plen) <= mlen && plen <= sizeof(ske_pub)) {
                     ske_pub_len = plen;
                     memcpy(ske_pub, m + 4, plen);
+                    uint32_t pl = 4 + (uint32_t)plen;          // ServerECDHParams = the signed data
+                    if (pl <= sizeof(tls_ske_params)) { memcpy(tls_ske_params, m, pl); ske_params_len = pl; }
+                    if (pl + 4 <= mlen) {                      // SignatureAndHashAlgorithm(2) + length(2) + signature
+                        ske_sig_alg = (uint16_t)((m[pl] << 8) | m[pl+1]);
+                        uint32_t sl = (uint32_t)((m[pl+2] << 8) | m[pl+3]);
+                        if (pl + 4 + sl <= mlen && sl <= sizeof(tls_ske_sig)) { memcpy(tls_ske_sig, m + pl + 4, sl); ske_sig_len = sl; }
+                    }
                 }
             }
         }
@@ -362,6 +383,43 @@ int tls_https_fetch(const char* host, const char* path, int iface_idx,
         const uint8_t* ckey = keyblock;              const uint8_t* skey = keyblock + 16;
         const uint8_t* civ  = keyblock + 32;         const uint8_t* siv  = keyblock + 36;
         TLSP("TLS: ECDHE(x25519) — pre-master secret computed; master secret + AES-128-GCM keys derived\n");
+
+        // ---- Verify the ServerKeyExchange signature against the leaf certificate (v5.9.61) ----
+        // Proves the ECDHE parameters were signed by the private key matching the certificate's
+        // public key (ECDSA-P256). This does NOT yet verify the certificate's chain to a trusted
+        // root — a MITM presenting its own valid cert would still pass here; the trust-anchor
+        // check is the next increment.
+        if (leaf_ptr && ske_sig_len && ske_sig_alg == 0x0403) {        // 0x0403 = ecdsa + sha256
+            int checked = -2;
+            const uint8_t* Q; uint32_t Qlen;
+            if (der_x509_ec_pubkey(leaf_ptr, cert0, &Q, &Qlen) == 0 && Qlen == 65 && Q[0] == 0x04) {
+                der_t sd = { tls_ske_sig, tls_ske_sig + ske_sig_len }, sq;
+                uint8_t tg; const uint8_t* iv; uint32_t il; uint8_t rr[32], ss[32];
+                if (der_enter(&sd, 0x30, &sq) == 0 &&
+                    der_read(&sq, &tg, &iv, &il) == 0 && tg == 0x02) {
+                    der_int_to_32(rr, iv, il);
+                    if (der_read(&sq, &tg, &iv, &il) == 0 && tg == 0x02) {
+                        der_int_to_32(ss, iv, il);
+                        uint8_t e[32]; sha256_ctx_t hc; sha256_init(&hc);      // e = SHA256(cr||sr||params)
+                        sha256_update(&hc, tls_client_random, 32);
+                        sha256_update(&hc, tls_server_random, 32);
+                        sha256_update(&hc, tls_ske_params, ske_params_len);
+                        sha256_final(&hc, e);
+                        checked = p256_ecdsa_verify(Q + 1, Q + 33, e, rr, ss);
+                    }
+                }
+            }
+            if (checked == 0) {
+                TLSP("TLS: ServerKeyExchange signature VERIFIED against the leaf certificate (ECDSA-P256)\n");
+            } else if (checked == -1) {
+                TLSP("TLS: ServerKeyExchange signature INVALID — aborting the handshake (possible MITM)\n");
+                tcp_close(conn); return -1;
+            } else {
+                TLSP("TLS: ServerKeyExchange signature not checked (cert key not P-256) — proceeding unverified\n");
+            }
+        } else if (got_ske) {
+            TLSP("TLS: no ECDSA-P256 signature on the ServerKeyExchange (sig alg 0x%x) — proceeding unverified\n", ske_sig_alg);
+        }
 
         // ---- Finished exchange (v5.9.54) ------------------------------------------------
         // The transcript is every handshake-layer message, in order, with no record headers:
