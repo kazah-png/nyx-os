@@ -17,6 +17,7 @@
 #include "aes_gcm.h"
 #include "csprng.h"
 #include "der.h"
+#include "p256.h"
 #include "smp.h"
 #include "initramfs.h"
 #include "bootsplash.h"
@@ -134,6 +135,7 @@ static void cmd_gcmtest(int argc, char** argv);
 static void cmd_tlsrectest(int argc, char** argv);
 static void cmd_csprngtest(int argc, char** argv);
 static void cmd_dertest(int argc, char** argv);
+static void cmd_p256test(int argc, char** argv);
 static void cmd_setip(int argc, char** argv);
 static void cmd_mount(int argc, char** argv);
 static void cmd_df(int argc, char** argv);
@@ -226,6 +228,7 @@ static const command_t commands[] = {
     {"tlsrectest",cmd_tlsrectest,"TLS record + Finished self-test (GCM records, verify_data)", false},
     {"csprngtest",cmd_csprngtest,"CSPRNG self-test — HMAC_DRBG (NIST) + hardware entropy", false},
     {"dertest",   cmd_dertest,   "DER/ASN.1 reader self-test (X.509 pubkey extraction)", false},
+    {"p256test",  cmd_p256test,  "NIST P-256 arithmetic self-test (base-point multiples)", false},
     {"setip",     cmd_setip,     "Set static IP: setip <ip> <mask> <gw>", false},
     {"mount",     cmd_mount,     "Mount EXT2: mount [drive] [part_lba]", false},
     {"ext2ls",    cmd_mount,     "Alias for mount", false},
@@ -1555,6 +1558,14 @@ static void cmd_dertest(int argc, char** argv) {
     (void)argc; (void)argv;
     printf("Running DER/ASN.1 reader self-test (X.509 public-key extraction)...\n");
     der_selftest();
+}
+
+// `p256test` — self-test the NIST P-256 curve arithmetic against known base-point multiples.
+// This is the curve the server certificate signs with (ECDSA-P256). Pure computation.
+static void cmd_p256test(int argc, char** argv) {
+    (void)argc; (void)argv;
+    printf("Running NIST P-256 arithmetic self-test (base-point multiples)...\n");
+    p256_selftest();
 }
 
 // Add history entry (called from shell loop)
