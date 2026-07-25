@@ -13,6 +13,9 @@ typedef struct {
 
 int http_get(const char* host, uint16_t port, const char* path,
              http_response_t* resp, int iface_idx);
+// Parse a raw HTTP/1.x response (buf[0..total), NUL-terminated at buf[total]) into resp,
+// allocating a de-chunked resp->body (free via http_free). Does not take ownership of buf.
+int http_parse_response(uint8_t* buf, uint32_t total, http_response_t* resp);
 void http_free(http_response_t* resp);
 
 #endif

@@ -16,6 +16,11 @@
 #include "aes_gcm.h"
 #include "sha256.h"
 
+// Diagnostic prints inside tls_https_fetch are gated on its `verbose` parameter, so the
+// `tls` command shows the full handshake while Selene fetches silently. (Only valid where
+// a `verbose` variable is in scope — i.e. inside tls_https_fetch.)
+#define TLSP(...) do { if (verbose) printf(__VA_ARGS__); } while (0)
+
 static uint8_t tls_hs[1024];        // outbound ClientHello (record + handshake)
 static uint8_t tls_rx[16384];       // raw bytes received
 static uint8_t tls_hd[16384];       // reassembled handshake message stream
@@ -92,15 +97,6 @@ static int build_client_hello(const char* host) {
     int rec_total = p - hs_start;
     b[rec_len_at] = (uint8_t)(rec_total >> 8); b[rec_len_at + 1] = (uint8_t)rec_total;
     return p;
-}
-
-// Print a labelled byte buffer as lowercase hex (does not rely on printf field widths).
-static void tls_print_hex(const char* label, const uint8_t* b, int n) {
-    static const char hx[] = "0123456789abcdef";
-    char two[3]; two[2] = 0;
-    printf("%s", label);
-    for (int i = 0; i < n; i++) { two[0] = hx[b[i] >> 4]; two[1] = hx[b[i] & 0xf]; printf("%s", two); }
-    printf("\n");
 }
 
 // Print up to `max` bytes as text, replacing non-printables (except tab/newlines) with '.'.
@@ -256,12 +252,16 @@ int tls_record_selftest(void) {
     return (pass == total) ? 0 : -1;
 }
 
-int tls_hello(const char* host, int iface_idx) {
+// Full https fetch: TLS 1.2 handshake with host:443, GET <path>, decrypt the response into
+// out[cap]. Returns the decrypted response length (>= 0) or -1 on failure. `verbose` gates
+// the step-by-step diagnostics (the `tls` command sets it; Selene does not).
+int tls_https_fetch(const char* host, const char* path, int iface_idx,
+                    uint8_t* out, uint32_t cap, int verbose) {
     uint32_t ip = dns_resolve(host, iface_idx);
-    if (!ip) { printf("TLS: cannot resolve %s\n", host); return -1; }
+    if (!ip) { TLSP("TLS: cannot resolve %s\n", host); return -1; }
 
     int conn = tcp_connect(ip, 443, 12400);
-    if (conn < 0) { printf("TLS: connect() to %s:443 failed\n", host); return -1; }
+    if (conn < 0) { TLSP("TLS: connect() to %s:443 failed\n", host); return -1; }
 
     uint32_t dl = get_ticks() + 5000;              // drive the TCP 3-way handshake
     while ((int32_t)(get_ticks() - dl) < 0) {
@@ -269,13 +269,13 @@ int tls_hello(const char* host, int iface_idx) {
         if (tcp_state(conn) == TCP_STATE_ESTABLISHED) break;
     }
     if (tcp_state(conn) != TCP_STATE_ESTABLISHED) {
-        printf("TLS: TCP handshake to %s:443 timed out\n", host); tcp_close(conn); return -1;
+        TLSP("TLS: TCP handshake to %s:443 timed out\n", host); tcp_close(conn); return -1;
     }
-    printf("TLS: TCP connected to %s:443 — sending ClientHello...\n", host);
+    TLSP("TLS: TCP connected to %s:443 — sending ClientHello...\n", host);
 
     tls_rng = ((uint64_t)get_ticks() << 16) ^ 0x9E3779B97F4A7C15ULL ^ (uint64_t)ip;
     int chlen = build_client_hello(host);
-    if (tcp_send(conn, tls_hs, chlen) < 0) { printf("TLS: send failed\n"); tcp_close(conn); return -1; }
+    if (tcp_send(conn, tls_hs, chlen) < 0) { TLSP("TLS: send failed\n"); tcp_close(conn); return -1; }
 
     uint32_t total = 0, start = get_ticks(), last = start;   // read the server flight
     for (;;) {
@@ -288,7 +288,7 @@ int tls_hello(const char* host, int iface_idx) {
         else if ((int32_t)(now - (last + 1200)) >= 0) break;   // stream went quiet
         if ((int32_t)(now - (start + 12000)) >= 0) break;
     }
-    if (total == 0) { printf("TLS: no response from %s\n", host); tcp_close(conn); return -1; }
+    if (total == 0) { TLSP("TLS: no response from %s\n", host); tcp_close(conn); return -1; }
 
     // Walk TLS records: gather handshake bytes, catch an Alert.
     uint32_t hn = 0, o = 0; int alert = 0, alert_level = 0, alert_desc = 0;
@@ -305,7 +305,7 @@ int tls_hello(const char* host, int iface_idx) {
     }
 
     if (alert) {
-        printf("TLS: %s sent an Alert (level %d, description %d) — handshake refused\n",
+        TLSP("TLS: %s sent an Alert (level %d, description %d) — handshake refused\n",
                host, alert_level, alert_desc);
         tcp_close(conn); return -1;
     }
@@ -350,11 +350,11 @@ int tls_hello(const char* host, int iface_idx) {
         h += 4 + mlen;
     }
 
-    if (!got_sh) { printf("TLS: no ServerHello in %u bytes from %s\n", total, host); tcp_close(conn); return -1; }
-    printf("TLS: ServerHello OK — negotiated cipher suite 0x%x\n", cipher);
-    if (got_cert) printf("TLS: Certificate chain — %d cert(s), leaf %u bytes\n", ncerts, (unsigned)cert0);
-    if (got_ske)  printf("TLS: ServerKeyExchange present (ephemeral ECDHE key, curve 0x%x)\n", ske_curve);
-    if (got_shd)  printf("TLS: ServerHelloDone — handshake start complete.\n");
+    if (!got_sh) { TLSP("TLS: no ServerHello in %u bytes from %s\n", total, host); tcp_close(conn); return -1; }
+    TLSP("TLS: ServerHello OK — negotiated cipher suite 0x%x\n", cipher);
+    if (got_cert) TLSP("TLS: Certificate chain — %d cert(s), leaf %u bytes\n", ncerts, (unsigned)cert0);
+    if (got_ske)  TLSP("TLS: ServerKeyExchange present (ephemeral ECDHE key, curve 0x%x)\n", ske_curve);
+    if (got_shd)  TLSP("TLS: ServerHelloDone — handshake start complete.\n");
 
     // ECDHE key agreement + the TLS 1.2 key schedule (v5.9.51). Only x25519 is implemented.
     if (ske_curve == 0x001D && ske_pub_len == 32) {
@@ -370,13 +370,13 @@ int tls_hello(const char* host, int iface_idx) {
         tls12_prf(master, 48, "key expansion", seed, 64, keyblock, 40);   // client_key|server_key|client_iv|server_iv
         const uint8_t* ckey = keyblock;              const uint8_t* skey = keyblock + 16;
         const uint8_t* civ  = keyblock + 32;         const uint8_t* siv  = keyblock + 36;
-        printf("TLS: ECDHE(x25519) — pre-master secret computed; master secret + AES-128-GCM keys derived\n");
+        TLSP("TLS: ECDHE(x25519) — pre-master secret computed; master secret + AES-128-GCM keys derived\n");
 
         // ---- Finished exchange (v5.9.54) ------------------------------------------------
         // The transcript is every handshake-layer message, in order, with no record headers:
         // ClientHello || ServerHello..ServerHelloDone || our ClientKeyExchange (+ our Finished).
         if ((uint32_t)(chlen - 5) + hn + 37 + 16 > sizeof(tls_ts)) {
-            printf("TLS: handshake transcript too large to buffer — skipping Finished\n");
+            TLSP("TLS: handshake transcript too large to buffer — skipping Finished\n");
             tcp_close(conn); return -1;
         }
         uint32_t tn = 0;
@@ -396,17 +396,17 @@ int tls_hello(const char* host, int iface_idx) {
         uint8_t svd_exp[12];                         // the value the server's Finished must carry
         tls_verify_data(master, "server finished", tls_ts, tn, svd_exp);
 
-        uint8_t out[128]; uint32_t on = 0;           // flight 2: ClientKeyExchange + ChangeCipherSpec + Finished
-        out[on++] = 0x16; out[on++] = 0x03; out[on++] = 0x03; out[on++] = 0x00; out[on++] = 0x25;   // CKE record
-        memcpy(out + on, cke, 37); on += 37;
-        out[on++] = 0x14; out[on++] = 0x03; out[on++] = 0x03; out[on++] = 0x00; out[on++] = 0x01; out[on++] = 0x01;  // CCS
+        uint8_t f2[128]; uint32_t on = 0;            // flight 2: ClientKeyExchange + ChangeCipherSpec + Finished
+        f2[on++] = 0x16; f2[on++] = 0x03; f2[on++] = 0x03; f2[on++] = 0x00; f2[on++] = 0x25;   // CKE record
+        memcpy(f2 + on, cke, 37); on += 37;
+        f2[on++] = 0x14; f2[on++] = 0x03; f2[on++] = 0x03; f2[on++] = 0x00; f2[on++] = 0x01; f2[on++] = 0x01;  // CCS
         uint8_t sealed[64];
         int sl = tls_seal_record(ckey, civ, 0, 0x16, cfin, 16, sealed);   // GCM-seal the Finished, client seq 0
-        out[on++] = 0x16; out[on++] = 0x03; out[on++] = 0x03; out[on++] = (uint8_t)(sl >> 8); out[on++] = (uint8_t)sl;
-        memcpy(out + on, sealed, (uint32_t)sl); on += (uint32_t)sl;
+        f2[on++] = 0x16; f2[on++] = 0x03; f2[on++] = 0x03; f2[on++] = (uint8_t)(sl >> 8); f2[on++] = (uint8_t)sl;
+        memcpy(f2 + on, sealed, (uint32_t)sl); on += (uint32_t)sl;
 
-        printf("TLS: sending ClientKeyExchange + ChangeCipherSpec + encrypted Finished...\n");
-        if (tcp_send(conn, out, (int)on) < 0) { printf("TLS: flight-2 send failed\n"); tcp_close(conn); return -1; }
+        TLSP("TLS: sending ClientKeyExchange + ChangeCipherSpec + encrypted Finished...\n");
+        if (tcp_send(conn, f2, (int)on) < 0) { TLSP("TLS: flight-2 send failed\n"); tcp_close(conn); return -1; }
 
         uint32_t t2 = 0, s2 = get_ticks(), l2 = s2;  // read the server's ChangeCipherSpec + Finished
         for (;;) {
@@ -433,38 +433,41 @@ int tls_hello(const char* host, int iface_idx) {
                 int pl = tls_open_record(skey, siv, 0, 0x16, tls_rx + pp + 5, rl, fin);   // server seq 0
                 if (pl == 16 && fin[0] == 0x14) {
                     if (tls_eq(fin + 4, svd_exp, 12)) verified = 1;
-                    else printf("TLS: server Finished verify_data MISMATCH — transcript/keys disagree\n");
+                    else TLSP("TLS: server Finished verify_data MISMATCH — transcript/keys disagree\n");
                 } else if (pl < 0) {
-                    printf("TLS: could not decrypt the server Finished (bad key or tag)\n");
+                    TLSP("TLS: could not decrypt the server Finished (bad key or tag)\n");
                 }
             }
             pp += 5 + rl;
         }
         if (s_alert) {
-            printf("TLS: %s sent an Alert (description %d) after our Finished — handshake rejected\n", host, s_desc);
+            TLSP("TLS: %s sent an Alert (description %d) after our Finished — handshake rejected\n", host, s_desc);
             tcp_close(conn); return -1;
         }
         if (!verified) {
-            printf("TLS: handshake did not complete — no verified server Finished received\n");
+            TLSP("TLS: handshake did not complete — no verified server Finished received\n");
             tcp_close(conn); return -1;
         }
-        printf("TLS: *** HANDSHAKE COMPLETE — server Finished verified; secure channel established with %s ***\n", host);
+        TLSP("TLS: *** HANDSHAKE COMPLETE — server Finished verified; secure channel established with %s ***\n", host);
 
-        // ---- Encrypted https GET over the established channel (v5.9.55) -----------------
+        // ---- Encrypted https GET over the established channel ---------------------------
         // Our client Finished was record seq 0, so this GET is client seq 1; the server's
         // Finished was seq 0, so its first application-data reply is server seq 1.
-        uint8_t req[320]; uint32_t reqn = 0;
-        const char* g1 = "GET / HTTP/1.1\r\nHost: ";
-        const char* g2 = "\r\nConnection: close\r\nUser-Agent: NyxOS-Selene\r\n\r\n";
-        for (const char* s = g1; *s; s++) req[reqn++] = (uint8_t)*s;
-        for (const char* s = host; *s && reqn < sizeof(req) - 64; s++) req[reqn++] = (uint8_t)*s;
-        for (const char* s = g2; *s; s++) req[reqn++] = (uint8_t)*s;
+        uint8_t req[512]; uint32_t reqn = 0;
+        const char* r_get  = "GET ";
+        const char* r_ver  = " HTTP/1.1\r\nHost: ";
+        const char* r_tail = "\r\nConnection: close\r\nUser-Agent: NyxOS-Selene\r\n\r\n";
+        for (const char* s = r_get;  *s; s++) req[reqn++] = (uint8_t)*s;
+        for (const char* s = path;   *s && reqn < sizeof(req) - 128; s++) req[reqn++] = (uint8_t)*s;
+        for (const char* s = r_ver;  *s; s++) req[reqn++] = (uint8_t)*s;
+        for (const char* s = host;   *s && reqn < sizeof(req) - 64;  s++) req[reqn++] = (uint8_t)*s;
+        for (const char* s = r_tail; *s; s++) req[reqn++] = (uint8_t)*s;
 
-        uint8_t grec[5 + 320 + 24];                  // one application-data record (type 0x17)
+        uint8_t grec[5 + 512 + 24];                  // one application-data record (type 0x17)
         int gl = tls_seal_record(ckey, civ, 1, 0x17, req, reqn, grec + 5);   // client seq 1
         grec[0] = 0x17; grec[1] = 0x03; grec[2] = 0x03; grec[3] = (uint8_t)(gl >> 8); grec[4] = (uint8_t)gl;
-        printf("TLS: sending an encrypted \"GET /\" over the channel...\n");
-        if (tcp_send(conn, grec, 5 + gl) < 0) { printf("TLS: GET send failed\n"); tcp_close(conn); return -1; }
+        TLSP("TLS: sending an encrypted \"GET %s\" over the channel...\n", path);
+        if (tcp_send(conn, grec, 5 + gl) < 0) { TLSP("TLS: GET send failed\n"); tcp_close(conn); return -1; }
 
         uint32_t r3 = 0, s3 = get_ticks(), l3 = s3;  // read the encrypted response
         for (;;) {
@@ -479,32 +482,40 @@ int tls_hello(const char* host, int iface_idx) {
         }
         tcp_close(conn);
 
-        uint32_t pn = 0; uint64_t sseq = 1;          // decrypt each application-data record in turn
+        uint32_t pn = 0; uint64_t sseq = 1;          // decrypt each application-data record into out
         uint32_t q = 0;
         while (q + 5 <= r3) {
             uint8_t rt = tls_rx[q];
             uint16_t rl2 = (uint16_t)((tls_rx[q+3] << 8) | tls_rx[q+4]);
             if (q + 5 + rl2 > r3) break;
             if (rt == 0x17) {                        // application data
-                if (pn + rl2 > sizeof(tls_hd)) break;
-                int pl = tls_open_record(skey, siv, sseq, 0x17, tls_rx + q + 5, rl2, tls_hd + pn);
-                if (pl < 0) { printf("TLS: could not decrypt application-data record %u\n", (unsigned)sseq); break; }
+                if (pn + rl2 > cap) break;
+                int pl = tls_open_record(skey, siv, sseq, 0x17, tls_rx + q + 5, rl2, out + pn);
+                if (pl < 0) { TLSP("TLS: could not decrypt application-data record %u\n", (unsigned)sseq); break; }
                 pn += (uint32_t)pl; sseq++;
             } else if (rt == 0x15) { break; }        // encrypted close_notify alert — end of stream
             q += 5 + rl2;
         }
 
-        if (pn == 0) { printf("TLS: no application data decrypted\n"); return -1; }
-        printf("TLS: decrypted %u bytes of https response:\n", pn);
-        printf("------------------------------------------------------------\n");
-        tls_print_text(tls_hd, pn, 480);
-        printf("------------------------------------------------------------\n");
-        printf("TLS: *** https fetch over TLS succeeded for %s ***\n", host);
-        printf("TLS: [note] ephemeral key still uses a NON-crypto RNG; the certificate is not verified yet.\n");
-        return 0;
+        if (pn == 0) { TLSP("TLS: no application data decrypted\n"); return -1; }
+        if (verbose) {
+            TLSP("TLS: decrypted %u bytes of https response:\n", pn);
+            printf("------------------------------------------------------------\n");
+            tls_print_text(out, pn, 480);
+            printf("------------------------------------------------------------\n");
+            TLSP("TLS: *** https fetch over TLS succeeded for %s ***\n", host);
+            TLSP("TLS: [note] ephemeral key still uses a NON-crypto RNG; the certificate is not verified yet.\n");
+        }
+        return (int)pn;
     } else if (got_ske) {
-        printf("TLS: server chose curve 0x%x; only x25519 (0x001d) is wired up so far — no key agreement this run.\n", ske_curve);
+        TLSP("TLS: server chose curve 0x%x; only x25519 (0x001d) is wired up so far — no key agreement this run.\n", ske_curve);
     }
     tcp_close(conn);
-    return 0;
+    return -1;   // handshake reached but nothing was fetched
+}
+
+// The `tls <host>` diagnostic command: verbosely fetch host:443 "/" into a scratch buffer.
+int tls_hello(const char* host, int iface_idx) {
+    int n = tls_https_fetch(host, "/", iface_idx, tls_hd, sizeof(tls_hd), 1);
+    return (n >= 0) ? 0 : -1;
 }

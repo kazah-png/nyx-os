@@ -16,6 +16,7 @@
 #include "compositor.h"
 #include "selene_win.h"
 #include "http.h"
+#include "tls.h"
 #include "font.h"
 
 #define SEL_BAR       34        // top toolbar (back button + URL box) height
@@ -46,6 +47,7 @@ typedef struct {
     // base for resolving relative links (from the loaded URL)
     char     base_host[128];
     uint16_t base_port;
+    int      base_https;         // the loaded page's scheme (for resolving relative links)
     char     base_path[256];
     // Back history (stack of URLs left behind)
     char hist[SEL_HIST][256];
@@ -121,24 +123,26 @@ static int ci_starts(const uint8_t* p, uint32_t len, const char* lit) {
 static void selene_resolve(selene_ctx_t* s, const char* href, char* out) {
     while (*href == ' ') href++;
     out[0] = '\0';
+    const char* scheme = s->base_https ? "https" : "http";
     if (strncmp(href, "http://", 7) == 0)  { strncpy(out, href, 191); out[191] = '\0'; return; }
-    if (strncmp(href, "https://", 8) == 0) { snprintf(out, 192, "http://%s", href + 8); return; }
+    if (strncmp(href, "https://", 8) == 0) { strncpy(out, href, 191); out[191] = '\0'; return; }   // keep https — Selene speaks TLS now
     if (href[0] == '#' || href[0] == '\0') return;
     if (strncmp(href, "mailto:", 7) == 0 || strncmp(href, "javascript:", 11) == 0) return;
-    if (href[0] == '/' && href[1] == '/')  { snprintf(out, 192, "http:%s", href); return; }
+    if (href[0] == '/' && href[1] == '/')  { snprintf(out, 192, "%s:%s", scheme, href); return; }
 
     char hostport[160];
-    if (s->base_port != 80) snprintf(hostport, sizeof(hostport), "%s:%u", s->base_host, s->base_port);
-    else                    snprintf(hostport, sizeof(hostport), "%s", s->base_host);
+    uint16_t defport = s->base_https ? 443 : 80;
+    if (s->base_port != defport) snprintf(hostport, sizeof(hostport), "%s:%u", s->base_host, s->base_port);
+    else                         snprintf(hostport, sizeof(hostport), "%s", s->base_host);
 
-    if (href[0] == '/') { snprintf(out, 192, "http://%s%s", hostport, href); return; }
+    if (href[0] == '/') { snprintf(out, 192, "%s://%s%s", scheme, hostport, href); return; }
 
     // relative: keep the base path's directory (everything up to the last '/')
     char dir[200]; int last = -1;
     for (int k = 0; s->base_path[k] && k < 198; k++) if (s->base_path[k] == '/') last = k;
     if (last < 0) { dir[0] = '/'; dir[1] = '\0'; }
     else { int dl = last + 1; __builtin_memcpy(dir, s->base_path, dl); dir[dl] = '\0'; }
-    snprintf(out, 192, "http://%s%s%s", hostport, dir, href);
+    snprintf(out, 192, "%s://%s%s%s", scheme, hostport, dir, href);
 }
 
 // ---- word-wrap a stripped-text buffer into ctx->lines, carrying per-char link ids ----
@@ -332,17 +336,18 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
 }
 
 // Parse http[://]host[:port][/path] into host/port/path (same shape as `httpget`).
-static void parse_url(const char* url, char* host, uint16_t* port, char* path) {
+static void parse_url(const char* url, char* host, uint16_t* port, char* path, int* is_https) {
     const char* p = url;
     while (*p == ' ') p++;
+    *is_https = 0;
     if (strncmp(p, "http://", 7) == 0) p += 7;
-    else if (strncmp(p, "https://", 8) == 0) p += 8;   // no TLS; try plain :80 anyway
+    else if (strncmp(p, "https://", 8) == 0) { p += 8; *is_https = 1; }
     const char* hs = p;
     while (*p && *p != ':' && *p != '/') p++;
     int hl = (int)(p - hs); if (hl > 127) hl = 127;
     __builtin_memcpy(host, hs, hl); host[hl] = '\0';
-    *port = 80;
-    if (*p == ':') { p++; uint16_t v = 0; while (*p >= '0' && *p <= '9') { v = v*10 + (*p - '0'); p++; } *port = v ? v : 80; }
+    *port = *is_https ? 443 : 80;
+    if (*p == ':') { p++; uint16_t v = 0; while (*p >= '0' && *p <= '9') { v = v*10 + (*p - '0'); p++; } *port = v ? v : *port; }
     if (*p == '/') { strncpy(path, p, 255); path[255] = '\0'; }
     else { path[0] = '/'; path[1] = '\0'; }
 }
@@ -364,20 +369,33 @@ static void selene_load(selene_ctx_t* s) {
         compositor_redraw_now();
         dhcp_request(iface);
     }
-    char host[128] = {0}, path[256] = {0}; uint16_t port = 80;
-    parse_url(s->url, host, &port, path);
+    char host[128] = {0}, path[256] = {0}; uint16_t port = 80; int is_https = 0;
+    parse_url(s->url, host, &port, path, &is_https);
     if (!host[0]) { strncpy(s->status, "Enter a URL, e.g. example.com", 95); return; }
     // record the base for resolving this page's relative links
     strncpy(s->base_host, host, sizeof(s->base_host)-1); s->base_host[sizeof(s->base_host)-1] = '\0';
     s->base_port = port;
+    s->base_https = is_https;
     strncpy(s->base_path, path, sizeof(s->base_path)-1); s->base_path[sizeof(s->base_path)-1] = '\0';
-    snprintf(s->status, sizeof(s->status), "Loading %s ...", host);
+    snprintf(s->status, sizeof(s->status), "Loading %s%s ...", is_https ? "https://" : "", host);
     compositor_redraw_now();
 
     http_response_t resp;
-    if (http_get(host, port, path, &resp, iface) < 0) {
-        snprintf(s->status, sizeof(s->status), "Could not load %s", host);
-        return;
+    if (is_https) {
+        // Secure fetch: a full TLS 1.2 handshake + encrypted GET, then parsed like http_get.
+        uint8_t* raw = (uint8_t*)kmalloc(HTTP_MAX_RESPONSE);
+        if (!raw) { strncpy(s->status, "Out of memory", 95); return; }
+        int rn = tls_https_fetch(host, path, iface, raw, HTTP_MAX_RESPONSE - 1, 0);
+        if (rn < 0) { kfree(raw); snprintf(s->status, sizeof(s->status), "Could not load %s (TLS failed)", host); return; }
+        raw[rn] = '\0';
+        int pr = http_parse_response(raw, (uint32_t)rn, &resp);
+        kfree(raw);
+        if (pr < 0) { snprintf(s->status, sizeof(s->status), "Bad https response from %s", host); return; }
+    } else {
+        if (http_get(host, port, path, &resp, iface) < 0) {
+            snprintf(s->status, sizeof(s->status), "Could not load %s", host);
+            return;
+        }
     }
     render_html(s, resp.body, resp.body_len);
     strncpy(s->cur_url, s->url, sizeof(s->cur_url)-1); s->cur_url[sizeof(s->cur_url)-1] = '\0';

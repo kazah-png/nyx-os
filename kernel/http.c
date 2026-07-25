@@ -23,6 +23,103 @@ static int http_body_complete(const uint8_t* buf, uint32_t total) {
     return (total - header_len) >= content_length;
 }
 
+// Parse a raw HTTP/1.x response held in buf[0..total) (NUL-terminated at buf[total]) into
+// resp: status code/text plus a heap-allocated, de-chunked body. Does NOT free buf; the
+// caller owns it. Returns 0 on success (body possibly NULL/0), -1 on a malformed response.
+int http_parse_response(uint8_t* buf, uint32_t total, http_response_t* resp)
+{
+    // Parse status line: "HTTP/1.1 200 OK\r\n"
+    char* line_end = strstr((char*)buf, "\r\n");
+    if (!line_end) return -1;
+
+    const char* status = (const char*)buf;
+    while (*status && *status != ' ') status++;
+    if (*status) status++;
+    resp->status_code = atoi(status);
+
+    // Copy status text (e.g. "OK")
+    resp->status_text[0] = '\0';
+    const char* st = status;
+    while (*st && *st != '\r' && *st != '\n') st++;
+    while (*status && *status != ' ' && status < st) status++;
+    if (*status == ' ') status++;
+    int st_len = (int)(st - status);
+    if (st_len > 63) st_len = 63;
+    if (st_len > 0) {
+        __builtin_memcpy(resp->status_text, status, st_len);
+        resp->status_text[st_len] = '\0';
+    }
+
+    // Find double CRLF separating headers from body
+    char* body_start = strstr((char*)buf, "\r\n\r\n");
+    if (!body_start) { resp->body = NULL; resp->body_len = 0; return 0; }
+    body_start += 4;
+
+    // Parse Content-Length
+    uint32_t content_length = 0;
+    char* headers_end = body_start - 4;
+    char* cl = strstr((char*)buf, "Content-Length:");
+    if (!cl || cl >= headers_end) cl = strstr((char*)buf, "Content-length:");
+    if (!cl || cl >= headers_end) cl = strstr((char*)buf, "content-length:");
+    if (cl && cl < headers_end) {
+        cl += 15; // skip "Content-Length:"
+        while (*cl == ' ') cl++;
+        content_length = 0;
+        while (*cl >= '0' && *cl <= '9') { content_length = content_length * 10 + (*cl - '0'); cl++; }
+    }
+
+    uint32_t body_avail = total - (uint32_t)(body_start - (char*)buf);
+    if (content_length > 0 && content_length < body_avail)
+        body_avail = content_length;
+
+    // Transfer-Encoding: chunked — decode the chunk framing so callers see the real body.
+    int chunked = 0;
+    char* te = strstr((char*)buf, "Transfer-Encoding:");
+    if (!te || te >= headers_end) te = strstr((char*)buf, "transfer-encoding:");
+    if (te && te < headers_end) {
+        char* teol = strstr(te, "\r\n");
+        if ((strstr(te, "chunked") && (!teol || strstr(te, "chunked") < teol)))
+            chunked = 1;
+    }
+
+    if (chunked) {
+        uint8_t* out = (uint8_t*)kmalloc(body_avail + 1);
+        if (!out) return -1;
+        uint32_t olen = 0;
+        char* p = body_start;
+        char* end = (char*)buf + total;
+        while (p < end) {
+            uint32_t sz = 0; int any = 0;
+            while (p < end) {
+                char c = *p; int d;
+                if (c >= '0' && c <= '9') d = c - '0';
+                else if (c >= 'a' && c <= 'f') d = (c - 'a') + 10;
+                else if (c >= 'A' && c <= 'F') d = (c - 'A') + 10;
+                else break;
+                sz = sz * 16 + (uint32_t)d; p++; any = 1;
+            }
+            while (p < end && *p != '\n') p++;      // skip chunk-ext + CR up to LF
+            if (p < end) p++;                        // consume LF
+            if (!any || sz == 0) break;              // 0-size chunk terminates
+            if (olen + sz > body_avail) sz = body_avail - olen;
+            for (uint32_t k = 0; k < sz && p < end; k++) out[olen++] = (uint8_t)*p++;
+            if (p < end && *p == '\r') p++;          // trailing CRLF after data
+            if (p < end && *p == '\n') p++;
+        }
+        out[olen] = '\0';
+        resp->body = out;
+        resp->body_len = olen;
+        return 0;
+    }
+
+    resp->body = (uint8_t*)kmalloc(body_avail + 1);
+    if (!resp->body) return -1;
+    __builtin_memcpy(resp->body, body_start, body_avail);
+    resp->body[body_avail] = '\0';
+    resp->body_len = body_avail;
+    return 0;
+}
+
 int http_get(const char* host, uint16_t port, const char* path,
              http_response_t* resp, int iface_idx)
 {
@@ -95,104 +192,9 @@ int http_get(const char* host, uint16_t port, const char* path,
 
     if (total == 0) { kfree(buf); return -1; }
 
-    // Parse status line: "HTTP/1.1 200 OK\r\n"
-    char* line_end = strstr((char*)buf, "\r\n");
-    if (!line_end) { kfree(buf); return -1; }
-
-    const char* status = (const char*)buf;
-    while (*status && *status != ' ') status++;
-    if (*status) status++;
-    resp->status_code = atoi(status);
-
-    // Copy status text (e.g. "OK")
-    resp->status_text[0] = '\0';
-    const char* st = status;
-    while (*st && *st != '\r' && *st != '\n') st++;
-    while (*status && *status != ' ' && status < st) status++;
-    if (*status == ' ') status++;
-    int st_len = (int)(st - status);
-    if (st_len > 63) st_len = 63;
-    if (st_len > 0) {
-        __builtin_memcpy(resp->status_text, status, st_len);
-        resp->status_text[st_len] = '\0';
-    }
-
-    // Find double CRLF separating headers from body
-    char* body_start = strstr((char*)buf, "\r\n\r\n");
-    if (!body_start) { kfree(buf); resp->body = NULL; resp->body_len = 0; return 0; }
-    body_start += 4;
-
-    // Parse Content-Length
-    uint32_t content_length = 0;
-    char* headers_end = body_start - 4;
-    char* cl = strstr((char*)buf, "Content-Length:");
-    if (!cl || cl >= headers_end) cl = strstr((char*)buf, "Content-length:");
-    if (!cl || cl >= headers_end) cl = strstr((char*)buf, "content-length:");
-    if (cl && cl < headers_end) {
-        cl += 15; // skip "Content-Length:"
-        while (*cl == ' ') cl++;
-        content_length = 0;
-        while (*cl >= '0' && *cl <= '9') {
-            content_length = content_length * 10 + (*cl - '0');
-            cl++;
-        }
-    }
-
-    uint32_t body_avail = total - (uint32_t)(body_start - (char*)buf);
-    if (content_length > 0 && content_length < body_avail)
-        body_avail = content_length;
-
-    // Transfer-Encoding: chunked — decode the chunk framing (hex-size line, data,
-    // CRLF, ... , 0) so callers see the real body, not "22f...0" chunk markers.
-    int chunked = 0;
-    char* te = strstr((char*)buf, "Transfer-Encoding:");
-    if (!te || te >= headers_end) te = strstr((char*)buf, "transfer-encoding:");
-    if (te && te < headers_end) {
-        char* teol = strstr(te, "\r\n");
-        if ((strstr(te, "chunked") && (!teol || strstr(te, "chunked") < teol)))
-            chunked = 1;
-    }
-
-    if (chunked) {
-        uint8_t* out = (uint8_t*)kmalloc(body_avail + 1);
-        if (!out) { kfree(buf); return -1; }
-        uint32_t olen = 0;
-        char* p = body_start;
-        char* end = (char*)buf + total;
-        while (p < end) {
-            uint32_t sz = 0; int any = 0;
-            while (p < end) {
-                char c = *p;
-                int d;
-                if (c >= '0' && c <= '9') d = c - '0';
-                else if (c >= 'a' && c <= 'f') d = (c - 'a') + 10;
-                else if (c >= 'A' && c <= 'F') d = (c - 'A') + 10;
-                else break;
-                sz = sz * 16 + (uint32_t)d; p++; any = 1;
-            }
-            while (p < end && *p != '\n') p++;      // skip chunk-ext + CR up to LF
-            if (p < end) p++;                        // consume LF
-            if (!any || sz == 0) break;              // 0-size chunk terminates
-            if (olen + sz > body_avail) sz = body_avail - olen;
-            for (uint32_t k = 0; k < sz && p < end; k++) out[olen++] = (uint8_t)*p++;
-            if (p < end && *p == '\r') p++;          // trailing CRLF after data
-            if (p < end && *p == '\n') p++;
-        }
-        out[olen] = '\0';
-        resp->body = out;
-        resp->body_len = olen;
-        kfree(buf);
-        return 0;
-    }
-
-    resp->body = (uint8_t*)kmalloc(body_avail + 1);
-    if (!resp->body) { kfree(buf); return -1; }
-    __builtin_memcpy(resp->body, body_start, body_avail);
-    resp->body[body_avail] = '\0';
-    resp->body_len = body_avail;
-
+    int pr = http_parse_response(buf, total, resp);
     kfree(buf);
-    return 0;
+    return pr;
 }
 
 void http_free(http_response_t* resp)
