@@ -18,6 +18,7 @@
 #include "csprng.h"
 #include "der.h"
 #include "p256.h"
+#include "p384.h"
 #include "rsa.h"
 #include "sha512.h"
 #include "smp.h"
@@ -138,6 +139,7 @@ static void cmd_tlsrectest(int argc, char** argv);
 static void cmd_csprngtest(int argc, char** argv);
 static void cmd_dertest(int argc, char** argv);
 static void cmd_p256test(int argc, char** argv);
+static void cmd_p384test(int argc, char** argv);
 static void cmd_rsatest(int argc, char** argv);
 static void cmd_sha512test(int argc, char** argv);
 static void cmd_setip(int argc, char** argv);
@@ -233,6 +235,7 @@ static const command_t commands[] = {
     {"csprngtest",cmd_csprngtest,"CSPRNG self-test — HMAC_DRBG (NIST) + hardware entropy", false},
     {"dertest",   cmd_dertest,   "DER/ASN.1 reader self-test (X.509 pubkey extraction)", false},
     {"p256test",  cmd_p256test,  "NIST P-256 self-test (point multiples + ECDSA verify)", false},
+    {"p384test",  cmd_p384test,  "NIST P-384 self-test (point multiples + ECDSA verify)", false},
     {"rsatest",   cmd_rsatest,   "RSA PKCS#1 v1.5 SHA-256 signature-verify self-test", false},
     {"sha512test",cmd_sha512test,"SHA-512 / SHA-384 self-test (FIPS 180-4 vectors)", false},
     {"setip",     cmd_setip,     "Set static IP: setip <ip> <mask> <gw>", false},
@@ -1572,6 +1575,15 @@ static void cmd_p256test(int argc, char** argv) {
     (void)argc; (void)argv;
     printf("Running NIST P-256 arithmetic self-test (base-point multiples)...\n");
     p256_selftest();
+}
+
+// `p384test` — self-test the NIST P-384 curve arithmetic against known base-point multiples
+// and an ECDSA-P384/SHA-384 signature. This is the curve the certificate chain's CA links sign
+// with (ECDSA-P384). Pure computation.
+static void cmd_p384test(int argc, char** argv) {
+    (void)argc; (void)argv;
+    printf("Running NIST P-384 arithmetic self-test (base-point multiples + ECDSA)...\n");
+    p384_selftest();
 }
 
 // `rsatest` — self-test RSA PKCS#1 v1.5 SHA-256 signature verification, needed to check the
