@@ -13,6 +13,7 @@
 #include "http.h"
 #include "tls.h"
 #include "curve25519.h"
+#include "tls_prf.h"
 #include "smp.h"
 #include "initramfs.h"
 #include "bootsplash.h"
@@ -124,6 +125,7 @@ static void cmd_tcpserve(int argc, char** argv);
 static void cmd_httpget(int argc, char** argv);
 static void cmd_tls(int argc, char** argv);
 static void cmd_x25519test(int argc, char** argv);
+static void cmd_prftest(int argc, char** argv);
 static void cmd_setip(int argc, char** argv);
 static void cmd_mount(int argc, char** argv);
 static void cmd_df(int argc, char** argv);
@@ -210,6 +212,7 @@ static const command_t commands[] = {
     {"httpget",   cmd_httpget,   "HTTP GET: httpget <url>", false},
     {"tls",       cmd_tls,       "TLS handshake test: tls <host> (https :443)", false},
     {"x25519test",cmd_x25519test,"X25519 (Curve25519) self-test — RFC 7748 vectors", false},
+    {"prftest",   cmd_prftest,   "TLS 1.2 PRF self-test — RFC 4231 + P_SHA256 vectors", false},
     {"setip",     cmd_setip,     "Set static IP: setip <ip> <mask> <gw>", false},
     {"mount",     cmd_mount,     "Mount EXT2: mount [drive] [part_lba]", false},
     {"ext2ls",    cmd_mount,     "Alias for mount", false},
@@ -1485,6 +1488,15 @@ static void cmd_x25519test(int argc, char** argv) {
     (void)argc; (void)argv;
     printf("Running X25519 (Curve25519) known-answer tests (RFC 7748)...\n");
     curve25519_selftest();
+}
+
+// `prftest` — run the HMAC-SHA256 (RFC 4231) and TLS 1.2 PRF (P_SHA256) known-answer
+// vectors. This is the key-derivation function TLS uses to turn the ECDHE secret into
+// the master secret and the AES keys. Pure computation; no network needed.
+static void cmd_prftest(int argc, char** argv) {
+    (void)argc; (void)argv;
+    printf("Running TLS 1.2 PRF known-answer tests (RFC 4231 HMAC + P_SHA256)...\n");
+    tls_prf_selftest();
 }
 
 // Add history entry (called from shell loop)
