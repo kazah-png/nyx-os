@@ -1044,7 +1044,8 @@ void launch_selene(void) {
     if (!w) return;
     w->reserved = selene_create_ctx();
     if (!w->reserved) { window_destroy(w->id); return; }
-    w->on_key = selene_win_key;
+    w->on_key   = selene_win_key;
+    w->on_click = selene_win_click;
     selene_first_load(w);      // blocks briefly while it fetches (http_get drives the net)
 }
 
