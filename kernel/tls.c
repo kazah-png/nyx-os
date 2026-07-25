@@ -11,10 +11,14 @@
 #include "tcp.h"
 #include "dns.h"
 #include "tls.h"
+#include "curve25519.h"
+#include "tls_prf.h"
 
 static uint8_t tls_hs[1024];        // outbound ClientHello (record + handshake)
 static uint8_t tls_rx[16384];       // raw bytes received
 static uint8_t tls_hd[16384];       // reassembled handshake message stream
+static uint8_t tls_client_random[32];   // saved from our ClientHello (for the key schedule)
+static uint8_t tls_server_random[32];   // parsed from the ServerHello
 
 // Non-cryptographic PRNG for the ClientHello random. This is fine ONLY because this
 // step doesn't derive keys yet; a real handshake needs a CSPRNG (a later concern).
@@ -42,7 +46,10 @@ static int build_client_hello(const char* host) {
     int ch_start = p;
 
     put16(b, &p, 0x0303);            // client_version TLS 1.2
-    for (int i = 0; i < 32; i++) put8(b, &p, tls_rand_byte());           // 32-byte random
+    for (int i = 0; i < 32; i++) {                                       // 32-byte random
+        tls_client_random[i] = tls_rand_byte();                          // (saved for the key schedule)
+        put8(b, &p, tls_client_random[i]);
+    }
     put8(b, &p, 0);                  // session_id length 0
 
     static const uint16_t suites[] = {
@@ -82,6 +89,55 @@ static int build_client_hello(const char* host) {
     int rec_total = p - hs_start;
     b[rec_len_at] = (uint8_t)(rec_total >> 8); b[rec_len_at + 1] = (uint8_t)rec_total;
     return p;
+}
+
+// Print a labelled byte buffer as lowercase hex (does not rely on printf field widths).
+static void tls_print_hex(const char* label, const uint8_t* b, int n) {
+    static const char hx[] = "0123456789abcdef";
+    char two[3]; two[2] = 0;
+    printf("%s", label);
+    for (int i = 0; i < n; i++) { two[0] = hx[b[i] >> 4]; two[1] = hx[b[i] & 0xf]; printf("%s", two); }
+    printf("\n");
+}
+
+static int tls_hexval(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return 0;
+}
+static void tls_hex(uint8_t* out, const char* h, int n) {
+    for (int i = 0; i < n; i++) out[i] = (uint8_t)((tls_hexval(h[2 * i]) << 4) | tls_hexval(h[2 * i + 1]));
+}
+
+// Known-answer test for the TLS 1.2 key schedule: it chains the (separately KAT'd) X25519
+// and PRF primitives with the EXACT labels and seed order the live handshake uses, so a
+// wrong label or a swapped client/server-random order is caught here rather than only at a
+// real server's Finished check. The pre-master secret is the RFC 7748 §6.1 X25519 shared
+// secret; the expected master secret and key block were produced by an independent PRF.
+int tls_keyschedule_selftest(void) {
+    uint8_t pm[32], cr[32], sr[32], seed[64], master[48], keyblock[40], want[48], wantk[40];
+    tls_hex(pm, "4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742", 32);
+    for (int i = 0; i < 32; i++) { cr[i] = (uint8_t)i; sr[i] = (uint8_t)(0x20 + i); }
+
+    memcpy(seed, cr, 32); memcpy(seed + 32, sr, 32);
+    tls12_prf(pm, 32, "master secret", seed, 64, master, 48);
+    tls_hex(want, "3dcd0e1fa717e41ff560509c61c4039922fb8d2a7580728ef991c0748f244b0b"
+                  "4125f429b4f71ed8b2084093e40953ae", 48);
+    int ok_m = 1; for (int i = 0; i < 48; i++) if (master[i] != want[i]) ok_m = 0;
+
+    memcpy(seed, sr, 32); memcpy(seed + 32, cr, 32);
+    tls12_prf(master, 48, "key expansion", seed, 64, keyblock, 40);
+    tls_hex(wantk, "0b98d0c76e21f26689a87b7749abe9938329f7c1e746cf68358623233e646082"
+                   "eaaa7227ebba690e", 40);
+    int ok_k = 1; for (int i = 0; i < 40; i++) if (keyblock[i] != wantk[i]) ok_k = 0;
+
+    if (ok_m) printf("tlskeys: master-secret derivation PASS (48 B, label \"master secret\")\n");
+    else      printf("tlskeys: master-secret derivation FAIL\n");
+    if (ok_k) printf("tlskeys: key expansion PASS (40 B AES-128-GCM key block, label \"key expansion\")\n");
+    else      printf("tlskeys: key expansion FAIL\n");
+    printf("tlskeys: self-test %d/2 vectors passed\n", ok_m + ok_k);
+    return (ok_m && ok_k) ? 0 : -1;
 }
 
 int tls_hello(const char* host, int iface_idx) {
@@ -142,6 +198,7 @@ int tls_hello(const char* host, int iface_idx) {
     // Parse the handshake messages.
     uint32_t h = 0; uint16_t cipher = 0;
     int got_sh = 0, got_cert = 0, ncerts = 0; uint32_t cert0 = 0; int got_ske = 0, got_shd = 0;
+    uint16_t ske_curve = 0; int ske_pub_len = 0; uint8_t ske_pub[80];   // server's ECDHE public key
     while (h + 4 <= hn) {
         uint8_t mt = tls_hd[h];
         uint32_t mlen = (uint32_t)((tls_hd[h+1] << 16) | (tls_hd[h+2] << 8) | tls_hd[h+3]);
@@ -149,6 +206,7 @@ int tls_hello(const char* host, int iface_idx) {
         uint8_t* m = tls_hd + h + 4;
         if (mt == 2 && mlen >= 38) {                // ServerHello
             got_sh = 1;
+            memcpy(tls_server_random, m + 2, 32);    // 2-byte version, then the 32-byte random
             uint32_t q = 2 + 32;                     // version + random
             uint8_t sidl = m[q]; q += 1 + sidl;      // session id
             if (q + 1 < mlen) cipher = (uint16_t)((m[q] << 8) | m[q+1]);
@@ -161,7 +219,18 @@ int tls_hello(const char* host, int iface_idx) {
                 if (ncerts == 0) cert0 = one;
                 ncerts++; cq += 3 + one;
             }
-        } else if (mt == 12) { got_ske = 1; }       // ServerKeyExchange
+        } else if (mt == 12) {                      // ServerKeyExchange (ECDHE parameters)
+            got_ske = 1;
+            // ServerECDHParams: curve_type(1). named_curve => named_curve(2) + point_len(1) + point.
+            if (mlen >= 4 && m[0] == 3) {           // 3 = named_curve
+                ske_curve = (uint16_t)((m[1] << 8) | m[2]);
+                uint8_t plen = m[3];
+                if ((uint32_t)(4 + plen) <= mlen && plen <= sizeof(ske_pub)) {
+                    ske_pub_len = plen;
+                    memcpy(ske_pub, m + 4, plen);
+                }
+            }
+        }
         else if (mt == 14) { got_shd = 1; }         // ServerHelloDone
         h += 4 + mlen;
     }
@@ -169,8 +238,34 @@ int tls_hello(const char* host, int iface_idx) {
     if (!got_sh) { printf("TLS: no ServerHello in %u bytes from %s\n", total, host); return -1; }
     printf("TLS: ServerHello OK — negotiated cipher suite 0x%x\n", cipher);
     if (got_cert) printf("TLS: Certificate chain — %d cert(s), leaf %u bytes\n", ncerts, (unsigned)cert0);
-    if (got_ske)  printf("TLS: ServerKeyExchange present (ephemeral ECDHE key)\n");
+    if (got_ske)  printf("TLS: ServerKeyExchange present (ephemeral ECDHE key, curve 0x%x)\n", ske_curve);
     if (got_shd)  printf("TLS: ServerHelloDone — handshake start complete.\n");
-    printf("TLS: [next steps: X25519 key exchange, AES-GCM, record decryption]\n");
+
+    // ECDHE key agreement + the TLS 1.2 key schedule (v5.9.51). Only x25519 is implemented.
+    if (ske_curve == 0x001D && ske_pub_len == 32) {
+        uint8_t eph_priv[32], eph_pub[32], premaster[32];
+        for (int i = 0; i < 32; i++) eph_priv[i] = tls_rand_byte();   // NON-crypto RNG — see note below
+        x25519_base(eph_pub, eph_priv);              // our ephemeral public key
+        x25519(premaster, eph_priv, ske_pub);        // shared secret = the pre-master secret
+
+        uint8_t seed[64], master[48], keyblock[40];
+        memcpy(seed, tls_client_random, 32); memcpy(seed + 32, tls_server_random, 32);
+        tls12_prf(premaster, 32, "master secret", seed, 64, master, 48);
+        memcpy(seed, tls_server_random, 32); memcpy(seed + 32, tls_client_random, 32);
+        tls12_prf(master, 48, "key expansion", seed, 64, keyblock, 40);
+
+        printf("TLS: ECDHE(x25519) — computed the 32-byte pre-master secret from the server's key\n");
+        tls_print_hex("TLS:   pre-master = ", premaster, 32);
+        tls_print_hex("TLS:   master     = ", master, 48);
+        printf("TLS: derived the AES-128-GCM key block (client_key[16] server_key[16] "
+               "client_iv[4] server_iv[4])\n");
+        tls_print_hex("TLS:   client_write_key = ", keyblock, 16);
+        tls_print_hex("TLS:   server_write_key = ", keyblock + 16, 16);
+        printf("TLS: key exchange complete — next: AES-128-GCM record protection + Finished.\n");
+        printf("TLS: [note] the ephemeral key uses a NON-crypto RNG for now; a CSPRNG is a later step.\n");
+    } else if (got_ske) {
+        printf("TLS: server chose curve 0x%x; only x25519 (0x001d) is wired up so far — "
+               "no key agreement this run.\n", ske_curve);
+    }
     return 0;
 }

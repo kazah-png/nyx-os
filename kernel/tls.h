@@ -10,4 +10,7 @@
 // actually fetch an https page come in later steps.
 int tls_hello(const char* host, int iface_idx);
 
+// Known-answer self-test for the TLS 1.2 key schedule (master secret + AES key block).
+int tls_keyschedule_selftest(void);
+
 #endif

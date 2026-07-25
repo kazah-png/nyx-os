@@ -126,6 +126,7 @@ static void cmd_httpget(int argc, char** argv);
 static void cmd_tls(int argc, char** argv);
 static void cmd_x25519test(int argc, char** argv);
 static void cmd_prftest(int argc, char** argv);
+static void cmd_tlskeytest(int argc, char** argv);
 static void cmd_setip(int argc, char** argv);
 static void cmd_mount(int argc, char** argv);
 static void cmd_df(int argc, char** argv);
@@ -213,6 +214,7 @@ static const command_t commands[] = {
     {"tls",       cmd_tls,       "TLS handshake test: tls <host> (https :443)", false},
     {"x25519test",cmd_x25519test,"X25519 (Curve25519) self-test — RFC 7748 vectors", false},
     {"prftest",   cmd_prftest,   "TLS 1.2 PRF self-test — RFC 4231 + P_SHA256 vectors", false},
+    {"tlskeytest",cmd_tlskeytest,"TLS 1.2 key-schedule self-test (master secret + keys)", false},
     {"setip",     cmd_setip,     "Set static IP: setip <ip> <mask> <gw>", false},
     {"mount",     cmd_mount,     "Mount EXT2: mount [drive] [part_lba]", false},
     {"ext2ls",    cmd_mount,     "Alias for mount", false},
@@ -1497,6 +1499,15 @@ static void cmd_prftest(int argc, char** argv) {
     (void)argc; (void)argv;
     printf("Running TLS 1.2 PRF known-answer tests (RFC 4231 HMAC + P_SHA256)...\n");
     tls_prf_selftest();
+}
+
+// `tlskeytest` — run the TLS 1.2 key-schedule known-answer test: derive the master secret
+// and the AES-128-GCM key block from a fixed pre-master secret + randoms, exactly as the
+// live handshake does. Pure computation; no network needed.
+static void cmd_tlskeytest(int argc, char** argv) {
+    (void)argc; (void)argv;
+    printf("Running TLS 1.2 key-schedule known-answer test (master secret + key block)...\n");
+    tls_keyschedule_selftest();
 }
 
 // Add history entry (called from shell loop)
