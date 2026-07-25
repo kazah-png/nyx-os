@@ -11,6 +11,7 @@
 #include "ext2.h"
 #include "dns.h"
 #include "http.h"
+#include "tls.h"
 #include "smp.h"
 #include "initramfs.h"
 #include "bootsplash.h"
@@ -120,6 +121,7 @@ static void cmd_tcpdrop(int argc, char** argv);
 static void cmd_tcploop(int argc, char** argv);
 static void cmd_tcpserve(int argc, char** argv);
 static void cmd_httpget(int argc, char** argv);
+static void cmd_tls(int argc, char** argv);
 static void cmd_setip(int argc, char** argv);
 static void cmd_mount(int argc, char** argv);
 static void cmd_df(int argc, char** argv);
@@ -204,6 +206,7 @@ static const command_t commands[] = {
     {"tcploop",   cmd_tcploop,   "In-guest TCP loopback self-test: tcploop [drop]", false},
     {"tcpserve",  cmd_tcpserve,  "Serve one TCP/HTTP connection: tcpserve [port]", false},
     {"httpget",   cmd_httpget,   "HTTP GET: httpget <url>", false},
+    {"tls",       cmd_tls,       "TLS handshake test: tls <host> (https :443)", false},
     {"setip",     cmd_setip,     "Set static IP: setip <ip> <mask> <gw>", false},
     {"mount",     cmd_mount,     "Mount EXT2: mount [drive] [part_lba]", false},
     {"ext2ls",    cmd_mount,     "Alias for mount", false},
@@ -1457,6 +1460,20 @@ static void cmd_httpget(int argc, char** argv) {
     if (resp.body && resp.body_len > 0 && resp.body[resp.body_len-1] != '\n')
         printf("\n");
     http_free(&resp);
+}
+
+// `tls <host>` — start a TLS handshake with host:443 and report what the server sends
+// back (ServerHello / Certificate / …). Step 1 of the https arc; no page fetch yet.
+static void cmd_tls(int argc, char** argv) {
+    if (argc < 2) { printf("Usage: tls <host>   (e.g. tls example.com)\n"); return; }
+    const char* host = argv[1];
+    if (strncmp(host, "https://", 8) == 0) host += 8;
+    else if (strncmp(host, "http://", 7) == 0) host += 7;
+    int iface_idx = -1;
+    for (int i = 0; i < 8; i++) {
+        if (net_interfaces[i].name[0] && strcmp(net_interfaces[i].name, "lo") != 0) { iface_idx = i; break; }
+    }
+    tls_hello(host, iface_idx);
 }
 
 // Add history entry (called from shell loop)
