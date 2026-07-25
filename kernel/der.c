@@ -67,6 +67,101 @@ int der_x509_ec_pubkey(const uint8_t* cert, uint32_t clen, const uint8_t** point
     return 0;
 }
 
+// ---- certificate-chain helpers (v5.9.65) --------------------------------------------
+
+// Enter the outer Certificate ::= SEQUENCE and return a cursor over its three elements
+// (tbsCertificate, signatureAlgorithm, signatureValue).
+static int cert_body(const uint8_t* cert, uint32_t clen, der_t* body) {
+    der_t top = { cert, cert + clen };
+    return der_enter(&top, 0x30, body);
+}
+
+int der_x509_tbs(const uint8_t* cert, uint32_t clen, const uint8_t** tbs, uint32_t* tbs_len) {
+    der_t body;
+    if (cert_body(cert, clen, &body) != 0) return -1;
+    const uint8_t* start = body.p;                          // start of the tbsCertificate TLV
+    uint8_t t; const uint8_t* v; uint32_t vl;
+    if (der_read(&body, &t, &v, &vl) != 0 || t != 0x30) return -1;
+    *tbs = start; *tbs_len = (uint32_t)((v + vl) - start);  // header + content = the signed bytes
+    return 0;
+}
+
+int der_x509_sig_alg(const uint8_t* cert, uint32_t clen, const uint8_t** oid, uint32_t* oid_len) {
+    der_t body, alg;
+    if (cert_body(cert, clen, &body) != 0) return -1;
+    if (der_skip(&body) != 0) return -1;                    // tbsCertificate
+    if (der_enter(&body, 0x30, &alg) != 0) return -1;       // signatureAlgorithm ::= SEQUENCE
+    uint8_t t; const uint8_t* v; uint32_t vl;
+    if (der_read(&alg, &t, &v, &vl) != 0 || t != 0x06) return -1;   // algorithm OID
+    *oid = v; *oid_len = vl;
+    return 0;
+}
+
+int der_x509_signature(const uint8_t* cert, uint32_t clen, const uint8_t** sig, uint32_t* sig_len) {
+    der_t body;
+    if (cert_body(cert, clen, &body) != 0) return -1;
+    if (der_skip(&body) != 0) return -1;                    // tbsCertificate
+    if (der_skip(&body) != 0) return -1;                    // signatureAlgorithm
+    uint8_t t; const uint8_t* v; uint32_t vl;
+    if (der_read(&body, &t, &v, &vl) != 0 || t != 0x03) return -1; // signatureValue BIT STRING
+    if (vl < 1 || v[0] != 0x00) return -1;                  // unused-bit count = 0
+    *sig = v + 1; *sig_len = vl - 1;
+    return 0;
+}
+
+static int oid_match(const uint8_t* v, uint32_t vl, const uint8_t* want, uint32_t wl) {
+    if (vl != wl) return 0;
+    for (uint32_t i = 0; i < vl; i++) if (v[i] != want[i]) return 0;
+    return 1;
+}
+
+int der_x509_pubkey(const uint8_t* cert, uint32_t clen, der_pubkey_t* out) {
+    static const uint8_t OID_EC[]   = { 0x2a,0x86,0x48,0xce,0x3d,0x02,0x01 };            // id-ecPublicKey
+    static const uint8_t OID_RSA[]  = { 0x2a,0x86,0x48,0x86,0xf7,0x0d,0x01,0x01,0x01 };  // rsaEncryption
+    static const uint8_t OID_P256[] = { 0x2a,0x86,0x48,0xce,0x3d,0x03,0x01,0x07 };       // prime256v1
+    static const uint8_t OID_P384[] = { 0x2b,0x81,0x04,0x00,0x22 };                      // secp384r1
+
+    out->type = -1; out->curve = DER_CURVE_OTHER;
+    out->ec_point = 0; out->ec_point_len = 0;
+    out->rsa_n = 0; out->rsa_n_len = 0; out->rsa_e = 0; out->rsa_e_len = 0;
+
+    der_t top = { cert, cert + clen }, certseq, tbs, spki, alg;
+    if (der_enter(&top, 0x30, &certseq) != 0) return -1;    // Certificate
+    if (der_enter(&certseq, 0x30, &tbs) != 0) return -1;    // tbsCertificate
+    if (tbs.p < tbs.end && *tbs.p == 0xA0) { if (der_skip(&tbs) != 0) return -1; }  // version [0]
+    for (int i = 0; i < 5; i++) if (der_skip(&tbs) != 0) return -1;   // serial..subject
+    if (der_enter(&tbs, 0x30, &spki) != 0) return -1;       // subjectPublicKeyInfo
+    if (der_enter(&spki, 0x30, &alg) != 0) return -1;       // AlgorithmIdentifier ::= SEQUENCE
+
+    uint8_t t; const uint8_t* v; uint32_t vl;
+    if (der_read(&alg, &t, &v, &vl) != 0 || t != 0x06) return -1;    // algorithm OID
+
+    if (oid_match(v, vl, OID_EC, sizeof(OID_EC))) {
+        out->type = DER_KEY_EC;
+        if (der_read(&alg, &t, &v, &vl) == 0 && t == 0x06) {         // namedCurve OID
+            if (oid_match(v, vl, OID_P256, sizeof(OID_P256))) out->curve = DER_CURVE_P256;
+            else if (oid_match(v, vl, OID_P384, sizeof(OID_P384))) out->curve = DER_CURVE_P384;
+        }
+        if (der_read(&spki, &t, &v, &vl) != 0 || t != 0x03) return -1;   // subjectPublicKey BIT STRING
+        if (vl < 2 || v[0] != 0x00) return -1;
+        out->ec_point = v + 1; out->ec_point_len = vl - 1;              // 0x04 || X || Y
+        return 0;
+    }
+    if (oid_match(v, vl, OID_RSA, sizeof(OID_RSA))) {
+        out->type = DER_KEY_RSA;
+        if (der_read(&spki, &t, &v, &vl) != 0 || t != 0x03) return -1;   // subjectPublicKey BIT STRING
+        if (vl < 1 || v[0] != 0x00) return -1;
+        der_t rsa_outer = { v + 1, v + vl }, rsaseq;                     // RSAPublicKey ::= SEQUENCE
+        if (der_enter(&rsa_outer, 0x30, &rsaseq) != 0) return -1;
+        if (der_read(&rsaseq, &t, &v, &vl) != 0 || t != 0x02) return -1; // modulus n
+        out->rsa_n = v; out->rsa_n_len = vl;
+        if (der_read(&rsaseq, &t, &v, &vl) != 0 || t != 0x02) return -1; // publicExponent e
+        out->rsa_e = v; out->rsa_e_len = vl;
+        return 0;
+    }
+    return -1;                                              // unrecognized key algorithm
+}
+
 // ---- known-answer self-test ---------------------------------------------------------
 
 static int hv(char c) {

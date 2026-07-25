@@ -21,6 +21,37 @@ int der_skip(der_t* c);
 // point (uncompressed 0x04||X||Y). Returns 0 on success, -1 if the structure doesn't match.
 int der_x509_ec_pubkey(const uint8_t* cert, uint32_t clen, const uint8_t** point, uint32_t* plen);
 
+// ---- helpers for certificate-chain verification (v5.9.65) --------------------------------
+
+// Return the raw DER bytes of the tbsCertificate — the exact bytes a certificate signature
+// covers (the full TLV, header included). Returns 0 on success, -1 on malformed input.
+int der_x509_tbs(const uint8_t* cert, uint32_t clen, const uint8_t** tbs, uint32_t* tbs_len);
+
+// Return the OID value bytes of the outer signatureAlgorithm (which scheme+hash signed the
+// certificate). Returns 0 on success, -1 otherwise.
+int der_x509_sig_alg(const uint8_t* cert, uint32_t clen, const uint8_t** oid, uint32_t* oid_len);
+
+// Return the signatureValue: the BIT STRING contents (a DER SEQUENCE{r,s} for ECDSA, or the
+// raw RSA signature). Returns 0 on success, -1 otherwise.
+int der_x509_signature(const uint8_t* cert, uint32_t clen, const uint8_t** sig, uint32_t* sig_len);
+
+// A parsed subjectPublicKeyInfo: either an EC point (with its curve) or an RSA modulus+exponent.
+#define DER_KEY_EC        0
+#define DER_KEY_RSA       1
+#define DER_CURVE_P256    0
+#define DER_CURVE_P384    1
+#define DER_CURVE_OTHER (-1)
+typedef struct {
+    int type;                                        // DER_KEY_EC or DER_KEY_RSA
+    int curve;                                       // EC only: DER_CURVE_P256 / P384 / OTHER
+    const uint8_t* ec_point; uint32_t ec_point_len;  // EC: uncompressed 0x04||X||Y
+    const uint8_t* rsa_n;    uint32_t rsa_n_len;     // RSA modulus (big-endian, DER INTEGER)
+    const uint8_t* rsa_e;    uint32_t rsa_e_len;     // RSA public exponent
+} der_pubkey_t;
+
+// Extract and classify a certificate's subjectPublicKeyInfo. Returns 0 on success, -1 otherwise.
+int der_x509_pubkey(const uint8_t* cert, uint32_t clen, der_pubkey_t* out);
+
 // Run the DER reader known-answer tests (TLV, long-form length, real-cert extraction).
 int der_selftest(void);
 

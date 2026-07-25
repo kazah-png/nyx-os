@@ -18,6 +18,7 @@
 #include "csprng.h"
 #include "der.h"
 #include "p256.h"
+#include "x509.h"
 
 // Diagnostic prints inside tls_https_fetch are gated on its `verbose` parameter, so the
 // `tls` command shows the full handshake while Selene fetches silently. (Only valid where
@@ -318,6 +319,7 @@ int tls_https_fetch(const char* host, const char* path, int iface_idx,
     int got_sh = 0, got_cert = 0, ncerts = 0; uint32_t cert0 = 0; int got_ske = 0, got_shd = 0;
     uint16_t ske_curve = 0; int ske_pub_len = 0; uint8_t ske_pub[80];   // server's ECDHE public key
     const uint8_t* leaf_ptr = 0;                                        // leaf certificate bytes (in tls_hd)
+    const uint8_t* chain_ptr[8]; uint32_t chain_len[8]; int chain_n = 0;  // the full cert chain
     uint32_t ske_params_len = 0, ske_sig_len = 0; uint16_t ske_sig_alg = 0;
     while (h + 4 <= hn) {
         uint8_t mt = tls_hd[h];
@@ -337,6 +339,9 @@ int tls_https_fetch(const char* host, const char* path, int iface_idx,
             while (cq + 3 <= 3 + clen && cq + 3 <= mlen) {
                 uint32_t one = (uint32_t)((m[cq] << 16) | (m[cq+1] << 8) | m[cq+2]);
                 if (ncerts == 0) { cert0 = one; leaf_ptr = m + cq + 3; }   // the leaf cert
+                if (chain_n < 8 && cq + 3 + one <= mlen) {                 // record the whole chain
+                    chain_ptr[chain_n] = m + cq + 3; chain_len[chain_n] = one; chain_n++;
+                }
                 ncerts++; cq += 3 + one;
             }
         } else if (mt == 12) {                      // ServerKeyExchange (ECDHE parameters)
@@ -367,6 +372,27 @@ int tls_https_fetch(const char* host, const char* path, int iface_idx,
     if (got_cert) TLSP("TLS: Certificate chain — %d cert(s), leaf %u bytes\n", ncerts, (unsigned)cert0);
     if (got_ske)  TLSP("TLS: ServerKeyExchange present (ephemeral ECDHE key, curve 0x%x)\n", ske_curve);
     if (got_shd)  TLSP("TLS: ServerHelloDone — handshake start complete.\n");
+
+    // ---- Verify the certificate chain to a pinned trust anchor (v5.9.65) ----
+    // Each certificate is verified under the next one's public key (ECDSA-P256/P384 or RSA, by its
+    // signatureAlgorithm), and the topmost must carry NyxOS's pinned root key. A broken link means
+    // tampering/MITM and aborts the handshake; a chain that merely fails to reach a pinned root is
+    // reported but allowed to proceed (NyxOS ships a single trust anchor for now, so most sites
+    // won't chain to it — the point is that a *tampered* chain is caught, and example.com's is
+    // fully anchored).
+    if (got_cert && chain_n > 0) {
+        char cmsg[96];
+        int trust = x509_verify_chain(chain_ptr, chain_len, chain_n, cmsg, sizeof(cmsg));
+        if (trust == X509_OK) {
+            TLSP("TLS: certificate chain VERIFIED — %s (%d link%s)\n",
+                 cmsg, chain_n - 1, (chain_n - 1) == 1 ? "" : "s");
+        } else if (trust == X509_FORGED) {
+            TLSP("TLS: certificate chain INVALID — %s — aborting (possible MITM)\n", cmsg);
+            tcp_close(conn); return -1;
+        } else {
+            TLSP("TLS: certificate chain: %s — proceeding without a pinned anchor\n", cmsg);
+        }
+    }
 
     // ECDHE key agreement + the TLS 1.2 key schedule (v5.9.51). Only x25519 is implemented.
     if (ske_curve == 0x001D && ske_pub_len == 32) {
