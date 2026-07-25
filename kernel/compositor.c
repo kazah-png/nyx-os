@@ -12,6 +12,7 @@
 #include "soundtest_win.h"
 #include "calc_win.h"
 #include "minesweeper_win.h"
+#include "games_win.h"
 #include "wallpaper_win.h"
 #include "rtc.h"
 #include "login.h"
@@ -992,6 +993,29 @@ void launch_pong(void) {
     w->on_tick      = pong_win_tick;
 }
 
+// Open the Minesweeper window. Extracted from do_start_menu_action's case 12 so the
+// Games folder can launch it too (one definition, two callers).
+void launch_minesweeper(void) {
+    window_t* mwin = window_create(320, 180, MS_WIN_W, MS_WIN_H,
+                                   "Minesweeper", minesweeper_win_draw);
+    if (!mwin) return;
+    mwin->reserved = minesweeper_create_ctx();
+    if (mwin->reserved) {
+        mwin->on_click = minesweeper_win_click;
+        mwin->on_key   = minesweeper_win_key;
+    }
+}
+
+// Open the "Games" desktop folder — a window listing Minesweeper, DOOM and Pong as
+// clickable emblems (games_win.c). Its click handler calls the three launchers above.
+void launch_games_folder(void) {
+    int px = ((int)fb_get_width()  - GAMES_WIN_W) / 2;              if (px < 0) px = 0;
+    int py = ((int)fb_get_height() - GAMES_WIN_H - TITLE_H) / 2;    if (py < 0) py = 0;
+    window_t* w = window_create(px, py, GAMES_WIN_W, GAMES_WIN_H, "Games", games_win_draw);
+    if (!w) return;
+    w->on_click = games_win_click;
+}
+
 static void do_start_menu_action(int idx) {
     start_menu_open = 0;
     redraw_all();
@@ -1105,17 +1129,7 @@ static void do_start_menu_action(int idx) {
             }
             break;
         case 12: // Minesweeper
-            {
-                window_t* mwin = window_create(320, 180, MS_WIN_W, MS_WIN_H,
-                                               "Minesweeper", minesweeper_win_draw);
-                if (mwin) {
-                    mwin->reserved = minesweeper_create_ctx();
-                    if (mwin->reserved) {
-                        mwin->on_click = minesweeper_win_click;
-                        mwin->on_key = minesweeper_win_key;
-                    }
-                }
-            }
+            launch_minesweeper();
             break;
         case 13: // DOOM — launch the userspace game from its desktop icon.
                  // Every other action opens an in-kernel window; DOOM is a real ring-3
@@ -1126,6 +1140,9 @@ static void do_start_menu_action(int idx) {
                  // main() injects `-iwad /mnt/doom1.wad` when launched with no args.
                  // v5.9.37: run it in a WINDOW (not fullscreen) via launch_doom_windowed.
             launch_doom_windowed();
+            break;
+        case 14: // Games folder — a desktop shelf listing Minesweeper, DOOM and Pong
+            launch_games_folder();
             break;
     }
     redraw_all();
@@ -1769,15 +1786,17 @@ static void settings_win_click(window_t* win, int mx, int my, int btn) {
     }
 }
 
-#define NUM_DESKTOP_ICONS 10
+#define NUM_DESKTOP_ICONS 9
 #define ICON_SIZE 64
 #define ICON_PAD 12
 static const char* desktop_icon_names[] = {
-    "Files", "Terminal", "Editor", "Viewer", "Settings", "Paint", "Sounds", "Calc", "Mines", "DOOM"
+    "Files", "Terminal", "Editor", "Viewer", "Settings", "Paint", "Sounds", "Calc", "Games"
 };
-// Action 13 is DOOM: unlike every other entry (which opens an in-kernel GUI window),
-// it spawns the userspace doom.elf game. See do_start_menu_action's case 13.
-static int desktop_icon_actions[] = {0, 3, 1, 2, 4, 7, 8, 11, 12, 13};
+// Action 14 is the "Games" folder: the three games (Minesweeper=12, DOOM=13, Pong)
+// used to be Mines/DOOM standalone icons here; v5.9.40 gathered them into one
+// desktop folder so Pong gets an icon "like DOOM" and the shelf stays tidy. It opens
+// an in-kernel window (launch_games_folder) whose own icons dispatch to 12/13/Pong.
+static int desktop_icon_actions[] = {0, 3, 1, 2, 4, 7, 8, 11, 14};
 static int desktop_icon_x[NUM_DESKTOP_ICONS];
 static int desktop_icon_y[NUM_DESKTOP_ICONS];
 
@@ -1829,18 +1848,24 @@ static void draw_icon_at(int i) {
         fb_rgb(70,160,230), fb_rgb(0,220,0), fb_rgb(230,60,60),
         fb_rgb(220,220,50), fb_rgb(100,220,100), fb_rgb(220,100,220)
     };
-    // Icon background (rounded square). DOOM gets a distinctive hell-red so the game
-    // stands out from the positional rainbow the other apps cycle through.
+    // Icon background (rounded square). "Games" is drawn as a folder instead — it is
+    // a container of games, not an app, so it should read like one on the desktop.
     uint32_t icon_bg = icon_color[i % 6];
-    if (strcmp(desktop_icon_names[i], "DOOM") == 0) icon_bg = fb_rgb(200,30,20);
-    fb_fill_rect(x+8, y+6, ICON_SIZE-16, ICON_SIZE-16, icon_bg);
-    // Subtle inner highlight
-    uint32_t hi = fb_rgb(255,255,255);
-    fb_fill_rect(x+12, y+10, ICON_SIZE-24, 2, hi);
-    // Content lines inside icon
-    fb_fill_rect(x+16, y+18, ICON_SIZE-32, 3, fb_rgb(255,255,255));
-    fb_fill_rect(x+16, y+26, ICON_SIZE-32, 3, fb_rgb(255,255,255));
-    fb_fill_rect(x+16, y+34, ICON_SIZE-32, 3, fb_rgb(255,255,255));
+    if (strcmp(desktop_icon_names[i], "Games") == 0) {
+        uint32_t body = fb_rgb(235,190,70), back = fb_rgb(200,150,40);
+        fb_fill_rect(x+12, y+16, 22, 8, back);                       // tab
+        fb_fill_rect(x+10, y+22, ICON_SIZE-20, ICON_SIZE-34, back);  // back panel
+        fb_fill_rect(x+10, y+27, ICON_SIZE-20, ICON_SIZE-39, body);  // front flap
+    } else {
+        fb_fill_rect(x+8, y+6, ICON_SIZE-16, ICON_SIZE-16, icon_bg);
+        // Subtle inner highlight
+        uint32_t hi = fb_rgb(255,255,255);
+        fb_fill_rect(x+12, y+10, ICON_SIZE-24, 2, hi);
+        // Content lines inside icon
+        fb_fill_rect(x+16, y+18, ICON_SIZE-32, 3, fb_rgb(255,255,255));
+        fb_fill_rect(x+16, y+26, ICON_SIZE-32, 3, fb_rgb(255,255,255));
+        fb_fill_rect(x+16, y+34, ICON_SIZE-32, 3, fb_rgb(255,255,255));
+    }
     // Label background for readability
     int tw = strlen(desktop_icon_names[i]) * 8;
     int tx = x + (ICON_SIZE - tw) / 2;
