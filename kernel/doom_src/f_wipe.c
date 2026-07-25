@@ -55,7 +55,7 @@ wipe_shittyColMajorXform
 	for(x=0;x<width;x++)
 	    dest[x*height+y] = array[y*width+x];
 
-    memcpy(array, dest, width*height*2);
+    memcpy(array, dest, (size_t)width*height*2);   // 64-bit multiply before widening to size_t
 
     Z_Free(dest);
 
