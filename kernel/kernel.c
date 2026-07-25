@@ -16,6 +16,7 @@
 #include "tls_prf.h"
 #include "aes_gcm.h"
 #include "csprng.h"
+#include "der.h"
 #include "smp.h"
 #include "initramfs.h"
 #include "bootsplash.h"
@@ -132,6 +133,7 @@ static void cmd_tlskeytest(int argc, char** argv);
 static void cmd_gcmtest(int argc, char** argv);
 static void cmd_tlsrectest(int argc, char** argv);
 static void cmd_csprngtest(int argc, char** argv);
+static void cmd_dertest(int argc, char** argv);
 static void cmd_setip(int argc, char** argv);
 static void cmd_mount(int argc, char** argv);
 static void cmd_df(int argc, char** argv);
@@ -223,6 +225,7 @@ static const command_t commands[] = {
     {"gcmtest",   cmd_gcmtest,   "AES-128-GCM self-test — FIPS-197 + NIST GCM vectors", false},
     {"tlsrectest",cmd_tlsrectest,"TLS record + Finished self-test (GCM records, verify_data)", false},
     {"csprngtest",cmd_csprngtest,"CSPRNG self-test — HMAC_DRBG (NIST) + hardware entropy", false},
+    {"dertest",   cmd_dertest,   "DER/ASN.1 reader self-test (X.509 pubkey extraction)", false},
     {"setip",     cmd_setip,     "Set static IP: setip <ip> <mask> <gw>", false},
     {"mount",     cmd_mount,     "Mount EXT2: mount [drive] [part_lba]", false},
     {"ext2ls",    cmd_mount,     "Alias for mount", false},
@@ -1543,6 +1546,15 @@ static void cmd_csprngtest(int argc, char** argv) {
     (void)argc; (void)argv;
     printf("Running CSPRNG self-test (HMAC_DRBG-SHA256, NIST known-answer)...\n");
     csprng_selftest();
+}
+
+// `dertest` — self-test the DER/ASN.1 reader, including extracting the EC public key from a
+// real X.509 certificate. This is the first step of TLS certificate verification. Pure
+// computation; no network needed.
+static void cmd_dertest(int argc, char** argv) {
+    (void)argc; (void)argv;
+    printf("Running DER/ASN.1 reader self-test (X.509 public-key extraction)...\n");
+    der_selftest();
 }
 
 // Add history entry (called from shell loop)
