@@ -13,4 +13,7 @@ int tls_hello(const char* host, int iface_idx);
 // Known-answer self-test for the TLS 1.2 key schedule (master secret + AES key block).
 int tls_keyschedule_selftest(void);
 
+// Known-answer self-test for the AES-128-GCM record layer + Finished verify_data.
+int tls_record_selftest(void);
+
 #endif

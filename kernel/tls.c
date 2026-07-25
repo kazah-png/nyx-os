@@ -13,6 +13,8 @@
 #include "tls.h"
 #include "curve25519.h"
 #include "tls_prf.h"
+#include "aes_gcm.h"
+#include "sha256.h"
 
 static uint8_t tls_hs[1024];        // outbound ClientHello (record + handshake)
 static uint8_t tls_rx[16384];       // raw bytes received
@@ -138,6 +140,107 @@ int tls_keyschedule_selftest(void) {
     else      printf("tlskeys: key expansion FAIL\n");
     printf("tlskeys: self-test %d/2 vectors passed\n", ok_m + ok_k);
     return (ok_m && ok_k) ? 0 : -1;
+}
+
+static int tls_eq(const uint8_t* a, const uint8_t* b, int n) {
+    for (int i = 0; i < n; i++) if (a[i] != b[i]) return 0;
+    return 1;
+}
+
+// ---- TLS 1.2 AES-128-GCM record protection (RFC 5288) -------------------------------
+// GCM nonce = write_IV(4) || explicit_nonce(8). AAD = seq(8) || type || version || len.
+// The on-wire fragment is explicit_nonce(8) || GCM_ciphertext || GCM_tag(16); we send the
+// 64-bit sequence number as the explicit nonce.
+
+static void tls_rec_aad(uint8_t aad[13], uint64_t seq, uint8_t type, uint16_t plen) {
+    for (int i = 0; i < 8; i++) aad[i] = (uint8_t)(seq >> (8 * (7 - i)));
+    aad[8]  = type;
+    aad[9]  = 0x03; aad[10] = 0x03;                  // TLS 1.2
+    aad[11] = (uint8_t)(plen >> 8); aad[12] = (uint8_t)plen;
+}
+
+// Seal pt into out = explicit_nonce(8) || ct || tag(16); returns the fragment length.
+static int tls_seal_record(const uint8_t key[16], const uint8_t iv4[4], uint64_t seq,
+                           uint8_t type, const uint8_t* pt, uint32_t pt_len, uint8_t* out) {
+    uint8_t nonce[12], aad[13];
+    for (int i = 0; i < 4; i++) nonce[i] = iv4[i];
+    for (int i = 0; i < 8; i++) { nonce[4 + i] = (uint8_t)(seq >> (8 * (7 - i))); out[i] = nonce[4 + i]; }
+    tls_rec_aad(aad, seq, type, (uint16_t)pt_len);
+    aes128_gcm_encrypt(key, nonce, aad, 13, pt, pt_len, out + 8, out + 8 + pt_len);
+    return (int)(8 + pt_len + 16);
+}
+
+// Open a fragment (explicit_nonce(8) || ct || tag(16)); returns pt_len, or -1 on a bad tag.
+static int tls_open_record(const uint8_t key[16], const uint8_t iv4[4], uint64_t seq,
+                           uint8_t type, const uint8_t* in, uint32_t in_len, uint8_t* pt) {
+    if (in_len < 8 + 16) return -1;
+    uint32_t ct_len = in_len - 8 - 16;
+    uint8_t nonce[12], aad[13];
+    for (int i = 0; i < 4; i++) nonce[i] = iv4[i];
+    for (int i = 0; i < 8; i++) nonce[4 + i] = in[i];            // explicit nonce read off the wire
+    tls_rec_aad(aad, seq, type, (uint16_t)ct_len);              // GCM plaintext length == ct length
+    if (aes128_gcm_decrypt(key, nonce, aad, 13, in + 8, ct_len, in + 8 + ct_len, pt) != 0) return -1;
+    return (int)ct_len;
+}
+
+// Finished.verify_data = PRF(master, label, SHA256(handshake transcript))[0..11].
+static void tls_verify_data(const uint8_t master[48], const char* label,
+                            const uint8_t* transcript, uint32_t tlen, uint8_t out[12]) {
+    uint8_t hash[32];
+    sha256_ctx_t c;
+    sha256_init(&c);
+    sha256_update(&c, transcript, tlen);
+    sha256_final(&c, hash);
+    tls12_prf(master, 48, label, hash, 32, out, 12);
+}
+
+// Known-answer test for the record layer + Finished verify_data, so the exact GCM nonce/AAD
+// framing and the transcript-hash PRF are pinned offline before the live handshake (v5.9.54)
+// relies on them. The expected fragment and verify_data were produced by independent code.
+int tls_record_selftest(void) {
+    int pass = 0, total = 0;
+
+    uint8_t key[16], iv4[4], pt[16], frag[64], want[64], out[32];
+    tls_hex(key, "000102030405060708090a0b0c0d0e0f", 16);
+    tls_hex(iv4, "10111213", 4);
+    memcpy(pt, "hello, nyxos tls", 16);                          // 16 bytes
+    tls_hex(want, "000000000000000009e3145e244c52c6bffab247c55a84bbf924abd2649283e96c0f657ac55f4bb3", 40);
+
+    int flen = tls_seal_record(key, iv4, 0, 0x17, pt, 16, frag);
+    total++;
+    if (flen == 40 && tls_eq(frag, want, 40)) { pass++; printf("tlsrec: GCM record seal PASS (exact wire bytes)\n"); }
+    else                                        printf("tlsrec: GCM record seal FAIL\n");
+
+    int olen = tls_open_record(key, iv4, 0, 0x17, frag, 40, out);
+    total++;
+    if (olen == 16 && tls_eq(out, pt, 16)) { pass++; printf("tlsrec: GCM record open PASS (plaintext recovered)\n"); }
+    else                                     printf("tlsrec: GCM record open FAIL\n");
+
+    frag[12] ^= 0x01;                                            // corrupt one ciphertext byte
+    total++;
+    if (tls_open_record(key, iv4, 0, 0x17, frag, 40, out) == -1) { pass++; printf("tlsrec: record tamper rejected PASS\n"); }
+    else                                                          printf("tlsrec: record tamper rejected FAIL\n");
+    frag[12] ^= 0x01;
+
+    uint8_t master[48], trans[32], vd[12], wc[12], ws[12];
+    tls_hex(master, "3dcd0e1fa717e41ff560509c61c4039922fb8d2a7580728ef991c0748f244b0b"
+                    "4125f429b4f71ed8b2084093e40953ae", 48);
+    for (int i = 0; i < 32; i++) trans[i] = (uint8_t)i;
+    tls_hex(wc, "82ddaf4f4cd337eecc6526d3", 12);
+    tls_hex(ws, "31337bf745fbcf3fe2e1915a", 12);
+
+    tls_verify_data(master, "client finished", trans, 32, vd);
+    total++;
+    if (tls_eq(vd, wc, 12)) { pass++; printf("tlsrec: client Finished verify_data PASS\n"); }
+    else                      printf("tlsrec: client Finished verify_data FAIL\n");
+
+    tls_verify_data(master, "server finished", trans, 32, vd);
+    total++;
+    if (tls_eq(vd, ws, 12)) { pass++; printf("tlsrec: server Finished verify_data PASS\n"); }
+    else                      printf("tlsrec: server Finished verify_data FAIL\n");
+
+    printf("tlsrec: self-test %d/%d checks passed\n", pass, total);
+    return (pass == total) ? 0 : -1;
 }
 
 int tls_hello(const char* host, int iface_idx) {

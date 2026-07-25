@@ -129,6 +129,7 @@ static void cmd_x25519test(int argc, char** argv);
 static void cmd_prftest(int argc, char** argv);
 static void cmd_tlskeytest(int argc, char** argv);
 static void cmd_gcmtest(int argc, char** argv);
+static void cmd_tlsrectest(int argc, char** argv);
 static void cmd_setip(int argc, char** argv);
 static void cmd_mount(int argc, char** argv);
 static void cmd_df(int argc, char** argv);
@@ -218,6 +219,7 @@ static const command_t commands[] = {
     {"prftest",   cmd_prftest,   "TLS 1.2 PRF self-test — RFC 4231 + P_SHA256 vectors", false},
     {"tlskeytest",cmd_tlskeytest,"TLS 1.2 key-schedule self-test (master secret + keys)", false},
     {"gcmtest",   cmd_gcmtest,   "AES-128-GCM self-test — FIPS-197 + NIST GCM vectors", false},
+    {"tlsrectest",cmd_tlsrectest,"TLS record + Finished self-test (GCM records, verify_data)", false},
     {"setip",     cmd_setip,     "Set static IP: setip <ip> <mask> <gw>", false},
     {"mount",     cmd_mount,     "Mount EXT2: mount [drive] [part_lba]", false},
     {"ext2ls",    cmd_mount,     "Alias for mount", false},
@@ -1520,6 +1522,15 @@ static void cmd_gcmtest(int argc, char** argv) {
     (void)argc; (void)argv;
     printf("Running AES-128-GCM known-answer tests (FIPS-197 + NIST GCM)...\n");
     aes_gcm_selftest();
+}
+
+// `tlsrectest` — run the TLS 1.2 record-layer known-answer test: seal/open an AES-128-GCM
+// record with the RFC 5288 nonce/AAD framing, and derive a Finished verify_data from a
+// transcript hash. The plumbing the live handshake's Finished exchange rides on.
+static void cmd_tlsrectest(int argc, char** argv) {
+    (void)argc; (void)argv;
+    printf("Running TLS 1.2 record + Finished known-answer test...\n");
+    tls_record_selftest();
 }
 
 // Add history entry (called from shell loop)
