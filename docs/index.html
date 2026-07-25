@@ -4,9 +4,9 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>NyxOS — a 64-bit operating system, written from scratch</title>
-  <meta name="description" content="NyxOS is a from-scratch x86_64 operating system in C and Assembly: preemptive multitasking, a windowed desktop, a real TCP/IP stack, and an EXT2 filesystem." />
+  <meta name="description" content="NyxOS is a from-scratch x86_64 operating system in C and Assembly: preemptive multitasking, a windowed desktop with the Selene web browser and five games, a real TCP/IP stack, and an EXT2 filesystem." />
   <meta property="og:title" content="NyxOS — a 64-bit OS from scratch" />
-  <meta property="og:description" content="Preemptive multitasking, a window compositor, a real TCP/IP stack, EXT2 — all in C and x86_64 Assembly." />
+  <meta property="og:description" content="Preemptive multitasking, a window compositor, the Selene web browser, five games, a real TCP/IP stack, EXT2 — all in C and x86_64 Assembly." />
   <meta property="og:type" content="website" />
   <link rel="icon" href="favicon.svg" type="image/svg+xml" />
   <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -56,11 +56,13 @@
         <p class="hero-sub">
           A 64-bit operating system written from scratch in <strong>C</strong> and
           <strong>x86_64 Assembly</strong> — preemptive multitasking, a windowed
-          desktop, a real TCP/IP stack, 44 syscalls, I/O multiplexing with
-          <span class="mono">poll()</span>, and an EXT2 filesystem. No libraries. Just the metal.
+          desktop with the <strong>Selene web browser</strong> and five games, a real
+          TCP/IP stack, 57 syscalls, I/O multiplexing with <span class="mono">poll()</span>,
+          and an EXT2 filesystem. No libraries. Just the metal.
         </p>
         <div class="hero-badges">
-          <span class="pill pill-accent">◆ v5.9.0-LTS</span>
+          <span class="pill pill-accent">◆ v5.9.44</span>
+          <span class="pill">LTS · v5.9.0</span>
           <span class="pill">GPL-2.0+</span>
           <span class="pill">0 build warnings</span>
         </div>
@@ -86,12 +88,12 @@
       <div class="stat"><b>x86_64</b><span>long mode · 4-level paging</span></div>
       <div class="stat"><b>C + NASM</b><span>zero external libraries</span></div>
       <div class="stat"><b>🌙 Nyx C</b><span>native language runtime</span></div>
-      <div class="stat"><b>44</b><span>syscalls</span></div>
+      <div class="stat"><b>57</b><span>syscalls</span></div>
       <div class="stat"><b>TCP/IP</b><span>DHCP · DNS · HTTP · poll()</span></div>
       <div class="stat"><b>32 windows</b><span>compositor + taskbar</span></div>
       <div class="stat"><b>EXT2</b><span>read / write, auto-mount</span></div>
-      <div class="stat"><b>TCP+UDP</b><span>sockets in userspace</span></div>
-      <div class="stat"><b>Alarm</b><span>SIGALRM + catchable faults</span></div>
+      <div class="stat"><b>🌙 Selene</b><span>web browser · real HTTP</span></div>
+      <div class="stat"><b>5 games</b><span>DOOM · Tetris · Snake · Pong · Mines</span></div>
     </section>
 
     <!-- ============ OVERVIEW ============ -->
@@ -109,7 +111,7 @@
       <div class="shot reveal">
         <div class="shot-frame">
           <div class="shot-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="shot-url">NyxOS Desktop · window compositor</span></div>
-          <img src="gui.png" alt="The NyxOS desktop: wallpaper, app icons, windows and a taskbar" loading="lazy" />
+          <img src="gui.png?v=5" alt="The NyxOS desktop: the Selene web browser on a live page, distinct app icons, wallpaper and taskbar" loading="lazy" />
         </div>
       </div>
     </section>
@@ -140,7 +142,7 @@
         <article class="card reveal">
           <div class="card-ic">◈</div>
           <h3>ELF userspace</h3>
-          <p>An ELF64 loader, an embedded initramfs, <span class="mono">fork()</span> with copy-on-write, 44 syscalls via <span class="mono">syscall/sysret</span>, a minimal libc, isolated per-process file descriptors, and the <b>🌙 Nyx C</b> language runtime for first-class userspace programming.</p>
+          <p>An ELF64 loader, an embedded initramfs, <span class="mono">fork()</span> with copy-on-write, 57 syscalls via <span class="mono">syscall/sysret</span>, a minimal libc, isolated per-process file descriptors, and the <b>🌙 Nyx C</b> language runtime for first-class userspace programming.</p>
         </article>
         <article class="card reveal">
           <div class="card-ic">❯</div>
@@ -155,17 +157,32 @@
         <article class="card reveal">
           <div class="card-ic">🗔</div>
           <h3>GUI compositor</h3>
-          <p>Up to 32 windows with z-ordering, drag &amp; resize, four workspaces, a taskbar and Start menu — plus a Terminal, File Manager, Editor, Paint and more.</p>
+          <p>Up to 32 windows with z-ordering, drag &amp; resize, four workspaces, drop shadows, a taskbar and Start menu — plus a Terminal, File Manager, Text Editor, Image Viewer, Paint, Calculator, Settings and Sound Test, each with its own hand-drawn icon.</p>
+        </article>
+        <article class="card reveal">
+          <div class="card-ic">🌙</div>
+          <h3>Selene — web browser</h3>
+          <p>NyxOS browses the <em>real</em> internet: <b>Selene</b> resolves DNS, opens a TCP connection and fetches a page over HTTP, then strips the HTML to text and word-wraps it under a URL bar. DHCP, chunked-transfer decoding and scrolling included. Named for the moon goddess.</p>
+        </article>
+        <article class="card reveal">
+          <div class="card-ic">🎮</div>
+          <h3>Games</h3>
+          <p>A desktop <b>Games</b> folder with five: the original 1993 <b>DOOM</b> (running in a window), <b>Minesweeper</b>, <b>Pong</b>, <b>Snake</b> and <b>Tetris</b> — the last three animated in-kernel by a ~30&nbsp;fps compositor game-tick.</p>
         </article>
         <article class="card reveal">
           <div class="card-ic">🖴</div>
           <h3>Filesystem</h3>
-          <p>A ramdisk VFS with an EXT2 read/write driver auto-mounted at <span class="mono">/mnt</span>, per-fd byte offsets, and persistence across reboots on a disk image.</p>
+          <p>A ramdisk VFS with an EXT2 read/write driver auto-mounted at <span class="mono">/mnt</span>, a write-through sector cache, per-fd byte offsets, and persistence across reboots on a disk image.</p>
         </article>
         <article class="card reveal">
           <div class="card-ic">♪</div>
           <h3>Multimedia</h3>
-          <p>A Bochs VBE framebuffer (1024×768×32), a Sound Blaster 16 driver (DMA + IRQ + mixer), PC-speaker tones, and a DOOM port with sound.</p>
+          <p>A Bochs VBE framebuffer (1024×768×32), a Sound Blaster 16 driver (DMA + IRQ + mixer), PC-speaker tones, and the original DOOM engine ported to run on the framebuffer.</p>
+        </article>
+        <article class="card reveal">
+          <div class="card-ic">🛡</div>
+          <h3>Security &amp; isolation</h3>
+          <p><span class="mono">NX</span> + <span class="mono">SMEP</span> + <span class="mono">SMAP</span> and W^X page permissions, per-process address spaces, a hardened syscall boundary (bounded ELF loads, validated user pointers), ring-3 fault isolation — a crash kills the process, not the kernel — with catchable signals, and PBKDF2-HMAC-SHA256 login.</p>
         </article>
       </div>
     </section>
@@ -265,6 +282,7 @@ qemu-system-x86_64 -cdrom NyxOS.iso -m 256M -no-reboot \
             <tr><td>Files</td><td><span class="mono">ls cd pwd cat touch mkdir rm cp mv head tail grep sort wc find tree write which diff hexdump</span></td></tr>
             <tr><td>Processes</td><td><span class="mono">ps mem exec spawn jobs wait kill nice renice usertest pmap free</span></td></tr>
             <tr><td>Network</td><td><span class="mono">ifconfig dhcp ping setip httpget tcptest tcpdrop tcploop tcpserve nc</span></td></tr>
+            <tr><td>Apps &amp; games</td><td><span class="mono">selene doom pong snake tetris</span> · plus a desktop icon for each &amp; a Games folder</td></tr>
             <tr><td>Filesystem</td><td><span class="mono">mount</span> · EXT2 auto-mounts at <span class="mono">/mnt</span></td></tr>
             <tr><td>Graphics &amp; sound</td><td><span class="mono">gui desktop mode fonttest beep play sb16play</span></td></tr>
           </tbody>
@@ -282,7 +300,7 @@ qemu-system-x86_64 -cdrom NyxOS.iso -m 256M -no-reboot \
 
       <div class="net">
         <div class="net-stack reveal">
-          <div class="layer l7">HTTP · DNS · nc<span>client, server, full-duplex poll()</span></div>
+          <div class="layer l7">HTTP · DNS · Selene · nc<span>web browser, client, server, full-duplex poll()</span></div>
           <div class="layer l4">TCP<span>retransmit (RTO) · listen/accept · userspace sockets</span></div>
           <div class="layer l4b">UDP · ICMP<span>datagrams · userspace sockets · echo (ping) with RTT</span></div>
           <div class="layer l3">IPv4<span>checksum · routing · loopback delivery</span></div>
@@ -292,6 +310,7 @@ qemu-system-x86_64 -cdrom NyxOS.iso -m 256M -no-reboot \
         <div class="net-notes reveal">
           <h3>Highlights</h3>
           <ul class="ticks">
+            <li><b>🌙 Selene web browser</b> — resolves DNS, connects over TCP and fetches a real page by HTTP, decodes chunked transfer encoding, and renders the HTML to scrollable text under a URL bar.</li>
             <li><b>DHCP client</b> — DISCOVER → OFFER → REQUEST → ACK, auto-configures IP, netmask &amp; gateway.</li>
             <li><b><span class="mono">ping</span> with statistics</b> — real round-trip timing, per-packet sequencing, and a min/avg/max + loss summary. NyxOS also <em>answers</em> echo requests.</li>
             <li><b>TCP retransmission</b> — each connection buffers its outstanding segment and resends it on an RTO with exponential backoff; a lost SYN or data segment recovers automatically.</li>
@@ -310,7 +329,7 @@ qemu-system-x86_64 -cdrom NyxOS.iso -m 256M -no-reboot \
       <div class="section-head reveal">
         <span class="kicker">Releases</span>
         <h2>The road so far</h2>
-        <p class="lead">Selected milestones from a from-scratch kernel to a networked desktop OS.</p>
+        <p class="lead">Every increment from a from-scratch kernel to a networked desktop OS with a web browser and five games.</p>
       </div>
       <div class="timeline">
         <div class="tl reveal"><span class="tl-v">v1.x</span><div><h3>Foundations</h3><p>Base kernel, ramdisk VFS + shell commands, and the first real networking (RTL8139, ARP/IP/UDP/ICMP).</p></div></div>
@@ -348,6 +367,46 @@ qemu-system-x86_64 -cdrom NyxOS.iso -m 256M -no-reboot \
         <div class="tl reveal accent"><span class="tl-v">v5.9.2</span><div><h3>Palette reaches the apps — focused window gets the brand colour</h3><p>The v5.9.1 <span class="mono">theme.h</span> roles rolled out to all ten app windows: <b>206 → 169</b> <span class="mono">fb_rgb()</span> literals converted, <b>61</b> named role uses. Window chrome: <span class="mono">THEME_TITLE_ACTIVE</span> = brand purple for the focused title bar, <span class="mono">THEME_TITLE_INACTIVE</span> = dark grey for the rest. Selection highlights (<span class="mono">THEME_SELECTION</span>), panel headers (<span class="mono">THEME_PANEL_HEADER</span>), and buttons (<span class="mono">THEME_BUTTON</span>) all themed. App content colours kept as data (paint swatches, Minesweeper cells, ANSI palette).</p></div></div>
         <div class="tl reveal accent"><span class="tl-v">v5.9.4</span><div><h3>Desktop icons wrap on narrow resolutions</h3><p>The icon layout was a single fixed row that ran off the screen at 640×480 (the resolution Settings offers). Now icons are laid out as a grid that re-flows on the framebuffer width. Settings' resolution change handler calls <span class="mono">init_desktop_icons()</span> so switching to a smaller mode re-flows them cleanly. At 1024×768 the layout is pixel-identical (13 columns, all nine icons in one row).</p></div></div>
         <div class="tl reveal accent"><span class="tl-v">v5.9.3</span><div><h3>Window frame joins the focus story</h3><p>The window frame now carries focus too: a focused window gets the brand accent on its top+left edge and a darker accent on bottom+right, so the border and title bar merge into one continuous coloured edge. Unfocused windows keep the neutral grey bevel for depth between stacked windows. Title text and button glyphs unified onto <span class="mono">THEME_TITLE_TEXT</span>. Traffic-light buttons untouched (close red, minimise grey, maximise green — control affordance, not branding).</p></div></div>
+        <div class="tl reveal accent"><span class="tl-v">v5.9.5</span><div><h3>No window can be born off-screen</h3><p>Every new window is clamped fully on-screen at spawn, at any resolution — no more title bars appearing past the edge.</p></div></div>
+        <div class="tl reveal accent"><span class="tl-v">v5.9.6</span><div><h3>Window geometry follows the screen</h3><p>Window sizes and positions scale to the live framebuffer instead of assuming 1024×768, so the layout holds at 640×480 too.</p></div></div>
+        <div class="tl reveal accent"><span class="tl-v">v5.9.7</span><div><h3>Window-management keyboard shortcuts</h3><p>Alt+Tab cycles focus, Alt+F4 closes, Alt+Up/Down maximise/restore — full keyboard control of windows.</p></div></div>
+        <div class="tl reveal accent"><span class="tl-v">v5.9.8</span><div><h3>Window snapping</h3><p>Alt+Left / Alt+Right tile the focused window to the left or right half of the usable area.</p></div></div>
+        <div class="tl reveal accent"><span class="tl-v">v5.9.9</span><div><h3>Quarter-tiling</h3><p>Once a window is snapped to a half, Alt+Up/Down refines it to a top or bottom quarter.</p></div></div>
+        <div class="tl reveal accent"><span class="tl-v">v5.9.10</span><div><h3>Window drop shadows</h3><p>Soft shadows under windows — the compositor's first real depth cue.</p></div></div>
+        <div class="tl reveal accent"><span class="tl-v">v5.9.11</span><div><h3>Title-bar gradient</h3><p>The focused title bar gets a vertical gradient — the second depth cue, alongside the shadows.</p></div></div>
+        <div class="tl reveal accent"><span class="tl-v">v5.9.12</span><div><h3>Rounded window tops</h3><p>Rounded top corners complete the modern-window look: shadow + gradient + rounding.</p></div></div>
+        <div class="tl reveal accent"><span class="tl-v">v5.9.13</span><div><h3>Taskbar depth</h3><p>The taskbar gets the same gradient treatment carried down from the window chrome.</p></div></div>
+        <div class="tl reveal accent"><span class="tl-v">v5.9.14</span><div><h3>Start menu depth + hover</h3><p>The Start menu joins the polished chrome, with a gradient panel and hover highlighting on entries.</p></div></div>
+        <div class="tl reveal accent"><span class="tl-v">v5.9.15</span><div><h3>Context &amp; user menus polished</h3><p>Every menu now shares one consistent look — rounded, gradient, hover-highlighted.</p></div></div>
+        <div class="tl reveal accent"><span class="tl-v">v5.9.16</span><div><h3>Login card</h3><p>The brand look reaches the first screen the user sees — the login card gets the rounded, purple treatment.</p></div></div>
+        <div class="tl reveal accent"><span class="tl-v">v5.9.17</span><div><h3>Rounded-corner primitives consolidated into <span class="mono">fb.c</span></h3><p>Corner rounding moved into one reusable framebuffer helper instead of being re-derived per call site.</p></div></div>
+        <div class="tl reveal accent"><span class="tl-v">v5.9.18</span><div><h3>Windows round on all four corners</h3><p>The v5.9.12 follow-up, closed with a framebuffer clip region so bottom corners round too.</p></div></div>
+        <div class="tl reveal accent"><span class="tl-v">v5.9.19</span><div><h3>README hero screenshot refreshed</h3><p>The repo's public face finally matched the OS after the visual overhaul.</p></div></div>
+        <div class="tl reveal accent"><span class="tl-v">v5.9.20</span><div><h3>Per-CPU IST stacks</h3><p>Each core gets its own double-fault / NMI stacks — the first increment of the kernel-internals track.</p></div></div>
+        <div class="tl reveal accent"><span class="tl-v">v5.9.21</span><div><h3>VFS node-pool spinlock</h3><p>The VFS inode/node pool made SMP-safe — first increment of the T1 locking arc.</p></div></div>
+        <div class="tl reveal accent"><span class="tl-v">v5.9.22</span><div><h3>VFS mount-table spinlock</h3><p>The mount table serialized across cores (leaning on it being append-only).</p></div></div>
+        <div class="tl reveal accent"><span class="tl-v">v5.9.23</span><div><h3>Keyboard input path locked</h3><p>The keyboard IRQ and the terminal's line discipline made SMP-safe with an irqsave lock.</p></div></div>
+        <div class="tl reveal accent"><span class="tl-v">v5.9.24</span><div><h3>Network stack under one <span class="mono">net_lock</span></h3><p>A giant lock serializes the whole non-reentrant TCP/UDP/IP stack + socket table — the capstone of the T1 arc.</p></div></div>
+        <div class="tl reveal accent"><span class="tl-v">v5.9.25</span><div><h3>The EXT2 driver locked</h3><p>The ext2 driver's shared scratch buffers serialized — the last major non-reentrant subsystem a user process can reach under <span class="mono">smpbalance</span>.</p></div></div>
+        <div class="tl reveal accent"><span class="tl-v">v5.9.26</span><div><h3>EXT2 sector cache</h3><p>A write-through 128 KB direct-mapped sector cache speeds disk reads — coherent by construction, verified <span class="mono">e2fsck</span>-clean.</p></div></div>
+        <div class="tl reveal accent"><span class="tl-v">v5.9.27</span><div><h3>Partial <span class="mono">munmap</span> now splits the VMA</h3><p>A partial unmap trims or splits the VMA instead of silently leaving the range mapped so it re-faulted a zero page.</p></div></div>
+        <div class="tl reveal accent"><span class="tl-v">v5.9.28</span><div><h3>Partial <span class="mono">mprotect</span> now splits the VMA too</h3><p>The companion to v5.9.27 — a partial mprotect carves the VMA precisely so pages outside the range keep their prot.</p></div></div>
+        <div class="tl reveal accent"><span class="tl-v">v5.9.29</span><div><h3>Fullscreen framebuffer syscalls</h3><p><span class="mono">SYS_FBINFO</span>/<span class="mono">FBPRESENT</span> let a userspace program put pixels on the screen — the first step toward the DOOM milestone.</p></div></div>
+        <div class="tl reveal accent"><span class="tl-v">v5.9.30</span><div><h3>Raw key-event path</h3><p>Press <em>and</em> release events (<span class="mono">DG_GetKey</span>) for a fullscreen game — the second DOOM-milestone enabler after the video path.</p></div></div>
+        <div class="tl reveal accent"><span class="tl-v">v5.9.31</span><div><h3>The DOOM port begins</h3><p>The <span class="mono">doomgeneric</span> engine recovered from git history, and the platform hooks scoped against the new syscalls.</p></div></div>
+        <div class="tl reveal accent"><span class="tl-v">v5.9.32</span><div><h3>DOOM compiles</h3><p>The whole engine builds as userspace; the link gap pinned to exactly 35 missing symbols.</p></div></div>
+        <div class="tl reveal accent"><span class="tl-v">v5.9.33</span><div><h3>DOOM links</h3><p>The engine now produces a userspace ELF (448 KB) with zero undefined symbols.</p></div></div>
+        <div class="tl reveal accent"><span class="tl-v">v5.9.34</span><div><h3>DOOM RUNS 🔥</h3><p>The original 1993 DOOM (shareware) is playable on NyxOS — E1M1 + HUD, ESC menu. The "but can it run DOOM?" milestone, reached.</p></div></div>
+        <div class="tl reveal accent"><span class="tl-v">v5.9.35</span><div><h3>DOOM gets a desktop icon</h3><p>Launch the game by clicking an icon, not by knowing the <span class="mono">doom</span> command.</p></div></div>
+        <div class="tl reveal accent"><span class="tl-v">v5.9.36</span><div><h3>The DOOM icon actually launches the game</h3><p>Two real bugs fixed: the launcher never attached the disk (no WAD), and the icon spawned DOOM unscheduled.</p></div></div>
+        <div class="tl reveal accent"><span class="tl-v">v5.9.37</span><div><h3>DOOM runs in a window</h3><p>Not fullscreen — <span class="mono">SYS_FBPRESENT</span> is rerouted into a compositor window so you see the desktop around the game.</p></div></div>
+        <div class="tl reveal accent"><span class="tl-v">v5.9.38</span><div><h3>Title-bar buttons made pixel-consistent</h3><p>The maximize glyph was malformed on every window; the minimise, maximise and close marks now share one inner box.</p></div></div>
+        <div class="tl reveal accent"><span class="tl-v">v5.9.39</span><div><h3>Pong — the compositor's first animated window</h3><p>An in-kernel Pong, driven by a new per-window <span class="mono">on_tick</span> + a ~30 fps game-tick so the ball moves with no input.</p></div></div>
+        <div class="tl reveal accent"><span class="tl-v">v5.9.40</span><div><h3>A "Games" desktop folder</h3><p>Gathers Minesweeper, DOOM and Pong as clickable emblems; Pong gets an icon "like DOOM" and the desktop stays tidy.</p></div></div>
+        <div class="tl reveal accent"><span class="tl-v">v5.9.41</span><div><h3>Every desktop app icon gets its own identity</h3><p>A distinct little picture per app — Terminal a console, Editor a page &amp; pencil, Settings sliders, Calc an LCD — instead of one generic square.</p></div></div>
+        <div class="tl reveal accent"><span class="tl-v">v5.9.42</span><div><h3>Snake</h3><p>A second in-kernel game, reusing Pong's <span class="mono">on_tick</span>; the Games folder grows to four.</p></div></div>
+        <div class="tl reveal accent"><span class="tl-v">v5.9.43</span><div><h3>Tetris — the fifth game</h3><p>Full 7-piece rotation (4×4-bitmask table), line clears, levels, and a NEXT/SCORE/LINES panel. Games folder grows to five.</p></div></div>
+        <div class="tl reveal accent"><span class="tl-v">v5.9.44</span><div><h3>Selene — the NyxOS web browser 🌙</h3><p>Selene fetches and renders real pages from the internet — DHCP + DNS + TCP, an HTML-to-text renderer, a URL bar and a moon-crescent icon. HTTP only for now.</p></div></div>
       </div>
     </section>
 
