@@ -207,6 +207,15 @@ static void extract_href(const uint8_t* body, uint32_t j, uint32_t te, char* out
     }
 }
 
+// Ensure the text buffer ends with `want` newlines (1 = line break, 2 = a blank line
+// between paragraphs), collapsing so runs of block tags don't pile up blank lines.
+static uint32_t sel_ensure_nl(char* txt, uint8_t* tlink, uint32_t ti, uint32_t cap, int want) {
+    int have = 0;
+    while ((int)ti - 1 - have >= 0 && txt[ti - 1 - have] == '\n') have++;
+    while (have < want && ti < cap) { txt[ti] = '\n'; tlink[ti] = 0; ti++; have++; }
+    return ti;
+}
+
 // ---- strip HTML in `body` to text (capturing <a href> links), then wrap it ----
 static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
     s->num_lines = 0; s->scroll = 0; s->title[0] = '\0';
@@ -219,6 +228,7 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
     uint32_t ti = 0;
     int last_space = 1;
     int cur_link = 0;                                         // link id in progress (0 = none)
+    int cur_hd = 0;                                           // inside an <h1>/<h2> (upper-case its text)
     for (uint32_t i = 0; i < len && ti < len; ) {
         char c = (char)body[i];
         if (c == '<') {
@@ -269,7 +279,31 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                 i = te; if (i < len) i++;
                 continue;
             }
-            if (is_block_tag(name) && ti > 0 && txt[ti-1] != '\n') { txt[ti] = '\n'; tlink[ti] = 0; ti++; last_space = 1; }
+            // Block-level layout so pages read as structure, not one wall of text:
+            // headings (h1/h2 also upper-cased for emphasis), list bullets, rules, and
+            // paragraph breaks; br/tr/dd/dt are single line breaks.
+            int hlevel = (name[0]=='h' && name[1]>='1' && name[1]<='6' && name[2]=='\0') ? name[1]-'0' : 0;
+            if (hlevel) {
+                ti = sel_ensure_nl(txt, tlink, ti, len, 2);
+                cur_hd = (!close && hlevel <= 2);
+                if (close) ti = sel_ensure_nl(txt, tlink, ti, len, 2);
+                last_space = 1;
+            } else if (sel_streq(name, "hr")) {
+                ti = sel_ensure_nl(txt, tlink, ti, len, 1);
+                for (int d = 0; d < 64 && ti < len; d++) { txt[ti] = '-'; tlink[ti] = 0; ti++; }
+                ti = sel_ensure_nl(txt, tlink, ti, len, 1);
+                last_space = 1;
+            } else if (!close && sel_streq(name, "li")) {
+                ti = sel_ensure_nl(txt, tlink, ti, len, 1);
+                if (ti + 2 < len) { txt[ti]='-'; tlink[ti]=0; ti++; txt[ti]=' '; tlink[ti]=0; ti++; }
+                last_space = 1;
+            } else if (sel_streq(name,"br") || sel_streq(name,"tr") || sel_streq(name,"dd") || sel_streq(name,"dt")) {
+                ti = sel_ensure_nl(txt, tlink, ti, len, 1);
+                last_space = 1;
+            } else if (is_block_tag(name)) {
+                ti = sel_ensure_nl(txt, tlink, ti, len, 2);
+                last_space = 1;
+            }
             i = j;
             while (i < len && body[i] != '>') i++;
             if (i < len) i++;
@@ -279,7 +313,7 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
             char dec; uint32_t adv;
             if (decode_entity(body + i, len - i, &dec, &adv)) {
                 if (dec == ' ') { if (!last_space) { txt[ti] = ' '; tlink[ti] = (uint8_t)cur_link; ti++; last_space = 1; } }
-                else { txt[ti] = dec; tlink[ti] = (uint8_t)cur_link; ti++; last_space = 0; }
+                else { if (cur_hd && dec >= 'a' && dec <= 'z') dec -= 32; txt[ti] = dec; tlink[ti] = (uint8_t)cur_link; ti++; last_space = 0; }
                 i += adv;
             } else { txt[ti] = '&'; tlink[ti] = (uint8_t)cur_link; ti++; last_space = 0; i++; }
             continue;
@@ -289,6 +323,7 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
             i++;
             continue;
         }
+        if (cur_hd && c >= 'a' && c <= 'z') c -= 32;          // upper-case h1/h2 text
         txt[ti] = c; tlink[ti] = (uint8_t)cur_link; ti++; last_space = 0; i++;
     }
     txt[ti] = '\0';
