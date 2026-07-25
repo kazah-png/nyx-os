@@ -138,7 +138,7 @@ wipe_initMelt
     int i, r;
     
     // copy start screen to main screen
-    memcpy(wipe_scr, wipe_scr_start, width*height);
+    memcpy(wipe_scr, wipe_scr_start, (size_t)width*height);   // 64-bit multiply before widening to size_t
     
     // makes this wipe faster (in theory)
     // to have stuff in column-major format
