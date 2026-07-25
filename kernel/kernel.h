@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.9.42"
+#define KERNEL_VERSION "5.9.43"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -1014,6 +1014,7 @@ int  doom_window_present(const uint32_t* src, uint32_t w, uint32_t h); // rerout
 void launch_doom_windowed(void);        // run DOOM inside a compositor window (compositor.c)
 void launch_pong(void);                 // open a Pong game window (compositor.c)
 void launch_snake(void);                // open a Snake game window (compositor.c)
+void launch_tetris(void);               // open a Tetris game window (compositor.c)
 void launch_minesweeper(void);          // open the Minesweeper window (compositor.c)
 void launch_games_folder(void);         // open the "Games" desktop folder (compositor.c)
 void reap_zombies(void);

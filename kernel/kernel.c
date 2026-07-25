@@ -108,6 +108,7 @@ static void cmd_spawn(int argc, char** argv);
 static void cmd_doom(int argc, char** argv);
 static void cmd_pong(int argc, char** argv);
 static void cmd_snake(int argc, char** argv);
+static void cmd_tetris(int argc, char** argv);
 static void cmd_jobs(int argc, char** argv);
 static void cmd_wait(int argc, char** argv);
 static void cmd_nice(int argc, char** argv);
@@ -190,6 +191,7 @@ static const command_t commands[] = {
     {"doom",      cmd_doom,      "Play DOOM in a window (Ctrl-C to quit)", false},
     {"pong",      cmd_pong,      "Play Pong (mouse or arrows)", false},
     {"snake",     cmd_snake,     "Play Snake (arrows/WASD)", false},
+    {"tetris",    cmd_tetris,    "Play Tetris (arrows, Space=drop)", false},
     {"jobs",      cmd_jobs,      "List background jobs", false},
     {"wait",      cmd_wait,      "Wait for background jobs: wait [pid]", false},
     {"nice",      cmd_nice,      "Spawn ELF at a scheduler weight: nice <weight> <file>", false},
@@ -937,6 +939,12 @@ static void cmd_pong(int argc, char** argv) {
 static void cmd_snake(int argc, char** argv) {
     (void)argc; (void)argv;
     launch_snake();
+}
+
+// `tetris` — open a Tetris game window (in-kernel, compositor.c).
+static void cmd_tetris(int argc, char** argv) {
+    (void)argc; (void)argv;
+    launch_tetris();
 }
 
 static void cmd_spawn(int argc, char** argv) {

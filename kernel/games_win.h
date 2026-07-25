@@ -2,12 +2,12 @@
 #define GAMES_WIN_H
 #include "compositor.h"
 
-// The "Games" desktop folder (v5.9.40, +Snake v5.9.42). A plain compositor window
-// that visually lists the built-in games — Minesweeper, DOOM, Pong and Snake — as
-// clickable icons, each drawn as a little preview of the game, and launches the one
-// you click. It is a folder in spirit only: there is no filesystem behind it, just a
-// fixed menu, which is exactly what a "games shelf" on the desktop needs to be.
-#define GAMES_COUNT    4
+// The "Games" desktop folder (v5.9.40, +Snake v5.9.42, +Tetris v5.9.43). A plain
+// compositor window that visually lists the built-in games — Minesweeper, DOOM, Pong,
+// Snake and Tetris — as clickable icons, each drawn as a little preview of the game,
+// and launches the one you click. It is a folder in spirit only: there is no filesystem
+// behind it, just a fixed menu, which is exactly what a "games shelf" needs to be.
+#define GAMES_COUNT    5
 #define GAMES_ICON     64          // emblem square, px
 #define GAMES_CELL_W   120         // one column: emblem + label, centred
 #define GAMES_CELL_H   96          // emblem + gap + label strip

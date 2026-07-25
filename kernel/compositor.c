@@ -13,6 +13,7 @@
 #include "calc_win.h"
 #include "minesweeper_win.h"
 #include "snake_win.h"
+#include "tetris_win.h"
 #include "games_win.h"
 #include "wallpaper_win.h"
 #include "rtc.h"
@@ -1005,6 +1006,19 @@ void launch_snake(void) {
     if (!w->reserved) { window_destroy(w->id); return; }
     w->on_key  = snake_win_key;
     w->on_tick = snake_win_tick;
+}
+
+// Open a Tetris window. In-kernel game like Pong/Snake: the compositor's game-tick
+// drives gravity via on_tick, arrows move/rotate. Used by `tetris` and the Games folder.
+void launch_tetris(void) {
+    int px = ((int)fb_get_width()  - TET_W) / 2;               if (px < 0) px = 0;
+    int py = ((int)fb_get_height() - TET_H - TITLE_H) / 2;     if (py < 0) py = 0;
+    window_t* w = window_create(px, py, TET_W, TET_H, "Tetris", tetris_win_draw);
+    if (!w) return;
+    w->reserved = tetris_create_ctx();
+    if (!w->reserved) { window_destroy(w->id); return; }
+    w->on_key  = tetris_win_key;
+    w->on_tick = tetris_win_tick;
 }
 
 // Open the Minesweeper window. Extracted from do_start_menu_action's case 12 so the

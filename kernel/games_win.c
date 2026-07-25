@@ -74,7 +74,24 @@ static void draw_snake_emblem(int x, int y) {
     fb_fill_rect(x + 4 + c + 3, y + 4 + 2 * c + 3, c - 6, c - 6, fb_rgb(235, 80, 70)); // food
 }
 
-static const char* g_names[GAMES_COUNT] = { "Minesweeper", "DOOM", "Pong", "Snake" };
+static void draw_tetris_emblem(int x, int y) {
+    int s = GAMES_ICON;
+    fb_fill_rect(x, y, s, s, fb_rgb(18, 18, 28));           // well
+    int cs = 10;
+    uint32_t cols[4] = { fb_rgb(80,210,230), fb_rgb(235,150,50),
+                         fb_rgb(90,200,100), fb_rgb(230,80,80) };
+    for (int c = 0; c < 5; c++)                             // stacked rubble, two rows
+        fb_fill_rect(x + 7 + c*cs, y + 44, cs - 1, cs - 1, cols[c % 4]);
+    for (int c = 0; c < 3; c++)
+        fb_fill_rect(x + 7 + c*cs, y + 34, cs - 1, cs - 1, cols[(c + 1) % 4]);
+    uint32_t t = fb_rgb(180, 100, 220);                    // a falling T-piece
+    fb_fill_rect(x + 17, y + 8,  cs - 1, cs - 1, t);
+    fb_fill_rect(x + 7,  y + 18, cs - 1, cs - 1, t);
+    fb_fill_rect(x + 17, y + 18, cs - 1, cs - 1, t);
+    fb_fill_rect(x + 27, y + 18, cs - 1, cs - 1, t);
+}
+
+static const char* g_names[GAMES_COUNT] = { "Minesweeper", "DOOM", "Pong", "Snake", "Tetris" };
 
 void games_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     (void)win;
@@ -86,8 +103,9 @@ void games_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
         switch (i) {
             case 0: draw_mines_emblem(ix, iy); break;
             case 1: draw_doom_emblem(ix, iy);  break;
-            case 2: draw_pong_emblem(ix, iy);  break;
-            case 3: draw_snake_emblem(ix, iy); break;
+            case 2: draw_pong_emblem(ix, iy);   break;
+            case 3: draw_snake_emblem(ix, iy);  break;
+            case 4: draw_tetris_emblem(ix, iy); break;
         }
         int cell_x = cx + GAMES_MARGIN_X + i * GAMES_CELL_W;
         int tw = (int)strlen(g_names[i]) * FONT_WIDTH;
@@ -112,6 +130,7 @@ void games_win_click(window_t* win, int mx, int my, int btn) {
                 case 1: launch_doom_windowed(); break;  // blocks (foreground pump) until DOOM quits
                 case 2: launch_pong();          break;
                 case 3: launch_snake();         break;
+                case 4: launch_tetris();        break;
             }
             return;
         }
