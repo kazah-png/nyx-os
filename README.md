@@ -59,8 +59,8 @@ o###o   o#                  CPU:        QEMU Virtual CPU version 2.5+ (1)
 The project implements core kernel primitives, a custom network stack (RTL8139 NIC + ARP/IP/UDP/ICMP/DHCP + TCP with retransmission and passive open), userspace TCP/UDP sockets with `poll()` I/O multiplexing, a window compositor GUI, and a Sound Blaster 16 audio driver — all written in C and x86_64 Assembly with no external libraries.
 
 <div align="center">
-  <img src="gui.png?v=4" alt="NyxOS Desktop v5.9.44" width="700" />
-  <p><em>NyxOS Desktop — app icons, purple wallpaper, windows and a taskbar</em></p>
+  <img src="gui.png?v=6" alt="NyxOS Desktop v5.9.44 with the Selene web browser" width="700" />
+  <p><em>NyxOS Desktop — the <strong>Selene</strong> web browser showing a live page, distinct app icons, the Nightfall wallpaper and taskbar</em></p>
 </div>
 
 ---
