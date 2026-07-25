@@ -300,6 +300,16 @@ static void run_foreground_elf(const char* path, char* const* argv, int argc) {
     printf("[exec] PID %d exited (code %d)\n", pid, code);
 }
 
+// GUI entry point: launch a userspace ELF from a desktop icon EXACTLY the way the shell
+// launches it from a typed command — spawn, then pump the desktop and block until exit.
+// A bare spawn_user_path() from the compositor left the child unscheduled (the click
+// looked like a no-op): run_foreground_elf's redraw+sleep loop is what yields the CPU so
+// the child actually runs and its SYS_FBPRESENT fullscreen takeover is serviced. Blocking
+// the compositor here is fine — it is the same call chain the terminal uses. (v5.9.36)
+void gui_launch_elf(const char* path) {
+    run_foreground_elf(path, (char* const*)0, 0);
+}
+
 // Resolve a bare command name to a userspace ELF path in the initramfs. A name that
 // already contains '/' is used verbatim; otherwise "/<name>.elf" then "/<name>" are
 // tried. Returns 1 and fills `out` if a file exists there, else 0.

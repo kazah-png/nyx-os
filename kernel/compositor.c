@@ -1050,12 +1050,14 @@ static void do_start_menu_action(int idx) {
                 }
             }
             break;
-        case 13: // DOOM — launch the userspace game from its desktop icon (v5.9.35).
+        case 13: // DOOM — launch the userspace game from its desktop icon.
                  // Every other action opens an in-kernel window; DOOM is a real ring-3
-                 // ELF, so spawn it into the scheduler. It takes the framebuffer over
-                 // SYS_FBPRESENT and the compositor yields; on exit the desktop returns.
+                 // ELF. v5.9.35 used a bare spawn_user_path() here, which left the child
+                 // unscheduled so the click did nothing; v5.9.36 uses the shell's proven
+                 // foreground-run (spawn + pump the desktop + block until exit), so DOOM
+                 // is actually scheduled and its SYS_FBPRESENT takeover is serviced.
                  // main() injects `-iwad /mnt/doom1.wad` when launched with no args.
-            spawn_user_path("/doom.elf");
+            gui_launch_elf("/doom.elf");
             break;
     }
     redraw_all();
