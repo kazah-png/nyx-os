@@ -26,7 +26,7 @@
 #define TLSP(...) do { if (verbose) printf(__VA_ARGS__); } while (0)
 
 static uint8_t tls_hs[1024];        // outbound ClientHello (record + handshake)
-static uint8_t tls_rx[16384];       // raw bytes received
+static uint8_t tls_rx[20480];       // receive buffer — holds >= one max TLS record (app data is streamed)
 static uint8_t tls_hd[16384];       // reassembled handshake message stream
 static uint8_t tls_client_random[32];   // saved from our ClientHello (for the key schedule)
 static uint8_t tls_server_random[32];   // parsed from the ServerHello
@@ -558,33 +558,40 @@ int tls_https_fetch(const char* host, const char* path, int iface_idx,
         TLSP("TLS: sending an encrypted \"GET %s\" over the channel...\n", path);
         if (tcp_send(conn, grec, 5 + gl) < 0) { TLSP("TLS: GET send failed\n"); tcp_close(conn); return -1; }
 
-        uint32_t r3 = 0, s3 = get_ticks(), l3 = s3;  // read the encrypted response
-        for (;;) {
+        // Read and decrypt the response by STREAMING: decrypt each complete TLS record as it
+        // arrives, then compact tls_rx. The page is bounded by `cap` (the caller's buffer — up to
+        // 64 KB), not by tls_rx, which now only has to hold a single record at a time. (Before,
+        // the whole encrypted response had to fit in tls_rx, so pages over ~16 KB were truncated.)
+        uint32_t r3 = 0, s3 = get_ticks(), l3 = s3;
+        uint32_t pn = 0; uint64_t sseq = 1; int done = 0;
+        while (!done) {
             kernel_poll_net();
-            int n = tcp_recv(conn, tls_rx + r3, (uint32_t)sizeof(tls_rx) - r3 - 1);
-            if (n > 0) { r3 += (uint32_t)n; l3 = get_ticks(); if (r3 >= sizeof(tls_rx) - 1) break; }
+            int n = tcp_recv(conn, tls_rx + r3, (uint32_t)sizeof(tls_rx) - r3);
+            if (n > 0) {
+                r3 += (uint32_t)n; l3 = get_ticks();
+                uint32_t q = 0;
+                while (q + 5 <= r3) {                 // drain every complete record at the front
+                    uint8_t rt = tls_rx[q];
+                    uint32_t rl2 = (uint32_t)((tls_rx[q+3] << 8) | tls_rx[q+4]);
+                    if (rl2 > sizeof(tls_rx) - 5) { done = 1; break; }   // oversize/illegal record
+                    if (q + 5 + rl2 > r3) break;                         // not fully arrived yet
+                    if (rt == 0x17) {                                    // application data
+                        if (pn + rl2 > cap) { done = 1; break; }         // caller buffer full
+                        int pl = tls_open_record(skey, siv, sseq, 0x17, tls_rx + q + 5, rl2, out + pn);
+                        if (pl < 0) { TLSP("TLS: could not decrypt application-data record %u\n", (unsigned)sseq); done = 1; break; }
+                        pn += (uint32_t)pl; sseq++;
+                    } else if (rt == 0x15) { done = 1; break; }          // close_notify — end of stream
+                    q += 5 + rl2;
+                }
+                if (q > 0) { for (uint32_t i = q; i < r3; i++) tls_rx[i - q] = tls_rx[i]; r3 -= q; }  // compact
+            }
             else if (n < 0) break;                   // server closed (Connection: close)
             uint32_t now = get_ticks();
-            if (r3 == 0) { if ((int32_t)(now - (s3 + 8000)) >= 0) break; }
-            else if ((int32_t)(now - (l3 + 1500)) >= 0) break;
-            if ((int32_t)(now - (s3 + 15000)) >= 0) break;
+            if (pn == 0 && r3 == 0) { if ((int32_t)(now - (s3 + 8000)) >= 0) break; }   // nothing yet
+            else if ((int32_t)(now - (l3 + 1500)) >= 0) break;                          // idle after data
+            if ((int32_t)(now - (s3 + 20000)) >= 0) break;                              // hard cap
         }
         tcp_close(conn);
-
-        uint32_t pn = 0; uint64_t sseq = 1;          // decrypt each application-data record into out
-        uint32_t q = 0;
-        while (q + 5 <= r3) {
-            uint8_t rt = tls_rx[q];
-            uint16_t rl2 = (uint16_t)((tls_rx[q+3] << 8) | tls_rx[q+4]);
-            if (q + 5 + rl2 > r3) break;
-            if (rt == 0x17) {                        // application data
-                if (pn + rl2 > cap) break;
-                int pl = tls_open_record(skey, siv, sseq, 0x17, tls_rx + q + 5, rl2, out + pn);
-                if (pl < 0) { TLSP("TLS: could not decrypt application-data record %u\n", (unsigned)sseq); break; }
-                pn += (uint32_t)pl; sseq++;
-            } else if (rt == 0x15) { break; }        // encrypted close_notify alert — end of stream
-            q += 5 + rl2;
-        }
 
         if (pn == 0) { TLSP("TLS: no application data decrypted\n"); return -1; }
         if (verbose) {
@@ -604,7 +611,13 @@ int tls_https_fetch(const char* host, const char* path, int iface_idx,
 }
 
 // The `tls <host>` diagnostic command: verbosely fetch host:443 "/" into a scratch buffer.
+// Uses a 64 KB heap buffer (like Selene) so it can hold large pages, not just the 16 KB tls_hd.
 int tls_hello(const char* host, int iface_idx) {
-    int n = tls_https_fetch(host, "/", iface_idx, tls_hd, sizeof(tls_hd), 1);
+    uint32_t cap = 64 * 1024;
+    uint8_t* buf = (uint8_t*)kmalloc(cap);
+    if (!buf) { buf = tls_hd; cap = (uint32_t)sizeof(tls_hd); }   // fall back to the scratch buffer
+    int n = tls_https_fetch(host, "/", iface_idx, buf, cap, 1);
+    if (n >= 0) printf("TLS: total decrypted response = %d bytes (buffer cap %u)\n", n, cap);
+    if (buf != tls_hd) kfree(buf);
     return (n >= 0) ? 0 : -1;
 }
