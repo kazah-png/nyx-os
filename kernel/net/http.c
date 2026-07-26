@@ -24,6 +24,30 @@ static int http_body_complete(const uint8_t* buf, uint32_t total) {
 }
 
 // Parse a raw HTTP/1.x response held in buf[0..total) (NUL-terminated at buf[total]) into
+// Case-insensitive: extract the value of header `name` (e.g. "location:") that starts its own line
+// within [buf, hdr_end), whitespace-trimmed, into out (NUL-terminated, bounded by cap). Empty if absent.
+static void http_get_header(const char* buf, const char* hdr_end, const char* name, char* out, uint32_t cap) {
+    out[0] = '\0';
+    uint32_t nl = 0; while (name[nl]) nl++;
+    for (const char* p = buf; p + nl <= hdr_end; p++) {
+        if (p != buf && p[-1] != '\n') continue;              // a header name starts a line
+        uint32_t i = 0;
+        for (; i < nl; i++) {
+            char a = p[i], b = name[i];
+            if (a >= 'A' && a <= 'Z') a = (char)(a + 32);
+            if (b >= 'A' && b <= 'Z') b = (char)(b + 32);
+            if (a != b) break;
+        }
+        if (i != nl) continue;                                // name didn't match
+        const char* v = p + nl;
+        while (v < hdr_end && (*v == ' ' || *v == '\t')) v++;  // skip leading whitespace
+        uint32_t o = 0;
+        while (v < hdr_end && *v != '\r' && *v != '\n' && o + 1 < cap) out[o++] = *v++;
+        out[o] = '\0';
+        return;
+    }
+}
+
 // resp: status code/text plus a heap-allocated, de-chunked body. Does NOT free buf; the
 // caller owns it. Returns 0 on success (body possibly NULL/0), -1 on a malformed response.
 int http_parse_response(uint8_t* buf, uint32_t total, http_response_t* resp)
@@ -39,6 +63,7 @@ int http_parse_response(uint8_t* buf, uint32_t total, http_response_t* resp)
 
     // Copy status text (e.g. "OK")
     resp->status_text[0] = '\0';
+    resp->location[0] = '\0';
     const char* st = status;
     while (*st && *st != '\r' && *st != '\n') st++;
     while (*status && *status != ' ' && status < st) status++;
@@ -58,6 +83,7 @@ int http_parse_response(uint8_t* buf, uint32_t total, http_response_t* resp)
     // Parse Content-Length
     uint32_t content_length = 0;
     char* headers_end = body_start - 4;
+    http_get_header((char*)buf, headers_end, "location:", resp->location, sizeof(resp->location));   // for 3xx redirects
     char* cl = strstr((char*)buf, "Content-Length:");
     if (!cl || cl >= headers_end) cl = strstr((char*)buf, "Content-length:");
     if (!cl || cl >= headers_end) cl = strstr((char*)buf, "content-length:");

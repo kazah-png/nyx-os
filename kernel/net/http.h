@@ -7,6 +7,7 @@
 typedef struct {
     int      status_code;
     char     status_text[64];
+    char     location[256];      // the Location: header value (for 3xx redirects); "" if absent
     uint8_t* body;
     uint32_t body_len;
 } http_response_t;

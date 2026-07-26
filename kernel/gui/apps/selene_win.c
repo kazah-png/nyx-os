@@ -875,6 +875,9 @@ static void selene_after_scroll(selene_ctx_t* s) {
 
 // Fetch ctx->url with `method` (+ optional form `body` for POST) and render the reply. Blocks
 // (the fetch drives the net) - we paint a status first via compositor_redraw_now for progress.
+#define SEL_MAX_REDIRECTS 5                  // cap on how many 3xx Location hops we follow
+static void selene_set_url(selene_ctx_t* s, const char* u);   // defined below; used by the redirect follow
+
 static void selene_load_ex(selene_ctx_t* s, const char* method, const uint8_t* body, uint32_t body_len) {
     s->num_lines = 0; s->scroll = 0; s->title[0] = '\0'; s->num_links = 0; s->sel_link = -1;
     s->find_active = 0; s->find_matches = 0; s->find_cur = 0;   // close find-in-page on navigation
@@ -885,41 +888,64 @@ static void selene_load_ex(selene_ctx_t* s, const char* method, const uint8_t* b
         compositor_redraw_now();
         dhcp_request(iface);
     }
-    char host[128] = {0}, path[256] = {0}; uint16_t port = 80; int is_https = 0;
-    parse_url(s->url, host, &port, path, &is_https);
-    if (!host[0]) { strncpy(s->status, "Enter a URL, e.g. example.com", 95); return; }
-    int is_post = (method && (method[0] == 'P' || method[0] == 'p'));
-    // record the base for resolving this page's relative links
-    strncpy(s->base_host, host, sizeof(s->base_host)-1); s->base_host[sizeof(s->base_host)-1] = '\0';
-    s->base_port = port;
-    s->base_https = is_https;
-    strncpy(s->base_path, path, sizeof(s->base_path)-1); s->base_path[sizeof(s->base_path)-1] = '\0';
-    snprintf(s->status, sizeof(s->status), "%s %s%s ...", is_post ? "Submitting to" : "Loading",
-             is_https ? "https://" : "", host);
-    compositor_redraw_now();
 
+    // Fetch, following up to SEL_MAX_REDIRECTS 3xx redirects: a 301/302/303/307/308 with a Location
+    // header re-fetches the resolved target (301/302/303 downgrade to GET; 307/308 keep method+body).
+    const char* cur_method = method;
+    const uint8_t* cur_body = body; uint32_t cur_body_len = body_len;
+    char final_host[128] = {0};
     http_response_t resp;
-    if (is_https) {
-        // Secure fetch: a full TLS 1.2 handshake + encrypted request, then parsed like http.
-        uint8_t* raw = (uint8_t*)kmalloc(HTTP_MAX_RESPONSE);
-        if (!raw) { strncpy(s->status, "Out of memory", 95); return; }
-        int rn = tls_https_request(host, path, method, body, body_len, iface, raw, HTTP_MAX_RESPONSE - 1, 0);
-        if (rn < 0) { kfree(raw); snprintf(s->status, sizeof(s->status), "Could not load %s (TLS failed)", host); return; }
-        raw[rn] = '\0';
-        int pr = http_parse_response(raw, (uint32_t)rn, &resp);
-        kfree(raw);
-        if (pr < 0) { snprintf(s->status, sizeof(s->status), "Bad https response from %s", host); return; }
-    } else {
-        if (http_request(host, port, path, method, body, body_len, &resp, iface) < 0) {
-            snprintf(s->status, sizeof(s->status), "Could not load %s", host);
-            return;
+
+    for (int hop = 0; ; hop++) {
+        char host[128] = {0}, path[256] = {0}; uint16_t port = 80; int is_https = 0;
+        parse_url(s->url, host, &port, path, &is_https);
+        if (!host[0]) { strncpy(s->status, "Enter a URL, e.g. example.com", 95); return; }
+        strncpy(final_host, host, sizeof(final_host)-1); final_host[sizeof(final_host)-1] = '\0';
+        int is_post = (cur_method && (cur_method[0] == 'P' || cur_method[0] == 'p'));
+        // base for resolving this page's relative links (and a relative redirect target)
+        strncpy(s->base_host, host, sizeof(s->base_host)-1); s->base_host[sizeof(s->base_host)-1] = '\0';
+        s->base_port = port; s->base_https = is_https;
+        strncpy(s->base_path, path, sizeof(s->base_path)-1); s->base_path[sizeof(s->base_path)-1] = '\0';
+        snprintf(s->status, sizeof(s->status), "%s %s%s ...%s", is_post ? "Submitting to" : "Loading",
+                 is_https ? "https://" : "", host, hop ? " (redirect)" : "");
+        compositor_redraw_now();
+
+        // Fetch, retrying once: NyxOS's first NEW TCP connection right after another fetch sometimes
+        // fails (see v5.9.83), and a redirect chain opens several connections back-to-back.
+        int ok = 0;
+        for (int attempt = 0; attempt < 2 && !ok; attempt++) {
+            if (is_https) {
+                // Secure fetch: a full TLS 1.2 handshake + encrypted request, then parsed like http.
+                uint8_t* raw = (uint8_t*)kmalloc(HTTP_MAX_RESPONSE);
+                if (!raw) { strncpy(s->status, "Out of memory", 95); return; }
+                int rn = tls_https_request(host, path, cur_method, cur_body, cur_body_len, iface, raw, HTTP_MAX_RESPONSE - 1, 0);
+                if (rn >= 0) { raw[rn] = '\0'; if (http_parse_response(raw, (uint32_t)rn, &resp) == 0) ok = 1; }
+                kfree(raw);
+            } else {
+                if (http_request(host, port, path, cur_method, cur_body, cur_body_len, &resp, iface) == 0) ok = 1;
+            }
         }
+        if (!ok) { snprintf(s->status, sizeof(s->status), "Could not load %s", host); return; }
+
+        int sc = resp.status_code;
+        if ((sc == 301 || sc == 302 || sc == 303 || sc == 307 || sc == 308) && resp.location[0] && hop < SEL_MAX_REDIRECTS) {
+            char newurl[256] = {0};
+            selene_resolve(s, resp.location, newurl);          // absolute / relative Location -> full URL
+            if (newurl[0]) {
+                selene_set_url(s, newurl);                     // follow it: the URL bar shows the final URL
+                if (sc != 307 && sc != 308) { cur_method = "GET"; cur_body = 0; cur_body_len = 0; }
+                http_free(&resp);
+                continue;
+            }
+        }
+        break;   // final response: not a redirect, no Location, unresolvable, or the hop cap was reached
     }
+
     render_html(s, resp.body, resp.body_len);
     strncpy(s->cur_url, s->url, sizeof(s->cur_url)-1); s->cur_url[sizeof(s->cur_url)-1] = '\0';
     snprintf(s->status, sizeof(s->status), "%d %s  -  %s  -  %d links",
              resp.status_code, resp.status_text,
-             s->title[0] ? s->title : host, s->num_links);
+             s->title[0] ? s->title : final_host, s->num_links);
     http_free(&resp);
     compositor_redraw_now();                 // show the page instantly; visible images stream in via selene_win_tick
 }
@@ -1745,6 +1771,25 @@ int selene_form_selftest(void) {
         }
         if (found) { pass++; printf("selene-form: HTML entities (mdash/hellip/copy/amp/nbsp/middot/#8212) PASS\n"); }
         else printf("selene-form: HTML entities FAIL\n");
+    }
+
+    // 10) HTTP redirect parse: a 3xx response's status code + Location header are extracted (so
+    // selene_load_ex can follow it). Pure — feeds a canned response to http_parse_response.
+    total++;
+    {
+        static const char* R =
+            "HTTP/1.1 301 Moved Permanently\r\n"
+            "Server: nyx\r\n"
+            "Location: https://example.com/final\r\n"
+            "Content-Length: 0\r\n\r\n";
+        uint8_t buf[256]; uint32_t n = (uint32_t)strlen(R);
+        for (uint32_t k = 0; k <= n; k++) buf[k] = (uint8_t)R[k];   // include the NUL
+        http_response_t rr;
+        int pr = http_parse_response(buf, n, &rr);
+        int ok = (pr == 0 && rr.status_code == 301 && sel_streq(rr.location, "https://example.com/final"));
+        if (ok) { pass++; printf("selene-form: HTTP 301 redirect parse (status + Location) PASS\n"); }
+        else printf("selene-form: HTTP redirect parse FAIL (code=%d loc=%s)\n", rr.status_code, rr.location);
+        http_free(&rr);
     }
 
     selene_free_ctx(s);
