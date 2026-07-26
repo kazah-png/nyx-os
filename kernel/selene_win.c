@@ -19,6 +19,7 @@
 #include "tls.h"
 #include "png.h"
 #include "bmp.h"
+#include "gif.h"
 #include "font.h"
 
 #define SEL_BAR       34        // top toolbar (back button + URL box) height
@@ -725,6 +726,7 @@ static void selene_fetch_one(selene_ctx_t* s, int i, int iface) {
             image_t pi; int dec = -1;
             if (resp.body[0] == 0x89 && resp.body[1] == 'P')     dec = png_decode(resp.body, resp.body_len, &pi);
             else if (resp.body[0] == 'B' && resp.body[1] == 'M') dec = bmp_decode(resp.body, resp.body_len, &pi);
+            else if (resp.body[0] == 'G' && resp.body[1] == 'I' && resp.body[2] == 'F') dec = gif_decode(resp.body, resp.body_len, &pi);
             if (dec == 0) {
                 s->images[i].px = pi.pixels;
                 s->images[i].iw = (uint16_t)pi.width;
