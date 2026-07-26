@@ -6,6 +6,11 @@
 #define PML4_IDENTITY 0
 #define PML4_HIGHER   511       // 0xFFFFFF8000000000 — matches KERNEL_BASE
 
+// Page-frame address bits [51:12] of a PTE/table entry. Masking with this (NOT `& ~0xFFF`, which
+// keeps bit 63 = NX plus any reserved 63:52) is what turns an entry back into a clean physical
+// address: `& ~0xFFF` on an NX leaf leaves bit 63 set, so the "physical address" comes out wrong.
+#define PHYS_ADDR_MASK 0x000FFFFFFFFFF000ULL
+
 static uint64_t* current_pml4 = NULL;
 static uint64_t* kernel_pml4 = NULL;
 
@@ -22,29 +27,29 @@ void* get_phys_addr(void* virtual_addr) {
     uint64_t pml4e = kernel_pml4[pml4_idx];
     if (!(pml4e & PAGE_PRESENT)) return NULL;
 
-    uint64_t* pdpt = (uint64_t*)(pml4e & ~0xFFF);
+    uint64_t* pdpt = (uint64_t*)(pml4e & PHYS_ADDR_MASK);
     uint64_t pdpte = pdpt[pdpt_idx];
     if (!(pdpte & PAGE_PRESENT)) return NULL;
 
     // 1GB huge page?
     if (pdpte & PAGE_HUGE) {
-        return (void*)((pdpte & ~((1ULL << 30) - 1)) + (addr & ((1ULL << 30) - 1)));
+        return (void*)((pdpte & PHYS_ADDR_MASK & ~((1ULL << 30) - 1)) + (addr & ((1ULL << 30) - 1)));
     }
 
-    uint64_t* pd = (uint64_t*)(pdpte & ~0xFFF);
+    uint64_t* pd = (uint64_t*)(pdpte & PHYS_ADDR_MASK);
     uint64_t pde = pd[pd_idx];
     if (!(pde & PAGE_PRESENT)) return NULL;
 
     // 2MB huge page?
     if (pde & PAGE_HUGE) {
-        return (void*)((pde & ~((1ULL << 21) - 1)) + (addr & ((1ULL << 21) - 1)));
+        return (void*)((pde & PHYS_ADDR_MASK & ~((1ULL << 21) - 1)) + (addr & ((1ULL << 21) - 1)));
     }
 
-    uint64_t* pt = (uint64_t*)(pde & ~0xFFF);
+    uint64_t* pt = (uint64_t*)(pde & PHYS_ADDR_MASK);
     uint64_t pte = pt[pt_idx];
     if (!(pte & PAGE_PRESENT)) return NULL;
 
-    return (void*)((pte & ~0xFFF) + offset);
+    return (void*)((pte & PHYS_ADDR_MASK) + offset);   // mask [51:12] drops NX/reserved so NX pages resolve correctly
 }
 
 // Extract the physical base of a present intermediate page-table entry with the FULL
@@ -53,7 +58,7 @@ void* get_phys_addr(void* virtual_addr) {
 // that #GPs opaquely on the next dereference. A well-formed intermediate entry never
 // has bits 63:52 set; if any are, the table is corrupt (the still-open "-1 writer")
 // — panic here with the offending value/vaddr/pid instead of crashing one deref later.
-#define PT_ADDR_BITS 0x000FFFFFFFFFF000ULL
+#define PT_ADDR_BITS PHYS_ADDR_MASK      // alias of the canonical page-frame mask (bits [51:12])
 static uint64_t* pt_next(uint64_t entry, const char* level, uint64_t vaddr, int idx) {
     if (entry & 0xFFF0000000000000ULL) {
         process_t* p = get_current_process();
@@ -142,15 +147,15 @@ void unmap_page(void* virt) {
     uint64_t pml4e = kernel_pml4[pml4_idx];
     if (!(pml4e & PAGE_PRESENT)) return;
 
-    uint64_t* pdpt = (uint64_t*)(pml4e & ~0xFFF);
+    uint64_t* pdpt = (uint64_t*)(pml4e & PHYS_ADDR_MASK);
     uint64_t pdpte = pdpt[pdpt_idx];
     if (!(pdpte & PAGE_PRESENT)) return;
 
-    uint64_t* pd = (uint64_t*)(pdpte & ~0xFFF);
+    uint64_t* pd = (uint64_t*)(pdpte & PHYS_ADDR_MASK);
     uint64_t pde = pd[pd_idx];
     if (!(pde & PAGE_PRESENT)) return;
 
-    uint64_t* pt = (uint64_t*)(pde & ~0xFFF);
+    uint64_t* pt = (uint64_t*)(pde & PHYS_ADDR_MASK);
     pt[pt_idx] = 0;
     // Removal from the KERNEL page tables, which every core shares — the case
     // v5.8.95 missed while wiring up vm_free_range/vm_protect_range/vm_unmap.
@@ -195,7 +200,7 @@ void* clone_page_directory(void) {
 // leaf frame and intermediate table for the user half (PML4[0..510]) and the
 // PML4 page itself. PML4[511] is the shared kernel mirror and is left untouched.
 // Physical addresses are masked to bits 51:12 to drop the NX bit and flags.
-#define PT_PHYS_MASK 0x000FFFFFFFFFF000ULL
+#define PT_PHYS_MASK PHYS_ADDR_MASK      // alias of the canonical page-frame mask (bits [51:12])
 void free_page_directory(uint64_t* pml4) {
     if (!pml4) return;
     for (int i = 0; i < PML4_HIGHER; i++) {
@@ -230,7 +235,7 @@ void free_page_directory(uint64_t* pml4) {
 // ============================================================
 #define PTE_DEMAND     (1ULL << 9)
 #define PTE_COW        (1ULL << 10)
-#define PTE_ADDR_MASK  0x000FFFFFFFFFF000ULL   // physical address bits [51:12]
+#define PTE_ADDR_MASK  PHYS_ADDR_MASK          // alias of the canonical page-frame mask (bits [51:12])
 
 static uint64_t vm_demand_faults = 0;
 static uint64_t vm_cow_faults = 0;
