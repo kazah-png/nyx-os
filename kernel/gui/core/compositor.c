@@ -2174,8 +2174,7 @@ void compositor_run(void) {
         if ((btns & 2) && !(btns & 1)) {
             // Check if we hit desktop (not on a window, not on taskbar)
             int on_desktop = 1;
-            uint32_t fh = fb_get_height();
-            if (my >= (int)(fh - TASKBAR_H)) on_desktop = 0; // taskbar
+            if (my >= (int)(fh - TASKBAR_H)) on_desktop = 0; // taskbar (fh: the function-level framebuffer height)
             window_t* sorted_win[MAX_WINDOWS];
             int nw = 0;
             for (int i = 0; i < MAX_WINDOWS; i++)

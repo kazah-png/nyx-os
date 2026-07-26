@@ -6,7 +6,7 @@ CC = gcc
 AS = nasm
 LD = ld
 
-CFLAGS = -std=gnu99 -ffreestanding -Os -Wall -Wextra \
+CFLAGS = -std=gnu99 -ffreestanding -Os -Wall -Wextra -Wshadow \
          -nostdlib -nostartfiles -nodefaultlibs \
          -fno-stack-protector -fno-pie -m64 \
          -mno-red-zone -mno-sse -mno-mmx -mno-sse2 \

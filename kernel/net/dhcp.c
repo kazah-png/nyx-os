@@ -83,10 +83,10 @@ int dhcp_request(int iface_idx) {
             uint8_t *rx = dhcp_rx_buf;
             uint32_t rx_xid;
             memcpy(&rx_xid, &rx[4], 4);
-            uint32_t cookie;
-            memcpy(&cookie, &rx[236], 4);   // magic cookie at BOOTP offset 236
+            uint32_t rx_cookie;              // the cookie we RECEIVED (distinct from the sent `cookie` above)
+            memcpy(&rx_cookie, &rx[236], 4);  // magic cookie at BOOTP offset 236
 
-            if (rx_xid == dhcp_xid && rx[0] == 2 && cookie == DHCP_MAGIC_COOKIE) {
+            if (rx_xid == dhcp_xid && rx[0] == 2 && rx_cookie == DHCP_MAGIC_COOKIE) {
                 int o = 240;                 // options begin at 240
                 uint8_t msg_type = 0;
                 while (o < dhcp_rx_len && rx[o] != DHCP_OPT_END) {
