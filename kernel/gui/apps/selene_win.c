@@ -333,7 +333,14 @@ static void sel_emit(char* txt, uint8_t* tlink, uint8_t* tfield, uint32_t* ti, u
 #define SEL_TBL_COLCAP   22      // max display width of one column (chars)
 #define SEL_TBL_ROWCAP   84      // max total row width (< SEL_WRAP, so rows never word-wrap)
 
-typedef struct { uint32_t s, e; uint16_t row, col; uint8_t th; } sel_tcell_t;
+typedef struct { uint32_t s, e; uint16_t row, col; uint8_t th, cspan, rspan; } sel_tcell_t;
+
+// Read an integer tag attribute (e.g. colspan/rowspan) from the tag in body[s..e); 0 if absent.
+static int sel_span_attr(const uint8_t* body, uint32_t s, uint32_t e, const char* name) {
+    char b[8]; extract_attr(body, s, e, name, b, sizeof(b));
+    int v = 0; const char* q = b; while (*q >= '0' && *q <= '9') { v = v * 10 + (*q - '0'); q++; }
+    return v;
+}
 
 // If body[i] opens/closes exactly tag `nm`, return 1, set *close (1=closing) and *past (just after '>').
 static int sel_tag_match(const uint8_t* body, uint32_t i, uint32_t e, const char* nm, int* close, uint32_t* past) {
@@ -380,10 +387,14 @@ static void render_table(const uint8_t* body, uint32_t ts, uint32_t te,
                          char* txt, uint8_t* tlink, uint8_t* tfield, uint32_t* pti, uint32_t cap) {
     sel_tcell_t* cells = (sel_tcell_t*)kmalloc(SEL_TBL_MAXCELLS * sizeof(sel_tcell_t));
     if (!cells) return;
+    uint8_t* occ = (uint8_t*)kmalloc(SEL_TBL_MAXROWS * SEL_TBL_MAXCOLS);   // grid: 1 = covered by a span
+    if (!occ) { kfree(cells); return; }
+    for (int z = 0; z < SEL_TBL_MAXROWS * SEL_TBL_MAXCOLS; z++) occ[z] = 0;
     int colw[SEL_TBL_MAXCOLS]; for (int c = 0; c < SEL_TBL_MAXCOLS; c++) colw[c] = 0;
     int ncols = 0, nrows = 0, ncells = 0, has_header = 0, row = -1, curcol = 0;
 
-    // Pass 1 — collect cells (row, col, byte range, th?) and each column's max content width.
+    // Pass 1 — collect cells (row, col, col/row span, th?, byte range). colspan/rowspan cells reserve
+    // their footprint in the occupancy grid so later cells skip past covered columns and stay aligned.
     for (uint32_t i = ts; i < te && ncells < SEL_TBL_MAXCELLS; ) {
         if (body[i] != '<') { i++; continue; }
         int close; uint32_t past;
@@ -396,6 +407,8 @@ static void render_table(const uint8_t* body, uint32_t ts, uint32_t te,
         else if (sel_tag_match(body, i, te, "th", &close, &past) && !close) { isopen = 1; isth = 1; cpast = past; }
         if (isopen) {
             if (row < 0) { row = 0; nrows = 1; curcol = 0; }         // cells before an explicit <tr>
+            int cspan = sel_span_attr(body, i, cpast, "colspan"); if (cspan < 1) cspan = 1; if (cspan > SEL_TBL_MAXCOLS) cspan = SEL_TBL_MAXCOLS;
+            int rspan = sel_span_attr(body, i, cpast, "rowspan"); if (rspan < 1) rspan = 1; if (rspan > SEL_TBL_MAXROWS) rspan = SEL_TBL_MAXROWS;
             uint32_t k = cpast;                                       // find the cell's end (next cell/row/table tag)
             while (k < te) {
                 if (body[k] == '<') { int c3; uint32_t p3;
@@ -403,24 +416,46 @@ static void render_table(const uint8_t* body, uint32_t ts, uint32_t te,
                         sel_tag_match(body,k,te,"tr",&c3,&p3) || sel_tag_match(body,k,te,"table",&c3,&p3)) break; }
                 k++;
             }
+            while (curcol < SEL_TBL_MAXCOLS && occ[row * SEL_TBL_MAXCOLS + curcol]) curcol++;   // skip rowspan-covered cols
             if (curcol < SEL_TBL_MAXCOLS) {
-                char cb[SEL_TBL_COLCAP + 2];
-                int w = sel_cell_text(body, cpast, k, cb, sizeof(cb), 0);   // measure (capped at COLCAP)
-                if (w > SEL_TBL_COLCAP) w = SEL_TBL_COLCAP;
-                if (w > colw[curcol]) colw[curcol] = w;
+                if (curcol + cspan > SEL_TBL_MAXCOLS) cspan = SEL_TBL_MAXCOLS - curcol;
+                for (int rr = 0; rr < rspan && row + rr < SEL_TBL_MAXROWS; rr++)     // reserve the footprint
+                    for (int cc = 0; cc < cspan; cc++) occ[(row + rr) * SEL_TBL_MAXCOLS + (curcol + cc)] = 1;
+                char cb[SEL_TBL_ROWCAP + 2];
+                int w = sel_cell_text(body, cpast, k, cb, sizeof(cb), 0);
+                if (cspan == 1) { if (w > SEL_TBL_COLCAP) w = SEL_TBL_COLCAP; if (w > colw[curcol]) colw[curcol] = w; }
                 cells[ncells].s = cpast; cells[ncells].e = k;
-                cells[ncells].row = (uint16_t)row; cells[ncells].col = (uint16_t)curcol; cells[ncells].th = (uint8_t)isth;
+                cells[ncells].row = (uint16_t)row; cells[ncells].col = (uint16_t)curcol;
+                cells[ncells].th = (uint8_t)isth; cells[ncells].cspan = (uint8_t)cspan; cells[ncells].rspan = (uint8_t)rspan;
                 ncells++;
                 if (isth) has_header = 1;
-                if (curcol + 1 > ncols) ncols = curcol + 1;
+                if (curcol + cspan > ncols) ncols = curcol + cspan;
+                if (row + rspan > nrows) nrows = row + rspan;
+                curcol += cspan;
             }
-            curcol++;
             i = k; continue;
         }
         { uint32_t k = i + 1; while (k < te && body[k] != '>') k++; if (k < te) k++; i = k; }   // skip other tag
     }
-    if (ncols == 0 || nrows == 0) { kfree(cells); return; }
+    if (ncols == 0 || nrows == 0) { kfree(cells); kfree(occ); return; }
+    if (ncols > SEL_TBL_MAXCOLS) ncols = SEL_TBL_MAXCOLS;
+    if (nrows > SEL_TBL_MAXROWS) nrows = SEL_TBL_MAXROWS;
     for (int c = 0; c < ncols; c++) if (colw[c] < 1) colw[c] = 1;      // empty columns still get a slot
+
+    // Grow the spanned columns of each colspan cell until its content fits across them.
+    for (int m = 0; m < ncells; m++) {
+        int cs = cells[m].cspan; if (cs <= 1) continue;
+        int c0 = cells[m].col; if (c0 + cs > ncols) cs = ncols - c0; if (cs <= 1) continue;
+        char cb[SEL_TBL_ROWCAP + 2];
+        int need = sel_cell_text(body, cells[m].s, cells[m].e, cb, sizeof(cb), cells[m].th);
+        if (need > SEL_TBL_ROWCAP) need = SEL_TBL_ROWCAP;
+        int span = 3 * (cs - 1); for (int k = 0; k < cs; k++) span += colw[c0 + k];
+        while (span < need) {
+            int bumped = 0;
+            for (int k = 0; k < cs && span < need; k++) if (colw[c0 + k] < SEL_TBL_COLCAP) { colw[c0 + k]++; span++; bumped = 1; }
+            if (!bumped) break;
+        }
+    }
 
     int total = 1; for (int c = 0; c < ncols; c++) total += colw[c] + 3;   // "|" + per col " x |"
     while (total > SEL_TBL_ROWCAP) {                                    // shrink widest column until it fits
@@ -438,14 +473,26 @@ static void render_table(const uint8_t* body, uint32_t ts, uint32_t te,
     sel_emit(txt, tlink, tfield, pti, cap, rule, 0); sel_emit(txt, tlink, tfield, pti, cap, "\n", 0);
     for (int r = 0; r < nrows; r++) {
         char line[SEL_LINE_COLS]; int p = 0; line[p++] = '|';
-        for (int c = 0; c < ncols && p < SEL_LINE_COLS - 2; c++) {
-            char cb[SEL_TBL_COLCAP + 2]; int w = 0; int th = 0;
-            for (int m = 0; m < ncells; m++) if (cells[m].row == r && cells[m].col == c) {
-                th = cells[m].th; w = sel_cell_text(body, cells[m].s, cells[m].e, cb, colw[c] + 1, th); break; }
-            line[p++] = ' ';
-            int z = 0; for (; z < w && z < colw[c] && p < SEL_LINE_COLS - 2; z++) line[p++] = cb[z];
-            for (; z < colw[c] && p < SEL_LINE_COLS - 2; z++) line[p++] = ' ';
-            line[p++] = ' '; line[p++] = '|';
+        int c = 0;
+        while (c < ncols && p < SEL_LINE_COLS - 2) {
+            int found = -1;
+            for (int m = 0; m < ncells; m++) if (cells[m].row == r && cells[m].col == c) { found = m; break; }
+            if (found >= 0) {                                          // a cell starts here — draw across its cspan
+                int cs = cells[found].cspan; if (c + cs > ncols) cs = ncols - c;
+                int spanw = 3 * (cs - 1); for (int k = 0; k < cs; k++) spanw += colw[c + k];
+                char cb[SEL_TBL_ROWCAP + 2];
+                int w = sel_cell_text(body, cells[found].s, cells[found].e, cb, spanw + 1, cells[found].th);
+                line[p++] = ' ';
+                int z = 0; for (; z < w && z < spanw && p < SEL_LINE_COLS - 2; z++) line[p++] = cb[z];
+                for (; z < spanw && p < SEL_LINE_COLS - 2; z++) line[p++] = ' ';
+                line[p++] = ' '; line[p++] = '|';
+                c += cs;
+            } else {                                                  // empty, or covered by a span — blank column
+                line[p++] = ' ';
+                for (int z = 0; z < colw[c] && p < SEL_LINE_COLS - 2; z++) line[p++] = ' ';
+                line[p++] = ' '; line[p++] = '|';
+                c += 1;
+            }
         }
         line[p] = '\0';
         sel_emit(txt, tlink, tfield, pti, cap, line, 0); sel_emit(txt, tlink, tfield, pti, cap, "\n", 0);
@@ -453,7 +500,7 @@ static void render_table(const uint8_t* body, uint32_t ts, uint32_t te,
     }
     sel_emit(txt, tlink, tfield, pti, cap, rule, 0);
     *pti = sel_ensure_nl(txt, tlink, *pti, cap, 2);
-    kfree(cells);
+    kfree(cells); kfree(occ);
 }
 
 // Free a decoded <img>'s pixels: an animated GIF owns its frames array (px only ALIASES the current
@@ -1790,6 +1837,26 @@ int selene_form_selftest(void) {
         if (ok) { pass++; printf("selene-form: HTTP 301 redirect parse (status + Location) PASS\n"); }
         else printf("selene-form: HTTP redirect parse FAIL (code=%d loc=%s)\n", rr.status_code, rr.location);
         http_free(&rr);
+    }
+
+    // 11) table colspan/rowspan: a header spanning 2 columns renders as one wide cell, and a rowspan
+    // keeps the following row's cell aligned in the right column (col 0 blank under the spanning cell).
+    total++;
+    {
+        static const char* T1 = "<table><tr><th colspan=\"2\">Group</th></tr><tr><td>A</td><td>B</td></tr></table>";
+        render_html(s, (const uint8_t*)T1, (uint32_t)strlen(T1));
+        int cspan_ok = 0, data_ok = 0;
+        for (int li = 0; li < s->num_lines; li++) {
+            if (sel_streq(s->lines[li], "| GROUP |")) cspan_ok = 1;   // <th> is upper-cased, spanning both cols
+            if (sel_streq(s->lines[li], "| A | B |")) data_ok = 1;
+        }
+        static const char* T2 = "<table><tr><td rowspan=\"2\">R</td><td>x</td></tr><tr><td>y</td></tr></table>";
+        render_html(s, (const uint8_t*)T2, (uint32_t)strlen(T2));
+        int rspan_ok = 0;
+        for (int li = 0; li < s->num_lines; li++) if (sel_streq(s->lines[li], "|   | y |")) rspan_ok = 1;  // y aligned in col 1
+        if (cspan_ok && data_ok && rspan_ok)
+            { pass++; printf("selene-form: table colspan + rowspan (spanning header + aligned rowspan) PASS\n"); }
+        else printf("selene-form: table span FAIL (cspan=%d data=%d rspan=%d)\n", cspan_ok, data_ok, rspan_ok);
     }
 
     selene_free_ctx(s);
