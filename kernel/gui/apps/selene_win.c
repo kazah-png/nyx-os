@@ -32,6 +32,9 @@
 #define SEL_MAX_LINES 1200
 #define SEL_LIST_MAXDEPTH 8     // <ul>/<ol> nesting tracked for indent + <ol> numbering (deeper = clamped)
 #define SEL_LIST_INDENT   2     // spaces of indent added per list nesting level
+#define SEL_QUOTE_MAXDEPTH 8    // <blockquote> nesting tracked for the left margin (deeper = clamped)
+#define SEL_QUOTE_INDENT  4     // spaces of left margin added per <blockquote> nesting level
+#define SEL_PRE_TAB       4     // a tab in <pre> text expands to this many spaces
 #define SEL_MAX_LINKS 240       // per page; link id stored as a uint8 (index+1)
 #define SEL_HIST      32        // Back history depth
 #define SEL_MAX_FORMS  16       // <form>s per page
@@ -215,8 +218,11 @@ static void selene_resolve(selene_ctx_t* s, const char* href, char* out) {
 }
 
 // ---- word-wrap a stripped-text buffer into ctx->lines, carrying per-char link ids ----
+// tindent[i] = the <blockquote> nesting level in effect at char i; a fresh line (hard '\n' OR soft
+// word-wrap) whose content sits at level L is prefixed with L*SEL_QUOTE_INDENT spaces, so a quoted
+// paragraph stays indented even where it wraps. Level 0 (the common case) is byte-for-byte unchanged.
 static void wrap_text(selene_ctx_t* s, const char* txt, const uint8_t* tlink, const uint8_t* tfield,
-                      const uint8_t* timg, uint32_t ti) {
+                      const uint8_t* timg, const uint8_t* tindent, uint32_t ti) {
     int li = 0, col = 0, bol = 1;   // bol: at a HARD line start (after '\n') — preserve intentional leading indent
     s->lines[0][0] = '\0';
     uint32_t i = 0;
@@ -238,15 +244,18 @@ static void wrap_text(selene_ctx_t* s, const char* txt, const uint8_t* tlink, co
         uint32_t st = i;
         while (i < ti && txt[i] != ' ' && txt[i] != '\n') i++;
         int wlen = (int)(i - st);
+        int indent = (int)tindent[st] * SEL_QUOTE_INDENT;     // <blockquote> left margin for this word's line
         int off = 0;
         while (wlen > 0 && li < SEL_MAX_LINES) {
-            if (col > 0 && col + wlen > SEL_WRAP) {           // word won't fit: next line
+            if (col > indent && col + wlen > SEL_WRAP) {       // word won't fit: next line
                 if (col > 0 && s->lines[li][col-1] == ' ') col--;
                 s->lines[li][col] = '\0';
-                li++; col = 0; bol = 0;                        // soft-wrapped continuation: no leading indent
+                li++; col = 0; bol = 0;                        // soft-wrapped continuation (indent re-applied below)
                 if (li >= SEL_MAX_LINES) break;
                 s->lines[li][0] = '\0';
             }
+            if (col == 0 && indent > 0)                        // fresh line inside a <blockquote>: left margin
+                for (int q = 0; q < indent && col < SEL_LINE_COLS - 1; q++) s->lines[li][col++] = ' ';
             int take = wlen;
             if (take > SEL_WRAP - col) take = SEL_WRAP - col; // hard-split an over-long word
             if (take <= 0) { s->lines[li][col] = '\0'; li++; col = 0; bol = 0; if (li < SEL_MAX_LINES) s->lines[li][0]='\0'; continue; }
@@ -612,16 +621,21 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
     uint8_t* tlink  = (uint8_t*)kmalloc(len + 1);
     uint8_t* tfield = (uint8_t*)kmalloc(len + 1);
     uint8_t* timg   = (uint8_t*)kmalloc(len + 1);
-    if (!txt || !tlink || !tfield || !timg) {
-        if (txt) kfree(txt); if (tlink) kfree(tlink); if (tfield) kfree(tfield); if (timg) kfree(timg); return; }
-    __builtin_memset(tfield, 0, len + 1);
-    __builtin_memset(timg,   0, len + 1);
+    uint8_t* tindent= (uint8_t*)kmalloc(len + 1);            // per-char <blockquote> nesting level (for wrap_text)
+    if (!txt || !tlink || !tfield || !timg || !tindent) {
+        if (txt) kfree(txt); if (tlink) kfree(tlink); if (tfield) kfree(tfield); if (timg) kfree(timg); if (tindent) kfree(tindent); return; }
+    __builtin_memset(tfield,  0, len + 1);
+    __builtin_memset(timg,    0, len + 1);
+    __builtin_memset(tindent, 0, len + 1);
     uint32_t ti = 0;
     int last_space = 1;
     int cur_link = 0;                                         // link id in progress (0 = none)
     int cur_field = 0;                                        // field id in progress (<button> label text)
     int cur_form = -1;                                        // the <form> currently open (-1 = none)
     int cur_hd = 0;                                           // inside an <h1>/<h2> (upper-case its text)
+    int pre_mode = 0;                                         // inside <pre> (preserve whitespace literally)
+    int pre_skip_nl = 0;                                      // swallow one newline right after <pre> (like browsers)
+    int quote_depth = 0;                                      // <blockquote> nesting (left margin level)
     struct { uint8_t ordered; uint16_t counter; } liststk[SEL_LIST_MAXDEPTH];  // <ul>/<ol> nesting
     int listdepth = 0;                                        // 0 = not in a list
     for (uint32_t i = 0; i < len && ti < len; ) {
@@ -630,8 +644,8 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
             uint32_t j = i + 1;
             int close = 0;
             if (j < len && body[j] == '/') { close = 1; j++; }
-            char name[10]; int nl = 0;
-            while (j < len && nl < 9) {
+            char name[16]; int nl = 0;                        // 16 so 10-char tags (blockquote/figcaption) fit
+            while (j < len && nl < 15) {
                 char t = (char)body[j];
                 if ((t>='a'&&t<='z')||(t>='A'&&t<='Z')||(t>='0'&&t<='9')) { name[nl++] = (t>='A'&&t<='Z')?t+32:t; j++; }
                 else break;
@@ -837,6 +851,16 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                     txt[ti]='-'; tlink[ti]=0; ti++; txt[ti]=' '; tlink[ti]=0; ti++;
                 }
                 last_space = 1;
+            } else if (sel_streq(name, "pre")) {
+                ti = sel_ensure_nl(txt, tlink, ti, len, 2);   // block break around a preformatted block
+                pre_mode = !close;                            // inside: whitespace is preserved literally
+                if (!close) pre_skip_nl = 1;                  // ...but a single newline right after <pre> is dropped
+                last_space = 1;
+            } else if (sel_streq(name, "blockquote")) {
+                ti = sel_ensure_nl(txt, tlink, ti, len, 2);   // block break around the quote
+                if (!close) { if (quote_depth < SEL_QUOTE_MAXDEPTH) quote_depth++; }   // deeper left margin
+                else        { if (quote_depth > 0) quote_depth--; }
+                last_space = 1;
             } else if (sel_streq(name,"br") || sel_streq(name,"tr") || sel_streq(name,"dd") || sel_streq(name,"dt")) {
                 ti = sel_ensure_nl(txt, tlink, ti, len, 1);
                 last_space = 1;
@@ -851,27 +875,39 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
         }
         if (c == '&') {
             char eb[8]; uint32_t el, adv;
+            pre_skip_nl = 0;                                   // an entity is content: a later <pre> newline counts
             if (decode_entity(body + i, len - i, eb, sizeof(eb), &el, &adv)) {
                 for (uint32_t k = 0; k < el && ti < len; k++) {
                     char dec = eb[k];
-                    if (dec == ' ') { if (!last_space) { txt[ti] = ' '; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; ti++; last_space = 1; } }
-                    else { if (cur_hd && dec >= 'a' && dec <= 'z') dec -= 32; txt[ti] = dec; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; ti++; last_space = 0; }
+                    if (dec == ' ') { if (pre_mode || !last_space) { txt[ti] = ' '; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 1; } }
+                    else { if (cur_hd && dec >= 'a' && dec <= 'z') dec -= 32; txt[ti] = dec; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 0; }
                 }
                 i += adv;
-            } else { txt[ti] = '&'; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; ti++; last_space = 0; i++; }
+            } else { txt[ti] = '&'; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 0; i++; }
             continue;
         }
         if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
-            if (!last_space) { txt[ti] = ' '; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; ti++; last_space = 1; }
+            if (pre_mode) {                                   // <pre>: keep whitespace literally
+                if (c == '\r') { i++; continue; }             // drop CR (part of a CRLF)
+                if (c == '\n') {
+                    if (pre_skip_nl) { pre_skip_nl = 0; i++; continue; }   // swallow the single newline after <pre>
+                    txt[ti] = '\n'; tlink[ti] = 0; tfield[ti] = 0; tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 1;
+                } else if (c == '\t') { pre_skip_nl = 0; for (int q = 0; q < SEL_PRE_TAB && ti < len; q++) { txt[ti]=' '; tlink[ti]=(uint8_t)cur_link; tfield[ti]=0; tindent[ti]=(uint8_t)quote_depth; ti++; } last_space = 0; }
+                else { pre_skip_nl = 0; txt[ti] = ' '; tlink[ti] = (uint8_t)cur_link; tfield[ti] = 0; tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 0; }
+                i++;
+                continue;
+            }
+            if (!last_space) { txt[ti] = ' '; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 1; }
             i++;
             continue;
         }
         if (cur_hd && c >= 'a' && c <= 'z') c -= 32;          // upper-case h1/h2 text
-        txt[ti] = c; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; ti++; last_space = 0; i++;
+        pre_skip_nl = 0;                                       // real content: a later <pre> newline is significant
+        txt[ti] = c; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 0; i++;
     }
     txt[ti] = '\0';
-    wrap_text(s, txt, tlink, tfield, timg, ti);
-    kfree(txt); kfree(tlink); kfree(tfield); kfree(timg);
+    wrap_text(s, txt, tlink, tfield, timg, tindent, ti);
+    kfree(txt); kfree(tlink); kfree(tfield); kfree(timg); kfree(tindent);
 }
 
 // Parse http[://]host[:port][/path] into host/port/path (same shape as `httpget`).
@@ -2020,6 +2056,27 @@ int selene_form_selftest(void) {
         if (n1 && n2 && n3 && pa && c1 && c2 && pb)
             { pass++; printf("selene-form: ordered + nested lists (numbered <ol> + indented nesting) PASS\n"); }
         else printf("selene-form: list FAIL (ol=%d,%d,%d nest a=%d 1=%d 2=%d b=%d)\n", n1, n2, n3, pa, c1, c2, pb);
+    }
+
+    // 14) <pre> preserves whitespace (multiple spaces + line breaks kept verbatim), and <blockquote>
+    // indents every line of the quote by SEL_QUOTE_INDENT (4) spaces via the tindent margin in wrap_text.
+    total++;
+    {
+        static const char* PRE = "<pre>a  b\n  c</pre>";               // 2 spaces mid-line, 2 leading on line 2
+        render_html(s, (const uint8_t*)PRE, (uint32_t)strlen(PRE));
+        int p1 = 0, p2 = 0;
+        for (int li = 0; li < s->num_lines; li++) {
+            if (sel_streq(s->lines[li], "a  b")) p1 = 1;               // interior double space kept
+            if (sel_streq(s->lines[li], "  c"))  p2 = 1;               // leading indent kept
+        }
+        static const char* BQ = "<blockquote>Quoted text here</blockquote>";
+        render_html(s, (const uint8_t*)BQ, (uint32_t)strlen(BQ));
+        int q1 = 0;
+        for (int li = 0; li < s->num_lines; li++)
+            if (sel_streq(s->lines[li], "    Quoted text here")) q1 = 1;  // 4-space left margin
+        if (p1 && p2 && q1)
+            { pass++; printf("selene-form: <pre> whitespace + <blockquote> indent PASS\n"); }
+        else printf("selene-form: pre/blockquote FAIL (pre a  b=%d, pre indent=%d, quote=%d)\n", p1, p2, q1);
     }
 
     selene_free_ctx(s);
