@@ -24,6 +24,7 @@
 #include "png.h"
 #include "bmp.h"
 #include "gif.h"
+#include "jpeg.h"
 #include "selene_win.h"
 #include "rsa.h"
 #include "sha512.h"
@@ -153,6 +154,7 @@ static void cmd_deflatetest(int argc, char** argv);
 static void cmd_pngtest(int argc, char** argv);
 static void cmd_bmptest(int argc, char** argv);
 static void cmd_giftest(int argc, char** argv);
+static void cmd_jpegtest(int argc, char** argv);
 static void cmd_rsatest(int argc, char** argv);
 static void cmd_sha512test(int argc, char** argv);
 static void cmd_chaintest(int argc, char** argv);
@@ -258,6 +260,7 @@ static const command_t commands[] = {
     {"pngtest",   cmd_pngtest,   "PNG image decoder self-test (color types + filters)", false},
     {"bmptest",   cmd_bmptest,   "BMP image decoder self-test (24/32/8-bit + top-down)", false},
     {"giftest",   cmd_giftest,   "GIF image decoder self-test (LZW + interlace + transparency)", false},
+    {"jpegtest",  cmd_jpegtest,  "JPEG (baseline) decoder self-test (Huffman + IDCT + YCbCr)", false},
     {"rsatest",   cmd_rsatest,   "RSA PKCS#1 v1.5 SHA-256 signature-verify self-test", false},
     {"sha512test",cmd_sha512test,"SHA-512 / SHA-384 self-test (FIPS 180-4 vectors)", false},
     {"chaintest", cmd_chaintest, "X.509 certificate-chain verification self-test (pinned root)", false},
@@ -1685,6 +1688,13 @@ static void cmd_giftest(int argc, char** argv) {
     (void)argc; (void)argv;
     printf("Running GIF decoder self-test (LZW, interlace, transparency, vs expected RGBA)...\n");
     gif_selftest();
+}
+
+// `jpegtest` — self-test the baseline JPEG decoder: Huffman + IDCT + YCbCr, vs Pillow within tolerance.
+static void cmd_jpegtest(int argc, char** argv) {
+    (void)argc; (void)argv;
+    printf("Running JPEG decoder self-test (grayscale + 4:4:4 + 4:2:0, vs reference within tolerance)...\n");
+    jpeg_selftest();
 }
 
 // `rsatest` — self-test RSA PKCS#1 v1.5 SHA-256 signature verification, needed to check the
