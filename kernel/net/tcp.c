@@ -464,6 +464,19 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t 
     // is not acked past data we had to drop under memory pressure.
     int data_accepted = 0;
     if (payload_len > 0 && (flags & TCP_FLAG_ACK)) {
+        // In-order gate: accept data only if it starts exactly at conn->ack (the next
+        // byte we expect). Before this the payload was appended blindly, so a retransmitted
+        // duplicate (the peer resent because our ACK was lost — seq before ack) had its
+        // bytes stored a SECOND time, and an out-of-order segment (a gap — seq past ack)
+        // was stored as if contiguous and jumped ack over data we never received. We do
+        // not buffer out-of-order data, so drop the payload and re-send an ACK of our true
+        // position, which tells the peer to resend from there. (Signed compare tolerates
+        // seq wraparound, like the cumulative-ACK check above.) A FIN in the same segment
+        // sequences past this data, so recv_drop skips it too via the data_accepted guard.
+        if ((int32_t)(seq - conn->ack) != 0) {
+            send_segment(conn, TCP_FLAG_ACK, NULL, 0);
+            goto recv_drop;
+        }
         // Received data — store it (the recv buffer grows on demand). On an allocation FAILURE we
         // drop the segment: don't advance recv_len/ack and don't ACK, so the peer retransmits later.
         // (The old code dereferenced a NULL recv_buf / new_buf right below and crashed the kernel
