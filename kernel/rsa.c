@@ -10,6 +10,7 @@
 // library. The certificate-chain walking that uses this is the next increment.
 #include "kernel.h"
 #include "rsa.h"
+#include "sha256.h"
 
 #define RSA_MAX_LIMBS 64                 // up to RSA-4096
 typedef uint64_t bn[RSA_MAX_LIMBS];      // little-endian 64-bit limbs
@@ -90,6 +91,74 @@ int rsa_pkcs1_sha256_verify(const uint8_t* Nb, uint32_t Nlen, uint64_t e,
     return 0;
 }
 
+// SHA-256 of (a || b), either part optional.
+static void sha256_cat(const uint8_t* a, uint32_t al, const uint8_t* b, uint32_t bl, uint8_t out[32]) {
+    sha256_ctx_t c; sha256_init(&c);
+    if (a && al) sha256_update(&c, a, al);
+    if (b && bl) sha256_update(&c, b, bl);
+    sha256_final(&c, out);
+}
+
+// RSASSA-PSS verify with SHA-256, MGF1-SHA256, salt length 32 (rsa_pss_rsae_sha256, TLS 0x0804).
+// Returns 0 if the signature over `mHash` is valid under (N, e), -1 otherwise.
+int rsa_pss_sha256_verify(const uint8_t* Nb, uint32_t Nlen, uint64_t e,
+                          const uint8_t* sig, uint32_t siglen, const uint8_t mHash[32]) {
+    if (Nlen == 0 || Nlen > RSA_MAX_LIMBS * 8 || siglen != Nlen) return -1;
+    int L = (int)((Nlen + 7) / 8);
+    bn N, S, M;
+    bn_from_be(N, Nb, Nlen);
+    bn_from_be(S, sig, siglen);
+    if (bn_ge(S, N, L)) return -1;                   // signature must be < modulus
+    bn_modexp(M, S, e, N, L);
+    uint8_t em[RSA_MAX_LIMBS * 8];
+    bn_to_be(M, em, Nlen);
+
+    const uint32_t hLen = 32, sLen = 32;
+    uint32_t modBits = 0;                            // bit length of N
+    for (uint32_t i = 0; i < Nlen; i++) {
+        if (Nb[i]) { int hb = 7; while (hb > 0 && !((Nb[i] >> hb) & 1)) hb--; modBits = (Nlen - 1 - i) * 8 + hb + 1; break; }
+    }
+    if (modBits == 0) return -1;
+    uint32_t emBits = modBits - 1;
+    uint32_t emLen  = (emBits + 7) / 8;
+    if (emLen < hLen + sLen + 2 || emLen > Nlen) return -1;
+    const uint8_t* EM = em + (Nlen - emLen);         // the emLen-byte encoded message
+    if (EM[emLen - 1] != 0xbc) return -1;
+
+    uint32_t dbLen = emLen - hLen - 1;               // EM = maskedDB(dbLen) || H(hLen) || 0xbc
+    const uint8_t* maskedDB = EM;
+    const uint8_t* H = EM + dbLen;
+    uint32_t numMaskBits = 8 * emLen - emBits;       // top bits of maskedDB[0] that must be zero
+    if (numMaskBits > 0 && (maskedDB[0] >> (8 - numMaskBits)) != 0) return -1;
+
+    // DB = maskedDB XOR MGF1(H, dbLen)
+    uint8_t DB[RSA_MAX_LIMBS * 8];
+    uint32_t gen = 0, counter = 0;
+    while (gen < dbLen) {
+        uint8_t cb[4] = { (uint8_t)(counter >> 24), (uint8_t)(counter >> 16), (uint8_t)(counter >> 8), (uint8_t)counter };
+        uint8_t md[32];
+        sha256_cat(H, hLen, cb, 4, md);
+        for (uint32_t j = 0; j < 32 && gen < dbLen; j++, gen++) DB[gen] = maskedDB[gen] ^ md[j];
+        counter++;
+    }
+    if (numMaskBits > 0) DB[0] &= (uint8_t)(0xFF >> numMaskBits);
+
+    // DB must be: PS(0x00...) || 0x01 || salt(sLen)
+    uint32_t psLen = dbLen - sLen - 1;
+    for (uint32_t i = 0; i < psLen; i++) if (DB[i] != 0x00) return -1;
+    if (DB[psLen] != 0x01) return -1;
+    const uint8_t* salt = DB + psLen + 1;
+
+    // H' = SHA-256( 0x00*8 || mHash || salt );  valid iff H' == H
+    uint8_t mp[8 + 32 + 32], hp[32];
+    for (int i = 0; i < 8; i++) mp[i] = 0;
+    for (int i = 0; i < 32; i++) mp[8 + i] = mHash[i];
+    for (uint32_t i = 0; i < sLen; i++) mp[40 + i] = salt[i];
+    sha256_cat(mp, 8 + 32 + sLen, 0, 0, hp);
+    for (int i = 0; i < 32; i++) if (hp[i] != H[i]) return -1;
+    return 0;
+}
+
 // ---- known-answer self-test ----------------------------------------------------------
 static int hv(char c) {
     if (c >= '0' && c <= '9') return c - '0';
@@ -143,6 +212,38 @@ int rsa_selftest(void) {
     if (rsa_pkcs1_sha256_verify(N, 256, 65537, s2, 256, hash) == -1) {
         pass++; printf("rsa: tampered signature rejected PASS\n");
     } else   printf("rsa: tampered signature rejected FAIL\n");
+
+    // RSA-PSS (rsa_pss_rsae_sha256, TLS 0x0804): a valid PSS signature accepted, a tamper rejected.
+    {
+        static const char PSS_N[] =
+            "b800c5db05821ef1e06bae15c30440078b82e5cf6f6de0f9d30b0672c672cb1b"
+            "ab14de82bcaf55684faaba42462515915c531b3cee70cfdf217f01aeec40db66"
+            "9150a2d19911b8ffd4cd55690f34b94e04fd4209ce15a5fc9c65e2e23202f67d"
+            "d13d87e42ef0d9ee30de7eb92f82399a7b5925a14b4d92e7d8b3282fcd2d7986"
+            "048bcb62f372895e01a51d723834e38e0c5919d89913aa66f37aa8fcd35e0a13"
+            "6b45c6417ce090a13b189f51937e07a81d1d1c03d75cfc7240c7a15a0b7d82d0"
+            "f1a4c946534e172a4dd096f1bcaebe358f6bd4841eed838e56695de17425aff4"
+            "7275159870ace264e4aa2ee3ce2b525edc1b5336e9d23037a06f57f026cb9013";
+        static const char PSS_SIG[] =
+            "5a9e9430a170487ebe0186f486ba11e67d1d6bd5189169a9b3026c4d57cf668d"
+            "616db1d1ea23d2ec0fd509074247590a9afc65ebc83635fa15884b2aeacf3ddc"
+            "70d5577394ad841cd9ae41533227246f2f1dde6e705f99c726c77f1bedb255d4"
+            "15bdc935295bb3212bc47fe96b3db1db8f3e6dc085e0c03f6dcaa4280901c6fa"
+            "ee9b0849ccf59e622f38ea1bbc47bac3401a024104a6d7235ba5d3eaa4626478"
+            "21507b8b7ef90263d227982804dfdb66f1f575f1dda6ef75514640780538fcfc"
+            "e41e2649b6d9f911f897c8811e33316fa80311b68ff1a3a65fa3c42e98548280"
+            "633e9aab6bba51f59389e16080ee327d36817fa25a2d748e393336b5798c64c4";
+        static const char PSS_HASH[] = "e10133de6fe14070327bddd938bb525181ec7c323ff1a7e503e3a97dc3601794";
+        uint8_t pn[256], psig[256], ph[32], ph2[32];
+        unhexs(pn, PSS_N, 256); unhexs(psig, PSS_SIG, 256); unhexs(ph, PSS_HASH, 32);
+        total++;
+        if (rsa_pss_sha256_verify(pn, 256, 65537, psig, 256, ph) == 0) { pass++; printf("rsa: RSA-2048 PSS SHA-256 valid signature PASS\n"); }
+        else   printf("rsa: RSA-2048 PSS SHA-256 valid signature FAIL\n");
+        for (int i = 0; i < 32; i++) ph2[i] = ph[i]; ph2[5] ^= 0x01;
+        total++;
+        if (rsa_pss_sha256_verify(pn, 256, 65537, psig, 256, ph2) == -1) { pass++; printf("rsa: PSS tampered hash rejected PASS\n"); }
+        else   printf("rsa: PSS tampered hash rejected FAIL\n");
+    }
 
     printf("rsa: self-test %d/%d passed\n", pass, total);
     return (pass == total) ? 0 : -1;

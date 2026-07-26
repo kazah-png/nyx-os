@@ -462,10 +462,12 @@ int tls_https_request(const char* host, const char* path, const char* method,
 
         // ---- Verify the ServerKeyExchange signature against the leaf certificate ----------
         // Proves the ECDHE parameters were signed by the private key matching the leaf certificate:
-        // ECDSA-P256 (v5.9.61) or RSA-PKCS1-SHA256 (v5.9.71). The signed data is
-        // SHA-256(client_random ‖ server_random ‖ ServerECDHParams). (This is authenticity of the
+        // ECDSA-P256 (v5.9.61), RSA-PKCS1-SHA256 (v5.9.71), or RSA-PSS-SHA256 (v5.9.74). The signed
+        // data is SHA-256(client_random ‖ server_random ‖ ServerECDHParams). (Authenticity of the
         // key exchange; the certificate's chain to a trusted root is checked separately, above.)
-        if (leaf_ptr && ske_sig_len && (ske_sig_alg == 0x0403 || ske_sig_alg == 0x0401)) {
+        int ske_ok = 0;
+        if (leaf_ptr && ske_sig_len &&
+            (ske_sig_alg == 0x0403 || ske_sig_alg == 0x0401 || ske_sig_alg == 0x0804)) {
             uint8_t e[32]; sha256_ctx_t hc; sha256_init(&hc);
             sha256_update(&hc, tls_client_random, 32);
             sha256_update(&hc, tls_server_random, 32);
@@ -487,18 +489,21 @@ int tls_https_request(const char* host, const char* path, const char* method,
                         }
                     }
                 }
-            } else {                                                   // RSA-PKCS1-v1.5 over SHA-256
-                scheme = "RSA";
+            } else {                                                   // RSA: PKCS1 (0x0401) or PSS (0x0804)
+                int pss = (ske_sig_alg == 0x0804);
+                scheme = pss ? "RSA-PSS" : "RSA-PKCS1";
                 der_pubkey_t pk;
                 if (der_x509_pubkey(leaf_ptr, cert0, &pk) == 0 && pk.type == DER_KEY_RSA) {
                     const uint8_t* N = pk.rsa_n; uint32_t Nl = pk.rsa_n_len;
                     while (Nl > 1 && N[0] == 0x00) { N++; Nl--; }       // strip DER INTEGER leading zero
                     uint64_t ev = 0;
                     for (uint32_t k = 0; k < pk.rsa_e_len && k < 8; k++) ev = (ev << 8) | pk.rsa_e[k];
-                    checked = rsa_pkcs1_sha256_verify(N, Nl, ev, tls_ske_sig, ske_sig_len, e);
+                    checked = pss ? rsa_pss_sha256_verify(N, Nl, ev, tls_ske_sig, ske_sig_len, e)
+                                  : rsa_pkcs1_sha256_verify(N, Nl, ev, tls_ske_sig, ske_sig_len, e);
                 }
             }
             if (checked == 0) {
+                ske_ok = 1;
                 TLSP("TLS: ServerKeyExchange signature VERIFIED against the leaf certificate (%s)\n", scheme);
             } else if (checked == -1) {
                 TLSP("TLS: ServerKeyExchange signature INVALID — aborting the handshake (possible MITM)\n");
@@ -508,6 +513,12 @@ int tls_https_request(const char* host, const char* path, const char* method,
             }
         } else if (got_ske) {
             TLSP("TLS: ServerKeyExchange sig alg 0x%x not supported for verification — proceeding unverified\n", ske_sig_alg);
+        }
+        // Strict mode (v5.9.74): the ServerKeyExchange signature must also be verified — otherwise
+        // an active MITM could substitute its own ECDHE parameters while presenting the real cert.
+        if (tls_strict && got_ske && !ske_ok) {
+            TLSP("TLS: STRICT MODE — refusing %s (ServerKeyExchange signature not verified)\n", host);
+            tcp_close(conn); return -1;
         }
 
         // ---- Finished exchange (v5.9.54) ------------------------------------------------
