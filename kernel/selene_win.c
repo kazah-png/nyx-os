@@ -30,6 +30,7 @@
 #define SEL_HIST      32        // Back history depth
 #define SEL_MAX_FORMS  16       // <form>s per page
 #define SEL_MAX_FIELDS 64       // form controls per page; field id stored as a uint8 (index+1)
+#define SEL_MAX_IMGS   128      // <img>s per page; image id stored as a uint8 (index+1)
 #define SEL_FIELD_W    22       // rendered width (chars) of a text-input box
 
 // Form control kinds.
@@ -40,6 +41,7 @@
 typedef struct { char url[192]; } sel_link_t;
 typedef struct { char action[192]; uint8_t method; } sel_form_t;   // method 0 = GET (only GET so far)
 typedef struct { int form; uint8_t kind; char name[64]; char value[160]; } sel_field_t;
+typedef struct { char alt[64]; char src[160]; } sel_img_t;         // an <img>: alt text + source URL
 
 typedef struct {
     char url[256];
@@ -61,6 +63,11 @@ typedef struct {
     sel_form_t*  forms;                // kmalloc'd SEL_MAX_FORMS
     int  num_forms;
     int  sel_field;              // focused form field index (-1 = none)
+    // Images: a per-char image-id grid (like field_of) and the parsed <img> alt/src, drawn as
+    // framed placeholders (NyxOS has no image decoder yet, so we show the alt text in a box).
+    uint8_t (*img_of)[SEL_LINE_COLS];  // per-char image id (0 = none, else image index+1)
+    sel_img_t* images;                 // kmalloc'd SEL_MAX_IMGS
+    int  num_imgs;
     // base for resolving relative links (from the loaded URL)
     char     base_host[128];
     uint16_t base_port;
@@ -169,7 +176,8 @@ static void selene_resolve(selene_ctx_t* s, const char* href, char* out) {
 }
 
 // ---- word-wrap a stripped-text buffer into ctx->lines, carrying per-char link ids ----
-static void wrap_text(selene_ctx_t* s, const char* txt, const uint8_t* tlink, const uint8_t* tfield, uint32_t ti) {
+static void wrap_text(selene_ctx_t* s, const char* txt, const uint8_t* tlink, const uint8_t* tfield,
+                      const uint8_t* timg, uint32_t ti) {
     int li = 0, col = 0;
     s->lines[0][0] = '\0';
     uint32_t i = 0;
@@ -183,7 +191,7 @@ static void wrap_text(selene_ctx_t* s, const char* txt, const uint8_t* tlink, co
             continue;
         }
         if (c == ' ') {
-            if (col > 0 && col < SEL_LINE_COLS - 1) { s->link_of[li][col] = tlink[i]; s->field_of[li][col] = tfield[i]; s->lines[li][col++] = ' '; }
+            if (col > 0 && col < SEL_LINE_COLS - 1) { s->link_of[li][col] = tlink[i]; s->field_of[li][col] = tfield[i]; s->img_of[li][col] = timg[i]; s->lines[li][col++] = ' '; }
             i++;
             continue;
         }
@@ -205,6 +213,7 @@ static void wrap_text(selene_ctx_t* s, const char* txt, const uint8_t* tlink, co
             for (int k = 0; k < take && col < SEL_LINE_COLS - 1; k++) {
                 s->link_of[li][col] = tlink[st + off + k];
                 s->field_of[li][col] = tfield[st + off + k];
+                s->img_of[li][col] = timg[st + off + k];
                 s->lines[li][col++] = txt[st + off + k];
             }
             off += take; wlen -= take;
@@ -285,14 +294,19 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
     s->num_lines = 0; s->scroll = 0; s->title[0] = '\0';
     s->num_links = 0; s->sel_link = -1;
     s->num_fields = 0; s->num_forms = 0; s->sel_field = -1;
+    s->num_imgs = 0;
     __builtin_memset(s->link_of, 0, SEL_MAX_LINES * SEL_LINE_COLS);
     __builtin_memset(s->field_of, 0, SEL_MAX_LINES * SEL_LINE_COLS);
+    __builtin_memset(s->img_of, 0, SEL_MAX_LINES * SEL_LINE_COLS);
     if (!body || !len) { s->num_lines = 0; return; }
     char*    txt    = (char*)kmalloc(len + 1);
     uint8_t* tlink  = (uint8_t*)kmalloc(len + 1);
     uint8_t* tfield = (uint8_t*)kmalloc(len + 1);
-    if (!txt || !tlink || !tfield) { if (txt) kfree(txt); if (tlink) kfree(tlink); if (tfield) kfree(tfield); return; }
+    uint8_t* timg   = (uint8_t*)kmalloc(len + 1);
+    if (!txt || !tlink || !tfield || !timg) {
+        if (txt) kfree(txt); if (tlink) kfree(tlink); if (tfield) kfree(tfield); if (timg) kfree(timg); return; }
     __builtin_memset(tfield, 0, len + 1);
+    __builtin_memset(timg,   0, len + 1);
     uint32_t ti = 0;
     int last_space = 1;
     int cur_link = 0;                                         // link id in progress (0 = none)
@@ -420,6 +434,34 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                 i = te; if (i < len) i++;
                 continue;
             }
+            if (!close && sel_streq(name, "img") && s->num_imgs < SEL_MAX_IMGS) {   // <img ...> placeholder
+                uint32_t te = j; while (te < len && body[te] != '>') te++;
+                char alt[64], src[160];
+                extract_attr(body, j, te, "alt", alt, sizeof(alt));
+                extract_attr(body, j, te, "src", src, sizeof(src));
+                sel_img_t* im = &s->images[s->num_imgs];
+                strncpy(im->alt, alt, sizeof(im->alt)-1); im->alt[sizeof(im->alt)-1] = '\0';
+                strncpy(im->src, src, sizeof(im->src)-1); im->src[sizeof(im->src)-1] = '\0';
+                int imgid = s->num_imgs + 1; s->num_imgs++;
+                // Caption text: prefer alt, else the src filename, else "image" (kept short so the box fits a line).
+                const char* capsrc = alt[0] ? alt : 0;
+                if (!capsrc) { int last = -1; for (int z = 0; src[z]; z++) if (src[z]=='/') last = z;
+                               capsrc = src[0] ? src + last + 1 : "image"; }
+                char lbl[64]; int b = 0;
+                lbl[b++]='['; lbl[b++]='i'; lbl[b++]='m'; lbl[b++]='g'; lbl[b++]=':'; lbl[b++]=' ';
+                int cl = 0;
+                for (int z = 0; capsrc[z] && cl < 29 && b < (int)sizeof(lbl)-2; z++, cl++) {
+                    char ch = capsrc[z]; if (ch=='\n'||ch=='\r'||ch=='\t') ch = ' '; lbl[b++] = ch;
+                }
+                if (cl == 0) { lbl[b++]='i'; lbl[b++]='m'; lbl[b++]='g'; }   // truly empty: "[img:img]"
+                lbl[b++]=']'; lbl[b]='\0';
+                if (!last_space && ti < len) { txt[ti]=' '; tlink[ti]=0; tfield[ti]=0; timg[ti]=0; ti++; }
+                for (int z = 0; lbl[z] && ti < len; z++) { txt[ti]=lbl[z]; tlink[ti]=0; tfield[ti]=0; timg[ti]=(uint8_t)imgid; ti++; }
+                if (ti < len) { txt[ti]=' '; tlink[ti]=0; tfield[ti]=0; timg[ti]=0; ti++; }
+                last_space = 1;
+                i = te; if (i < len) i++;
+                continue;
+            }
             // Block-level layout so pages read as structure, not one wall of text:
             // headings (h1/h2 also upper-cased for emphasis), list bullets, rules, and
             // paragraph breaks; br/tr/dd/dt are single line breaks.
@@ -468,8 +510,8 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
         txt[ti] = c; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; ti++; last_space = 0; i++;
     }
     txt[ti] = '\0';
-    wrap_text(s, txt, tlink, tfield, ti);
-    kfree(txt); kfree(tlink); kfree(tfield);
+    wrap_text(s, txt, tlink, tfield, timg, ti);
+    kfree(txt); kfree(tlink); kfree(tfield); kfree(timg);
 }
 
 // Parse http[://]host[:port][/path] into host/port/path (same shape as `httpget`).
@@ -656,13 +698,18 @@ void* selene_create_ctx(void) {
     s->links    = (sel_link_t*)kmalloc(SEL_MAX_LINKS * sizeof(sel_link_t));
     s->fields   = (sel_field_t*)kmalloc(SEL_MAX_FIELDS * sizeof(sel_field_t));
     s->forms    = (sel_form_t*)kmalloc(SEL_MAX_FORMS * sizeof(sel_form_t));
-    if (!s->lines || !s->link_of || !s->field_of || !s->links || !s->fields || !s->forms) {
+    s->img_of   = (uint8_t(*)[SEL_LINE_COLS])kmalloc(SEL_MAX_LINES * SEL_LINE_COLS);
+    s->images   = (sel_img_t*)kmalloc(SEL_MAX_IMGS * sizeof(sel_img_t));
+    if (!s->lines || !s->link_of || !s->field_of || !s->links || !s->fields || !s->forms ||
+        !s->img_of || !s->images) {
         if (s->lines) kfree(s->lines);
         if (s->link_of) kfree(s->link_of);
         if (s->field_of) kfree(s->field_of);
         if (s->links) kfree(s->links);
         if (s->fields) kfree(s->fields);
         if (s->forms) kfree(s->forms);
+        if (s->img_of) kfree(s->img_of);
+        if (s->images) kfree(s->images);
         kfree(s); return NULL;
     }
     s->sel_field = -1;
@@ -899,6 +946,29 @@ void selene_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
             c0 = c1f;
         }
 
+        // overlay image placeholders on this line: a framed box with a purple media accent
+        // (NyxOS has no image decoder yet, so an <img> shows its alt/filename in a box)
+        c0 = 0;
+        while (c0 < llen) {
+            uint8_t ik = s->img_of[idx][c0];
+            int c1i = c0; while (c1i < llen && s->img_of[idx][c1i] == ik) c1i++;
+            if (ik != 0) {
+                int px = cx + SEL_PAD + c0 * FONT_WIDTH;
+                int wpx = (c1i - c0) * FONT_WIDTH;
+                uint32_t box = fb_rgb(226, 230, 240);            // cool light-slate frame fill
+                uint32_t brd = fb_rgb(120, 130, 165);
+                fb_fill_rect(px, py - 1, wpx, FONT_HEIGHT + 2, box);
+                fb_fill_rect(px, py - 1, wpx, 1, brd); fb_fill_rect(px, py + FONT_HEIGHT, wpx, 1, brd);
+                fb_fill_rect(px, py - 1, 1, FONT_HEIGHT + 2, brd); fb_fill_rect(px + wpx - 1, py - 1, 1, FONT_HEIGHT + 2, brd);
+                fb_fill_rect(px, py - 1, 3, FONT_HEIGHT + 2, fb_rgb(120, 90, 210));   // purple media accent bar
+                char sub[SEL_LINE_COLS]; int k = 0;
+                for (; k < c1i - c0 && k < SEL_LINE_COLS - 1; k++) sub[k] = s->lines[idx][c0 + k];
+                sub[k] = '\0';
+                font_draw_string(px + 4, py, sub, fb_rgb(60, 70, 100), box);
+            }
+            c0 = c1i;
+        }
+
         // find-in-page: highlight every match on this line, the current one accented orange
         if (s->find_active && s->find_len > 0) {
             int flen = (int)strlen(s->lines[idx]);
@@ -1101,8 +1171,33 @@ int selene_form_selftest(void) {
                     s->num_forms ? s->forms[0].method : -1, body);
     }
 
+    // 5) <img> placeholders: alt text captured, src filename fallback, and the rendered "[img: ...]" label.
+    total++;
+    {
+        static const char* IHTML =
+            "<p>Logo <img src=\"/logo.png\" alt=\"Company Logo\"> here</p>"
+            "<img src=\"http://cdn.example/cat.jpg\">";
+        render_html(s, (const uint8_t*)IHTML, (uint32_t)strlen(IHTML));
+        int oki = (s->num_imgs == 2 &&
+                   sel_streq(s->images[0].alt, "Company Logo") && sel_streq(s->images[0].src, "/logo.png") &&
+                   s->images[1].alt[0] == '\0' && sel_streq(s->images[1].src, "http://cdn.example/cat.jpg"));
+        int lbl_alt = 0, lbl_file = 0;                                    // the labels made it into the grid
+        for (int li = 0; li < s->num_lines; li++) {
+            const char* L = s->lines[li];
+            for (int c = 0; L[c]; c++) {
+                if (!strncmp(L + c, "[img: Company Logo]", 19)) lbl_alt = 1;
+                if (!strncmp(L + c, "[img: cat.jpg]", 14)) lbl_file = 1;
+            }
+        }
+        if (oki && lbl_alt && lbl_file)
+            { pass++; printf("selene-form: <img> parsed (alt + filename fallback + labels) PASS\n"); }
+        else printf("selene-form: <img> FAIL (ni=%d ok=%d altlbl=%d filelbl=%d)\n",
+                    s->num_imgs, oki, lbl_alt, lbl_file);
+    }
+
     kfree(s->lines); kfree(s->link_of); kfree(s->field_of);
-    kfree(s->links); kfree(s->fields); kfree(s->forms); kfree(s);
+    kfree(s->links); kfree(s->fields); kfree(s->forms);
+    kfree(s->img_of); kfree(s->images); kfree(s);
     printf("selene-form: self-test %d/%d passed\n", pass, total);
     return (pass == total) ? 0 : -1;
 }
