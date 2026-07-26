@@ -11,7 +11,8 @@
 // Tab / Shift-Tab move a selection between links, Enter follows the selected one (or
 // loads the URL bar when nothing is selected), a click follows the link under the
 // cursor, and Backspace goes Back through a per-window history stack. Relative and
-// root-relative hrefs are resolved against the current page. HTTP only - no TLS yet.
+// root-relative hrefs are resolved against the current page. (Back then HTTP only; HTTPS
+// over TLS 1.2 landed at v5.9.56, so Selene now fetches https:// pages too.)
 #include "../../core/kernel.h"
 #include "../core/compositor.h"
 #include "selene_win.h"
@@ -88,8 +89,9 @@ typedef struct {
     sel_form_t*  forms;                // kmalloc'd SEL_MAX_FORMS
     int  num_forms;
     int  sel_field;              // focused form field index (-1 = none)
-    // Images: a per-char image-id grid (like field_of) and the parsed <img> alt/src, drawn as
-    // framed placeholders (NyxOS has no image decoder yet, so we show the alt text in a box).
+    // Images: a per-char image-id grid (like field_of) and the parsed <img> alt/src. Same-origin
+    // images are fetched, decoded (PNG/BMP/GIF/JPEG) and drawn inline; a framed "[img: alt]" box
+    // is the fallback when the fetch/decode fails or the format is unsupported.
     uint8_t (*img_of)[SEL_LINE_COLS];  // per-char image id (0 = none, else image index+1)
     sel_img_t* images;                 // kmalloc'd SEL_MAX_IMGS
     int  num_imgs;

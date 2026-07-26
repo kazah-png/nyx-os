@@ -326,12 +326,6 @@ static int start_hit(int mx, int my) {
     return mx >= 2 && mx < 2 + 80 && my >= (int)(fb_get_height() - TASKBAR_H) && my < (int)fb_get_height();
 }
 
-__attribute__((unused)) static int taskbar_clock_hit(int mx, int my) {
-    uint32_t fw = fb_get_width(), fh = fb_get_height();
-    return mx >= (int)(fw - CLOCK_W - 4) && mx < (int)(fw - 2)
-        && my >= (int)(fh - TASKBAR_H) && my < (int)fh;
-}
-
 static int taskbar_win_hit(int mx, int my, int* id) {
     uint32_t fw = fb_get_width(), fh = fb_get_height();
     int bx = 90;

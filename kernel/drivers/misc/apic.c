@@ -40,12 +40,6 @@ static int cpuid_apic_detected(void) {
     return (edx & (1 << 9)) != 0; // CPUID.01h:EDX.APIC bit
 }
 
-static int __attribute__((unused)) cpuid_x2apic_detected(void) {
-    uint32_t eax, ebx, ecx, edx;
-    __asm__ volatile("cpuid" : "=a"(eax), "=b"(ebx), "=c"(ecx), "=d"(edx) : "a"(1));
-    return (ecx & (1 << 21)) != 0; // CPUID.01h:ECX.x2APIC bit
-}
-
 // Write 0 to the PIC to mask everything
 static void mask_legacy_pic(void) {
     outb(0xA1, 0xFF); // Slave PIC

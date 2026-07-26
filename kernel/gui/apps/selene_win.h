@@ -2,10 +2,10 @@
 #define SELENE_WIN_H
 #include "../core/compositor.h"
 
-// Selene - the NyxOS web browser (v5.9.44). A GUI window with a URL bar and a
-// rendered (HTML-tag-stripped, word-wrapped) view of a page fetched over HTTP via
-// http_get(). It ensures connectivity (DHCP) on load, resolves DNS and fetches the
-// real page. HTTP only for now (no TLS). Named for Selene, the Greek moon goddess -
+// Selene - the NyxOS web browser (introduced v5.9.44). A GUI window with a URL bar and a
+// rendered (HTML-tag-stripped, word-wrapped) view of a page fetched over HTTP or HTTPS
+// (TLS 1.2, since v5.9.56). It ensures connectivity (DHCP) on load, resolves DNS and fetches
+// the real page. Named for Selene, the Greek moon goddess -
 // on-theme with Nyx (night). Launched by the `selene` command and a desktop icon.
 #define SELENE_W 720
 #define SELENE_H 520
