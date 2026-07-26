@@ -20,6 +20,7 @@
 #include "png.h"
 #include "bmp.h"
 #include "gif.h"
+#include "jpeg.h"
 #include "font.h"
 
 #define SEL_BAR       34        // top toolbar (back button + URL box) height
@@ -745,10 +746,11 @@ static void selene_fetch_one(selene_ctx_t* s, int i, int iface) {
             if (http_request(host, port, path, "GET", 0, 0, &resp, iface) == 0) ok = 1;
         }
         if (!ok) continue;
-        if (resp.body && resp.body_len > 8) {               // dispatch by magic bytes: PNG / BMP / GIF
+        if (resp.body && resp.body_len > 8) {               // dispatch by magic bytes: PNG / BMP / JPEG / GIF
             image_t pi; int dec = -1;
-            if (resp.body[0] == 0x89 && resp.body[1] == 'P')     dec = png_decode(resp.body, resp.body_len, &pi);
-            else if (resp.body[0] == 'B' && resp.body[1] == 'M') dec = bmp_decode(resp.body, resp.body_len, &pi);
+            if (resp.body[0] == 0x89 && resp.body[1] == 'P')      dec = png_decode(resp.body, resp.body_len, &pi);
+            else if (resp.body[0] == 'B' && resp.body[1] == 'M')  dec = bmp_decode(resp.body, resp.body_len, &pi);
+            else if (resp.body[0] == 0xFF && resp.body[1] == 0xD8) dec = jpeg_decode(resp.body, resp.body_len, &pi);   // JPEG (baseline)
             else if (resp.body[0] == 'G' && resp.body[1] == 'I' && resp.body[2] == 'F') {   // GIF: decode all frames
                 gif_anim_t ga;
                 if (gif_decode_anim(resp.body, resp.body_len, &ga) == 0) {
