@@ -30,6 +30,8 @@
 #define SEL_WRAP      86        // wrap width in chars (SEL_WRAP*8 < content width)
 #define SEL_LINE_COLS 96
 #define SEL_MAX_LINES 1200
+#define SEL_LIST_MAXDEPTH 8     // <ul>/<ol> nesting tracked for indent + <ol> numbering (deeper = clamped)
+#define SEL_LIST_INDENT   2     // spaces of indent added per list nesting level
 #define SEL_MAX_LINKS 240       // per page; link id stored as a uint8 (index+1)
 #define SEL_HIST      32        // Back history depth
 #define SEL_MAX_FORMS  16       // <form>s per page
@@ -215,20 +217,21 @@ static void selene_resolve(selene_ctx_t* s, const char* href, char* out) {
 // ---- word-wrap a stripped-text buffer into ctx->lines, carrying per-char link ids ----
 static void wrap_text(selene_ctx_t* s, const char* txt, const uint8_t* tlink, const uint8_t* tfield,
                       const uint8_t* timg, uint32_t ti) {
-    int li = 0, col = 0;
+    int li = 0, col = 0, bol = 1;   // bol: at a HARD line start (after '\n') — preserve intentional leading indent
     s->lines[0][0] = '\0';
     uint32_t i = 0;
     while (i < ti && li < SEL_MAX_LINES) {
         char c = txt[i];
         if (c == '\n') {
             s->lines[li][col] = '\0';
-            li++; col = 0;
+            li++; col = 0; bol = 1;
             if (li < SEL_MAX_LINES) s->lines[li][0] = '\0';
             i++;
             continue;
         }
         if (c == ' ') {
-            if (col > 0 && col < SEL_LINE_COLS - 1) { s->link_of[li][col] = tlink[i]; s->field_of[li][col] = tfield[i]; s->img_of[li][col] = timg[i]; s->lines[li][col++] = ' '; }
+            // Leading spaces are dropped after a soft word-wrap, but kept after a hard '\n' (list indents).
+            if ((col > 0 || bol) && col < SEL_LINE_COLS - 1) { s->link_of[li][col] = tlink[i]; s->field_of[li][col] = tfield[i]; s->img_of[li][col] = timg[i]; s->lines[li][col++] = ' '; }
             i++;
             continue;
         }
@@ -240,19 +243,20 @@ static void wrap_text(selene_ctx_t* s, const char* txt, const uint8_t* tlink, co
             if (col > 0 && col + wlen > SEL_WRAP) {           // word won't fit: next line
                 if (col > 0 && s->lines[li][col-1] == ' ') col--;
                 s->lines[li][col] = '\0';
-                li++; col = 0;
+                li++; col = 0; bol = 0;                        // soft-wrapped continuation: no leading indent
                 if (li >= SEL_MAX_LINES) break;
                 s->lines[li][0] = '\0';
             }
             int take = wlen;
             if (take > SEL_WRAP - col) take = SEL_WRAP - col; // hard-split an over-long word
-            if (take <= 0) { s->lines[li][col] = '\0'; li++; col = 0; if (li < SEL_MAX_LINES) s->lines[li][0]='\0'; continue; }
+            if (take <= 0) { s->lines[li][col] = '\0'; li++; col = 0; bol = 0; if (li < SEL_MAX_LINES) s->lines[li][0]='\0'; continue; }
             for (int k = 0; k < take && col < SEL_LINE_COLS - 1; k++) {
                 s->link_of[li][col] = tlink[st + off + k];
                 s->field_of[li][col] = tfield[st + off + k];
                 s->img_of[li][col] = timg[st + off + k];
                 s->lines[li][col++] = txt[st + off + k];
             }
+            bol = 0;                                           // wrote content — no longer at a hard line start
             off += take; wlen -= take;
         }
     }
@@ -618,6 +622,8 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
     int cur_field = 0;                                        // field id in progress (<button> label text)
     int cur_form = -1;                                        // the <form> currently open (-1 = none)
     int cur_hd = 0;                                           // inside an <h1>/<h2> (upper-case its text)
+    struct { uint8_t ordered; uint16_t counter; } liststk[SEL_LIST_MAXDEPTH];  // <ul>/<ol> nesting
+    int listdepth = 0;                                        // 0 = not in a list
     for (uint32_t i = 0; i < len && ti < len; ) {
         char c = (char)body[i];
         if (c == '<') {
@@ -799,9 +805,37 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                 for (int d = 0; d < 64 && ti < len; d++) { txt[ti] = '-'; tlink[ti] = 0; ti++; }
                 ti = sel_ensure_nl(txt, tlink, ti, len, 1);
                 last_space = 1;
+            } else if (sel_streq(name,"ul") || sel_streq(name,"ol")) {
+                // Track list nesting for per-level indent + <ol> numbering. A top-level list gets a
+                // paragraph break around it; a nested list just starts on the line under its parent <li>.
+                if (!close) {
+                    ti = sel_ensure_nl(txt, tlink, ti, len, listdepth == 0 ? 2 : 1);
+                    if (listdepth < SEL_LIST_MAXDEPTH) {
+                        liststk[listdepth].ordered = sel_streq(name,"ol") ? 1 : 0;
+                        liststk[listdepth].counter = 0;
+                        listdepth++;
+                    }
+                } else {
+                    if (listdepth > 0) listdepth--;
+                    ti = sel_ensure_nl(txt, tlink, ti, len, listdepth == 0 ? 2 : 1);
+                }
+                last_space = 1;
+            } else if (close && sel_streq(name, "li")) {
+                ti = sel_ensure_nl(txt, tlink, ti, len, 1);           // end an item with ONE break (tight list,
+                last_space = 1;                                       // not the want=2 is_block_tag would give)
             } else if (!close && sel_streq(name, "li")) {
                 ti = sel_ensure_nl(txt, tlink, ti, len, 1);
-                if (ti + 2 < len) { txt[ti]='-'; tlink[ti]=0; ti++; txt[ti]=' '; tlink[ti]=0; ti++; }
+                int lvl = listdepth > 0 ? listdepth : 1;              // a stray <li> (no list) acts as depth 1
+                for (int d = 0; d < (lvl - 1) * SEL_LIST_INDENT && ti < len; d++) { txt[ti]=' '; tlink[ti]=0; ti++; }
+                if (listdepth > 0 && liststk[listdepth-1].ordered) {  // ordered: "N. "
+                    uint16_t n = ++liststk[listdepth-1].counter;
+                    char num[8]; int nn = 0;
+                    do { num[nn++] = (char)('0' + n % 10); n /= 10; } while (n > 0 && nn < 6);
+                    while (nn > 0 && ti < len) { txt[ti] = num[--nn]; tlink[ti] = 0; ti++; }
+                    if (ti + 1 < len) { txt[ti]='.'; tlink[ti]=0; ti++; txt[ti]=' '; tlink[ti]=0; ti++; }
+                } else if (ti + 1 < len) {                             // unordered: "- "
+                    txt[ti]='-'; tlink[ti]=0; ti++; txt[ti]=' '; tlink[ti]=0; ti++;
+                }
                 last_space = 1;
             } else if (sel_streq(name,"br") || sel_streq(name,"tr") || sel_streq(name,"dd") || sel_streq(name,"dt")) {
                 ti = sel_ensure_nl(txt, tlink, ti, len, 1);
@@ -1960,6 +1994,32 @@ int selene_form_selftest(void) {
         if (hdr_ok && nest_ok && cols_ok)
             { pass++; printf("selene-form: nested <table> (inline flatten + outer grid intact) PASS\n"); }
         else printf("selene-form: nested table FAIL (hdr=%d nest=%d cols=%d)\n", hdr_ok, nest_ok, cols_ok);
+    }
+
+    // 13) ordered + nested lists: <ol> items are numbered "1. 2. 3." (not flat "- "), and a list nested
+    // inside a parent <li> is indented one level (SEL_LIST_INDENT spaces) with its own numbering.
+    total++;
+    {
+        static const char* OL = "<ol><li>First</li><li>Second</li><li>Third</li></ol>";
+        render_html(s, (const uint8_t*)OL, (uint32_t)strlen(OL));
+        int n1 = 0, n2 = 0, n3 = 0;
+        for (int li = 0; li < s->num_lines; li++) {
+            if (sel_streq(s->lines[li], "1. First"))  n1 = 1;
+            if (sel_streq(s->lines[li], "2. Second")) n2 = 1;
+            if (sel_streq(s->lines[li], "3. Third"))  n3 = 1;
+        }
+        static const char* NL = "<ul><li>A<ol><li>one</li><li>two</li></ol></li><li>B</li></ul>";
+        render_html(s, (const uint8_t*)NL, (uint32_t)strlen(NL));
+        int pa = 0, c1 = 0, c2 = 0, pb = 0;
+        for (int li = 0; li < s->num_lines; li++) {
+            if (sel_streq(s->lines[li], "- A"))      pa = 1;   // unordered parent marker
+            if (sel_streq(s->lines[li], "  1. one")) c1 = 1;   // nested ordered item, indented 2
+            if (sel_streq(s->lines[li], "  2. two")) c2 = 1;
+            if (sel_streq(s->lines[li], "- B"))      pb = 1;   // parent numbering/marker resumes at col 0
+        }
+        if (n1 && n2 && n3 && pa && c1 && c2 && pb)
+            { pass++; printf("selene-form: ordered + nested lists (numbered <ol> + indented nesting) PASS\n"); }
+        else printf("selene-form: list FAIL (ol=%d,%d,%d nest a=%d 1=%d 2=%d b=%d)\n", n1, n2, n3, pa, c1, c2, pb);
     }
 
     selene_free_ctx(s);
