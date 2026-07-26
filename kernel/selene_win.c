@@ -17,6 +17,7 @@
 #include "selene_win.h"
 #include "http.h"
 #include "tls.h"
+#include "png.h"
 #include "font.h"
 
 #define SEL_BAR       34        // top toolbar (back button + URL box) height
@@ -31,6 +32,10 @@
 #define SEL_MAX_FORMS  16       // <form>s per page
 #define SEL_MAX_FIELDS 64       // form controls per page; field id stored as a uint8 (index+1)
 #define SEL_MAX_IMGS   128      // <img>s per page; image id stored as a uint8 (index+1)
+#define SEL_IMG_BOX_W     24    // image display box width, in characters
+#define SEL_IMG_BOX_LINES 5     // image display box height, in text rows
+#define SEL_IMG_FETCH_MAX 8     // fetch + decode at most this many images per page load
+#define SEL_IMG_FETCH_CAP (512 * 1024)   // per-image download buffer (bytes)
 #define SEL_FIELD_W    22       // rendered width (chars) of a text-input box
 #define SEL_MAX_TABS   6        // browser tabs per Selene window
 #define SEL_TABS_H     24       // tab-strip height (drawn below the toolbar)
@@ -44,7 +49,7 @@
 typedef struct { char url[192]; } sel_link_t;
 typedef struct { char action[192]; uint8_t method; } sel_form_t;   // method 0 = GET (only GET so far)
 typedef struct { int form; uint8_t kind; char name[64]; char value[160]; } sel_field_t;
-typedef struct { char alt[64]; char src[160]; } sel_img_t;         // an <img>: alt text + source URL
+typedef struct { char alt[64]; char src[160]; uint8_t* px; uint16_t iw, ih; } sel_img_t;   // <img>: alt/src + decoded RGBA (px=NULL until fetched)
 
 typedef struct {
     char url[256];
@@ -427,6 +432,7 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
     s->num_lines = 0; s->scroll = 0; s->title[0] = '\0';
     s->num_links = 0; s->sel_link = -1;
     s->num_fields = 0; s->num_forms = 0; s->sel_field = -1;
+    for (int i = 0; i < s->num_imgs; i++) if (s->images[i].px) { kfree(s->images[i].px); s->images[i].px = 0; }
     s->num_imgs = 0;
     __builtin_memset(s->link_of, 0, SEL_MAX_LINES * SEL_LINE_COLS);
     __builtin_memset(s->field_of, 0, SEL_MAX_LINES * SEL_LINE_COLS);
@@ -590,6 +596,7 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                 sel_img_t* im = &s->images[s->num_imgs];
                 strncpy(im->alt, alt, sizeof(im->alt)-1); im->alt[sizeof(im->alt)-1] = '\0';
                 strncpy(im->src, src, sizeof(im->src)-1); im->src[sizeof(im->src)-1] = '\0';
+                im->px = 0; im->iw = 0; im->ih = 0;              // decoded later by selene_fetch_images
                 int imgid = s->num_imgs + 1; s->num_imgs++;
                 // Caption text: prefer alt, else the src filename, else "image" (kept short so the box fits a line).
                 const char* capsrc = alt[0] ? alt : 0;
@@ -603,9 +610,9 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                 }
                 if (cl == 0) { lbl[b++]='i'; lbl[b++]='m'; lbl[b++]='g'; }   // truly empty: "[img:img]"
                 lbl[b++]=']'; lbl[b]='\0';
-                if (!last_space && ti < len) { txt[ti]=' '; tlink[ti]=0; tfield[ti]=0; timg[ti]=0; ti++; }
+                ti = sel_ensure_nl(txt, tlink, ti, len, 1);       // block-level: the image starts a fresh line at col 0
                 for (int z = 0; lbl[z] && ti < len; z++) { txt[ti]=lbl[z]; tlink[ti]=0; tfield[ti]=0; timg[ti]=(uint8_t)imgid; ti++; }
-                if (ti < len) { txt[ti]=' '; tlink[ti]=0; tfield[ti]=0; timg[ti]=0; ti++; }
+                for (int z = 0; z < SEL_IMG_BOX_LINES && ti < len; z++) { txt[ti]='\n'; tlink[ti]=0; tfield[ti]=0; timg[ti]=0; ti++; }   // reserve the box's height
                 last_space = 1;
                 i = te; if (i < len) i++;
                 continue;
@@ -685,6 +692,45 @@ static int find_iface(void) {
     return -1;
 }
 
+// After a page renders, download + decode the first few <img>s so they can be drawn for real.
+// Each image: resolve its src, fetch the bytes (http/https), and png_decode into RGBA (stored in
+// the sel_img_t). A failed fetch/decode or an unsupported format simply leaves px = NULL, and the
+// draw falls back to the framed "[img: alt]" placeholder. Bounded (count + per-image buffer).
+static void selene_fetch_images(selene_ctx_t* s, int iface) {
+    int n = s->num_imgs; if (n > SEL_IMG_FETCH_MAX) n = SEL_IMG_FETCH_MAX;
+    for (int i = 0; i < n; i++) {
+        if (!s->images[i].src[0]) continue;
+        char abs[256]; selene_resolve(s, s->images[i].src, abs);
+        if (!abs[0]) continue;
+        char host[128] = {0}, path[256] = {0}; uint16_t port = 80; int is_https = 0;
+        parse_url(abs, host, &port, path, &is_https);
+        if (!host[0]) continue;
+        // Retry once: NyxOS's first new TCP connection right after the page fetch sometimes fails.
+        for (int attempt = 0; attempt < 2 && !s->images[i].px; attempt++) {
+            http_response_t resp; int ok = 0;
+            if (is_https) {
+                uint8_t* raw = (uint8_t*)kmalloc(SEL_IMG_FETCH_CAP);
+                if (!raw) break;
+                int rn = tls_https_request(host, path, "GET", 0, 0, iface, raw, SEL_IMG_FETCH_CAP - 1, 0);
+                if (rn > 0) { raw[rn] = '\0'; if (http_parse_response(raw, (uint32_t)rn, &resp) == 0) ok = 1; }
+                kfree(raw);
+            } else {
+                if (http_request(host, port, path, "GET", 0, 0, &resp, iface) == 0) ok = 1;
+            }
+            if (!ok) continue;
+            if (resp.body && resp.body_len > 8 && resp.body[0] == 0x89 && resp.body[1] == 'P') {   // PNG signature
+                png_image_t pi;
+                if (png_decode(resp.body, resp.body_len, &pi) == 0) {
+                    s->images[i].px = pi.pixels;
+                    s->images[i].iw = (uint16_t)pi.width;
+                    s->images[i].ih = (uint16_t)pi.height;
+                }
+            }
+            http_free(&resp);
+        }
+    }
+}
+
 // Fetch ctx->url with `method` (+ optional form `body` for POST) and render the reply. Blocks
 // (the fetch drives the net) - we paint a status first via compositor_redraw_now for progress.
 static void selene_load_ex(selene_ctx_t* s, const char* method, const uint8_t* body, uint32_t body_len) {
@@ -728,11 +774,12 @@ static void selene_load_ex(selene_ctx_t* s, const char* method, const uint8_t* b
         }
     }
     render_html(s, resp.body, resp.body_len);
+    http_free(&resp);                                            // page body consumed; free before fetching images
+    selene_fetch_images(s, iface);                               // download + decode <img>s (blocks briefly)
     strncpy(s->cur_url, s->url, sizeof(s->cur_url)-1); s->cur_url[sizeof(s->cur_url)-1] = '\0';
     snprintf(s->status, sizeof(s->status), "%d %s  -  %s  -  %d links",
              resp.status_code, resp.status_text,
              s->title[0] ? s->title : host, s->num_links);
-    http_free(&resp);
 }
 
 static void selene_load(selene_ctx_t* s) { selene_load_ex(s, "GET", 0, 0); }
@@ -870,6 +917,7 @@ static selene_ctx_t* selene_new_ctx(void) {
 
 static void selene_free_ctx(selene_ctx_t* s) {
     if (!s) return;
+    for (int i = 0; i < s->num_imgs; i++) if (s->images[i].px) kfree(s->images[i].px);
     kfree(s->lines); kfree(s->link_of); kfree(s->field_of);
     kfree(s->links); kfree(s->fields); kfree(s->forms);
     kfree(s->img_of); kfree(s->images); kfree(s);
@@ -1177,28 +1225,7 @@ void selene_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
             c0 = c1f;
         }
 
-        // overlay image placeholders on this line: a framed box with a purple media accent
-        // (NyxOS has no image decoder yet, so an <img> shows its alt/filename in a box)
-        c0 = 0;
-        while (c0 < llen) {
-            uint8_t ik = s->img_of[idx][c0];
-            int c1i = c0; while (c1i < llen && s->img_of[idx][c1i] == ik) c1i++;
-            if (ik != 0) {
-                int px = cx + SEL_PAD + c0 * FONT_WIDTH;
-                int wpx = (c1i - c0) * FONT_WIDTH;
-                uint32_t box = fb_rgb(226, 230, 240);            // cool light-slate frame fill
-                uint32_t brd = fb_rgb(120, 130, 165);
-                fb_fill_rect(px, py - 1, wpx, FONT_HEIGHT + 2, box);
-                fb_fill_rect(px, py - 1, wpx, 1, brd); fb_fill_rect(px, py + FONT_HEIGHT, wpx, 1, brd);
-                fb_fill_rect(px, py - 1, 1, FONT_HEIGHT + 2, brd); fb_fill_rect(px + wpx - 1, py - 1, 1, FONT_HEIGHT + 2, brd);
-                fb_fill_rect(px, py - 1, 3, FONT_HEIGHT + 2, fb_rgb(120, 90, 210));   // purple media accent bar
-                char sub[SEL_LINE_COLS]; int k = 0;
-                for (; k < c1i - c0 && k < SEL_LINE_COLS - 1; k++) sub[k] = s->lines[idx][c0 + k];
-                sub[k] = '\0';
-                font_draw_string(px + 4, py, sub, fb_rgb(60, 70, 100), box);
-            }
-            c0 = c1i;
-        }
+        // (images are drawn as block boxes in a separate pass after this line loop, below)
 
         // find-in-page: highlight every match on this line, the current one accented orange
         if (s->find_active && s->find_len > 0) {
@@ -1220,6 +1247,48 @@ void selene_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     }
     if (s->num_lines == 0)
         font_draw_string(cx + SEL_PAD, cyy + SEL_PAD, "(no page loaded)", fb_rgb(150,150,160), pg);
+
+    // Image blocks: draw each <img> as a box. Decoded images are scaled (nearest-neighbour) and
+    // alpha-composited over the page; the rest fall back to a framed "[img: alt]" placeholder. Only
+    // fully-visible boxes are drawn (keeps the blit unclipped); a box scrolls in/out as a whole.
+    {
+        int BW = SEL_IMG_BOX_W * FONT_WIDTH, BH = SEL_IMG_BOX_LINES * SEL_LINE_H;
+        for (int im = 0; im < s->num_imgs; im++) {
+            int aline = -1;
+            for (int li = s->scroll; li < s->num_lines && li < s->scroll + rows; li++)
+                if (s->img_of[li][0] == im + 1) { aline = li; break; }   // block images anchor at col 0
+            if (aline < 0) continue;
+            int bx = cx + SEL_PAD, by = cyy + SEL_PAD + (aline - s->scroll) * SEL_LINE_H - 1;
+            if (by < cyy || by + BH > cyy + content_h) continue;         // draw only when fully in view
+            sel_img_t* mi = &s->images[im];
+            if (mi->px && mi->iw && mi->ih) {
+                int dW, dH;                                              // aspect-fit into the box
+                if ((int)mi->iw * BH >= (int)mi->ih * BW) { dW = BW; dH = (int)mi->ih * BW / (int)mi->iw; }
+                else { dH = BH; dW = (int)mi->iw * BH / (int)mi->ih; }
+                if (dW < 1) dW = 1; if (dH < 1) dH = 1;
+                int ox = bx + (BW - dW) / 2, oy = by + (BH - dH) / 2;
+                fb_fill_rect(bx, by, BW, BH, pg);                        // letterbox background
+                for (int dy = 0; dy < dH; dy++) {
+                    const uint8_t* srow = mi->px + (uint64_t)(dy * (int)mi->ih / dH) * mi->iw * 4;
+                    for (int dx = 0; dx < dW; dx++) {
+                        const uint8_t* sp = srow + (uint64_t)(dx * (int)mi->iw / dW) * 4;
+                        uint32_t col;
+                        if (sp[3] >= 250) col = fb_rgb(sp[0], sp[1], sp[2]);
+                        else { int a = sp[3];
+                            col = fb_rgb((sp[0]*a + 248*(255-a))/255, (sp[1]*a + 248*(255-a))/255, (sp[2]*a + 250*(255-a))/255); }
+                        fb_put_pixel(ox + dx, oy + dy, col);
+                    }
+                }
+            } else {                                                    // fallback placeholder
+                fb_fill_rect(bx, by, BW, BH, fb_rgb(226, 230, 240));
+                fb_fill_rect(bx, by, 3, BH, fb_rgb(120, 90, 210));       // purple media accent
+                font_draw_string(bx + 8, by + BH/2 - FONT_HEIGHT/2, s->lines[aline], fb_rgb(60, 70, 100), fb_rgb(226, 230, 240));
+            }
+            uint32_t brd = fb_rgb(120, 130, 165);                       // border
+            fb_fill_rect(bx, by, BW, 1, brd); fb_fill_rect(bx, by + BH - 1, BW, 1, brd);
+            fb_fill_rect(bx, by, 1, BH, brd); fb_fill_rect(bx + BW - 1, by, 1, BH, brd);
+        }
+    }
 
     if (s->num_lines > rows) {                               // scrollbar
         int track_h = content_h - 4;
