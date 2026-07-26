@@ -1515,10 +1515,9 @@ static void cmd_tls(int argc, char** argv) {
     tls_hello(host, iface_idx);
 }
 
-// `posttest` — live HTTP POST self-test: POST a small form body to httpbin.org and confirm the
-// server echoes it back, proving the POST request + body path works end to end. Uses plain HTTP
-// (port 80): the echo services that support POST negotiate P-256 ECDHE, which NyxOS's x25519-only
-// handshake can't do yet — but the POST request bytes are identical over TLS (sealed in a record).
+// `posttest` — live POST self-test over TLS: POST a small form body to https://httpbin.org and
+// confirm the server echoes it back. Exercises P-256 ECDHE (httpbin negotiates secp256r1) AND the
+// TLS POST request/body path end to end.
 static void cmd_posttest(int argc, char** argv) {
     (void)argc; (void)argv;
     int iface = -1;
@@ -1526,19 +1525,23 @@ static void cmd_posttest(int argc, char** argv) {
         if (net_interfaces[i].name[0] && strcmp(net_interfaces[i].name, "lo") != 0) { iface = i; break; }
     if (iface < 0) { printf("posttest: no network interface (boot with -nic)\n"); return; }
     const char* body = "nyxos=works&user=alice&msg=hello+world";
-    printf("posttest: POST http://httpbin.org/post  body=\"%s\"\n", body);
+    uint8_t* buf = (uint8_t*)kmalloc(64 * 1024);
+    if (!buf) { printf("posttest: out of memory\n"); return; }
+    printf("posttest: POST https://httpbin.org/post  body=\"%s\"\n", body);
+    int n = tls_https_request("httpbin.org", "/post", "POST", (const uint8_t*)body,
+                              (uint32_t)strlen(body), iface, buf, 64 * 1024 - 1, 1);
+    if (n < 0) { printf("posttest: request failed (retry — the first DNS lookup after boot can miss)\n"); kfree(buf); return; }
+    buf[n] = '\0';
     http_response_t resp; int echoed = 0;
-    if (http_request("httpbin.org", 80, "/post", "POST", (const uint8_t*)body,
-                     (uint32_t)strlen(body), &resp, iface) != 0) {
-        printf("posttest: request failed (retry — the first DNS lookup after boot can miss)\n");
-        return;
+    if (http_parse_response(buf, (uint32_t)n, &resp) == 0 && resp.body) {
+        if (strstr((char*)resp.body, "nyxos") && strstr((char*)resp.body, "works") &&
+            strstr((char*)resp.body, "hello world")) echoed = 1;    // httpbin echoes the posted form
+        printf("posttest: HTTPS %d %s, %u-byte reply\n", resp.status_code, resp.status_text, resp.body_len);
+        http_free(&resp);
     }
-    if (resp.body && strstr((char*)resp.body, "nyxos") && strstr((char*)resp.body, "works") &&
-        strstr((char*)resp.body, "hello world")) echoed = 1;         // httpbin echoes the posted form
-    printf("posttest: HTTP %d %s, %u-byte reply\n", resp.status_code, resp.status_text, resp.body_len);
-    printf("posttest: %s — httpbin %s the posted form fields\n",
+    printf("posttest: %s — httpbin %s the posted form fields (over TLS)\n",
            echoed ? "PASS" : "CHECK", echoed ? "echoed back" : "did not clearly echo");
-    http_free(&resp);
+    kfree(buf);
 }
 
 // `x25519test` — run the RFC 7748 known-answer vectors for X25519 (Curve25519 ECDH),

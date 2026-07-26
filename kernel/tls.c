@@ -410,12 +410,26 @@ int tls_https_request(const char* host, const char* path, const char* method,
         else              TLSP("TLS: leaf certificate validity dates could not be parsed\n");
     }
 
-    // ECDHE key agreement + the TLS 1.2 key schedule (v5.9.51). Only x25519 is implemented.
-    if (ske_curve == 0x001D && ske_pub_len == 32) {
-        uint8_t eph_priv[32], eph_pub[32], premaster[32];
-        csprng_bytes(eph_priv, 32);                  // cryptographically-strong ephemeral private key
-        x25519_base(eph_pub, eph_priv);              // our ephemeral public key
-        x25519(premaster, eph_priv, ske_pub);        // shared secret = the pre-master secret
+    // ECDHE key agreement + the TLS 1.2 key schedule (v5.9.51; secp256r1/P-256 added v5.9.70).
+    if ((ske_curve == 0x001D && ske_pub_len == 32) ||                        // x25519
+        (ske_curve == 0x0017 && ske_pub_len == 65 && ske_pub[0] == 0x04)) {  // secp256r1 (P-256)
+        uint8_t eph_pub[65]; uint32_t eph_pub_len; uint8_t premaster[32];
+        const char* curve_name;
+        if (ske_curve == 0x001D) {                                           // x25519 (RFC 7748)
+            uint8_t eph_priv[32];
+            csprng_bytes(eph_priv, 32);                                      // strong ephemeral key
+            x25519_base(eph_pub, eph_priv);                                  // our public key
+            x25519(premaster, eph_priv, ske_pub);                           // shared secret
+            eph_pub_len = 32; curve_name = "x25519";
+        } else {                                                            // NIST P-256 ECDHE
+            uint8_t eph_priv[32], sx[32], sy[32];
+            csprng_bytes(eph_priv, 32);                                     // ephemeral scalar d
+            eph_pub[0] = 0x04;
+            p256_base_scalar(eph_priv, eph_pub + 1, eph_pub + 33);          // our point = d*G (0x04||X||Y)
+            p256_point_scalar(eph_priv, ske_pub + 1, ske_pub + 33, sx, sy); // shared point = d*serverPub
+            memcpy(premaster, sx, 32);                                      // pre-master = its X coordinate
+            eph_pub_len = 65; curve_name = "secp256r1 (P-256)";
+        }
 
         uint8_t seed[64], master[48], keyblock[40];
         memcpy(seed, tls_client_random, 32); memcpy(seed + 32, tls_server_random, 32);
@@ -424,7 +438,7 @@ int tls_https_request(const char* host, const char* path, const char* method,
         tls12_prf(master, 48, "key expansion", seed, 64, keyblock, 40);   // client_key|server_key|client_iv|server_iv
         const uint8_t* ckey = keyblock;              const uint8_t* skey = keyblock + 16;
         const uint8_t* civ  = keyblock + 32;         const uint8_t* siv  = keyblock + 36;
-        TLSP("TLS: ECDHE(x25519) — pre-master secret computed; master secret + AES-128-GCM keys derived\n");
+        TLSP("TLS: ECDHE(%s) — pre-master secret computed; master secret + AES-128-GCM keys derived\n", curve_name);
 
         // ---- Verify the ServerKeyExchange signature against the leaf certificate (v5.9.61) ----
         // Proves the ECDHE parameters were signed by the private key matching the certificate's
@@ -466,7 +480,7 @@ int tls_https_request(const char* host, const char* path, const char* method,
         // ---- Finished exchange (v5.9.54) ------------------------------------------------
         // The transcript is every handshake-layer message, in order, with no record headers:
         // ClientHello || ServerHello..ServerHelloDone || our ClientKeyExchange (+ our Finished).
-        if ((uint32_t)(chlen - 5) + hn + 37 + 16 > sizeof(tls_ts)) {
+        if ((uint32_t)(chlen - 5) + hn + 70 + 16 > sizeof(tls_ts)) {
             TLSP("TLS: handshake transcript too large to buffer — skipping Finished\n");
             tcp_close(conn); return -1;
         }
@@ -474,10 +488,12 @@ int tls_https_request(const char* host, const char* path, const char* method,
         memcpy(tls_ts + tn, tls_hs + 5, (uint32_t)chlen - 5); tn += (uint32_t)chlen - 5;   // ClientHello
         memcpy(tls_ts + tn, tls_hd, hn); tn += hn;                                         // server flight
 
-        uint8_t cke[37];                             // ClientKeyExchange (type 16): len 33 = pointlen(1) + point(32)
-        cke[0] = 0x10; cke[1] = 0; cke[2] = 0; cke[3] = 0x21;
-        cke[4] = 0x20; memcpy(cke + 5, eph_pub, 32);
-        memcpy(tls_ts + tn, cke, 37); tn += 37;
+        uint8_t cke[70];                             // ClientKeyExchange (type 16): pointlen(1) + point
+        uint32_t cke_body = 1 + eph_pub_len;         // the ECDH public point, length-prefixed
+        uint32_t cke_len  = 4 + cke_body;            // 4-byte handshake header + body
+        cke[0] = 0x10; cke[1] = 0; cke[2] = (uint8_t)(cke_body >> 8); cke[3] = (uint8_t)cke_body;
+        cke[4] = (uint8_t)eph_pub_len; memcpy(cke + 5, eph_pub, eph_pub_len);
+        memcpy(tls_ts + tn, cke, cke_len); tn += cke_len;
 
         uint8_t cvd[12], cfin[16];                   // client Finished = verify_data over the transcript so far
         tls_verify_data(master, "client finished", tls_ts, tn, cvd);
@@ -487,9 +503,9 @@ int tls_https_request(const char* host, const char* path, const char* method,
         uint8_t svd_exp[12];                         // the value the server's Finished must carry
         tls_verify_data(master, "server finished", tls_ts, tn, svd_exp);
 
-        uint8_t f2[128]; uint32_t on = 0;            // flight 2: ClientKeyExchange + ChangeCipherSpec + Finished
-        f2[on++] = 0x16; f2[on++] = 0x03; f2[on++] = 0x03; f2[on++] = 0x00; f2[on++] = 0x25;   // CKE record
-        memcpy(f2 + on, cke, 37); on += 37;
+        uint8_t f2[160]; uint32_t on = 0;            // flight 2: ClientKeyExchange + ChangeCipherSpec + Finished
+        f2[on++] = 0x16; f2[on++] = 0x03; f2[on++] = 0x03; f2[on++] = (uint8_t)(cke_len >> 8); f2[on++] = (uint8_t)cke_len;   // CKE record
+        memcpy(f2 + on, cke, cke_len); on += cke_len;
         f2[on++] = 0x14; f2[on++] = 0x03; f2[on++] = 0x03; f2[on++] = 0x00; f2[on++] = 0x01; f2[on++] = 0x01;  // CCS
         uint8_t sealed[64];
         int sl = tls_seal_record(ckey, civ, 0, 0x16, cfin, 16, sealed);   // GCM-seal the Finished, client seq 0
@@ -616,7 +632,7 @@ int tls_https_request(const char* host, const char* path, const char* method,
         }
         return (int)pn;
     } else if (got_ske) {
-        TLSP("TLS: server chose curve 0x%x; only x25519 (0x001d) is wired up so far — no key agreement this run.\n", ske_curve);
+        TLSP("TLS: server chose curve 0x%x; only x25519 (0x001d) and secp256r1 (0x0017) are wired up — no key agreement this run.\n", ske_curve);
     }
     tcp_close(conn);
     return -1;   // handshake reached but nothing was fetched
