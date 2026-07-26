@@ -119,14 +119,33 @@ static int is_block_tag(const char* n) {
     return 0;
 }
 
-// Decode an HTML entity at p (len bytes available). On success writes the char to
-// *out, sets *adv to the bytes consumed (including the trailing ';' if present),
-// and returns 1. Handles &amp; &lt; &gt; &quot; &apos; &nbsp; and numeric &#nn; / &#xhh;.
-static int decode_entity(const uint8_t* p, uint32_t len, char* out, uint32_t* adv) {
+// The named/numeric HTML entities Selene decodes, each to a short display string. The font is a
+// single-byte 256-glyph set, so multi-char symbols map to readable ASCII approximations (— -> "--",
+// … -> "...", © -> "(c)"), while ° uses the CP437 degree glyph (0xF8). `cp` is the Unicode code point,
+// used to also resolve the numeric forms (&#176; / &#xB0;).
+typedef struct { const char* name; uint32_t cp; const char* str; } sel_entity_t;
+static const sel_entity_t SEL_ENTITIES[] = {
+    {"amp",38,"&"},    {"lt",60,"<"},     {"gt",62,">"},      {"quot",34,"\""}, {"apos",39,"'"},
+    {"nbsp",160," "},  {"copy",169,"(c)"},{"reg",174,"(r)"},  {"trade",8482,"(tm)"},
+    {"mdash",8212,"--"},{"ndash",8211,"-"},{"hellip",8230,"..."},
+    {"lsquo",8216,"'"},{"rsquo",8217,"'"},{"ldquo",8220,"\""},{"rdquo",8221,"\""},
+    {"laquo",171,"<<"},{"raquo",187,">>"},{"middot",183,"*"}, {"bull",8226,"*"},
+    {"times",215,"x"}, {"divide",247,"/"},{"plusmn",177,"+/-"},
+    {"frac12",189,"1/2"},{"frac14",188,"1/4"},{"frac34",190,"3/4"},
+    {"deg",176,"\xf8"},{"sect",167,"S"},  {"para",182,"P"},   {"euro",8364,"EUR"},
+    {"pound",163,"GBP"},{"cent",162,"c"},
+};
+#define SEL_NENT (int)(sizeof(SEL_ENTITIES)/sizeof(SEL_ENTITIES[0]))
+
+// Decode an HTML entity at p (len bytes available). On success writes up to `cap` bytes of the decoded
+// text to `out`, sets *outlen + *adv (bytes consumed, incl. the trailing ';'), and returns 1. Handles
+// the SEL_ENTITIES table (named + by code point) and numeric &#nn; / &#xhh;.
+static int decode_entity(const uint8_t* p, uint32_t len, char* out, uint32_t cap, uint32_t* outlen, uint32_t* adv) {
     if (len < 3 || p[0] != '&') return 0;
     uint32_t semi = 0;
     for (uint32_t i = 1; i < len && i < 10; i++) if (p[i] == ';') { semi = i; break; }
     if (!semi) return 0;
+    const char* s = 0; char tmp[2];
     if (p[1] == '#') {
         int hex = (p[2] == 'x' || p[2] == 'X');
         uint32_t v = 0;
@@ -141,22 +160,17 @@ static int decode_entity(const uint8_t* p, uint32_t len, char* out, uint32_t* ad
                 if (c >= '0' && c <= '9') v = v*10 + (c - '0'); else return 0;
             }
         }
-        *out = (v >= 0x20 && v < 0x7F) ? (char)v : (v == 0xA0 ? ' ' : '?');
-        *adv = semi + 1;
-        return 1;
+        for (int k = 0; k < SEL_NENT && !s; k++) if (SEL_ENTITIES[k].cp == v) s = SEL_ENTITIES[k].str;
+        if (!s) { tmp[0] = (v >= 0x20 && v < 0x7F) ? (char)v : (v == 0xA0 ? ' ' : '?'); tmp[1] = '\0'; s = tmp; }
+    } else {
+        char name[8]; uint32_t nl = 0;
+        for (uint32_t i = 1; i < semi && nl < 7; i++) name[nl++] = (char)p[i];
+        name[nl] = '\0';
+        for (int k = 0; k < SEL_NENT && !s; k++) if (sel_streq(name, SEL_ENTITIES[k].name)) s = SEL_ENTITIES[k].str;
+        if (!s) return 0;
     }
-    char name[8]; uint32_t nl = 0;
-    for (uint32_t i = 1; i < semi && nl < 7; i++) name[nl++] = (char)p[i];
-    name[nl] = '\0';
-    char d = 0;
-    if (sel_streq(name, "amp")) d = '&';
-    else if (sel_streq(name, "lt")) d = '<';
-    else if (sel_streq(name, "gt")) d = '>';
-    else if (sel_streq(name, "quot")) d = '"';
-    else if (sel_streq(name, "apos")) d = '\'';
-    else if (sel_streq(name, "nbsp")) d = ' ';
-    else return 0;
-    *out = d; *adv = semi + 1;
+    uint32_t n = 0; while (s[n] && n < cap) { out[n] = s[n]; n++; }
+    *outlen = n; *adv = semi + 1;
     return 1;
 }
 
@@ -343,10 +357,13 @@ static int sel_cell_text(const uint8_t* body, uint32_t s, uint32_t e, char* out,
     for (uint32_t i = s; i < e && n < cap - 1; ) {
         char c = (char)body[i];
         if (c == '<') { while (i < e && body[i] != '>') i++; if (i < e) i++; continue; }
-        if (c == '&') { char d; uint32_t adv;
-            if (decode_entity(body + i, e - i, &d, &adv)) {
-                if (d == ' ') { if (!last_space) { out[n++] = ' '; last_space = 1; } }
-                else { if (upper && d>='a'&&d<='z') d -= 32; out[n++] = d; last_space = 0; }
+        if (c == '&') { char eb[8]; uint32_t el, adv;
+            if (decode_entity(body + i, e - i, eb, sizeof(eb), &el, &adv)) {
+                for (uint32_t k = 0; k < el && n < cap - 1; k++) {
+                    char d = eb[k];
+                    if (d == ' ') { if (!last_space) { out[n++] = ' '; last_space = 1; } }
+                    else { if (upper && d>='a'&&d<='z') d -= 32; out[n++] = d; last_space = 0; }
+                }
                 i += adv; continue; }
             out[n++] = '&'; last_space = 0; i++; continue; }
         if (c==' '||c=='\t'||c=='\n'||c=='\r') { if (!last_space) { out[n++] = ' '; last_space = 1; } i++; continue; }
@@ -676,10 +693,13 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
             continue;
         }
         if (c == '&') {
-            char dec; uint32_t adv;
-            if (decode_entity(body + i, len - i, &dec, &adv)) {
-                if (dec == ' ') { if (!last_space) { txt[ti] = ' '; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; ti++; last_space = 1; } }
-                else { if (cur_hd && dec >= 'a' && dec <= 'z') dec -= 32; txt[ti] = dec; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; ti++; last_space = 0; }
+            char eb[8]; uint32_t el, adv;
+            if (decode_entity(body + i, len - i, eb, sizeof(eb), &el, &adv)) {
+                for (uint32_t k = 0; k < el && ti < len; k++) {
+                    char dec = eb[k];
+                    if (dec == ' ') { if (!last_space) { txt[ti] = ' '; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; ti++; last_space = 1; } }
+                    else { if (cur_hd && dec >= 'a' && dec <= 'z') dec -= 32; txt[ti] = dec; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; ti++; last_space = 0; }
+                }
                 i += adv;
             } else { txt[ti] = '&'; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; ti++; last_space = 0; i++; }
             continue;
@@ -1707,6 +1727,24 @@ int selene_form_selftest(void) {
         if (a == 0 && b == -1 && c == 1 && d == -1)
             { pass++; printf("selene-form: image loader visibility gating (0,-1,1,-1) PASS\n"); }
         else printf("selene-form: image loader FAIL (a=%d b=%d c=%d d=%d)\n", a, b, c, d);
+    }
+
+    // 9) HTML entities: named + numeric decode to their display strings (&mdash;->"--", &hellip;->"...", etc.).
+    total++;
+    {
+        static const char* EH = "<p>A&mdash;B&hellip;C&copy;D&amp;E&nbsp;F&middot;G&#8212;H</p>";
+        static const char* WANT = "A--B...C(c)D&E F*G--H";
+        render_html(s, (const uint8_t*)EH, (uint32_t)strlen(EH));
+        int found = 0;
+        for (int li = 0; li < s->num_lines && !found; li++) {
+            const char* L = s->lines[li];
+            for (int off = 0; L[off]; off++) {                       // substring search (ignore any padding)
+                int m = 1; for (int q = 0; WANT[q]; q++) if (L[off + q] != WANT[q]) { m = 0; break; }
+                if (m) { found = 1; break; }
+            }
+        }
+        if (found) { pass++; printf("selene-form: HTML entities (mdash/hellip/copy/amp/nbsp/middot/#8212) PASS\n"); }
+        else printf("selene-form: HTML entities FAIL\n");
     }
 
     selene_free_ctx(s);
