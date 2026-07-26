@@ -791,11 +791,12 @@ void vfs_rename(const char* old, const char* new) {
     char new_name[MAX_NAME];
     vfs_node_t* new_parent = resolve_parent(new, new_name);
     if (!new_parent) { strncpy(ino->name, new, MAX_NAME-1); return; }
-    strncpy(ino->name, new_name, MAX_NAME-1);
     if (new_parent != parent) {
         // Append to the destination FIRST — if it's at MAX_CHILDREN, abort the move
         // and leave `ino` in its original parent rather than orphaning it (or writing
-        // past the destination's children[]).
+        // past the destination's children[]). The rename below only runs once the move
+        // has committed, so a dest-full failure leaves the source FULLY unchanged (it
+        // used to rename ino here first, so a failed cross-dir move left "/a/x" as "/a/y").
         if (vfs_append_child(new_parent, ino) != 0) return;
         for (uint32_t i = 0; i < parent->child_count; i++) {
             if (parent->children[i] == ino) {
@@ -807,6 +808,7 @@ void vfs_rename(const char* old, const char* new) {
         }
         ino->parent = new_parent;
     }
+    strncpy(ino->name, new_name, MAX_NAME-1);   // rename only after any cross-dir move succeeded
 }
 
 dirent_t* vfs_readdir(int fd) {
