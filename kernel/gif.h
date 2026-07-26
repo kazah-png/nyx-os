@@ -11,8 +11,9 @@ int gif_decode(const uint8_t* src, uint32_t srclen, image_t* img);
 
 // One frame of an animated GIF: fully-composited RGBA at the logical-screen size + its display delay.
 typedef struct { uint8_t* pixels; uint16_t delay_cs; } gif_frame_t;   // delay in centiseconds (1/100 s)
-// A decoded (possibly animated) GIF: logical-screen size + the array of composited frames.
-typedef struct { uint32_t width, height; int nframes; gif_frame_t* frames; } gif_anim_t;
+// A decoded (possibly animated) GIF: logical-screen size + the array of composited frames + the
+// NETSCAPE loop count (0 = loop forever; N = play N times then stop; default 0 when unspecified).
+typedef struct { uint32_t width, height; int nframes; gif_frame_t* frames; int loop_count; } gif_anim_t;
 
 // Decode ALL frames of a GIF into composited RGBA frames — honours each frame's sub-rectangle,
 // transparent index, and disposal method (leave / restore-to-background / restore-to-previous),

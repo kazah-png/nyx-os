@@ -179,7 +179,7 @@ int gif_decode_anim(const uint8_t* src, uint32_t srclen, gif_anim_t* out) {
     if (!canvas || !frames) { if (canvas) kfree(canvas); if (frames) kfree(frames); return -5; }
     { uint64_t k; for (k = 0; k < fbytes; k++) canvas[k] = 0; }   // start fully transparent
 
-    int nf = 0, delay = 0, trans = -1, disposal = 0;
+    int nf = 0, delay = 0, trans = -1, disposal = 0, loop_count = 0;   // loop_count 0 = infinite (default)
     while (p < srclen && nf < GIF_MAX_FRAMES) {
         uint8_t blk = src[p++];
         if (blk == 0x3B) break;                             // trailer
@@ -191,6 +191,11 @@ int gif_decode_anim(const uint8_t* src, uint32_t srclen, gif_anim_t* out) {
                 delay    = src[p + 2] | ((int)src[p + 3] << 8);        // centiseconds
                 trans    = (flags & 1) ? src[p + 4] : -1;
                 disposal = (flags >> 2) & 7;
+            } else if (label == 0xFF && p + 16 <= srclen && src[p] == 11) {   // Application Extension
+                static const char NS[11] = { 'N','E','T','S','C','A','P','E','2','.','0' };
+                int is_ns = 1; for (int k = 0; k < 11; k++) if (src[p + 1 + k] != (uint8_t)NS[k]) is_ns = 0;
+                if (is_ns && src[p + 12] == 3 && src[p + 13] == 1)     // sub-block: 03 01 LL HH -> loop count
+                    loop_count = src[p + 14] | ((int)src[p + 15] << 8);
             }
             while (p < srclen) { uint8_t sz = src[p++]; if (sz == 0) break; p += sz; }
             continue;
@@ -239,7 +244,7 @@ int gif_decode_anim(const uint8_t* src, uint32_t srclen, gif_anim_t* out) {
     }
     kfree(canvas); if (saved) kfree(saved);
     if (nf == 0) { kfree(frames); return -14; }
-    out->width = W; out->height = H; out->nframes = nf; out->frames = frames;
+    out->width = W; out->height = H; out->nframes = nf; out->frames = frames; out->loop_count = loop_count;
     return 0;
 }
 
@@ -277,6 +282,15 @@ static int gif_anim_case(const char* name, const uint8_t* file, uint32_t flen, u
     return ok;
 }
 
+// NETSCAPE loop count: a GIF saved with loop=3 must report loop_count 3; the loop=0 ("infinite") one reports 0.
+static int gif_loop_case(void) {
+    gif_anim_t a; int ok = 1;
+    if (gif_decode_anim(GIF_LOOP3, sizeof(GIF_LOOP3), &a) == 0) { ok = ok && (a.loop_count == 3); gif_anim_free(&a); } else ok = 0;
+    if (gif_decode_anim(GIF_ANIMF, sizeof(GIF_ANIMF), &a) == 0) { ok = ok && (a.loop_count == 0); gif_anim_free(&a); } else ok = 0;
+    printf("gif: loop-count %s (finite=3 + infinite=0)\n", ok ? "PASS" : "FAIL");
+    return ok;
+}
+
 int gif_selftest(void) {
     int pass = 0, total = 0;
     total++; pass += gif_case("basic",       GIF_BASIC,     sizeof(GIF_BASIC),     GIF_BASIC_W,     GIF_BASIC_H,     GIF_BASIC_RGBA);
@@ -287,6 +301,7 @@ int gif_selftest(void) {
                                    GIF_ANIMF_N, GIF_ANIMF_FRAMES, GIF_ANIMF_DELAYS);
     total++; pass += gif_anim_case("anim-partial", GIF_ANIMP, sizeof(GIF_ANIMP), GIF_ANIMP_W, GIF_ANIMP_H,
                                    GIF_ANIMP_N, GIF_ANIMP_FRAMES, GIF_ANIMP_DELAYS);
+    total++; pass += gif_loop_case();
     printf("gif: self-test %d/%d passed\n", pass, total);
     return (pass == total) ? 0 : -1;
 }

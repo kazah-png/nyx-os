@@ -60,6 +60,7 @@ typedef struct {
     gif_frame_t* frames;                 // animated GIF frames, else NULL (static image)
     int nframes, cur_frame;              // frame count + the one px points at
     uint32_t anim_ms;                    // ms accumulated toward the current frame's delay
+    int loop_count, loops_done;          // NETSCAPE loop count (0 = infinite) + loops completed so far
 } sel_img_t;
 
 typedef struct {
@@ -623,6 +624,7 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                 strncpy(im->src, src, sizeof(im->src)-1); im->src[sizeof(im->src)-1] = '\0';
                 im->px = 0; im->iw = 0; im->ih = 0; im->tried = 0;   // fetched lazily by selene_win_tick
                 im->frames = 0; im->nframes = 0; im->cur_frame = 0; im->anim_ms = 0;   // static until a GIF sets these
+                im->loop_count = 0; im->loops_done = 0;
                 int imgid = s->num_imgs + 1; s->num_imgs++;
                 // Caption text: prefer alt, else the src filename, else "image" (kept short so the box fits a line).
                 const char* capsrc = alt[0] ? alt : 0;
@@ -756,6 +758,7 @@ static void selene_fetch_one(selene_ctx_t* s, int i, int iface) {
                 if (gif_decode_anim(resp.body, resp.body_len, &ga) == 0) {
                     s->images[i].frames = ga.frames; s->images[i].nframes = ga.nframes;
                     s->images[i].cur_frame = 0; s->images[i].anim_ms = 0;
+                    s->images[i].loop_count = ga.loop_count; s->images[i].loops_done = 0;
                     s->images[i].px = ga.frames[0].pixels;              // show frame 0 (aliases frames[]; freed via selene_img_free)
                     s->images[i].iw = (uint16_t)ga.width; s->images[i].ih = (uint16_t)ga.height;
                 }
@@ -801,21 +804,28 @@ static int selene_fetch_next(selene_ctx_t* s, int iface) {
     return 1;
 }
 
-// Advance any VISIBLE animated GIF by one compositor tick (~33 ms). When a frame's delay elapses,
-// step to the next frame (looping) and repoint px at it. Returns 1 if any visible frame flipped (so
-// the compositor repaints); off-screen animations are frozen until scrolled into view (no wasted CPU).
+// Advance any VISIBLE animated GIF by one compositor tick (~33 ms). When a frame's delay elapses, step
+// to the next frame and repoint px at it; on wrapping past the last frame a full loop has played, and a
+// GIF with a finite NETSCAPE loop count freezes on its last frame once it has looped that many times.
+// Returns 1 if any visible frame flipped; off-screen (or finished) animations are frozen (no wasted CPU).
 static int selene_anim_tick(selene_ctx_t* s) {
     int rows = visible_rows(), changed = 0;
     for (int i = 0; i < s->num_imgs; i++) {
         sel_img_t* im = &s->images[i];
         if (!im->frames || im->nframes < 2) continue;            // static or single-frame: nothing to animate
+        if (im->loop_count != 0 && im->loops_done >= im->loop_count) continue;   // finished looping: frozen
         int aline = selene_img_anchor(s, i);
         if (aline < 0 || aline < s->scroll || aline >= s->scroll + rows) continue;   // off-screen: freeze
         im->anim_ms += SELENE_TICK_MS;
         uint32_t need = (uint32_t)im->frames[im->cur_frame].delay_cs * 10;   // centiseconds -> ms
         if (im->anim_ms >= need) {
             im->anim_ms = 0;
-            im->cur_frame = (im->cur_frame + 1) % im->nframes;
+            if (im->cur_frame + 1 >= im->nframes) {              // finishing a loop
+                if (im->loop_count != 0 && ++im->loops_done >= im->loop_count) continue;   // last loop: stay on final frame
+                im->cur_frame = 0;
+            } else {
+                im->cur_frame++;
+            }
             im->px = im->frames[im->cur_frame].pixels;          // px aliases the new frame (not owned)
             changed = 1;
         }
