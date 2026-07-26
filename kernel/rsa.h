@@ -12,6 +12,10 @@ int rsa_pss_sha256_verify(const uint8_t* N, uint32_t Nlen, uint64_t e,
 int rsa_pkcs1_sha256_verify(const uint8_t* N, uint32_t Nlen, uint64_t e,
                             const uint8_t* sig, uint32_t siglen, const uint8_t hash[32]);
 
+// RSA-PKCS1-v1.5 verify with SHA-512 (rsa_pkcs1_sha512, TLS SKE 0x0601). 0 if valid.
+int rsa_pkcs1_sha512_verify(const uint8_t* N, uint32_t Nlen, uint64_t e,
+                            const uint8_t* sig, uint32_t siglen, const uint8_t hash[64]);
+
 // Known-answer self-test (valid signature accepted, tampered hash/sig rejected); 0 if all pass.
 int rsa_selftest(void);
 

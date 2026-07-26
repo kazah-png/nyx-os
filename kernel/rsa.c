@@ -65,8 +65,9 @@ static void bn_modexp(bn r, const bn base, uint64_t e, const bn N, int L) {
     for (int i = 0; i < L; i++) r[i] = result[i];
 }
 
-int rsa_pkcs1_sha256_verify(const uint8_t* Nb, uint32_t Nlen, uint64_t e,
-                            const uint8_t* sig, uint32_t siglen, const uint8_t hash[32]) {
+// Recover the padded message EM = sig^e mod N (big-endian, Nlen bytes). 0 on success, -1 on bad input.
+static int rsa_recover_em(const uint8_t* Nb, uint32_t Nlen, uint64_t e,
+                          const uint8_t* sig, uint32_t siglen, uint8_t* em) {
     if (Nlen == 0 || Nlen > RSA_MAX_LIMBS * 8 || siglen != Nlen) return -1;
     int L = (int)((Nlen + 7) / 8);
     bn N, S, M;
@@ -74,21 +75,42 @@ int rsa_pkcs1_sha256_verify(const uint8_t* Nb, uint32_t Nlen, uint64_t e,
     bn_from_be(S, sig, siglen);
     if (bn_ge(S, N, L)) return -1;                   // signature must be < modulus
     bn_modexp(M, S, e, N, L);
-
-    uint8_t em[RSA_MAX_LIMBS * 8];
     bn_to_be(M, em, Nlen);
-    // EMSA-PKCS1-v1.5: 0x00 0x01 0xFF..(>=8).. 0x00 || DigestInfo(SHA-256) || hash
+    return 0;
+}
+
+// Check an EMSA-PKCS1-v1.5 EM: 0x00 0x01 0xFF..(>=8).. 0x00 || DigestInfo || hash. 0 if it matches.
+static int rsa_pkcs1_check(const uint8_t* em, uint32_t Nlen, const uint8_t* DI, uint32_t dilen,
+                           const uint8_t* hash, uint32_t hashlen) {
     if (em[0] != 0x00 || em[1] != 0x01) return -1;
     uint32_t i = 2;
     while (i < Nlen && em[i] == 0xFF) i++;
     if (i < 10 || i >= Nlen || em[i] != 0x00) return -1;
     i++;
-    static const uint8_t DI[19] = { 0x30,0x31,0x30,0x0d,0x06,0x09,0x60,0x86,0x48,
-                                    0x01,0x65,0x03,0x04,0x02,0x01,0x05,0x00,0x04,0x20 };
-    if (Nlen - i != 19 + 32) return -1;
-    for (int j = 0; j < 19; j++) if (em[i + j]      != DI[j])   return -1;
-    for (int j = 0; j < 32; j++) if (em[i + 19 + j] != hash[j]) return -1;
+    if (Nlen - i != dilen + hashlen) return -1;
+    for (uint32_t j = 0; j < dilen; j++)   if (em[i + j]         != DI[j])   return -1;
+    for (uint32_t j = 0; j < hashlen; j++) if (em[i + dilen + j] != hash[j]) return -1;
     return 0;
+}
+
+int rsa_pkcs1_sha256_verify(const uint8_t* Nb, uint32_t Nlen, uint64_t e,
+                            const uint8_t* sig, uint32_t siglen, const uint8_t hash[32]) {
+    uint8_t em[RSA_MAX_LIMBS * 8];
+    if (rsa_recover_em(Nb, Nlen, e, sig, siglen, em)) return -1;
+    static const uint8_t DI[19] = { 0x30,0x31,0x30,0x0d,0x06,0x09,0x60,0x86,0x48,     // DigestInfo(SHA-256)
+                                    0x01,0x65,0x03,0x04,0x02,0x01,0x05,0x00,0x04,0x20 };
+    return rsa_pkcs1_check(em, Nlen, DI, 19, hash, 32);
+}
+
+// RSA-PKCS1-v1.5 with SHA-512 (rsa_pkcs1_sha512, TLS 0x0601 — the last SKE scheme). Same padding, a
+// different DigestInfo prefix (SHA-512 OID) and a 64-byte hash.
+int rsa_pkcs1_sha512_verify(const uint8_t* Nb, uint32_t Nlen, uint64_t e,
+                            const uint8_t* sig, uint32_t siglen, const uint8_t hash[64]) {
+    uint8_t em[RSA_MAX_LIMBS * 8];
+    if (rsa_recover_em(Nb, Nlen, e, sig, siglen, em)) return -1;
+    static const uint8_t DI[19] = { 0x30,0x51,0x30,0x0d,0x06,0x09,0x60,0x86,0x48,     // DigestInfo(SHA-512)
+                                    0x01,0x65,0x03,0x04,0x02,0x03,0x05,0x00,0x04,0x40 };
+    return rsa_pkcs1_check(em, Nlen, DI, 19, hash, 64);
 }
 
 // SHA-256 of (a || b), either part optional.
@@ -212,6 +234,42 @@ int rsa_selftest(void) {
     if (rsa_pkcs1_sha256_verify(N, 256, 65537, s2, 256, hash) == -1) {
         pass++; printf("rsa: tampered signature rejected PASS\n");
     } else   printf("rsa: tampered signature rejected FAIL\n");
+
+    // RSA-PKCS1-v1.5 with SHA-512 (TLS 0x0601): valid accepted, tampered hash rejected. Vector: cryptography lib.
+    {
+        static const char N512[] =
+        "9996e71e9a7e578fc270ac4ac1d5913e68e98ee18bbeba38f442a86f9b981404"
+        "90b20bb406d47f4bdd9744a952776753d0868f131dd2f7e5df0343dd73760d6e"
+        "03de6629565ee67706485fd4b9887ef6902d6ea5baaf1b1d9e303d9e23640c80"
+        "45b42e086084d784802e54f859e486c1c85971a7a57732212cd8c9f6378237ba"
+        "655b6e28d6de2ef86d84ee3bb47fbba897a1a98264648c473128ea7cf13955a3"
+        "280a90dba27c66185dc997222146f20b784c35d591e40773980edabdc565fdae"
+        "8e5f81a2463b563b7ee16645361543f7964e828fc66f523c015e3fe2f980b174"
+        "86740616a639b34cd21a8898708985e167206ff856f901a3ca5cebdbf3ed9253";
+        static const char S512[] =
+        "11b3c18c984f1d9d4f69a1fa14dab1e59bd684a01f5e92ff27797d1632331e62"
+        "86b8c805488896eef1bdf7ac48de623644de68611d1770046465c965c915c1eb"
+        "8ac231f5b36539076f2fbb3bc0e6c55587f50631e7f5d466262bf12c6b8dc5c6"
+        "0d13dc2ead924d334f5fda264067d003c205d26d5f53eb04c1247cfffc56a4e0"
+        "13f9d6650ae3b12a4a22afd6af1f4d9f374da31b4f1a5c81c482108fa38dadd0"
+        "8ddadfaae81d419351cb6207fd1eb5e6615ae4a306700c69cca1e47dad94b0db"
+        "bc867060448af855477cff808d17cf832e0afcbec71f25f3fd4dfa781eaae16e"
+        "770a015d146837998b198a547d3c992c60c05ac979264ca0e58372ed185a3d56";
+        static const char H512[] =
+        "c5eb9e02c65825bfed59273b663600bb74aaf3812fd53c01c46f75297e1e743d"
+        "67f21c71da20af968dc3999cda6e31af5340d1f3c0747baad5cd0cd0da513ba2";
+        uint8_t Nb[256], sb[256], hb[64], hb2[64];
+        unhexs(Nb, N512, 256); unhexs(sb, S512, 256); unhexs(hb, H512, 64);
+        total++;
+        if (rsa_pkcs1_sha512_verify(Nb, 256, 65537, sb, 256, hb) == 0) {
+            pass++; printf("rsa: RSA-2048 PKCS1-v1.5 SHA-512 valid signature PASS\n");
+        } else   printf("rsa: RSA-2048 PKCS1-v1.5 SHA-512 valid signature FAIL\n");
+        for (int i = 0; i < 64; i++) hb2[i] = hb[i]; hb2[0] ^= 0x01;
+        total++;
+        if (rsa_pkcs1_sha512_verify(Nb, 256, 65537, sb, 256, hb2) == -1) {
+            pass++; printf("rsa: SHA-512 tampered hash rejected PASS\n");
+        } else   printf("rsa: SHA-512 tampered hash rejected FAIL\n");
+    }
 
     // RSA-PSS (rsa_pss_rsae_sha256, TLS 0x0804): a valid PSS signature accepted, a tamper rejected.
     {

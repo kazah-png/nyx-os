@@ -561,13 +561,15 @@ int tls_https_request(const char* host, const char* path, const char* method,
 
         // ---- Verify the ServerKeyExchange signature against the leaf certificate ----------
         // Proves the ECDHE parameters were signed by the private key matching the leaf certificate:
-        // ECDSA-P256/SHA-256 (v5.9.61), ECDSA-P384/SHA-384 (v5.9.79), RSA-PKCS1-SHA256 (v5.9.71) or
-        // RSA-PSS-SHA256 (v5.9.74). The signed data is HASH(client_random ‖ server_random ‖
-        // ServerECDHParams), the hash chosen by the signature algorithm. (Authenticity of the key
-        // exchange; the certificate's chain to a trusted root is checked separately, above.)
+        // ECDSA-P256/SHA-256 (v5.9.61), ECDSA-P384/SHA-384 (v5.9.79), RSA-PKCS1-SHA256 (v5.9.71),
+        // RSA-PSS-SHA256 (v5.9.74) or RSA-PKCS1-SHA512 (v5.9.92) — every common SKE scheme. The signed
+        // data is HASH(client_random ‖ server_random ‖ ServerECDHParams), the hash chosen by the
+        // signature algorithm. (Authenticity of the key exchange; the certificate's chain to a trusted
+        // root is checked separately, above.)
         int ske_ok = 0;
         if (leaf_ptr && ske_sig_len &&
-            (ske_sig_alg == 0x0403 || ske_sig_alg == 0x0503 || ske_sig_alg == 0x0401 || ske_sig_alg == 0x0804)) {
+            (ske_sig_alg == 0x0403 || ske_sig_alg == 0x0503 || ske_sig_alg == 0x0401 ||
+             ske_sig_alg == 0x0804 || ske_sig_alg == 0x0601)) {
             int checked = -2; const char* scheme = "?";
             if (ske_sig_alg == 0x0503) {                               // ECDSA-P384 over SHA-384
                 scheme = "ECDSA-P384";
@@ -577,6 +579,21 @@ int tls_https_request(const char* host, const char* path, const char* method,
                 sha512_update(&hc, tls_ske_params, ske_params_len);
                 sha384_final(&hc, e);
                 checked = tls_ecdsa_leaf_verify(leaf_ptr, cert0, e, 48, tls_ske_sig, ske_sig_len);
+            } else if (ske_sig_alg == 0x0601) {                        // RSA-PKCS1 over SHA-512
+                scheme = "RSA-PKCS1-SHA512";
+                uint8_t e[64]; sha512_ctx_t hc; sha512_init(&hc);
+                sha512_update(&hc, tls_client_random, 32);
+                sha512_update(&hc, tls_server_random, 32);
+                sha512_update(&hc, tls_ske_params, ske_params_len);
+                sha512_final(&hc, e);
+                der_pubkey_t pk;
+                if (der_x509_pubkey(leaf_ptr, cert0, &pk) == 0 && pk.type == DER_KEY_RSA) {
+                    const uint8_t* N = pk.rsa_n; uint32_t Nl = pk.rsa_n_len;
+                    while (Nl > 1 && N[0] == 0x00) { N++; Nl--; }   // strip DER INTEGER leading zero
+                    uint64_t ev = 0;
+                    for (uint32_t k = 0; k < pk.rsa_e_len && k < 8; k++) ev = (ev << 8) | pk.rsa_e[k];
+                    checked = rsa_pkcs1_sha512_verify(N, Nl, ev, tls_ske_sig, ske_sig_len, e);
+                }
             } else {
                 uint8_t e[32]; sha256_ctx_t hc; sha256_init(&hc);
                 sha256_update(&hc, tls_client_random, 32);
