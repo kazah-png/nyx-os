@@ -289,6 +289,133 @@ static void sel_emit(char* txt, uint8_t* tlink, uint8_t* tfield, uint32_t* ti, u
     }
 }
 
+// ===== <table> column layout: parse rows/cells, size columns, emit a bordered ASCII table =====
+#define SEL_TBL_MAXCOLS 12       // columns beyond this are dropped
+#define SEL_TBL_MAXROWS 80       // rows beyond this are dropped
+#define SEL_TBL_MAXCELLS 480     // total cells captured (kmalloc'd)
+#define SEL_TBL_COLCAP   22      // max display width of one column (chars)
+#define SEL_TBL_ROWCAP   84      // max total row width (< SEL_WRAP, so rows never word-wrap)
+
+typedef struct { uint32_t s, e; uint16_t row, col; uint8_t th; } sel_tcell_t;
+
+// If body[i] opens/closes exactly tag `nm`, return 1, set *close (1=closing) and *past (just after '>').
+static int sel_tag_match(const uint8_t* body, uint32_t i, uint32_t e, const char* nm, int* close, uint32_t* past) {
+    if (i >= e || body[i] != '<') return 0;
+    uint32_t j = i + 1; *close = 0;
+    if (j < e && body[j] == '/') { *close = 1; j++; }
+    char name[10]; int n = 0;
+    while (j < e && n < 9) { char t = (char)body[j];
+        if ((t>='a'&&t<='z')||(t>='A'&&t<='Z')||(t>='0'&&t<='9')) { name[n++] = (t>='A'&&t<='Z')?t+32:t; j++; }
+        else break; }
+    name[n] = '\0';
+    if (!sel_streq(name, nm)) return 0;
+    while (j < e && body[j] != '>') j++; if (j < e) j++;
+    *past = j;
+    return 1;
+}
+
+// Plain text of a table cell body[s..e): strip inner tags, decode entities, collapse whitespace, trim.
+static int sel_cell_text(const uint8_t* body, uint32_t s, uint32_t e, char* out, int cap, int upper) {
+    int n = 0, last_space = 1;
+    for (uint32_t i = s; i < e && n < cap - 1; ) {
+        char c = (char)body[i];
+        if (c == '<') { while (i < e && body[i] != '>') i++; if (i < e) i++; continue; }
+        if (c == '&') { char d; uint32_t adv;
+            if (decode_entity(body + i, e - i, &d, &adv)) {
+                if (d == ' ') { if (!last_space) { out[n++] = ' '; last_space = 1; } }
+                else { if (upper && d>='a'&&d<='z') d -= 32; out[n++] = d; last_space = 0; }
+                i += adv; continue; }
+            out[n++] = '&'; last_space = 0; i++; continue; }
+        if (c==' '||c=='\t'||c=='\n'||c=='\r') { if (!last_space) { out[n++] = ' '; last_space = 1; } i++; continue; }
+        if (upper && c>='a'&&c<='z') c -= 32;
+        out[n++] = c; last_space = 0; i++;
+    }
+    while (n > 0 && out[n-1] == ' ') n--;   // trim trailing space
+    out[n] = '\0';
+    return n;
+}
+
+// Parse the table in body[ts..te) and emit it, aligned, into the text stream at *pti.
+static void render_table(const uint8_t* body, uint32_t ts, uint32_t te,
+                         char* txt, uint8_t* tlink, uint8_t* tfield, uint32_t* pti, uint32_t cap) {
+    sel_tcell_t* cells = (sel_tcell_t*)kmalloc(SEL_TBL_MAXCELLS * sizeof(sel_tcell_t));
+    if (!cells) return;
+    int colw[SEL_TBL_MAXCOLS]; for (int c = 0; c < SEL_TBL_MAXCOLS; c++) colw[c] = 0;
+    int ncols = 0, nrows = 0, ncells = 0, has_header = 0, row = -1, curcol = 0;
+
+    // Pass 1 — collect cells (row, col, byte range, th?) and each column's max content width.
+    for (uint32_t i = ts; i < te && ncells < SEL_TBL_MAXCELLS; ) {
+        if (body[i] != '<') { i++; continue; }
+        int close; uint32_t past;
+        if (sel_tag_match(body, i, te, "tr", &close, &past)) {
+            if (!close && row < SEL_TBL_MAXROWS - 1) { row++; if (row + 1 > nrows) nrows = row + 1; curcol = 0; }
+            i = past; continue;
+        }
+        int isth = 0, isopen = 0; uint32_t cpast = i;
+        if (sel_tag_match(body, i, te, "td", &close, &past) && !close) { isopen = 1; isth = 0; cpast = past; }
+        else if (sel_tag_match(body, i, te, "th", &close, &past) && !close) { isopen = 1; isth = 1; cpast = past; }
+        if (isopen) {
+            if (row < 0) { row = 0; nrows = 1; curcol = 0; }         // cells before an explicit <tr>
+            uint32_t k = cpast;                                       // find the cell's end (next cell/row/table tag)
+            while (k < te) {
+                if (body[k] == '<') { int c3; uint32_t p3;
+                    if (sel_tag_match(body,k,te,"td",&c3,&p3) || sel_tag_match(body,k,te,"th",&c3,&p3) ||
+                        sel_tag_match(body,k,te,"tr",&c3,&p3) || sel_tag_match(body,k,te,"table",&c3,&p3)) break; }
+                k++;
+            }
+            if (curcol < SEL_TBL_MAXCOLS) {
+                char cb[SEL_TBL_COLCAP + 2];
+                int w = sel_cell_text(body, cpast, k, cb, sizeof(cb), 0);   // measure (capped at COLCAP)
+                if (w > SEL_TBL_COLCAP) w = SEL_TBL_COLCAP;
+                if (w > colw[curcol]) colw[curcol] = w;
+                cells[ncells].s = cpast; cells[ncells].e = k;
+                cells[ncells].row = (uint16_t)row; cells[ncells].col = (uint16_t)curcol; cells[ncells].th = (uint8_t)isth;
+                ncells++;
+                if (isth) has_header = 1;
+                if (curcol + 1 > ncols) ncols = curcol + 1;
+            }
+            curcol++;
+            i = k; continue;
+        }
+        { uint32_t k = i + 1; while (k < te && body[k] != '>') k++; if (k < te) k++; i = k; }   // skip other tag
+    }
+    if (ncols == 0 || nrows == 0) { kfree(cells); return; }
+    for (int c = 0; c < ncols; c++) if (colw[c] < 1) colw[c] = 1;      // empty columns still get a slot
+
+    int total = 1; for (int c = 0; c < ncols; c++) total += colw[c] + 3;   // "|" + per col " x |"
+    while (total > SEL_TBL_ROWCAP) {                                    // shrink widest column until it fits
+        int mx = -1, mi = 0; for (int c = 0; c < ncols; c++) if (colw[c] > mx) { mx = colw[c]; mi = c; }
+        if (mx <= 3) break; colw[mi]--; total--;
+    }
+
+    // Build a horizontal rule "+----+---+" once (reused for top / header sep / bottom).
+    char rule[SEL_LINE_COLS]; { int p = 0; rule[p++] = '+';
+        for (int c = 0; c < ncols && p < SEL_LINE_COLS - 2; c++) {
+            for (int z = 0; z < colw[c] + 2 && p < SEL_LINE_COLS - 2; z++) rule[p++] = '-';
+            rule[p++] = '+'; } rule[p] = '\0'; }
+
+    *pti = sel_ensure_nl(txt, tlink, *pti, cap, 2);
+    sel_emit(txt, tlink, tfield, pti, cap, rule, 0); sel_emit(txt, tlink, tfield, pti, cap, "\n", 0);
+    for (int r = 0; r < nrows; r++) {
+        char line[SEL_LINE_COLS]; int p = 0; line[p++] = '|';
+        for (int c = 0; c < ncols && p < SEL_LINE_COLS - 2; c++) {
+            char cb[SEL_TBL_COLCAP + 2]; int w = 0; int th = 0;
+            for (int m = 0; m < ncells; m++) if (cells[m].row == r && cells[m].col == c) {
+                th = cells[m].th; w = sel_cell_text(body, cells[m].s, cells[m].e, cb, colw[c] + 1, th); break; }
+            line[p++] = ' ';
+            int z = 0; for (; z < w && z < colw[c] && p < SEL_LINE_COLS - 2; z++) line[p++] = cb[z];
+            for (; z < colw[c] && p < SEL_LINE_COLS - 2; z++) line[p++] = ' ';
+            line[p++] = ' '; line[p++] = '|';
+        }
+        line[p] = '\0';
+        sel_emit(txt, tlink, tfield, pti, cap, line, 0); sel_emit(txt, tlink, tfield, pti, cap, "\n", 0);
+        if (r == 0 && has_header) { sel_emit(txt, tlink, tfield, pti, cap, rule, 0); sel_emit(txt, tlink, tfield, pti, cap, "\n", 0); }
+    }
+    sel_emit(txt, tlink, tfield, pti, cap, rule, 0);
+    *pti = sel_ensure_nl(txt, tlink, *pti, cap, 2);
+    kfree(cells);
+}
+
 // ---- strip HTML in `body` to text (capturing <a href> links + form controls), then wrap it ----
 static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
     s->num_lines = 0; s->scroll = 0; s->title[0] = '\0';
@@ -433,6 +560,21 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                 }
                 i = te; if (i < len) i++;
                 continue;
+            }
+            if (!close && sel_streq(name, "table")) {          // <table>...</table>: aligned column layout
+                uint32_t inner = j; while (inner < len && body[inner] != '>') inner++; if (inner < len) inner++;
+                int depth = 1; uint32_t k = inner, innerEnd = len;  // match the closing </table> (nesting-aware)
+                while (k < len) {
+                    if (body[k] == '<') { int c4; uint32_t p4;
+                        if (sel_tag_match(body, k, len, "table", &c4, &p4)) {
+                            if (c4) { depth--; if (depth == 0) { innerEnd = k; k = p4; break; } }
+                            else depth++;
+                            k = p4; continue; } }
+                    k++;
+                }
+                render_table(body, inner, innerEnd, txt, tlink, tfield, &ti, len);
+                last_space = 1;
+                i = k; continue;
             }
             if (!close && sel_streq(name, "img") && s->num_imgs < SEL_MAX_IMGS) {   // <img ...> placeholder
                 uint32_t te = j; while (te < len && body[te] != '>') te++;
@@ -1193,6 +1335,29 @@ int selene_form_selftest(void) {
             { pass++; printf("selene-form: <img> parsed (alt + filename fallback + labels) PASS\n"); }
         else printf("selene-form: <img> FAIL (ni=%d ok=%d altlbl=%d filelbl=%d)\n",
                     s->num_imgs, oki, lbl_alt, lbl_file);
+    }
+
+    // 6) <table> column layout: a small table renders as aligned, bordered rows (header th upper-cased).
+    total++;
+    {
+        static const char* THTML =
+            "<table>"
+            "<tr><th>Name</th><th>Age</th></tr>"
+            "<tr><td>Alice</td><td>30</td></tr>"
+            "<tr><td>Bob</td><td>5</td></tr>"
+            "</table>";
+        render_html(s, (const uint8_t*)THTML, (uint32_t)strlen(THTML));
+        int hdr = 0, r1 = 0, r2 = 0, rule = 0;                            // exact aligned lines expected
+        for (int li = 0; li < s->num_lines; li++) {
+            const char* L = s->lines[li];
+            if (sel_streq(L, "| NAME  | AGE |")) hdr = 1;
+            if (sel_streq(L, "| Alice | 30  |")) r1 = 1;
+            if (sel_streq(L, "| Bob   | 5   |")) r2 = 1;
+            if (sel_streq(L, "+-------+-----+"))  rule = 1;
+        }
+        if (hdr && r1 && r2 && rule)
+            { pass++; printf("selene-form: <table> layout (aligned cols + header + border) PASS\n"); }
+        else printf("selene-form: <table> FAIL (hdr=%d r1=%d r2=%d rule=%d)\n", hdr, r1, r2, rule);
     }
 
     kfree(s->lines); kfree(s->link_of); kfree(s->field_of);
