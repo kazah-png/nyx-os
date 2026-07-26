@@ -489,9 +489,9 @@ static int find_iface(void) {
     return -1;
 }
 
-// Fetch ctx->url and render it. Blocks (http_get drives the net) - we paint a
-// "Loading" status first via compositor_redraw_now so the UI shows progress.
-static void selene_load(selene_ctx_t* s) {
+// Fetch ctx->url with `method` (+ optional form `body` for POST) and render the reply. Blocks
+// (the fetch drives the net) - we paint a status first via compositor_redraw_now for progress.
+static void selene_load_ex(selene_ctx_t* s, const char* method, const uint8_t* body, uint32_t body_len) {
     s->num_lines = 0; s->scroll = 0; s->title[0] = '\0'; s->num_links = 0; s->sel_link = -1;
     int iface = find_iface();
     if (iface < 0) { strncpy(s->status, "No network interface (boot with -nic)", 95); return; }
@@ -503,27 +503,29 @@ static void selene_load(selene_ctx_t* s) {
     char host[128] = {0}, path[256] = {0}; uint16_t port = 80; int is_https = 0;
     parse_url(s->url, host, &port, path, &is_https);
     if (!host[0]) { strncpy(s->status, "Enter a URL, e.g. example.com", 95); return; }
+    int is_post = (method && (method[0] == 'P' || method[0] == 'p'));
     // record the base for resolving this page's relative links
     strncpy(s->base_host, host, sizeof(s->base_host)-1); s->base_host[sizeof(s->base_host)-1] = '\0';
     s->base_port = port;
     s->base_https = is_https;
     strncpy(s->base_path, path, sizeof(s->base_path)-1); s->base_path[sizeof(s->base_path)-1] = '\0';
-    snprintf(s->status, sizeof(s->status), "Loading %s%s ...", is_https ? "https://" : "", host);
+    snprintf(s->status, sizeof(s->status), "%s %s%s ...", is_post ? "Submitting to" : "Loading",
+             is_https ? "https://" : "", host);
     compositor_redraw_now();
 
     http_response_t resp;
     if (is_https) {
-        // Secure fetch: a full TLS 1.2 handshake + encrypted GET, then parsed like http_get.
+        // Secure fetch: a full TLS 1.2 handshake + encrypted request, then parsed like http.
         uint8_t* raw = (uint8_t*)kmalloc(HTTP_MAX_RESPONSE);
         if (!raw) { strncpy(s->status, "Out of memory", 95); return; }
-        int rn = tls_https_fetch(host, path, iface, raw, HTTP_MAX_RESPONSE - 1, 0);
+        int rn = tls_https_request(host, path, method, body, body_len, iface, raw, HTTP_MAX_RESPONSE - 1, 0);
         if (rn < 0) { kfree(raw); snprintf(s->status, sizeof(s->status), "Could not load %s (TLS failed)", host); return; }
         raw[rn] = '\0';
         int pr = http_parse_response(raw, (uint32_t)rn, &resp);
         kfree(raw);
         if (pr < 0) { snprintf(s->status, sizeof(s->status), "Bad https response from %s", host); return; }
     } else {
-        if (http_get(host, port, path, &resp, iface) < 0) {
+        if (http_request(host, port, path, method, body, body_len, &resp, iface) < 0) {
             snprintf(s->status, sizeof(s->status), "Could not load %s", host);
             return;
         }
@@ -535,6 +537,8 @@ static void selene_load(selene_ctx_t* s) {
              s->title[0] ? s->title : host, s->num_links);
     http_free(&resp);
 }
+
+static void selene_load(selene_ctx_t* s) { selene_load_ex(s, "GET", 0, 0); }
 
 // Navigation helpers manage the Back history around selene_load.
 static void push_hist(selene_ctx_t* s, const char* u) {
@@ -580,16 +584,11 @@ static void sel_urlencode(char* dst, uint32_t cap, const char* src) {
     dst[o] = '\0';
 }
 
-// Build the GET submission URL for the form that owns field `fi`: "action?name=value&..." from
-// its text/hidden fields (named controls only; submit buttons excluded). No navigation — so it's
-// unit-testable. Empty out if `fi` is out of range.
-static void selene_build_submit_url(selene_ctx_t* s, int fi, char* url, uint32_t cap) {
-    url[0] = '\0';
-    if (fi < 0 || fi >= s->num_fields) return;
-    int form = s->fields[fi].form;
-    const char* action = (form >= 0 && form < s->num_forms) ? s->forms[form].action : s->cur_url;
-
-    char query[512]; uint32_t q = 0; query[0] = '\0';
+// Build the URL-encoded "name=value&..." data for the form `form` from its text/hidden fields
+// (named controls only; submit buttons excluded). Returns the length written. Shared by the GET
+// query and the POST body — so unit-testable without any navigation.
+static uint32_t selene_build_query(selene_ctx_t* s, int form, char* query, uint32_t cap) {
+    uint32_t q = 0; query[0] = '\0';
     for (int k = 0; k < s->num_fields; k++) {
         sel_field_t* f = &s->fields[k];
         if (f->form != form || f->kind == SEL_FLD_SUBMIT || !f->name[0]) continue;   // named data only
@@ -597,25 +596,47 @@ static void selene_build_submit_url(selene_ctx_t* s, int fi, char* url, uint32_t
         sel_urlencode(en, sizeof(en), f->name);
         sel_urlencode(ev, sizeof(ev), f->value);
         uint32_t need = (uint32_t)strlen(en) + (uint32_t)strlen(ev) + 2;
-        if (q + need >= sizeof(query)) break;
+        if (q + need >= cap) break;
         if (q) query[q++] = '&';
         for (const char* p = en; *p; p++) query[q++] = *p;
         query[q++] = '=';
         for (const char* p = ev; *p; p++) query[q++] = *p;
         query[q] = '\0';
     }
+    return q;
+}
+
+// Build the GET submission URL for the form that owns field `fi`: "action?name=value&...". No
+// navigation — so it's unit-testable. Empty out if `fi` is out of range.
+static void selene_build_submit_url(selene_ctx_t* s, int fi, char* url, uint32_t cap) {
+    url[0] = '\0';
+    if (fi < 0 || fi >= s->num_fields) return;
+    int form = s->fields[fi].form;
+    const char* action = (form >= 0 && form < s->num_forms) ? s->forms[form].action : s->cur_url;
+    char query[512]; selene_build_query(s, form, query, sizeof(query));
     const char* sep = "?";
     for (const char* p = action; *p; p++) if (*p == '?') { sep = "&"; break; }
     if (query[0]) snprintf(url, cap, "%s%s%s", action, sep, query);
     else          snprintf(url, cap, "%s", action);
 }
 
-// Submit the form owning field `fi` and navigate. (POST isn't wired yet — a method=post form
-// still submits as a GET query so the user goes somewhere sensible; real POST is a later step.)
+// Submit the form owning field `fi`. GET forms navigate to "action?query"; POST forms send the
+// query as an application/x-www-form-urlencoded request body to the action (over http or TLS).
 static void selene_submit(selene_ctx_t* s, int fi) {
-    char url[224];
-    selene_build_submit_url(s, fi, url, sizeof(url));
-    if (url[0]) selene_follow(s, url);
+    if (fi < 0 || fi >= s->num_fields) return;
+    int form = s->fields[fi].form;
+    int is_post = (form >= 0 && form < s->num_forms && s->forms[form].method == 1);
+    if (is_post) {
+        const char* action = (form >= 0 && form < s->num_forms) ? s->forms[form].action : s->cur_url;
+        char body[512]; uint32_t bl = selene_build_query(s, form, body, sizeof(body));
+        push_hist(s, s->cur_url);
+        selene_set_url(s, action);
+        selene_load_ex(s, "POST", (const uint8_t*)body, bl);
+    } else {
+        char url[224];
+        selene_build_submit_url(s, fi, url, sizeof(url));
+        if (url[0]) selene_follow(s, url);
+    }
 }
 
 void* selene_create_ctx(void) {
@@ -952,6 +973,27 @@ int selene_form_selftest(void) {
     if (sel_streq(url, "http://example.com/search?q=hello+world&lang=en"))
         { pass++; printf("selene-form: GET url built PASS (%s)\n", url); }
     else printf("selene-form: GET url build FAIL (%s)\n", url);
+
+    // 4) a method=post form: parse it and build the URL-encoded request body.
+    total++;
+    {
+        static const char* PHTML =
+            "<form action=\"/login\" method=\"post\">"
+            "<input type=\"text\" name=\"user\" value=\"\">"
+            "<input type=\"password\" name=\"pass\" value=\"\">"
+            "<input type=\"submit\" value=\"Sign in\"></form>";
+        render_html(s, (const uint8_t*)PHTML, (uint32_t)strlen(PHTML));
+        int okp = (s->num_forms == 1 && s->forms[0].method == 1 && s->num_fields == 3);   // method POST
+        if (okp) {
+            strncpy(s->fields[0].value, "alice",  sizeof(s->fields[0].value)-1);
+            strncpy(s->fields[1].value, "p@ss w", sizeof(s->fields[1].value)-1);          // @ and space encode
+        }
+        char body[256]; selene_build_query(s, 0, body, sizeof(body));
+        if (okp && sel_streq(body, "user=alice&pass=p%40ss+w"))
+            { pass++; printf("selene-form: POST body built PASS (%s)\n", body); }
+        else printf("selene-form: POST body FAIL (method=%d body=%s)\n",
+                    s->num_forms ? s->forms[0].method : -1, body);
+    }
 
     kfree(s->lines); kfree(s->link_of); kfree(s->field_of);
     kfree(s->links); kfree(s->fields); kfree(s->forms); kfree(s);

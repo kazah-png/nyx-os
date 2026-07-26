@@ -257,11 +257,13 @@ static void der_int_to_32(uint8_t out[32], const uint8_t* v, uint32_t len) {
     for (uint32_t i = 0; i < len; i++) out[32 - len + i] = v[i];
 }
 
-// Full https fetch: TLS 1.2 handshake with host:443, GET <path>, decrypt the response into
-// out[cap]. Returns the decrypted response length (>= 0) or -1 on failure. `verbose` gates
-// the step-by-step diagnostics (the `tls` command sets it; Selene does not).
-int tls_https_fetch(const char* host, const char* path, int iface_idx,
-                    uint8_t* out, uint32_t cap, int verbose) {
+// Full https request: TLS 1.2 handshake with host:443, send <method> <path> (with an optional
+// form body for POST), decrypt the response into out[cap]. Returns the decrypted length (>= 0)
+// or -1 on failure. `verbose` gates the step-by-step diagnostics (the `tls` command sets it).
+int tls_https_request(const char* host, const char* path, const char* method,
+                      const uint8_t* body, uint32_t body_len, int iface_idx,
+                      uint8_t* out, uint32_t cap, int verbose) {
+    if (!method) method = "GET";
     uint32_t ip = dns_resolve(host, iface_idx);
     if (!ip) { TLSP("TLS: cannot resolve %s\n", host); return -1; }
 
@@ -542,21 +544,31 @@ int tls_https_fetch(const char* host, const char* path, int iface_idx,
         // ---- Encrypted https GET over the established channel ---------------------------
         // Our client Finished was record seq 0, so this GET is client seq 1; the server's
         // Finished was seq 0, so its first application-data reply is server seq 1.
-        uint8_t req[512]; uint32_t reqn = 0;
-        const char* r_get  = "GET ";
-        const char* r_ver  = " HTTP/1.1\r\nHost: ";
-        const char* r_tail = "\r\nConnection: close\r\nUser-Agent: NyxOS-Selene\r\n\r\n";
-        for (const char* s = r_get;  *s; s++) req[reqn++] = (uint8_t)*s;
-        for (const char* s = path;   *s && reqn < sizeof(req) - 128; s++) req[reqn++] = (uint8_t)*s;
-        for (const char* s = r_ver;  *s; s++) req[reqn++] = (uint8_t)*s;
-        for (const char* s = host;   *s && reqn < sizeof(req) - 64;  s++) req[reqn++] = (uint8_t)*s;
-        for (const char* s = r_tail; *s; s++) req[reqn++] = (uint8_t)*s;
+        uint8_t req[640]; uint32_t reqn = 0;
+        int is_post = (method[0] == 'P' || method[0] == 'p');
+        const char* r_ver    = " HTTP/1.1\r\nHost: ";
+        const char* r_common = "\r\nConnection: close\r\nUser-Agent: NyxOS-Selene\r\n";
+        for (const char* s = method;   *s; s++) req[reqn++] = (uint8_t)*s;
+        req[reqn++] = ' ';
+        for (const char* s = path;     *s && reqn < sizeof(req) - 300; s++) req[reqn++] = (uint8_t)*s;
+        for (const char* s = r_ver;    *s; s++) req[reqn++] = (uint8_t)*s;
+        for (const char* s = host;     *s && reqn < sizeof(req) - 200; s++) req[reqn++] = (uint8_t)*s;
+        for (const char* s = r_common; *s; s++) req[reqn++] = (uint8_t)*s;
+        if (is_post && body && body_len > 0) {          // form body: add the content headers + data
+            char clh[96];
+            int cn = snprintf(clh, sizeof(clh),
+                "Content-Type: application/x-www-form-urlencoded\r\nContent-Length: %u\r\n\r\n", body_len);
+            for (int k = 0; k < cn && reqn < sizeof(req); k++) req[reqn++] = (uint8_t)clh[k];
+            for (uint32_t k = 0; k < body_len && reqn < sizeof(req); k++) req[reqn++] = body[k];
+        } else {
+            req[reqn++] = '\r'; req[reqn++] = '\n';      // end of the (bodyless) header block
+        }
 
-        uint8_t grec[5 + 512 + 24];                  // one application-data record (type 0x17)
+        uint8_t grec[5 + sizeof(req) + 24];             // one application-data record (type 0x17)
         int gl = tls_seal_record(ckey, civ, 1, 0x17, req, reqn, grec + 5);   // client seq 1
         grec[0] = 0x17; grec[1] = 0x03; grec[2] = 0x03; grec[3] = (uint8_t)(gl >> 8); grec[4] = (uint8_t)gl;
-        TLSP("TLS: sending an encrypted \"GET %s\" over the channel...\n", path);
-        if (tcp_send(conn, grec, 5 + gl) < 0) { TLSP("TLS: GET send failed\n"); tcp_close(conn); return -1; }
+        TLSP("TLS: sending an encrypted \"%s %s\" over the channel...\n", method, path);
+        if (tcp_send(conn, grec, 5 + gl) < 0) { TLSP("TLS: request send failed\n"); tcp_close(conn); return -1; }
 
         // Read and decrypt the response by STREAMING: decrypt each complete TLS record as it
         // arrives, then compact tls_rx. The page is bounded by `cap` (the caller's buffer — up to
@@ -608,6 +620,12 @@ int tls_https_fetch(const char* host, const char* path, int iface_idx,
     }
     tcp_close(conn);
     return -1;   // handshake reached but nothing was fetched
+}
+
+// Convenience wrapper: a plain GET (no body), the common case.
+int tls_https_fetch(const char* host, const char* path, int iface_idx,
+                    uint8_t* out, uint32_t cap, int verbose) {
+    return tls_https_request(host, path, "GET", 0, 0, iface_idx, out, cap, verbose);
 }
 
 // The `tls <host>` diagnostic command: verbosely fetch host:443 "/" into a scratch buffer.

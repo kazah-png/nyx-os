@@ -15,6 +15,12 @@ int tls_hello(const char* host, int iface_idx);
 int tls_https_fetch(const char* host, const char* path, int iface_idx,
                     uint8_t* out, uint32_t cap, int verbose);
 
+// Like tls_https_fetch but with an explicit method and an optional form body (POST). A non-NULL
+// body is sent as application/x-www-form-urlencoded with a Content-Length.
+int tls_https_request(const char* host, const char* path, const char* method,
+                      const uint8_t* body, uint32_t body_len, int iface_idx,
+                      uint8_t* out, uint32_t cap, int verbose);
+
 // Known-answer self-test for the TLS 1.2 key schedule (master secret + AES key block).
 int tls_keyschedule_selftest(void);
 

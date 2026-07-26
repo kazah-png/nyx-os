@@ -120,10 +120,11 @@ int http_parse_response(uint8_t* buf, uint32_t total, http_response_t* resp)
     return 0;
 }
 
-int http_get(const char* host, uint16_t port, const char* path,
-             http_response_t* resp, int iface_idx)
+int http_request(const char* host, uint16_t port, const char* path, const char* method,
+                 const uint8_t* body, uint32_t body_len, http_response_t* resp, int iface_idx)
 {
     if (!host || !path || !resp) return -1;
+    if (!method) method = "GET";
 
     uint32_t dst_ip = dns_resolve(host, iface_idx);
     if (!dst_ip) return -1;
@@ -144,13 +145,28 @@ int http_get(const char* host, uint16_t port, const char* path,
     if (!established) { tcp_close(conn); return -1; }
 
     char req[512];
-    int req_len = snprintf(req, sizeof(req),
-        "GET %s HTTP/1.1\r\n"
-        "Host: %s\r\n"
-        "Connection: close\r\n"
-        "\r\n", path, host);
+    int req_len;
+    if (body && body_len > 0) {                       // POST/PUT with a form body
+        req_len = snprintf(req, sizeof(req),
+            "%s %s HTTP/1.1\r\n"
+            "Host: %s\r\n"
+            "Connection: close\r\n"
+            "Content-Type: application/x-www-form-urlencoded\r\n"
+            "Content-Length: %u\r\n"
+            "\r\n", method, path, host, body_len);
+    } else {
+        req_len = snprintf(req, sizeof(req),
+            "%s %s HTTP/1.1\r\n"
+            "Host: %s\r\n"
+            "Connection: close\r\n"
+            "\r\n", method, path, host);
+    }
 
     if (tcp_send(conn, (const uint8_t*)req, req_len) < 0) {
+        tcp_close(conn);
+        return -1;
+    }
+    if (body && body_len > 0 && tcp_send(conn, body, body_len) < 0) {
         tcp_close(conn);
         return -1;
     }
@@ -195,6 +211,12 @@ int http_get(const char* host, uint16_t port, const char* path,
     int pr = http_parse_response(buf, total, resp);
     kfree(buf);
     return pr;
+}
+
+int http_get(const char* host, uint16_t port, const char* path,
+             http_response_t* resp, int iface_idx)
+{
+    return http_request(host, port, path, "GET", NULL, 0, resp, iface_idx);
 }
 
 void http_free(http_response_t* resp)
