@@ -21,6 +21,11 @@ int tls_https_request(const char* host, const char* path, const char* method,
                       const uint8_t* body, uint32_t body_len, int iface_idx,
                       uint8_t* out, uint32_t cap, int verbose);
 
+// Strict certificate enforcement: when on, a handshake is refused unless the chain anchors to a
+// pinned root, the hostname matches, and the certificate is in date. Off by default.
+void tls_set_strict(int on);
+int  tls_get_strict(void);
+
 // Known-answer self-test for the TLS 1.2 key schedule (master secret + AES key block).
 int tls_keyschedule_selftest(void);
 

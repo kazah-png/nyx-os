@@ -134,6 +134,7 @@ static void cmd_tcpserve(int argc, char** argv);
 static void cmd_httpget(int argc, char** argv);
 static void cmd_tls(int argc, char** argv);
 static void cmd_posttest(int argc, char** argv);
+static void cmd_tlsstrict(int argc, char** argv);
 static void cmd_x25519test(int argc, char** argv);
 static void cmd_prftest(int argc, char** argv);
 static void cmd_tlskeytest(int argc, char** argv);
@@ -233,6 +234,7 @@ static const command_t commands[] = {
     {"httpget",   cmd_httpget,   "HTTP GET: httpget <url>", false},
     {"tls",       cmd_tls,       "TLS handshake test: tls <host> (https :443)", false},
     {"posttest",  cmd_posttest,  "Live HTTP POST self-test (POST a form to httpbin over TLS)", false},
+    {"tlsstrict", cmd_tlsstrict, "Strict TLS cert enforcement: tlsstrict [on|off]", false},
     {"x25519test",cmd_x25519test,"X25519 (Curve25519) self-test — RFC 7748 vectors", false},
     {"prftest",   cmd_prftest,   "TLS 1.2 PRF self-test — RFC 4231 + P_SHA256 vectors", false},
     {"tlskeytest",cmd_tlskeytest,"TLS 1.2 key-schedule self-test (master secret + keys)", false},
@@ -1542,6 +1544,18 @@ static void cmd_posttest(int argc, char** argv) {
     printf("posttest: %s — httpbin %s the posted form fields (over TLS)\n",
            echoed ? "PASS" : "CHECK", echoed ? "echoed back" : "did not clearly echo");
     kfree(buf);
+}
+
+// `tlsstrict [on|off]` — toggle strict TLS certificate enforcement. When on, a handshake is
+// refused unless the chain anchors to a pinned root, the hostname matches, and the cert is in date.
+static void cmd_tlsstrict(int argc, char** argv) {
+    if (argc >= 2) {
+        if (strcmp(argv[1], "on") == 0)       tls_set_strict(1);
+        else if (strcmp(argv[1], "off") == 0) tls_set_strict(0);
+        else { printf("Usage: tlsstrict [on|off]\n"); return; }
+    }
+    printf("TLS strict certificate enforcement: %s\n",
+           tls_get_strict() ? "ON (untrusted certificates are refused)" : "OFF (report only)");
 }
 
 // `x25519test` — run the RFC 7748 known-answer vectors for X25519 (Curve25519 ECDH),

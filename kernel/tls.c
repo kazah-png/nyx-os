@@ -18,6 +18,7 @@
 #include "csprng.h"
 #include "der.h"
 #include "p256.h"
+#include "rsa.h"
 #include "x509.h"
 
 // Diagnostic prints inside tls_https_fetch are gated on its `verbose` parameter, so the
@@ -32,7 +33,15 @@ static uint8_t tls_client_random[32];   // saved from our ClientHello (for the k
 static uint8_t tls_server_random[32];   // parsed from the ServerHello
 static uint8_t tls_ts[20480];           // handshake transcript (hashed for the Finished verify_data)
 static uint8_t tls_ske_params[160];     // ServerECDHParams — the data the SKE signature covers
-static uint8_t tls_ske_sig[128];        // the SKE signature (DER ECDSA-Sig-Value)
+static uint8_t tls_ske_sig[512];        // the SKE signature (ECDSA DER-Sig-Value, or an RSA sig up to 4096-bit)
+
+// Strict mode (v5.9.72): when on, refuse a connection unless the certificate chain anchors to a
+// pinned root AND the hostname matches AND the cert is in date. Off by default — with a single
+// pinned trust anchor most of the web would otherwise be unreachable. Set via the `tlsstrict`
+// command. (A forged chain / invalid ServerKeyExchange signature is always refused regardless.)
+static int tls_strict = 0;
+void tls_set_strict(int on) { tls_strict = on ? 1 : 0; }
+int  tls_get_strict(void)   { return tls_strict; }
 
 
 static void put8(uint8_t* b, int* p, uint8_t v)   { b[(*p)++] = v; }
@@ -395,9 +404,7 @@ int tls_https_request(const char* host, const char* path, const char* method,
             TLSP("TLS: certificate chain: %s — proceeding without a pinned anchor\n", cmsg);
         }
 
-        // Leaf hostname (subjectAltName) + validity window (v5.9.66). Reported, not enforced:
-        // NyxOS notes a wrong-host or expired certificate but still proceeds (same single-anchor
-        // stance as the chain check) — enforcement is a later hardening step.
+        // Leaf hostname (subjectAltName) + validity window (v5.9.66).
         int hm = x509_check_host(chain_ptr[0], chain_len[0], host);
         if (hm == 0)      TLSP("TLS: leaf certificate covers host '%s' (subjectAltName match)\n", host);
         else if (hm == 1) TLSP("TLS: leaf certificate does NOT cover host '%s' — wrong-host certificate\n", host);
@@ -408,6 +415,19 @@ int tls_https_request(const char* host, const char* path, const char* method,
         else if (vd == 1) TLSP("TLS: leaf certificate is NOT yet valid (notBefore is in the future)\n");
         else if (vd == 2) TLSP("TLS: leaf certificate has EXPIRED (past notAfter)\n");
         else              TLSP("TLS: leaf certificate validity dates could not be parsed\n");
+
+        // Enforcement (v5.9.72). By default these three checks are REPORTED, not enforced: with a
+        // single pinned root, refusing everything that doesn't chain to it would make most of the
+        // web unreachable. In strict mode (`tlsstrict on`) NyxOS acts like a real browser and
+        // refuses the connection unless ALL of: chain anchored to a pinned root, hostname covered,
+        // certificate in date. (A forged chain / bad SKE signature already aborted, above.)
+        if (tls_strict && (trust != X509_OK || hm != 0 || vd != 0)) {
+            TLSP("TLS: STRICT MODE — refusing %s (%s%s%suntrusted certificate)\n", host,
+                 (trust != X509_OK) ? "not anchored to a trusted root; " : "",
+                 (hm != 0) ? "hostname not covered; " : "",
+                 (vd != 0) ? "not within validity dates; " : "");
+            tcp_close(conn); return -1;
+        }
     }
 
     // ECDHE key agreement + the TLS 1.2 key schedule (v5.9.51; secp256r1/P-256 added v5.9.70).
@@ -440,41 +460,54 @@ int tls_https_request(const char* host, const char* path, const char* method,
         const uint8_t* civ  = keyblock + 32;         const uint8_t* siv  = keyblock + 36;
         TLSP("TLS: ECDHE(%s) — pre-master secret computed; master secret + AES-128-GCM keys derived\n", curve_name);
 
-        // ---- Verify the ServerKeyExchange signature against the leaf certificate (v5.9.61) ----
-        // Proves the ECDHE parameters were signed by the private key matching the certificate's
-        // public key (ECDSA-P256). This does NOT yet verify the certificate's chain to a trusted
-        // root — a MITM presenting its own valid cert would still pass here; the trust-anchor
-        // check is the next increment.
-        if (leaf_ptr && ske_sig_len && ske_sig_alg == 0x0403) {        // 0x0403 = ecdsa + sha256
-            int checked = -2;
-            const uint8_t* Q; uint32_t Qlen;
-            if (der_x509_ec_pubkey(leaf_ptr, cert0, &Q, &Qlen) == 0 && Qlen == 65 && Q[0] == 0x04) {
-                der_t sd = { tls_ske_sig, tls_ske_sig + ske_sig_len }, sq;
-                uint8_t tg; const uint8_t* iv; uint32_t il; uint8_t rr[32], ss[32];
-                if (der_enter(&sd, 0x30, &sq) == 0 &&
-                    der_read(&sq, &tg, &iv, &il) == 0 && tg == 0x02) {
-                    der_int_to_32(rr, iv, il);
-                    if (der_read(&sq, &tg, &iv, &il) == 0 && tg == 0x02) {
-                        der_int_to_32(ss, iv, il);
-                        uint8_t e[32]; sha256_ctx_t hc; sha256_init(&hc);      // e = SHA256(cr||sr||params)
-                        sha256_update(&hc, tls_client_random, 32);
-                        sha256_update(&hc, tls_server_random, 32);
-                        sha256_update(&hc, tls_ske_params, ske_params_len);
-                        sha256_final(&hc, e);
-                        checked = p256_ecdsa_verify(Q + 1, Q + 33, e, rr, ss);
+        // ---- Verify the ServerKeyExchange signature against the leaf certificate ----------
+        // Proves the ECDHE parameters were signed by the private key matching the leaf certificate:
+        // ECDSA-P256 (v5.9.61) or RSA-PKCS1-SHA256 (v5.9.71). The signed data is
+        // SHA-256(client_random ‖ server_random ‖ ServerECDHParams). (This is authenticity of the
+        // key exchange; the certificate's chain to a trusted root is checked separately, above.)
+        if (leaf_ptr && ske_sig_len && (ske_sig_alg == 0x0403 || ske_sig_alg == 0x0401)) {
+            uint8_t e[32]; sha256_ctx_t hc; sha256_init(&hc);
+            sha256_update(&hc, tls_client_random, 32);
+            sha256_update(&hc, tls_server_random, 32);
+            sha256_update(&hc, tls_ske_params, ske_params_len);
+            sha256_final(&hc, e);
+            int checked = -2; const char* scheme = "?";
+            if (ske_sig_alg == 0x0403) {                               // ECDSA-P256 over SHA-256
+                scheme = "ECDSA-P256";
+                const uint8_t* Q; uint32_t Qlen;
+                if (der_x509_ec_pubkey(leaf_ptr, cert0, &Q, &Qlen) == 0 && Qlen == 65 && Q[0] == 0x04) {
+                    der_t sd = { tls_ske_sig, tls_ske_sig + ske_sig_len }, sq;
+                    uint8_t tg; const uint8_t* iv; uint32_t il; uint8_t rr[32], ss[32];
+                    if (der_enter(&sd, 0x30, &sq) == 0 &&
+                        der_read(&sq, &tg, &iv, &il) == 0 && tg == 0x02) {
+                        der_int_to_32(rr, iv, il);
+                        if (der_read(&sq, &tg, &iv, &il) == 0 && tg == 0x02) {
+                            der_int_to_32(ss, iv, il);
+                            checked = p256_ecdsa_verify(Q + 1, Q + 33, e, rr, ss);
+                        }
                     }
+                }
+            } else {                                                   // RSA-PKCS1-v1.5 over SHA-256
+                scheme = "RSA";
+                der_pubkey_t pk;
+                if (der_x509_pubkey(leaf_ptr, cert0, &pk) == 0 && pk.type == DER_KEY_RSA) {
+                    const uint8_t* N = pk.rsa_n; uint32_t Nl = pk.rsa_n_len;
+                    while (Nl > 1 && N[0] == 0x00) { N++; Nl--; }       // strip DER INTEGER leading zero
+                    uint64_t ev = 0;
+                    for (uint32_t k = 0; k < pk.rsa_e_len && k < 8; k++) ev = (ev << 8) | pk.rsa_e[k];
+                    checked = rsa_pkcs1_sha256_verify(N, Nl, ev, tls_ske_sig, ske_sig_len, e);
                 }
             }
             if (checked == 0) {
-                TLSP("TLS: ServerKeyExchange signature VERIFIED against the leaf certificate (ECDSA-P256)\n");
+                TLSP("TLS: ServerKeyExchange signature VERIFIED against the leaf certificate (%s)\n", scheme);
             } else if (checked == -1) {
                 TLSP("TLS: ServerKeyExchange signature INVALID — aborting the handshake (possible MITM)\n");
                 tcp_close(conn); return -1;
             } else {
-                TLSP("TLS: ServerKeyExchange signature not checked (cert key not P-256) — proceeding unverified\n");
+                TLSP("TLS: ServerKeyExchange signature not checked (cert key/type mismatch) — proceeding unverified\n");
             }
         } else if (got_ske) {
-            TLSP("TLS: no ECDSA-P256 signature on the ServerKeyExchange (sig alg 0x%x) — proceeding unverified\n", ske_sig_alg);
+            TLSP("TLS: ServerKeyExchange sig alg 0x%x not supported for verification — proceeding unverified\n", ske_sig_alg);
         }
 
         // ---- Finished exchange (v5.9.54) ------------------------------------------------
