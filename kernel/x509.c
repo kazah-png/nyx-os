@@ -21,22 +21,11 @@
 #include "sha512.h"
 #include "rtc.h"
 
-// The trust anchor NyxOS pins: the SSL.com TLS ECC Root CA 2022 public key (NIST P-384, the
-// uncompressed EC point 0x04||X||Y). A chain is trusted only when its topmost certificate carries
-// exactly this key — the key *is* the identity of a root, so it needs no signature check itself.
-// (This root anchors example.com and other SSL.com-issued sites; a broader trust store is future
-// work. Captured and cross-checked 2026-07-26.)
-static const uint8_t PINNED_ROOT_POINT[97] = {
-    0x04,0x45,0x29,0x35,0x73,0xfa,0xc2,0xb8,0x23,0xce,0x14,0x7d,
-    0xa8,0xb1,0x4d,0xa0,0x5b,0x36,0xee,0x2a,0x2c,0x53,0xc3,0x60,
-    0x09,0x35,0xb2,0x24,0x66,0x26,0x69,0xc0,0xb3,0x95,0xd6,0x5d,
-    0x92,0x40,0x19,0x0e,0xc6,0xa5,0x13,0x70,0xf4,0xef,0x12,0x51,
-    0x28,0x5d,0xe7,0xcc,0xbd,0xf9,0x3c,0x85,0xc1,0xcf,0x94,0x90,
-    0xc9,0x2b,0xce,0x92,0x42,0x58,0x59,0x67,0xfd,0x94,0x27,0x10,
-    0x64,0x8c,0x4f,0x04,0xb1,0x4d,0x49,0xe4,0x7b,0x4f,0x9b,0xf5,
-    0xe7,0x08,0xf8,0x03,0x88,0xf7,0xa7,0xc3,0x92,0x4b,0x19,0x54,
-    0x81,
-};
+// NyxOS's trust store: the public keys of a small bundle of root/anchor CAs (x509_roots.h). A
+// chain is trusted only when its topmost certificate carries one of these keys — the key *is* the
+// identity of a trust anchor, so it needs no signature check itself. (Key-pinned; a broader bundle
+// is more work but the machinery is the same. Captured and cross-checked 2026-07-26.)
+#include "x509_roots.h"
 
 // signatureAlgorithm OIDs we can verify (value bytes only).
 static const uint8_t OID_ECDSA_SHA256[] = { 0x2a,0x86,0x48,0xce,0x3d,0x04,0x03,0x02 };
@@ -114,6 +103,25 @@ static int verify_signed(const uint8_t* cert, uint32_t clen, const der_pubkey_t*
     return X509_INCOMPLETE;                                   // unsupported algorithm / key mismatch
 }
 
+// Is a parsed public key one of the bundled trust anchors? Returns the root's name, or NULL.
+static const char* trusted_root_name(const der_pubkey_t* k) {
+    for (uint32_t i = 0; i < NYX_TRUSTED_ROOTS_N; i++) {
+        const nyx_root_t* r = &NYX_TRUSTED_ROOTS[i];
+        if (k->type != r->type) continue;
+        if (r->type == DER_KEY_EC) {
+            if (k->ec_point_len == r->ec_len && mem_eq(k->ec_point, r->ec_point, r->ec_len)) return r->name;
+        } else {                                             // RSA: compare N and e (leading zeros stripped)
+            const uint8_t* kn = k->rsa_n; uint32_t knl = k->rsa_n_len;
+            while (knl > 1 && kn[0] == 0x00) { kn++; knl--; }
+            const uint8_t* ke = k->rsa_e; uint32_t kel = k->rsa_e_len;
+            while (kel > 1 && ke[0] == 0x00) { ke++; kel--; }
+            if (knl == r->rsa_n_len && kel == r->rsa_e_len &&
+                mem_eq(kn, r->rsa_n, knl) && mem_eq(ke, r->rsa_e, kel)) return r->name;
+        }
+    }
+    return 0;
+}
+
 int x509_verify_chain(const uint8_t* const* certs, const uint32_t* lens, int n,
                       char* msg, int msgcap) {
     if (n < 1) { set_msg(msg, msgcap, "empty chain"); return X509_INCOMPLETE; }
@@ -130,21 +138,22 @@ int x509_verify_chain(const uint8_t* const* certs, const uint32_t* lens, int n,
         if (r == X509_INCOMPLETE) incomplete = 1;
     }
 
-    // Anchor: the topmost certificate must carry a pinned trusted-root public key.
+    // Anchor: the topmost certificate must carry a public key from the bundled trust store.
     der_pubkey_t top;
     if (der_x509_pubkey(certs[n - 1], lens[n - 1], &top) != 0) {
         set_msg(msg, msgcap, "cannot parse the top certificate's key");
         return X509_INCOMPLETE;
     }
-    if (top.type == DER_KEY_EC && top.ec_point_len == 97 && mem_eq(top.ec_point, PINNED_ROOT_POINT, 97)) {
+    const char* root = trusted_root_name(&top);
+    if (root) {
         if (incomplete) {
-            set_msg(msg, msgcap, "anchored to pinned root, but a link used an unsupported algorithm");
+            set_msg(msg, msgcap, "anchored to a trusted root, but a link used an unsupported algorithm");
             return X509_INCOMPLETE;
         }
-        set_msg(msg, msgcap, "anchored to the pinned SSL.com TLS ECC Root CA 2022");
+        snprintf(msg, (uint32_t)msgcap, "anchored to trusted root: %s", root);
         return X509_OK;
     }
-    set_msg(msg, msgcap, "top certificate is not a pinned trusted root");
+    set_msg(msg, msgcap, "top certificate is not a trusted root");
     return X509_INCOMPLETE;
 }
 
