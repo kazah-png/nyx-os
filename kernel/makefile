@@ -21,6 +21,16 @@ ASFLAGS = -f elf64
 
 LDFLAGS = -T linker.ld -nostdlib -m elf_x86_64
 
+# Kernel sources live in subfolders (core/ mm/ net/ crypto/ gui/… ) but the .o objects
+# stay flat in kernel/: VPATH lets make find each .c/.h/.asm in its folder while the
+# recipes still write foo.o here. Quoted #includes are relative to the source file's own
+# folder (e.g. gui/apps/selene_win.c -> "../../core/kernel.h"), so no -I per folder needed.
+SRCDIRS = core mm proc fs drivers/video drivers/input drivers/net drivers/audio drivers/misc \
+          net crypto crypto/tls image gui/core gui/apps gui/games auth
+vpath %.c $(SRCDIRS)
+vpath %.h $(SRCDIRS)
+vpath %.asm core
+
 OBJS_KERNEL = boot.o kernel.o gdt.o idt.o isr.o isr_stubs.o irq.o \
         memory.o heap.o slab.o process.o syscall.o signal.o mmap.o pipe.o vfs.o ext2.o ata.o net.o udp.o \
         ip.o arp.o ethernet.o rtl8139.o icmp.o timer.o keyboard.o screen.o \
@@ -64,7 +74,7 @@ nyx-kernel.bin: $(OBJS) linker.ld
 # a change to ANY included header — kernel.h's KERNEL_VERSION, tcp.h's TCP_MAX_CONNS,
 # … — rebuilds the objects that include it. (kernel.h stays listed as a belt-and-
 # braces prereq for the very first build, before any .d files exist.)
-%.o: %.c kernel.h
+%.o: %.c core/kernel.h
 	$(CC) $(CFLAGS) -c $< -o $@
 
 %.o: %.asm
@@ -463,11 +473,11 @@ $(USER_DIR)/init.o: $(USER_DIR)/init.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
 # just-built .elf — ship silently despite the .h being newer on disk. Companion to
 # the -MMD/-MP auto-deps that track the hand-written headers.
 MKINITRAMFS = ../tools/mkinitramfs.py
-initramfs_data.h: FORCE $(MKINITRAMFS) $(USER_ELFS) $(USER_DIR)/libc.so $(USER_DIR)/libdemo.so
+fs/initramfs_data.h: FORCE $(MKINITRAMFS) $(USER_ELFS) $(USER_DIR)/libc.so $(USER_DIR)/libdemo.so
 	@python3 $(MKINITRAMFS) $@.tmp c >/dev/null
 	@if cmp -s $@.tmp $@ 2>/dev/null; then rm -f $@.tmp; else mv $@.tmp $@; echo "  [initramfs] regenerated $@"; fi
 
-initramfs.o: initramfs.c initramfs_data.h
+initramfs.o: initramfs.c fs/initramfs_data.h
 
 .PHONY: FORCE
 FORCE:
@@ -491,7 +501,7 @@ disk: ../ext2-test.img
 .PHONY: disk
 
 clean:
-	rm -f *.o *.d *.bin initramfs_data.h initramfs_data.h.tmp trampoline.bin $(USER_DIR)/*.o $(USER_DIR)/*.elf $(USER_DIR)/hello.o
+	rm -f *.o *.d *.bin fs/initramfs_data.h fs/initramfs_data.h.tmp trampoline.bin $(USER_DIR)/*.o $(USER_DIR)/*.elf $(USER_DIR)/hello.o
 	rm -rf $(USER_DIR)/doom_obj
 
 # doom.elf: the recovered doomgeneric engine (kernel/doom_src) built into a userspace
