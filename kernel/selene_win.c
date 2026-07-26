@@ -41,6 +41,7 @@
 #define SEL_MAX_TABS   6        // browser tabs per Selene window
 #define SEL_TABS_H     24       // tab-strip height (drawn below the toolbar)
 #define SEL_TABS_NEWW  26       // width of the [+] new-tab button
+#define SELENE_TICK_MS 33       // compositor tick period (~30fps) — the unit the GIF animator counts in
 
 // Form control kinds.
 #define SEL_FLD_TEXT   0        // text/search/email/url/password/tel/number -> editable box
@@ -50,7 +51,15 @@
 typedef struct { char url[192]; } sel_link_t;
 typedef struct { char action[192]; uint8_t method; } sel_form_t;   // method 0 = GET (only GET so far)
 typedef struct { int form; uint8_t kind; char name[64]; char value[160]; } sel_field_t;
-typedef struct { char alt[64]; char src[160]; uint8_t* px; uint16_t iw, ih; uint8_t tried; } sel_img_t;   // <img>: alt/src + decoded RGBA (px=NULL until fetched; tried=1 once attempted)
+// <img>: alt/src + decoded RGBA (px=NULL until fetched; tried=1 once attempted). Animated GIFs also
+// carry the composited frames: `px` then ALIASES frames[cur_frame].pixels (freed via frames[], not px).
+typedef struct {
+    char alt[64]; char src[160];
+    uint8_t* px; uint16_t iw, ih; uint8_t tried;
+    gif_frame_t* frames;                 // animated GIF frames, else NULL (static image)
+    int nframes, cur_frame;              // frame count + the one px points at
+    uint32_t anim_ms;                    // ms accumulated toward the current frame's delay
+} sel_img_t;
 
 typedef struct {
     char url[256];
@@ -428,12 +437,26 @@ static void render_table(const uint8_t* body, uint32_t ts, uint32_t te,
     kfree(cells);
 }
 
+// Free a decoded <img>'s pixels: an animated GIF owns its frames array (px only ALIASES the current
+// frame, so it is NOT freed separately); a static image owns its single RGBA buffer via px. Resets
+// the image to the un-fetched state so it can be reused.
+static void selene_img_free(sel_img_t* im) {
+    if (im->frames) {
+        for (int f = 0; f < im->nframes; f++) if (im->frames[f].pixels) kfree(im->frames[f].pixels);
+        kfree(im->frames);
+        im->frames = 0; im->nframes = 0; im->cur_frame = 0; im->anim_ms = 0;
+    } else if (im->px) {
+        kfree(im->px);
+    }
+    im->px = 0; im->iw = 0; im->ih = 0;
+}
+
 // ---- strip HTML in `body` to text (capturing <a href> links + form controls), then wrap it ----
 static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
     s->num_lines = 0; s->scroll = 0; s->title[0] = '\0';
     s->num_links = 0; s->sel_link = -1;
     s->num_fields = 0; s->num_forms = 0; s->sel_field = -1;
-    for (int i = 0; i < s->num_imgs; i++) if (s->images[i].px) { kfree(s->images[i].px); s->images[i].px = 0; }
+    for (int i = 0; i < s->num_imgs; i++) selene_img_free(&s->images[i]);   // free decoded pixels/frames on nav
     s->num_imgs = 0;
     __builtin_memset(s->link_of, 0, SEL_MAX_LINES * SEL_LINE_COLS);
     __builtin_memset(s->field_of, 0, SEL_MAX_LINES * SEL_LINE_COLS);
@@ -598,6 +621,7 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                 strncpy(im->alt, alt, sizeof(im->alt)-1); im->alt[sizeof(im->alt)-1] = '\0';
                 strncpy(im->src, src, sizeof(im->src)-1); im->src[sizeof(im->src)-1] = '\0';
                 im->px = 0; im->iw = 0; im->ih = 0; im->tried = 0;   // fetched lazily by selene_win_tick
+                im->frames = 0; im->nframes = 0; im->cur_frame = 0; im->anim_ms = 0;   // static until a GIF sets these
                 int imgid = s->num_imgs + 1; s->num_imgs++;
                 // Caption text: prefer alt, else the src filename, else "image" (kept short so the box fits a line).
                 const char* capsrc = alt[0] ? alt : 0;
@@ -721,12 +745,20 @@ static void selene_fetch_one(selene_ctx_t* s, int i, int iface) {
             if (http_request(host, port, path, "GET", 0, 0, &resp, iface) == 0) ok = 1;
         }
         if (!ok) continue;
-        if (resp.body && resp.body_len > 8) {               // dispatch by magic bytes: PNG or BMP
+        if (resp.body && resp.body_len > 8) {               // dispatch by magic bytes: PNG / BMP / GIF
             image_t pi; int dec = -1;
             if (resp.body[0] == 0x89 && resp.body[1] == 'P')     dec = png_decode(resp.body, resp.body_len, &pi);
             else if (resp.body[0] == 'B' && resp.body[1] == 'M') dec = bmp_decode(resp.body, resp.body_len, &pi);
-            else if (resp.body[0] == 'G' && resp.body[1] == 'I' && resp.body[2] == 'F') dec = gif_decode(resp.body, resp.body_len, &pi);
-            if (dec == 0) {
+            else if (resp.body[0] == 'G' && resp.body[1] == 'I' && resp.body[2] == 'F') {   // GIF: decode all frames
+                gif_anim_t ga;
+                if (gif_decode_anim(resp.body, resp.body_len, &ga) == 0) {
+                    s->images[i].frames = ga.frames; s->images[i].nframes = ga.nframes;
+                    s->images[i].cur_frame = 0; s->images[i].anim_ms = 0;
+                    s->images[i].px = ga.frames[0].pixels;              // show frame 0 (aliases frames[]; freed via selene_img_free)
+                    s->images[i].iw = (uint16_t)ga.width; s->images[i].ih = (uint16_t)ga.height;
+                }
+            }
+            if (dec == 0) {                                            // static image (PNG/BMP)
                 s->images[i].px = pi.pixels;
                 s->images[i].iw = (uint16_t)pi.width;
                 s->images[i].ih = (uint16_t)pi.height;
@@ -767,15 +799,39 @@ static int selene_fetch_next(selene_ctx_t* s, int iface) {
     return 1;
 }
 
-// Compositor ~30fps tick for a Selene window: cooperatively load one pending image per frame, so a
-// slow fetch never freezes the UI. Returns 1 (redraw) when it actually fetched an image this tick,
-// 0 when idle — so an open-but-quiet browser doesn't force a 30fps recomposite.
+// Advance any VISIBLE animated GIF by one compositor tick (~33 ms). When a frame's delay elapses,
+// step to the next frame (looping) and repoint px at it. Returns 1 if any visible frame flipped (so
+// the compositor repaints); off-screen animations are frozen until scrolled into view (no wasted CPU).
+static int selene_anim_tick(selene_ctx_t* s) {
+    int rows = visible_rows(), changed = 0;
+    for (int i = 0; i < s->num_imgs; i++) {
+        sel_img_t* im = &s->images[i];
+        if (!im->frames || im->nframes < 2) continue;            // static or single-frame: nothing to animate
+        int aline = selene_img_anchor(s, i);
+        if (aline < 0 || aline < s->scroll || aline >= s->scroll + rows) continue;   // off-screen: freeze
+        im->anim_ms += SELENE_TICK_MS;
+        uint32_t need = (uint32_t)im->frames[im->cur_frame].delay_cs * 10;   // centiseconds -> ms
+        if (im->anim_ms >= need) {
+            im->anim_ms = 0;
+            im->cur_frame = (im->cur_frame + 1) % im->nframes;
+            im->px = im->frames[im->cur_frame].pixels;          // px aliases the new frame (not owned)
+            changed = 1;
+        }
+    }
+    return changed;
+}
+
+// Compositor ~30fps tick for a Selene window: (1) advance any on-screen animated GIF, then (2)
+// cooperatively load one pending image — so neither animation nor a slow fetch freezes the UI.
+// Returns 1 (redraw) when it changed something this tick, 0 when idle.
 int selene_win_tick(window_t* win) {
     selene_tabs_t* T = (selene_tabs_t*)win->reserved;
     if (!T) return 0;
     selene_ctx_t* s = T->tab[T->active];
     if (!s) return 0;
-    return selene_fetch_next(s, find_iface());
+    int changed = selene_anim_tick(s);                          // animate first (cheap, no I/O)
+    if (selene_fetch_next(s, find_iface())) changed = 1;        // then fetch one pending image (may block briefly)
+    return changed;
 }
 
 // A scroll changed: repaint immediately (responsive). Newly-visible images are picked up by
@@ -971,7 +1027,7 @@ static selene_ctx_t* selene_new_ctx(void) {
 
 static void selene_free_ctx(selene_ctx_t* s) {
     if (!s) return;
-    for (int i = 0; i < s->num_imgs; i++) if (s->images[i].px) kfree(s->images[i].px);
+    for (int i = 0; i < s->num_imgs; i++) selene_img_free(&s->images[i]);
     kfree(s->lines); kfree(s->link_of); kfree(s->field_of);
     kfree(s->links); kfree(s->fields); kfree(s->forms);
     kfree(s->img_of); kfree(s->images); kfree(s);
@@ -1620,11 +1676,11 @@ int selene_form_selftest(void) {
     // Two <img>s (top + far down); assert selene_next_img_index picks the visible, untried one only.
     total++;
     {
-        for (int i = 0; i < s->num_imgs; i++) if (s->images[i].px) kfree(s->images[i].px);
+        for (int i = 0; i < s->num_imgs; i++) selene_img_free(&s->images[i]);
         for (int li = 0; li < SEL_MAX_LINES; li++) s->img_of[li][0] = 0;   // clear col-0 anchors
         s->num_imgs = 2; s->num_lines = 1150; s->scroll = 0;
-        s->images[0].tried = 0; s->images[0].px = 0;
-        s->images[1].tried = 0; s->images[1].px = 0;
+        s->images[0].tried = 0; s->images[0].px = 0; s->images[0].frames = 0; s->images[0].nframes = 0;
+        s->images[1].tried = 0; s->images[1].px = 0; s->images[1].frames = 0; s->images[1].nframes = 0;
         s->img_of[1][0]    = 1;                          // image 0 anchored on line 1 (near the top)
         s->img_of[1100][0] = 2;                          // image 1 anchored on line 1100 (far down)
         int rows = visible_rows();
