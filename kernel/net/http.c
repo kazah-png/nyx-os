@@ -19,7 +19,7 @@ static int http_body_complete(const uint8_t* buf, uint32_t total) {
     cl += 15;
     while (*cl == ' ') cl++;
     uint32_t content_length = 0;
-    while (*cl >= '0' && *cl <= '9') { content_length = content_length * 10 + (*cl - '0'); cl++; }
+    while (*cl >= '0' && *cl <= '9') { content_length = content_length * 10 + (uint32_t)(*cl - '0'); cl++; }
     return (total - header_len) >= content_length;
 }
 
@@ -71,7 +71,7 @@ int http_parse_response(uint8_t* buf, uint32_t total, http_response_t* resp)
     int st_len = (int)(st - status);
     if (st_len > 63) st_len = 63;
     if (st_len > 0) {
-        __builtin_memcpy(resp->status_text, status, st_len);
+        __builtin_memcpy(resp->status_text, status, (size_t)st_len);   // st_len is bounded [1,63] here
         resp->status_text[st_len] = '\0';
     }
 
@@ -91,7 +91,7 @@ int http_parse_response(uint8_t* buf, uint32_t total, http_response_t* resp)
         cl += 15; // skip "Content-Length:"
         while (*cl == ' ') cl++;
         content_length = 0;
-        while (*cl >= '0' && *cl <= '9') { content_length = content_length * 10 + (*cl - '0'); cl++; }
+        while (*cl >= '0' && *cl <= '9') { content_length = content_length * 10 + (uint32_t)(*cl - '0'); cl++; }
     }
 
     uint32_t body_avail = total - (uint32_t)(body_start - (char*)buf);
@@ -187,8 +187,13 @@ int http_request(const char* host, uint16_t port, const char* path, const char* 
             "Connection: close\r\n"
             "\r\n", method, path, host);
     }
+    // snprintf returns the would-be length: if the request didn't fit in req[] it was truncated,
+    // but req_len can still exceed sizeof(req). Clamp so tcp_send never reads past the stack buffer
+    // (a long host/path — e.g. from an attacker's redirect Location — must not leak stack memory).
+    if (req_len < 0) { tcp_close(conn); return -1; }
+    if (req_len >= (int)sizeof(req)) req_len = (int)sizeof(req) - 1;
 
-    if (tcp_send(conn, (const uint8_t*)req, req_len) < 0) {
+    if (tcp_send(conn, (const uint8_t*)req, (uint32_t)req_len) < 0) {
         tcp_close(conn);
         return -1;
     }
@@ -213,7 +218,7 @@ int http_request(const char* host, uint16_t port, const char* path, const char* 
         kernel_poll_net();
         int n = tcp_recv(conn, buf + total, HTTP_MAX_RESPONSE - total - 1);
         if (n > 0) {
-            total += n;
+            total += (uint32_t)n;
             last_rx = get_ticks();
             if (total >= HTTP_MAX_RESPONSE - 1) break;
         } else if (n < 0) {
