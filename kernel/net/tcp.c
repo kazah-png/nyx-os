@@ -461,23 +461,30 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t 
 
     // Update ack from received segment
     if (payload_len > 0 && (flags & TCP_FLAG_ACK)) {
-        // Received data - store it
-        conn->ack = seq + payload_len;
+        // Received data — store it (the recv buffer grows on demand). On an allocation FAILURE we
+        // drop the segment: don't advance recv_len/ack and don't ACK, so the peer retransmits later.
+        // (The old code dereferenced a NULL recv_buf / new_buf right below and crashed the kernel
+        // under memory pressure — a remote peer sending data while the heap was exhausted.)
         if (conn->recv_buf == NULL) {
             conn->recv_cap = payload_len > 4096 ? payload_len : 4096;
             conn->recv_buf = (uint8_t*)kmalloc(conn->recv_cap);
             conn->recv_len = 0;
+            if (!conn->recv_buf) { conn->recv_cap = 0; goto recv_drop; }
         }
         if (conn->recv_len + payload_len > conn->recv_cap) {
-            conn->recv_cap = conn->recv_len + payload_len;
-            uint8_t* new_buf = (uint8_t*)kmalloc(conn->recv_cap);
+            uint32_t new_cap = conn->recv_len + payload_len;
+            uint8_t* new_buf = (uint8_t*)kmalloc(new_cap);
+            if (!new_buf) goto recv_drop;                    // keep the existing buffer + its data
             if (conn->recv_len > 0) memcpy(new_buf, conn->recv_buf, conn->recv_len);
             if (conn->recv_buf) kfree(conn->recv_buf);
             conn->recv_buf = new_buf;
+            conn->recv_cap = new_cap;
         }
+        conn->ack = seq + payload_len;                       // advance ack only now that we can store it
         memcpy(conn->recv_buf + conn->recv_len, payload, payload_len);
         conn->recv_len += payload_len;
         send_segment(conn, TCP_FLAG_ACK, NULL, 0);
+        recv_drop: ;
     } else if (flags & TCP_FLAG_SYN && flags & TCP_FLAG_ACK) {
         if (conn->state == TCP_STATE_SYN_SENT) {
             conn->ack = seq + 1;
