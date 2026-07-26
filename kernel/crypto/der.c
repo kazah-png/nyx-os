@@ -175,25 +175,26 @@ static int tbs_skip(const uint8_t* cert, uint32_t clen, der_t* tbs, int n) {
 }
 
 // Parse a DER Time (UTCTime YYMMDDHHMMSSZ or GeneralizedTime YYYYMMDDHHMMSSZ) into a packed
-// decimal YYYYMMDDHHMMSS. Returns 0 on a malformed value.
+// decimal YYYYMMDDHHMMSS. Returns 0 on a malformed value. Untrusted input (from a cert), so
+// EVERY date position must be an actual digit: the old check allowed a 'Z' in any of the first
+// 14 bytes, which let a malformed Time with 'Z' in a date slot parse to a bogus (but bounded)
+// date instead of being rejected. Digit `d2()` reads two ASCII digits with `unsigned` arithmetic,
+// so nothing here converts a possibly-negative `int` into `uint64_t` (was 8 -Wsign-conversion hits).
+static uint64_t d2(const uint8_t* p) { return (uint64_t)(unsigned)(p[0]-'0')*10u + (unsigned)(p[1]-'0'); }
 static uint64_t parse_time(uint8_t tag, const uint8_t* p, uint32_t vl) {
-    for (uint32_t i = 0; i < vl && i < 14; i++) if (p[i] < '0' || p[i] > '9') { if (p[i] != 'Z') return 0; }
+    uint32_t ndig = (tag == 0x17) ? 12u : (tag == 0x18) ? 14u : 0u;   // UTCTime: 12 digits, Gen: 14
+    if (ndig == 0 || vl < ndig + 1) return 0;                         // +1 for the trailing 'Z'/marker byte
+    for (uint32_t i = 0; i < ndig; i++) if (p[i] < '0' || p[i] > '9') return 0;
     uint64_t year;
-    if (tag == 0x17) {                                     // UTCTime
-        if (vl < 13) return 0;
-        int yy = (p[0]-'0')*10 + (p[1]-'0');
-        year = (yy < 50) ? 2000 + yy : 1900 + yy;          // RFC 5280 sliding window
+    if (tag == 0x17) {                                     // UTCTime: 2-digit year, RFC 5280 sliding window
+        uint64_t yy = d2(p);
+        year = (yy < 50) ? 2000 + yy : 1900 + yy;
         p += 2;
-    } else if (tag == 0x18) {                              // GeneralizedTime
-        if (vl < 15) return 0;
-        year = (uint64_t)(p[0]-'0')*1000 + (p[1]-'0')*100 + (p[2]-'0')*10 + (p[3]-'0');
+    } else {                                               // GeneralizedTime: 4-digit year
+        year = d2(p) * 100 + d2(p + 2);
         p += 4;
-    } else return 0;
-    uint64_t mo = (p[0]-'0')*10 + (p[1]-'0');
-    uint64_t da = (p[2]-'0')*10 + (p[3]-'0');
-    uint64_t hh = (p[4]-'0')*10 + (p[5]-'0');
-    uint64_t mi = (p[6]-'0')*10 + (p[7]-'0');
-    uint64_t se = (p[8]-'0')*10 + (p[9]-'0');
+    }
+    uint64_t mo = d2(p), da = d2(p + 2), hh = d2(p + 4), mi = d2(p + 6), se = d2(p + 8);
     return ((((year*100 + mo)*100 + da)*100 + hh)*100 + mi)*100 + se;
 }
 
