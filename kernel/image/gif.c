@@ -79,7 +79,7 @@ static int gif_read_frame(const uint8_t* src, uint32_t srclen, uint32_t* pp,
     p += 9;
     int lct_flag = ipk >> 7, interlace = (ipk >> 6) & 1, lct_n = 2 << (ipk & 7);
     const uint8_t* ct = gct; int ctn = gct_n;
-    if (lct_flag) { if (p + (uint32_t)lct_n * 3 > srclen) return -7; ct = src + p; ctn = lct_n; p += lct_n * 3; }
+    if (lct_flag) { if (p + (uint32_t)lct_n * 3 > srclen) return -7; ct = src + p; ctn = lct_n; p += (uint32_t)lct_n * 3; }  // lct_n = 2<<(0..7) > 0
     if (!ct) return -8;
     if (fw == 0 || fh == 0 || fw > GIF_MAX_DIM || fh > GIF_MAX_DIM || (uint64_t)fw * fh > GIF_MAX_PX) return -9;
     if (p >= srclen) return -10;
@@ -121,7 +121,7 @@ int gif_decode(const uint8_t* src, uint32_t srclen, image_t* img) {
     int gct_flag = packed >> 7, gct_n = 2 << (packed & 7);  // 2^(size+1) entries
     uint32_t p = 13;
     const uint8_t* gct = 0;
-    if (gct_flag) { if (p + (uint32_t)gct_n * 3 > srclen) return -3; gct = src + p; p += gct_n * 3; }
+    if (gct_flag) { if (p + (uint32_t)gct_n * 3 > srclen) return -3; gct = src + p; p += (uint32_t)gct_n * 3; }  // gct_n = 2<<(0..7) > 0
     int transparent = -1;
 
     while (p < srclen) {
@@ -170,7 +170,7 @@ int gif_decode_anim(const uint8_t* src, uint32_t srclen, gif_anim_t* out) {
     if (W == 0 || H == 0 || W > GIF_MAX_DIM || H > GIF_MAX_DIM || (uint64_t)W * H > GIF_MAX_PX) return -3;
     uint32_t p = 13;
     const uint8_t* gct = 0;
-    if (gct_flag) { if (p + (uint32_t)gct_n * 3 > srclen) return -4; gct = src + p; p += gct_n * 3; }
+    if (gct_flag) { if (p + (uint32_t)gct_n * 3 > srclen) return -4; gct = src + p; p += (uint32_t)gct_n * 3; }  // gct_n = 2<<(0..7) > 0
 
     uint64_t fbytes = (uint64_t)W * H * 4;
     uint8_t* canvas = (uint8_t*)kmalloc(fbytes);
@@ -193,7 +193,7 @@ int gif_decode_anim(const uint8_t* src, uint32_t srclen, gif_anim_t* out) {
                 disposal = (flags >> 2) & 7;
             } else if (label == 0xFF && p + 16 <= srclen && src[p] == 11) {   // Application Extension
                 static const char NS[11] = { 'N','E','T','S','C','A','P','E','2','.','0' };
-                int is_ns = 1; for (int k = 0; k < 11; k++) if (src[p + 1 + k] != (uint8_t)NS[k]) is_ns = 0;
+                int is_ns = 1; for (uint32_t k = 0; k < 11; k++) if (src[p + 1 + k] != (uint8_t)NS[k]) is_ns = 0;
                 if (is_ns && src[p + 12] == 3 && src[p + 13] == 1)     // sub-block: 03 01 LL HH -> loop count
                     loop_count = src[p + 14] | ((int)src[p + 15] << 8);
             }
