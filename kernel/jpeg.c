@@ -164,6 +164,52 @@ static int jpeg_dht(jstate* st, const uint8_t* p, uint32_t seglen) {
     return 0;
 }
 
+// "Fancy" (triangle-filter) chroma upsampling, matching libjpeg's jdsample.c so decoded 4:2:x photos
+// come out as smooth as a reference decoder rather than blocky. Horizontal 2x: each output sample is
+// 3/4 of the nearer source sample + 1/4 of the farther (edges copy). h2v2 does the same separably in
+// both axes (a 9:3:3:1 weighting), with the row's neighbour taken above for the top output row of a
+// source row and below for the bottom one; image-edge rows/cols replicate.
+static void jpeg_fancy_h2v1(const uint8_t* src, int sw, int sh, uint8_t* dst) {
+    int dw = 2 * sw;
+    for (int y = 0; y < sh; y++) {
+        const uint8_t* r = src + (uint64_t)y * sw;
+        uint8_t* o = dst + (uint64_t)y * dw;
+        if (sw == 1) { o[0] = r[0]; o[1] = r[0]; continue; }
+        o[0] = r[0];
+        o[1] = (uint8_t)((r[0] * 3 + r[1] + 2) >> 2);
+        for (int i = 1; i < sw - 1; i++) {
+            o[2*i]     = (uint8_t)((r[i] * 3 + r[i-1] + 1) >> 2);
+            o[2*i + 1] = (uint8_t)((r[i] * 3 + r[i+1] + 2) >> 2);
+        }
+        o[2*(sw-1)]     = (uint8_t)((r[sw-1] * 3 + r[sw-2] + 1) >> 2);
+        o[2*(sw-1) + 1] = r[sw-1];
+    }
+}
+static void jpeg_fancy_h2v2(const uint8_t* src, int sw, int sh, uint8_t* dst) {
+    int dw = 2 * sw;
+    for (int oy = 0; oy < 2 * sh; oy++) {
+        int sy = oy >> 1, ny = (oy & 1) ? sy + 1 : sy - 1;
+        if (ny < 0) ny = 0; else if (ny >= sh) ny = sh - 1;
+        const uint8_t* r0 = src + (uint64_t)sy * sw;    // this row, vertical weight 3
+        const uint8_t* r1 = src + (uint64_t)ny * sw;    // neighbour row, weight 1
+        uint8_t* o = dst + (uint64_t)oy * dw;
+        int thiscol = r0[0] * 3 + r1[0];
+        if (sw == 1) { o[0] = (uint8_t)((thiscol * 4 + 8) >> 4); o[1] = (uint8_t)((thiscol * 4 + 7) >> 4); continue; }
+        int nextcol = r0[1] * 3 + r1[1];
+        o[0] = (uint8_t)((thiscol * 4 + 8) >> 4);
+        o[1] = (uint8_t)((thiscol * 3 + nextcol + 7) >> 4);
+        int lastcol = thiscol; thiscol = nextcol;
+        for (int i = 1; i < sw - 1; i++) {
+            nextcol = r0[i+1] * 3 + r1[i+1];
+            o[2*i]     = (uint8_t)((thiscol * 3 + lastcol + 8) >> 4);
+            o[2*i + 1] = (uint8_t)((thiscol * 3 + nextcol + 7) >> 4);
+            lastcol = thiscol; thiscol = nextcol;
+        }
+        o[2*(sw-1)]     = (uint8_t)((thiscol * 3 + lastcol + 8) >> 4);
+        o[2*(sw-1) + 1] = (uint8_t)((thiscol * 4 + 7) >> 4);
+    }
+}
+
 int jpeg_decode(const uint8_t* src, uint32_t srclen, image_t* img) {
     if (srclen < 4 || src[0] != 0xFF || src[1] != 0xD8) return -1;   // SOI
     jstate* st = (jstate*)kmalloc(sizeof(jstate));
@@ -173,6 +219,7 @@ int jpeg_decode(const uint8_t* src, uint32_t srclen, image_t* img) {
 
     uint8_t* planes[3] = {0, 0, 0};
     int cw[3] = {0,0,0}, ch[3] = {0,0,0};
+    uint8_t* up[3] = {0, 0, 0}; int up_owned[3] = {0, 0, 0};   // full-res (upsampled) component planes
     uint8_t* out = 0;
     int rc = -100;
     uint32_t p = 2;
@@ -261,19 +308,36 @@ int jpeg_decode(const uint8_t* src, uint32_t srclen, image_t* img) {
             }
             if (!ok) { rc = -16; goto done; }
 
-            // --- upsample (nearest) + colour convert into RGBA ---
+            // --- upsample each component to full resolution (FW x FH), then colour convert into RGBA ---
+            int FW = mcux * hmax * 8, FH = mcuy * vmax * 8;
+            for (int ci = 0; ci < st->ncomp; ci++) {
+                jcomp* c = &st->comp[ci];
+                if (c->h == hmax && c->v == vmax) { up[ci] = planes[ci]; up_owned[ci] = 0; continue; }   // already full-res
+                up[ci] = (uint8_t*)kmalloc((uint32_t)FW * FH);
+                if (!up[ci]) { rc = -17; goto done; }
+                up_owned[ci] = 1;
+                if (c->h * 2 == hmax && c->v * 2 == vmax)      jpeg_fancy_h2v2(planes[ci], cw[ci], ch[ci], up[ci]);   // 4:2:0
+                else if (c->h * 2 == hmax && c->v == vmax)     jpeg_fancy_h2v1(planes[ci], cw[ci], ch[ci], up[ci]);   // 4:2:2
+                else {                                                                                                // other: nearest
+                    for (int oy = 0; oy < FH; oy++) {
+                        int sy = oy * c->v / vmax;
+                        for (int ox = 0; ox < FW; ox++)
+                            up[ci][(uint64_t)oy * FW + ox] = planes[ci][(uint64_t)sy * cw[ci] + (ox * c->h / hmax)];
+                    }
+                }
+            }
             out = (uint8_t*)kmalloc((uint32_t)st->W * st->H * 4);
             if (!out) { rc = -17; goto done; }
             for (int y = 0; y < st->H; y++) {
                 for (int x = 0; x < st->W; x++) {
                     uint8_t* o = out + ((uint64_t)y * st->W + x) * 4;
                     if (st->ncomp == 1) {
-                        uint8_t Y = planes[0][(uint64_t)y * cw[0] + x];
+                        uint8_t Y = up[0][(uint64_t)y * FW + x];
                         o[0] = o[1] = o[2] = Y;
                     } else {
-                        int Y  = planes[0][(uint64_t)(y * st->comp[0].v / vmax) * cw[0] + (x * st->comp[0].h / hmax)];
-                        int Cb = planes[1][(uint64_t)(y * st->comp[1].v / vmax) * cw[1] + (x * st->comp[1].h / hmax)] - 128;
-                        int Cr = planes[2][(uint64_t)(y * st->comp[2].v / vmax) * cw[2] + (x * st->comp[2].h / hmax)] - 128;
+                        int Y  = up[0][(uint64_t)y * FW + x];
+                        int Cb = up[1][(uint64_t)y * FW + x] - 128;
+                        int Cr = up[2][(uint64_t)y * FW + x] - 128;
                         // fixed-point JFIF YCbCr->RGB (coefficients * 2^16, rounded): 1.402, 0.344136, 0.714136, 1.772
                         int ri = Y + ((91881 * Cr + 32768) >> 16);
                         int gi = Y - ((22554 * Cb + 46802 * Cr + 32768) >> 16);
@@ -296,6 +360,7 @@ int jpeg_decode(const uint8_t* src, uint32_t srclen, image_t* img) {
     if (rc == -100) rc = -18;                             // no SOS reached
 
 done:
+    for (int ci = 0; ci < 3; ci++) if (up_owned[ci] && up[ci]) kfree(up[ci]);
     for (int ci = 0; ci < 3; ci++) if (planes[ci]) kfree(planes[ci]);
     if (out) kfree(out);
     kfree(st);
@@ -330,9 +395,9 @@ static int jpeg_case(const char* name, const uint8_t* file, uint32_t flen, int w
 
 int jpeg_selftest(void) {
     int pass = 0, total = 0;
-    total++; pass += jpeg_case("grayscale", JPG_GRAY, sizeof(JPG_GRAY), JPG_GRAY_W, JPG_GRAY_H, JPG_GRAY_RGBA, 6, 120);
-    total++; pass += jpeg_case("ycbcr-444", JPG_444,  sizeof(JPG_444),  JPG_444_W,  JPG_444_H,  JPG_444_RGBA,  8, 150);
-    total++; pass += jpeg_case("ycbcr-420", JPG_420,  sizeof(JPG_420),  JPG_420_W,  JPG_420_H,  JPG_420_RGBA, 14, 250);
+    total++; pass += jpeg_case("grayscale", JPG_GRAY, sizeof(JPG_GRAY), JPG_GRAY_W, JPG_GRAY_H, JPG_GRAY_RGBA, 4, 40);
+    total++; pass += jpeg_case("ycbcr-444", JPG_444,  sizeof(JPG_444),  JPG_444_W,  JPG_444_H,  JPG_444_RGBA,  4, 40);
+    total++; pass += jpeg_case("ycbcr-420", JPG_420,  sizeof(JPG_420),  JPG_420_W,  JPG_420_H,  JPG_420_RGBA,  6, 60);   // fancy upsampling -> tighter than v5.9.89's 14/250
     printf("jpeg: self-test %d/%d passed\n", pass, total);
     return (pass == total) ? 0 : -1;
 }
