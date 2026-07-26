@@ -32,6 +32,9 @@
 #define SEL_MAX_FIELDS 64       // form controls per page; field id stored as a uint8 (index+1)
 #define SEL_MAX_IMGS   128      // <img>s per page; image id stored as a uint8 (index+1)
 #define SEL_FIELD_W    22       // rendered width (chars) of a text-input box
+#define SEL_MAX_TABS   6        // browser tabs per Selene window
+#define SEL_TABS_H     24       // tab-strip height (drawn below the toolbar)
+#define SEL_TABS_NEWW  26       // width of the [+] new-tab button
 
 // Form control kinds.
 #define SEL_FLD_TEXT   0        // text/search/email/url/password/tel/number -> editable box
@@ -83,6 +86,9 @@ typedef struct {
     int  find_matches;           // total matches of find_q on the page
     int  find_cur;               // index of the current (accented) match, 0-based
 } selene_ctx_t;
+
+// A Selene window holds several tabs, each a full page context; one is the active view.
+typedef struct { selene_ctx_t* tab[SEL_MAX_TABS]; int ntabs; int active; } selene_tabs_t;
 
 // ---- small string helpers (name buffers are already lowercased) ----
 
@@ -830,7 +836,8 @@ static void selene_submit(selene_ctx_t* s, int fi) {
     }
 }
 
-void* selene_create_ctx(void) {
+// Create one page context (one tab). The window-level manager is selene_create_ctx below.
+static selene_ctx_t* selene_new_ctx(void) {
     selene_ctx_t* s = (selene_ctx_t*)kmalloc(sizeof(selene_ctx_t));
     if (!s) return NULL;
     __builtin_memset(s, 0, sizeof(*s));
@@ -861,15 +868,73 @@ void* selene_create_ctx(void) {
     return s;
 }
 
+static void selene_free_ctx(selene_ctx_t* s) {
+    if (!s) return;
+    kfree(s->lines); kfree(s->link_of); kfree(s->field_of);
+    kfree(s->links); kfree(s->fields); kfree(s->forms);
+    kfree(s->img_of); kfree(s->images); kfree(s);
+}
+
+// The window's `reserved` is this manager: an array of tab contexts + the active index.
+void* selene_create_ctx(void) {
+    selene_tabs_t* T = (selene_tabs_t*)kmalloc(sizeof(selene_tabs_t));
+    if (!T) return NULL;
+    __builtin_memset(T, 0, sizeof(*T));
+    T->tab[0] = selene_new_ctx();
+    if (!T->tab[0]) { kfree(T); return NULL; }
+    T->ntabs = 1; T->active = 0;
+    return T;
+}
+
+// Open a fresh tab (blank, URL bar pre-filled) and focus it. No-op if the window is full.
+static void selene_tab_new(selene_tabs_t* T) {
+    if (T->ntabs >= SEL_MAX_TABS) return;
+    selene_ctx_t* n = selene_new_ctx();
+    if (!n) return;
+    T->tab[T->ntabs++] = n;
+    T->active = T->ntabs - 1;
+}
+
+// Close tab i (freeing its context). Keeps at least one tab; keeps the active view sensible.
+static void selene_tab_close(selene_tabs_t* T, int i) {
+    if (T->ntabs <= 1 || i < 0 || i >= T->ntabs) return;
+    selene_free_ctx(T->tab[i]);
+    for (int k = i; k < T->ntabs - 1; k++) T->tab[k] = T->tab[k + 1];
+    T->ntabs--;
+    if (T->active >= T->ntabs) T->active = T->ntabs - 1;
+    else if (T->active > i) T->active--;
+}
+
+// A short label for a tab: the page <title>, else the host of its URL, else "New Tab".
+static void selene_tab_label(selene_ctx_t* s, char* out, int cap) {
+    if (s->title[0]) { strncpy(out, s->title, cap - 1); out[cap - 1] = '\0'; return; }
+    if (s->cur_url[0]) {
+        const char* p = s->cur_url;
+        if (!strncmp(p, "http://", 7)) p += 7; else if (!strncmp(p, "https://", 8)) p += 8;
+        int n = 0; while (p[n] && p[n] != '/' && n < cap - 1) { out[n] = p[n]; n++; }
+        out[n] = '\0'; if (out[0]) return;
+    }
+    strncpy(out, "New Tab", cap - 1); out[cap - 1] = '\0';
+}
+
+// Tab i's x-offset (from the client left) and drawn width; call with i==ntabs to get the [+] x.
+static void selene_tab_geom(int ntabs, int i, int* x, int* w) {
+    int avail = SELENE_W - SEL_TABS_NEWW;
+    int tw = avail / (ntabs > 0 ? ntabs : 1);
+    if (tw > 150) tw = 150;
+    if (tw < 24) tw = 24;
+    *x = i * tw; *w = tw - 1;
+}
+
 // launch_selene calls this right after creating the window, so the browser opens
 // already showing its default page instead of a blank view.
 void selene_first_load(window_t* win) {
-    selene_ctx_t* s = (selene_ctx_t*)win->reserved;
-    if (s) selene_load(s);
+    selene_tabs_t* T = (selene_tabs_t*)win->reserved;
+    if (T && T->tab[T->active]) selene_load(T->tab[T->active]);
 }
 
 static int visible_rows(void) {
-    return (SELENE_H - SEL_BAR - SEL_STATUS - SEL_PAD) / SEL_LINE_H;
+    return (SELENE_H - SEL_BAR - SEL_TABS_H - SEL_STATUS - SEL_PAD) / SEL_LINE_H;
 }
 
 static void clamp_scroll(selene_ctx_t* s) {
@@ -992,7 +1057,9 @@ static void sel_disc(int ccx, int ccy, int r, uint32_t col) {
 
 void selene_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     (void)cw; (void)ch;
-    selene_ctx_t* s = (selene_ctx_t*)win->reserved;
+    selene_tabs_t* T = (selene_tabs_t*)win->reserved;
+    if (!T) return;
+    selene_ctx_t* s = T->tab[T->active];
     if (!s) return;
 
     uint32_t bar = fb_rgb(46, 40, 70);                        // brand-purple toolbar
@@ -1015,8 +1082,30 @@ void selene_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
         if (caret_x < ux + uw - 2) fb_fill_rect(caret_x, uty, 2, FONT_HEIGHT, fb_rgb(180, 160, 230));
     }
 
-    int cyy = cy + SEL_BAR;
-    int content_h = SELENE_H - SEL_BAR - SEL_STATUS;
+    // --- tab strip (below the toolbar): one button per tab + a [+] new-tab button ---
+    int tby = cy + SEL_BAR;
+    fb_fill_rect(cx, tby, SELENE_W, SEL_TABS_H, fb_rgb(34, 30, 50));
+    for (int t = 0; t < T->ntabs; t++) {
+        int tx, tw; selene_tab_geom(T->ntabs, t, &tx, &tw);
+        int act = (t == T->active);
+        uint32_t tb = act ? fb_rgb(248, 248, 250) : fb_rgb(58, 50, 82);
+        fb_fill_rect(cx + tx, tby + 2, tw, SEL_TABS_H - 2, tb);
+        if (act) fb_fill_rect(cx + tx, tby, tw, 2, fb_rgb(150, 120, 220));   // active-tab accent
+        char lbl[24]; selene_tab_label(T->tab[t], lbl, sizeof(lbl));
+        int maxc = (tw - 20) / FONT_WIDTH; if (maxc < 0) maxc = 0; if (maxc > 22) maxc = 22;
+        char show[24]; int z = 0; for (; z < maxc && lbl[z]; z++) show[z] = lbl[z]; show[z] = '\0';
+        uint32_t fg = act ? fb_rgb(30, 30, 45) : fb_rgb(210, 205, 225);
+        font_draw_string(cx + tx + 6, tby + (SEL_TABS_H - FONT_HEIGHT) / 2, show, fg, tb);
+        if (tw > 50) font_draw_string(cx + tx + tw - 13, tby + (SEL_TABS_H - FONT_HEIGHT) / 2, "x",
+                                      act ? fb_rgb(150, 110, 150) : fb_rgb(180, 170, 200), tb);
+    }
+    int nbx, nbw; selene_tab_geom(T->ntabs, T->ntabs, &nbx, &nbw);
+    if (nbx > SELENE_W - SEL_TABS_NEWW) nbx = SELENE_W - SEL_TABS_NEWW;
+    fb_fill_rect(cx + nbx, tby + 2, SEL_TABS_NEWW - 2, SEL_TABS_H - 2, fb_rgb(58, 50, 82));
+    font_draw_string(cx + nbx + 8, tby + (SEL_TABS_H - FONT_HEIGHT) / 2, "+", fb_rgb(220, 215, 235), fb_rgb(58, 50, 82));
+
+    int cyy = cy + SEL_BAR + SEL_TABS_H;
+    int content_h = SELENE_H - SEL_BAR - SEL_TABS_H - SEL_STATUS;
     uint32_t pg = fb_rgb(248, 248, 250);
     fb_fill_rect(cx, cyy, SELENE_W, content_h, pg);          // page (light)
 
@@ -1157,7 +1246,12 @@ void selene_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
 }
 
 void selene_win_key(window_t* win, int key) {
-    selene_ctx_t* s = (selene_ctx_t*)win->reserved;
+    selene_tabs_t* T = (selene_tabs_t*)win->reserved;
+    if (!T) return;
+    if (key == 0x14) { selene_tab_new(T); return; }                       // Ctrl+T: new tab
+    if (key == 0x17) { selene_tab_close(T, T->active); return; }           // Ctrl+W: close tab
+    if (key == '\t' && is_ctrl_pressed()) { T->active = (T->active + 1) % T->ntabs; return; }  // Ctrl+Tab: next tab
+    selene_ctx_t* s = T->tab[T->active];
     if (!s) return;
     int rows = visible_rows();
 
@@ -1203,6 +1297,8 @@ void selene_win_key(window_t* win, int key) {
 
     if (key == KEY_UP || key == KEY_WHEEL_UP)     { s->scroll -= 3; clamp_scroll(s); return; }
     if (key == KEY_DOWN || key == KEY_WHEEL_DOWN) { s->scroll += 3; clamp_scroll(s); return; }
+    if (key == KEY_PGUP && is_ctrl_pressed()) { T->active = (T->active + T->ntabs - 1) % T->ntabs; return; }  // Ctrl+PgUp: prev tab
+    if (key == KEY_PGDN && is_ctrl_pressed()) { T->active = (T->active + 1) % T->ntabs; return; }             // Ctrl+PgDn: next tab
     if (key == KEY_PGUP) { s->scroll -= (rows - 1); clamp_scroll(s); return; }
     if (key == KEY_PGDN) { s->scroll += (rows - 1); clamp_scroll(s); return; }
     if (key == KEY_HOME) { s->scroll = 0; return; }
@@ -1226,7 +1322,9 @@ void selene_win_key(window_t* win, int key) {
 // Mouse click: the Back button, the URL bar (focus it), or a link in the page.
 void selene_win_click(window_t* win, int mx, int my, int btn) {
     (void)btn;
-    selene_ctx_t* s = (selene_ctx_t*)win->reserved;
+    selene_tabs_t* T = (selene_tabs_t*)win->reserved;
+    if (!T) return;
+    selene_ctx_t* s = T->tab[T->active];
     if (!s) return;
     int cx = WIN_CLIENT_X(win), cy = WIN_CLIENT_Y(win);
 
@@ -1235,8 +1333,24 @@ void selene_win_click(window_t* win, int mx, int my, int btn) {
         s->sel_link = -1;                                    // clicking the URL bar edits it
         return;
     }
-    int cyy = cy + SEL_BAR;
-    int content_h = SELENE_H - SEL_BAR - SEL_STATUS;
+    int tby = cy + SEL_BAR;                                   // tab strip: switch tab / close 'x' / [+] new
+    if (my >= tby && my < tby + SEL_TABS_H) {
+        int rx = mx - cx;
+        int nbx, nbw; selene_tab_geom(T->ntabs, T->ntabs, &nbx, &nbw);
+        if (nbx > SELENE_W - SEL_TABS_NEWW) nbx = SELENE_W - SEL_TABS_NEWW;
+        if (rx >= nbx && rx < nbx + SEL_TABS_NEWW) { selene_tab_new(T); return; }
+        for (int t = 0; t < T->ntabs; t++) {
+            int tx, tw; selene_tab_geom(T->ntabs, t, &tx, &tw);
+            if (rx >= tx && rx < tx + tw) {
+                if (tw > 50 && rx >= tx + tw - 16) selene_tab_close(T, t);   // clicked the tab's 'x'
+                else T->active = t;
+                return;
+            }
+        }
+        return;
+    }
+    int cyy = cy + SEL_BAR + SEL_TABS_H;
+    int content_h = SELENE_H - SEL_BAR - SEL_TABS_H - SEL_STATUS;
     if (my < cyy || my >= cyy + content_h) return;
     int row = (my - cyy - SEL_PAD) / SEL_LINE_H;
     int col = (mx - cx - SEL_PAD) / FONT_WIDTH;
@@ -1256,7 +1370,7 @@ void selene_win_click(window_t* win, int mx, int my, int btn) {
 // Parse a known form, then build its GET submission URL. Pure logic — no network, no window.
 int selene_form_selftest(void) {
     int pass = 0, total = 0;
-    selene_ctx_t* s = (selene_ctx_t*)selene_create_ctx();
+    selene_ctx_t* s = selene_new_ctx();
     if (!s) { printf("selene-form: context alloc failed\n"); return -1; }
     strncpy(s->base_host, "example.com", sizeof(s->base_host)-1); s->base_host[sizeof(s->base_host)-1] = '\0';
     s->base_https = 0; s->base_port = 80;
@@ -1360,9 +1474,26 @@ int selene_form_selftest(void) {
         else printf("selene-form: <table> FAIL (hdr=%d r1=%d r2=%d rule=%d)\n", hdr, r1, r2, rule);
     }
 
-    kfree(s->lines); kfree(s->link_of); kfree(s->field_of);
-    kfree(s->links); kfree(s->fields); kfree(s->forms);
-    kfree(s->img_of); kfree(s->images); kfree(s);
+    // 7) tab manager: new / switch / close bookkeeping (no window, no network).
+    total++;
+    {
+        selene_tabs_t* T = (selene_tabs_t*)selene_create_ctx();
+        int ok = (T != 0);
+        if (ok) {
+            ok = ok && (T->ntabs == 1 && T->active == 0);
+            selene_tab_new(T); ok = ok && (T->ntabs == 2 && T->active == 1);   // opens + focuses
+            selene_tab_new(T); ok = ok && (T->ntabs == 3 && T->active == 2);
+            T->active = 1; selene_tab_close(T, 0); ok = ok && (T->ntabs == 2 && T->active == 0);  // active follows the shift
+            selene_tab_close(T, 1); ok = ok && (T->ntabs == 1);
+            selene_tab_close(T, 0); ok = ok && (T->ntabs == 1);                 // never closes the last tab
+            for (int t = 0; t < T->ntabs; t++) selene_free_ctx(T->tab[t]);
+            kfree(T);
+        }
+        if (ok) { pass++; printf("selene-form: tab manager (new/switch/close) PASS\n"); }
+        else printf("selene-form: tab manager FAIL\n");
+    }
+
+    selene_free_ctx(s);
     printf("selene-form: self-test %d/%d passed\n", pass, total);
     return (pass == total) ? 0 : -1;
 }
