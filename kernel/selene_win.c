@@ -49,7 +49,7 @@
 typedef struct { char url[192]; } sel_link_t;
 typedef struct { char action[192]; uint8_t method; } sel_form_t;   // method 0 = GET (only GET so far)
 typedef struct { int form; uint8_t kind; char name[64]; char value[160]; } sel_field_t;
-typedef struct { char alt[64]; char src[160]; uint8_t* px; uint16_t iw, ih; } sel_img_t;   // <img>: alt/src + decoded RGBA (px=NULL until fetched)
+typedef struct { char alt[64]; char src[160]; uint8_t* px; uint16_t iw, ih; uint8_t tried; } sel_img_t;   // <img>: alt/src + decoded RGBA (px=NULL until fetched; tried=1 once attempted)
 
 typedef struct {
     char url[256];
@@ -596,7 +596,7 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                 sel_img_t* im = &s->images[s->num_imgs];
                 strncpy(im->alt, alt, sizeof(im->alt)-1); im->alt[sizeof(im->alt)-1] = '\0';
                 strncpy(im->src, src, sizeof(im->src)-1); im->src[sizeof(im->src)-1] = '\0';
-                im->px = 0; im->iw = 0; im->ih = 0;              // decoded later by selene_fetch_images
+                im->px = 0; im->iw = 0; im->ih = 0; im->tried = 0;   // decoded lazily by selene_fetch_visible
                 int imgid = s->num_imgs + 1; s->num_imgs++;
                 // Caption text: prefer alt, else the src filename, else "image" (kept short so the box fits a line).
                 const char* capsrc = alt[0] ? alt : 0;
@@ -696,39 +696,69 @@ static int find_iface(void) {
 // Each image: resolve its src, fetch the bytes (http/https), and png_decode into RGBA (stored in
 // the sel_img_t). A failed fetch/decode or an unsupported format simply leaves px = NULL, and the
 // draw falls back to the framed "[img: alt]" placeholder. Bounded (count + per-image buffer).
-static void selene_fetch_images(selene_ctx_t* s, int iface) {
-    int n = s->num_imgs; if (n > SEL_IMG_FETCH_MAX) n = SEL_IMG_FETCH_MAX;
-    for (int i = 0; i < n; i++) {
-        if (!s->images[i].src[0]) continue;
-        char abs[256]; selene_resolve(s, s->images[i].src, abs);
-        if (!abs[0]) continue;
-        char host[128] = {0}, path[256] = {0}; uint16_t port = 80; int is_https = 0;
-        parse_url(abs, host, &port, path, &is_https);
-        if (!host[0]) continue;
-        // Retry once: NyxOS's first new TCP connection right after the page fetch sometimes fails.
-        for (int attempt = 0; attempt < 2 && !s->images[i].px; attempt++) {
-            http_response_t resp; int ok = 0;
-            if (is_https) {
-                uint8_t* raw = (uint8_t*)kmalloc(SEL_IMG_FETCH_CAP);
-                if (!raw) break;
-                int rn = tls_https_request(host, path, "GET", 0, 0, iface, raw, SEL_IMG_FETCH_CAP - 1, 0);
-                if (rn > 0) { raw[rn] = '\0'; if (http_parse_response(raw, (uint32_t)rn, &resp) == 0) ok = 1; }
-                kfree(raw);
-            } else {
-                if (http_request(host, port, path, "GET", 0, 0, &resp, iface) == 0) ok = 1;
-            }
-            if (!ok) continue;
-            if (resp.body && resp.body_len > 8 && resp.body[0] == 0x89 && resp.body[1] == 'P') {   // PNG signature
-                png_image_t pi;
-                if (png_decode(resp.body, resp.body_len, &pi) == 0) {
-                    s->images[i].px = pi.pixels;
-                    s->images[i].iw = (uint16_t)pi.width;
-                    s->images[i].ih = (uint16_t)pi.height;
-                }
-            }
-            http_free(&resp);
+static int  visible_rows(void);                        // defined below; used by the lazy image fetch
+static void clamp_scroll(selene_ctx_t* s);
+
+// Download + decode ONE <img> (image i) into RGBA on its sel_img_t. Retries once — NyxOS's first new
+// TCP connection right after another fetch sometimes fails. The caller marks it `tried`.
+static void selene_fetch_one(selene_ctx_t* s, int i, int iface) {
+    if (!s->images[i].src[0]) return;
+    char abs[256]; selene_resolve(s, s->images[i].src, abs);
+    if (!abs[0]) return;
+    char host[128] = {0}, path[256] = {0}; uint16_t port = 80; int is_https = 0;
+    parse_url(abs, host, &port, path, &is_https);
+    if (!host[0]) return;
+    for (int attempt = 0; attempt < 2 && !s->images[i].px; attempt++) {
+        http_response_t resp; int ok = 0;
+        if (is_https) {
+            uint8_t* raw = (uint8_t*)kmalloc(SEL_IMG_FETCH_CAP);
+            if (!raw) break;
+            int rn = tls_https_request(host, path, "GET", 0, 0, iface, raw, SEL_IMG_FETCH_CAP - 1, 0);
+            if (rn > 0) { raw[rn] = '\0'; if (http_parse_response(raw, (uint32_t)rn, &resp) == 0) ok = 1; }
+            kfree(raw);
+        } else {
+            if (http_request(host, port, path, "GET", 0, 0, &resp, iface) == 0) ok = 1;
         }
+        if (!ok) continue;
+        if (resp.body && resp.body_len > 8 && resp.body[0] == 0x89 && resp.body[1] == 'P') {   // PNG signature
+            png_image_t pi;
+            if (png_decode(resp.body, resp.body_len, &pi) == 0) {
+                s->images[i].px = pi.pixels;
+                s->images[i].iw = (uint16_t)pi.width;
+                s->images[i].ih = (uint16_t)pi.height;
+            }
+        }
+        http_free(&resp);
     }
+}
+
+// The document line image i's box is anchored on (its label starts at col 0), or -1.
+static int selene_img_anchor(selene_ctx_t* s, int i) {
+    for (int li = 0; li < s->num_lines; li++) if (s->img_of[li][0] == i + 1) return li;
+    return -1;
+}
+
+// Lazily fetch the images whose box is currently in view and hasn't been tried, redrawing after each
+// so they pop in one at a time. Off-screen images wait until they're scrolled into view.
+static void selene_fetch_visible(selene_ctx_t* s, int iface) {
+    if (iface < 0) return;
+    int rows = visible_rows(), got = 0;
+    for (int i = 0; i < s->num_imgs && got < SEL_IMG_FETCH_MAX; i++) {
+        if (s->images[i].tried || s->images[i].px) continue;
+        int aline = selene_img_anchor(s, i);
+        if (aline < 0 || aline < s->scroll || aline >= s->scroll + rows) continue;   // not visible now
+        selene_fetch_one(s, i, iface);
+        s->images[i].tried = 1;
+        got++;
+        compositor_redraw_now();                                                     // pop the image in
+    }
+}
+
+// A scroll changed: repaint immediately (responsive), then lazily fetch any newly-visible images.
+static void selene_after_scroll(selene_ctx_t* s) {
+    clamp_scroll(s);
+    compositor_redraw_now();
+    selene_fetch_visible(s, find_iface());
 }
 
 // Fetch ctx->url with `method` (+ optional form `body` for POST) and render the reply. Blocks
@@ -774,12 +804,13 @@ static void selene_load_ex(selene_ctx_t* s, const char* method, const uint8_t* b
         }
     }
     render_html(s, resp.body, resp.body_len);
-    http_free(&resp);                                            // page body consumed; free before fetching images
-    selene_fetch_images(s, iface);                               // download + decode <img>s (blocks briefly)
     strncpy(s->cur_url, s->url, sizeof(s->cur_url)-1); s->cur_url[sizeof(s->cur_url)-1] = '\0';
     snprintf(s->status, sizeof(s->status), "%d %s  -  %s  -  %d links",
              resp.status_code, resp.status_text,
              s->title[0] ? s->title : host, s->num_links);
+    http_free(&resp);
+    compositor_redraw_now();                 // show the page right away (images are placeholders for now)
+    selene_fetch_visible(s, iface);          // then fetch only the on-screen images, popping each in
 }
 
 static void selene_load(selene_ctx_t* s) { selene_load_ex(s, "GET", 0, 0); }
@@ -1364,14 +1395,14 @@ void selene_win_key(window_t* win, int key) {
         return;
     }
 
-    if (key == KEY_UP || key == KEY_WHEEL_UP)     { s->scroll -= 3; clamp_scroll(s); return; }
-    if (key == KEY_DOWN || key == KEY_WHEEL_DOWN) { s->scroll += 3; clamp_scroll(s); return; }
+    if (key == KEY_UP || key == KEY_WHEEL_UP)     { s->scroll -= 3; selene_after_scroll(s); return; }
+    if (key == KEY_DOWN || key == KEY_WHEEL_DOWN) { s->scroll += 3; selene_after_scroll(s); return; }
     if (key == KEY_PGUP && is_ctrl_pressed()) { T->active = (T->active + T->ntabs - 1) % T->ntabs; return; }  // Ctrl+PgUp: prev tab
     if (key == KEY_PGDN && is_ctrl_pressed()) { T->active = (T->active + 1) % T->ntabs; return; }             // Ctrl+PgDn: next tab
-    if (key == KEY_PGUP) { s->scroll -= (rows - 1); clamp_scroll(s); return; }
-    if (key == KEY_PGDN) { s->scroll += (rows - 1); clamp_scroll(s); return; }
-    if (key == KEY_HOME) { s->scroll = 0; return; }
-    if (key == KEY_END)  { s->scroll = s->num_lines; clamp_scroll(s); return; }
+    if (key == KEY_PGUP) { s->scroll -= (rows - 1); selene_after_scroll(s); return; }
+    if (key == KEY_PGDN) { s->scroll += (rows - 1); selene_after_scroll(s); return; }
+    if (key == KEY_HOME) { s->scroll = 0; selene_after_scroll(s); return; }
+    if (key == KEY_END)  { s->scroll = s->num_lines; selene_after_scroll(s); return; }
 
     if (key >= 0x20 && key < 0x7F) {                          // printable character
         if (in_text) {                                        // type into the focused text field
