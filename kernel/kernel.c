@@ -144,6 +144,7 @@ static void cmd_csprngtest(int argc, char** argv);
 static void cmd_dertest(int argc, char** argv);
 static void cmd_p256test(int argc, char** argv);
 static void cmd_p384test(int argc, char** argv);
+static void cmd_skp384test(int argc, char** argv);
 static void cmd_rsatest(int argc, char** argv);
 static void cmd_sha512test(int argc, char** argv);
 static void cmd_chaintest(int argc, char** argv);
@@ -244,6 +245,7 @@ static const command_t commands[] = {
     {"dertest",   cmd_dertest,   "DER/ASN.1 reader self-test (X.509 pubkey extraction)", false},
     {"p256test",  cmd_p256test,  "NIST P-256 self-test (point multiples + ECDSA verify)", false},
     {"p384test",  cmd_p384test,  "NIST P-384 self-test (point multiples + ECDSA verify)", false},
+    {"skp384test",cmd_skp384test,"ECDSA-P384 ServerKeyExchange verification self-test", false},
     {"rsatest",   cmd_rsatest,   "RSA PKCS#1 v1.5 SHA-256 signature-verify self-test", false},
     {"sha512test",cmd_sha512test,"SHA-512 / SHA-384 self-test (FIPS 180-4 vectors)", false},
     {"chaintest", cmd_chaintest, "X.509 certificate-chain verification self-test (pinned root)", false},
@@ -1635,6 +1637,14 @@ static void cmd_p384test(int argc, char** argv) {
     (void)argc; (void)argv;
     printf("Running NIST P-384 arithmetic self-test (base-point multiples + ECDSA)...\n");
     p384_selftest();
+}
+
+// `skp384test` — self-test ECDSA-P384/SHA-384 ServerKeyExchange verification: extract a P-384 key
+// from a real leaf certificate and check a known signature (valid accepted, tampered rejected).
+static void cmd_skp384test(int argc, char** argv) {
+    (void)argc; (void)argv;
+    printf("Running ECDSA-P384 ServerKeyExchange verification self-test (leaf key + known signature)...\n");
+    tls_ske_p384_selftest();
 }
 
 // `rsatest` — self-test RSA PKCS#1 v1.5 SHA-256 signature verification, needed to check the

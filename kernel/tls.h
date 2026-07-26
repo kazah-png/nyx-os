@@ -32,4 +32,7 @@ int tls_keyschedule_selftest(void);
 // Known-answer self-test for the AES-128-GCM record layer + Finished verify_data.
 int tls_record_selftest(void);
 
+// Known-answer self-test for ECDSA-P384/SHA-384 ServerKeyExchange verification (the `skp384test` command).
+int tls_ske_p384_selftest(void);
+
 #endif
