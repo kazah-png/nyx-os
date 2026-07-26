@@ -18,7 +18,7 @@ _start:
     ; envp = &argv[argc+1] = rsp + 8 + (argc+1)*8  (past argv's NULL terminator)
     lea rdx, [rdi+1]        ; argc + 1
     lea rdx, [rsp + rdx*8 + 8]  ; -> envp
-    mov [environ], rdx      ; publish it as the libc `environ` global (getenv reads it)
+    mov [abs environ], rdx  ; publish it as the libc `environ` global (getenv reads it); `abs` = explicit absolute (silences NASM's implicit-ABS deprecation; user binaries are fixed-VA / non-PIE)
     call main              ; main(argc, argv, envp) — extra arg ignored by 2-arg mains
 
     ; exit(rax)

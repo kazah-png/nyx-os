@@ -38,6 +38,12 @@ wget-log*
 
 # === Initramfs ===
 initramfs/
+# Generated every build by tools/mkinitramfs.py from the (untracked) user/*.elf + *.so.
+# It was tracked, but the current toolchain rebuilds it byte-differently from the committed
+# copy, so every clean build showed a ~27k-line churn. It's a second-order build artifact
+# (like the *.elf it embeds, already ignored above) — regenerated from a clean checkout by
+# the Makefile's `fs/initramfs_data.h` rule, so nothing needs it in git.
+kernel/fs/initramfs_data.h
 
 # === OS files ===
 Thumbs.db
