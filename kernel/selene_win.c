@@ -69,6 +69,12 @@ typedef struct {
     // Back history (stack of URLs left behind)
     char hist[SEL_HIST][256];
     int  hist_len;
+    // Find-in-page (Ctrl+F): a query, whether the find bar is capturing input, and match tracking.
+    char find_q[64];
+    int  find_len;
+    int  find_active;            // 1 = the find bar is open and taking keystrokes
+    int  find_matches;           // total matches of find_q on the page
+    int  find_cur;               // index of the current (accented) match, 0-based
 } selene_ctx_t;
 
 // ---- small string helpers (name buffers are already lowercased) ----
@@ -493,6 +499,7 @@ static int find_iface(void) {
 // (the fetch drives the net) - we paint a status first via compositor_redraw_now for progress.
 static void selene_load_ex(selene_ctx_t* s, const char* method, const uint8_t* body, uint32_t body_len) {
     s->num_lines = 0; s->scroll = 0; s->title[0] = '\0'; s->num_links = 0; s->sel_link = -1;
+    s->find_active = 0; s->find_matches = 0; s->find_cur = 0;   // close find-in-page on navigation
     int iface = find_iface();
     if (iface < 0) { strncpy(s->status, "No network interface (boot with -nic)", 95); return; }
     if (net_interfaces[iface].ip == 0) {
@@ -724,6 +731,61 @@ static void select_link(selene_ctx_t* s, int dir) {
     clamp_scroll(s);
 }
 
+// ---- find-in-page (Ctrl+F) ----------------------------------------------------------
+
+// Case-insensitive: does row `line` contain the query `q` (length ql) starting at column c?
+static int find_at(const char* line, int c, const char* q, int ql) {
+    for (int k = 0; k < ql; k++) {
+        char a = line[c + k], b = q[k];
+        if (a == '\0') return 0;
+        if (a >= 'A' && a <= 'Z') a += 32;
+        if (b >= 'A' && b <= 'Z') b += 32;
+        if (a != b) return 0;
+    }
+    return 1;
+}
+
+// Count non-overlapping matches of ctx->find_q across all lines; if wline != NULL, store the
+// (line, col) of the `want`-th match (0-based). Returns the total match count.
+static int find_scan(selene_ctx_t* s, int want, int* wline, int* wcol) {
+    int ql = s->find_len;
+    if (ql <= 0) return 0;
+    int count = 0;
+    for (int li = 0; li < s->num_lines; li++) {
+        const char* line = s->lines[li];
+        int llen = (int)strlen(line);
+        for (int c = 0; c + ql <= llen; c++) {
+            if (find_at(line, c, s->find_q, ql)) {
+                if (count == want && wline) { *wline = li; *wcol = c; }
+                count++;
+                c += ql - 1;                          // non-overlapping
+            }
+        }
+    }
+    return count;
+}
+
+// Scroll the current match into view (centred-ish).
+static void find_scroll_to_cur(selene_ctx_t* s) {
+    int wl = 0, wc = 0;
+    if (s->find_matches > 0 && find_scan(s, s->find_cur, &wl, &wc)) {
+        int rows = visible_rows();
+        if (wl < s->scroll || wl >= s->scroll + rows) { s->scroll = wl - rows / 2; clamp_scroll(s); }
+    }
+}
+// Recompute the match count after the query changed; reset to the first match.
+static void find_recount(selene_ctx_t* s) {
+    s->find_matches = find_scan(s, -1, 0, 0);
+    if (s->find_cur >= s->find_matches) s->find_cur = 0;
+    find_scroll_to_cur(s);
+}
+// Advance to the next match (wraps).
+static void find_next(selene_ctx_t* s) {
+    if (s->find_matches <= 0) { find_recount(s); return; }
+    s->find_cur = (s->find_cur + 1) % s->find_matches;
+    find_scroll_to_cur(s);
+}
+
 // A little crescent moon for the toolbar (Selene). Light disc, then carve it with an
 // offset disc in the toolbar colour.
 static void sel_disc(int ccx, int ccy, int r, uint32_t col) {
@@ -770,6 +832,8 @@ void selene_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     fb_fill_rect(cx, cyy, SELENE_W, content_h, pg);          // page (light)
 
     int rows = visible_rows();
+    int find_wl = -1, find_wc = -1;                          // the current find match's (line,col)
+    if (s->find_active && s->find_len > 0 && s->find_matches > 0) find_scan(s, s->find_cur, &find_wl, &find_wc);
     for (int r = 0; r < rows; r++) {
         int idx = s->scroll + r;
         if (idx >= s->num_lines) break;
@@ -834,6 +898,24 @@ void selene_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
             }
             c0 = c1f;
         }
+
+        // find-in-page: highlight every match on this line, the current one accented orange
+        if (s->find_active && s->find_len > 0) {
+            int flen = (int)strlen(s->lines[idx]);
+            for (int c = 0; c + s->find_len <= flen; c++) {
+                if (find_at(s->lines[idx], c, s->find_q, s->find_len)) {
+                    int px = cx + SEL_PAD + c * FONT_WIDTH, wpx = s->find_len * FONT_WIDTH;
+                    int is_cur = (idx == find_wl && c == find_wc);
+                    uint32_t bg = is_cur ? fb_rgb(255, 158, 40) : fb_rgb(250, 236, 130);
+                    fb_fill_rect(px, py - 1, wpx, FONT_HEIGHT + 2, bg);
+                    char sub[SEL_LINE_COLS]; int k = 0;
+                    for (; k < s->find_len && k < SEL_LINE_COLS - 1; k++) sub[k] = s->lines[idx][c + k];
+                    sub[k] = '\0';
+                    font_draw_string(px, py, sub, fb_rgb(30, 25, 10), bg);
+                    c += s->find_len - 1;
+                }
+            }
+        }
     }
     if (s->num_lines == 0)
         font_draw_string(cx + SEL_PAD, cyy + SEL_PAD, "(no page loaded)", fb_rgb(150,150,160), pg);
@@ -847,16 +929,40 @@ void selene_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
         fb_fill_rect(cx + SELENE_W - 5, thumb_y, 3, thumb_h, fb_rgb(150, 130, 200));
     }
 
-    // status: the selected link's target if one is selected, else the page status
-    fb_fill_rect(cx, cy + SELENE_H - SEL_STATUS, SELENE_W, SEL_STATUS, fb_rgb(32, 30, 44));
-    const char* st = (s->sel_link >= 0) ? s->links[s->sel_link].url : s->status;
-    font_draw_string(cx + 6, cy + SELENE_H - SEL_STATUS + 3, st, fb_rgb(200, 200, 220), fb_rgb(32, 30, 44));
+    // status: the find bar (when active) else the selected link's target else the page status
+    int sy = cy + SELENE_H - SEL_STATUS;
+    if (s->find_active) {
+        fb_fill_rect(cx, sy, SELENE_W, SEL_STATUS, fb_rgb(58, 48, 78));
+        char fbuf[128];
+        snprintf(fbuf, sizeof(fbuf), "Find: %s_   [%d/%d]   Enter=next  Esc=close",
+                 s->find_q, s->find_matches ? s->find_cur + 1 : 0, s->find_matches);
+        font_draw_string(cx + 6, sy + 3, fbuf, fb_rgb(255, 238, 180), fb_rgb(58, 48, 78));
+    } else {
+        fb_fill_rect(cx, sy, SELENE_W, SEL_STATUS, fb_rgb(32, 30, 44));
+        const char* st = (s->sel_link >= 0) ? s->links[s->sel_link].url : s->status;
+        font_draw_string(cx + 6, sy + 3, st, fb_rgb(200, 200, 220), fb_rgb(32, 30, 44));
+    }
 }
 
 void selene_win_key(window_t* win, int key) {
     selene_ctx_t* s = (selene_ctx_t*)win->reserved;
     if (!s) return;
     int rows = visible_rows();
+
+    if (key == 0x06) { s->find_active = 1; find_recount(s); return; }   // Ctrl+F: open/refresh find
+    if (s->find_active) {                                    // the find bar captures keystrokes
+        if (key == 0x1B) { s->find_active = 0; return; }                 // Esc: close find
+        if (key == '\n' || key == '\r') { find_next(s); return; }        // Enter: next match
+        if (key == '\b' || key == 0x7F) {                                // Backspace: edit query
+            if (s->find_len > 0) s->find_q[--s->find_len] = '\0';
+            find_recount(s); return;
+        }
+        if (key >= 0x20 && key < 0x7F) {                                 // type into the query
+            if (s->find_len < (int)sizeof(s->find_q) - 1) { s->find_q[s->find_len++] = (char)key; s->find_q[s->find_len] = '\0'; }
+            find_recount(s); return;
+        }
+        // arrows / PgUp / PgDn fall through so the page still scrolls while finding
+    }
 
     if (key == '\t') { select_link(s, +1); return; }         // Tab: next link/field (wraps to URL bar)
     if (key == 0x1B) { s->sel_link = -1; s->sel_field = -1; return; }   // Esc: back to the URL bar
