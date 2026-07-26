@@ -279,7 +279,7 @@ int jpeg_decode(const uint8_t* src, uint32_t srclen, image_t* img) {
             for (int ci = 0; ci < st->ncomp; ci++) {
                 cw[ci] = mcux * st->comp[ci].h * 8;
                 ch[ci] = mcuy * st->comp[ci].v * 8;
-                planes[ci] = (uint8_t*)kmalloc((uint32_t)cw[ci] * ch[ci]);
+                planes[ci] = (uint8_t*)kmalloc((size_t)cw[ci] * ch[ci]);   // 64-bit multiply before widening to kmalloc's size_t
                 if (!planes[ci]) { rc = -15; goto done; }
             }
             // --- decode every MCU ---
@@ -315,7 +315,7 @@ int jpeg_decode(const uint8_t* src, uint32_t srclen, image_t* img) {
             for (int ci = 0; ci < st->ncomp; ci++) {
                 jcomp* c = &st->comp[ci];
                 if (c->h == hmax && c->v == vmax) { up[ci] = planes[ci]; up_owned[ci] = 0; continue; }   // already full-res
-                up[ci] = (uint8_t*)kmalloc((uint32_t)FW * FH);
+                up[ci] = (uint8_t*)kmalloc((size_t)FW * FH);   // 64-bit multiply before widening to kmalloc's size_t
                 if (!up[ci]) { rc = -17; goto done; }
                 up_owned[ci] = 1;
                 if (c->h * 2 == hmax && c->v * 2 == vmax)      jpeg_fancy_h2v2(planes[ci], cw[ci], ch[ci], up[ci]);   // 4:2:0
@@ -328,7 +328,7 @@ int jpeg_decode(const uint8_t* src, uint32_t srclen, image_t* img) {
                     }
                 }
             }
-            out = (uint8_t*)kmalloc((uint32_t)st->W * st->H * 4);
+            out = (uint8_t*)kmalloc((size_t)st->W * st->H * 4);   // 64-bit multiply before widening to kmalloc's size_t
             if (!out) { rc = -17; goto done; }
             for (int y = 0; y < st->H; y++) {
                 for (int x = 0; x < st->W; x++) {
