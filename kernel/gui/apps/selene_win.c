@@ -358,12 +358,27 @@ static int sel_tag_match(const uint8_t* body, uint32_t i, uint32_t e, const char
     return 1;
 }
 
+// Flatten a nested <table> (body[i] at its '<table' open) into a compact inline "[ a b / c d ]"
+// so a table inside a cell reads in place instead of corrupting the grid. Declared here, used by
+// sel_cell_text below; defined after it (it calls back into sel_cell_text for each inner cell).
+static uint32_t sel_flatten_nested(const uint8_t* body, uint32_t i, uint32_t e, char* out, int* n, int cap);
+
 // Plain text of a table cell body[s..e): strip inner tags, decode entities, collapse whitespace, trim.
+// A nested <table> is replaced by sel_flatten_nested's compact "[ ... ]" form (kept in place, not merged).
 static int sel_cell_text(const uint8_t* body, uint32_t s, uint32_t e, char* out, int cap, int upper) {
     int n = 0, last_space = 1;
     for (uint32_t i = s; i < e && n < cap - 1; ) {
         char c = (char)body[i];
-        if (c == '<') { while (i < e && body[i] != '>') i++; if (i < e) i++; continue; }
+        if (c == '<') {
+            int tc; uint32_t tp;
+            if (sel_tag_match(body, i, e, "table", &tc, &tp) && !tc) {    // nested table -> inline "[ ... ]"
+                if (!last_space && n < cap - 1) out[n++] = ' ';
+                i = sel_flatten_nested(body, i, e, out, &n, cap);
+                if (n < cap - 1) { out[n++] = ' '; }
+                last_space = 1; continue;
+            }
+            while (i < e && body[i] != '>') i++; if (i < e) i++; continue;
+        }
         if (c == '&') { char eb[8]; uint32_t el, adv;
             if (decode_entity(body + i, e - i, eb, sizeof(eb), &el, &adv)) {
                 for (uint32_t k = 0; k < el && n < cap - 1; k++) {
@@ -380,6 +395,58 @@ static int sel_cell_text(const uint8_t* body, uint32_t s, uint32_t e, char* out,
     while (n > 0 && out[n-1] == ' ') n--;   // trim trailing space
     out[n] = '\0';
     return n;
+}
+
+// Flatten the nested <table> whose '<table' open is at body[i] into a compact one-line "[ a b / c d ]"
+// (cells space-separated, rows separated by " / "), appended into out[*n..cap). A table nested inside
+// this one collapses to "[..]" (no unbounded recursion). Returns the index just past the matching
+// </table>, so the caller resumes after the whole nested table.
+static uint32_t sel_flatten_nested(const uint8_t* body, uint32_t i, uint32_t e, char* out, int* n, int cap) {
+    int c0; uint32_t past;
+    if (!sel_tag_match(body, i, e, "table", &c0, &past)) return i + 1;   // shouldn't happen; skip one byte
+    i = past;
+    #define SFN_PUT(ch) do { if (*n < cap - 1) out[(*n)++] = (char)(ch); } while (0)
+    SFN_PUT('['); SFN_PUT(' ');
+    int firstrow = 1, firstcell = 1, depth = 1;
+    while (i < e && depth > 0) {
+        if (body[i] != '<') { i++; continue; }
+        int cl; uint32_t p;
+        if (sel_tag_match(body, i, e, "table", &cl, &p)) {              // deeper nesting
+            if (cl) { depth--; if (depth == 0) { i = p; break; } i = p; continue; }
+            if (!firstcell) SFN_PUT(' ');                               // a table-in-a-cell: collapse to "[..]"
+            SFN_PUT('['); SFN_PUT('.'); SFN_PUT('.'); SFN_PUT(']'); firstcell = 0;
+            int d = 1; uint32_t m = p;                                  // skip the whole deeper table
+            while (m < e && d > 0) {
+                if (body[m] == '<') { int c2; uint32_t p2;
+                    if (sel_tag_match(body, m, e, "table", &c2, &p2)) { if (c2) d--; else d++; m = p2; continue; } }
+                m++;
+            }
+            i = m; continue;
+        }
+        if (sel_tag_match(body, i, e, "tr", &cl, &p)) {                 // new row
+            if (!cl) { if (!firstrow) { SFN_PUT(' '); SFN_PUT('/'); SFN_PUT(' '); } firstrow = 0; firstcell = 1; }
+            i = p; continue;
+        }
+        if ((sel_tag_match(body, i, e, "td", &cl, &p) || sel_tag_match(body, i, e, "th", &cl, &p)) && !cl) {
+            uint32_t k = p;                                            // this cell's end (breaks at any table tag)
+            while (k < e) {
+                if (body[k] == '<') { int c3; uint32_t p3;
+                    if (sel_tag_match(body,k,e,"td",&c3,&p3) || sel_tag_match(body,k,e,"th",&c3,&p3) ||
+                        sel_tag_match(body,k,e,"tr",&c3,&p3) || sel_tag_match(body,k,e,"table",&c3,&p3)) break; }
+                k++;
+            }
+            char cb[SEL_TBL_COLCAP + 2];
+            int w = sel_cell_text(body, p, k, cb, sizeof(cb), 0);      // table-free range -> no re-entry here
+            if (!firstcell) SFN_PUT(' ');
+            for (int z = 0; z < w; z++) SFN_PUT(cb[z]);
+            firstcell = 0;
+            i = k; continue;
+        }
+        { uint32_t k = i + 1; while (k < e && body[k] != '>') k++; if (k < e) k++; i = k; }   // skip other tag
+    }
+    SFN_PUT(' '); SFN_PUT(']');
+    #undef SFN_PUT
+    return i;
 }
 
 // Parse the table in body[ts..te) and emit it, aligned, into the text stream at *pti.
@@ -409,11 +476,20 @@ static void render_table(const uint8_t* body, uint32_t ts, uint32_t te,
             if (row < 0) { row = 0; nrows = 1; curcol = 0; }         // cells before an explicit <tr>
             int cspan = sel_span_attr(body, i, cpast, "colspan"); if (cspan < 1) cspan = 1; if (cspan > SEL_TBL_MAXCOLS) cspan = SEL_TBL_MAXCOLS;
             int rspan = sel_span_attr(body, i, cpast, "rowspan"); if (rspan < 1) rspan = 1; if (rspan > SEL_TBL_MAXROWS) rspan = SEL_TBL_MAXROWS;
-            uint32_t k = cpast;                                       // find the cell's end (next cell/row/table tag)
+            uint32_t k = cpast;                                       // find the cell's end (next cell/row tag)
             while (k < te) {
                 if (body[k] == '<') { int c3; uint32_t p3;
+                    if (sel_tag_match(body,k,te,"table",&c3,&p3) && !c3) {   // nested table: skip it whole,
+                        int d = 1; uint32_t m = p3;                          // stay inside this cell (its
+                        while (m < te && d > 0) {                            // rows must not enter the grid)
+                            if (body[m] == '<') { int c5; uint32_t p5;
+                                if (sel_tag_match(body,m,te,"table",&c5,&p5)) { if (c5) d--; else d++; m = p5; continue; } }
+                            m++;
+                        }
+                        k = m; continue;
+                    }
                     if (sel_tag_match(body,k,te,"td",&c3,&p3) || sel_tag_match(body,k,te,"th",&c3,&p3) ||
-                        sel_tag_match(body,k,te,"tr",&c3,&p3) || sel_tag_match(body,k,te,"table",&c3,&p3)) break; }
+                        sel_tag_match(body,k,te,"tr",&c3,&p3)) break; }
                 k++;
             }
             while (curcol < SEL_TBL_MAXCOLS && occ[row * SEL_TBL_MAXCOLS + curcol]) curcol++;   // skip rowspan-covered cols
@@ -1857,6 +1933,33 @@ int selene_form_selftest(void) {
         if (cspan_ok && data_ok && rspan_ok)
             { pass++; printf("selene-form: table colspan + rowspan (spanning header + aligned rowspan) PASS\n"); }
         else printf("selene-form: table span FAIL (cspan=%d data=%d rspan=%d)\n", cspan_ok, data_ok, rspan_ok);
+    }
+
+    // 12) nested <table>: a table inside a cell renders inline as a compact "[ a b / c d ]" (cells
+    // space-separated, rows by " / ") and does NOT corrupt the outer grid — the outer data row keeps
+    // exactly its 2 columns and the inner rows never leak in as extra outer rows/columns.
+    total++;
+    {
+        static const char* NT =
+            "<table>"
+            "<tr><th>Item</th><th>Detail</th></tr>"
+            "<tr><td>Row1</td>"
+            "<td><table><tr><td>A</td><td>B</td></tr><tr><td>C</td><td>D</td></tr></table></td></tr>"
+            "</table>";
+        render_html(s, (const uint8_t*)NT, (uint32_t)strlen(NT));
+        int hdr_ok = 0, nest_ok = 0, cols_ok = 0;
+        for (int li = 0; li < s->num_lines; li++) {
+            const char* L = s->lines[li];
+            if (strstr(L, "ITEM") && strstr(L, "DETAIL")) hdr_ok = 1;              // header row intact
+            if (strstr(L, "Row1") && strstr(L, "[ A B / C D ]")) {                 // nested table inline, same row
+                nest_ok = 1;
+                int pipes = 0; for (int q = 0; L[q]; q++) if (L[q] == '|') pipes++;
+                if (pipes == 3) cols_ok = 1;                                       // exactly 2 columns (3 borders)
+            }
+        }
+        if (hdr_ok && nest_ok && cols_ok)
+            { pass++; printf("selene-form: nested <table> (inline flatten + outer grid intact) PASS\n"); }
+        else printf("selene-form: nested table FAIL (hdr=%d nest=%d cols=%d)\n", hdr_ok, nest_ok, cols_ok);
     }
 
     selene_free_ctx(s);
