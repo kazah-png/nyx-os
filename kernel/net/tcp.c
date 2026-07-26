@@ -459,7 +459,10 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t 
         conn->state = TCP_STATE_ESTABLISHED;
     }
 
-    // Update ack from received segment
+    // Update ack from the received segment. `data_accepted` records whether the
+    // payload was actually stored, so a FIN piggybacked on the same segment (below)
+    // is not acked past data we had to drop under memory pressure.
+    int data_accepted = 0;
     if (payload_len > 0 && (flags & TCP_FLAG_ACK)) {
         // Received data — store it (the recv buffer grows on demand). On an allocation FAILURE we
         // drop the segment: don't advance recv_len/ack and don't ACK, so the peer retransmits later.
@@ -483,6 +486,7 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t 
         conn->ack = seq + payload_len;                       // advance ack only now that we can store it
         memcpy(conn->recv_buf + conn->recv_len, payload, payload_len);
         conn->recv_len += payload_len;
+        data_accepted = 1;
         send_segment(conn, TCP_FLAG_ACK, NULL, 0);
         recv_drop: ;
     } else if (flags & TCP_FLAG_SYN && flags & TCP_FLAG_ACK) {
@@ -491,13 +495,25 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t 
             conn->state = TCP_STATE_ESTABLISHED;
             send_segment(conn, TCP_FLAG_ACK, NULL, 0);
         }
-    } else if (flags & TCP_FLAG_FIN) {
+    }
+
+    // A FIN can arrive on its own OR piggybacked on the peer's final data segment
+    // (its last bytes and FIN in one segment — common when a server closes right
+    // after responding). This used to be an `else if` after the data branch, so a
+    // combined data+FIN segment had its data stored but its FIN ignored: we stayed
+    // ESTABLISHED and never acked the FIN, recovering only once the peer retransmitted
+    // a bare FIN. Handle it after the data path instead. Skip it when the segment
+    // carried data we could not store (the OOM drop above): the FIN sequences just
+    // past that data, so acking it would falsely ack bytes we dropped — leave the
+    // whole segment for the peer to resend.
+    if ((flags & TCP_FLAG_FIN) && !(payload_len > 0 && !data_accepted)) {
+        uint32_t fin_seq = seq + payload_len;   // the FIN occupies the seq just past any data
         if (conn->state == TCP_STATE_ESTABLISHED) {
-            conn->ack = seq + 1;
+            conn->ack = fin_seq + 1;
             conn->state = TCP_STATE_CLOSE_WAIT;
             send_segment(conn, TCP_FLAG_ACK, NULL, 0);
         } else if (conn->state == TCP_STATE_FIN_WAIT1) {
-            conn->ack = seq + 1;
+            conn->ack = fin_seq + 1;
             conn->state = TCP_STATE_TIME_WAIT;
             send_segment(conn, TCP_FLAG_ACK, NULL, 0);
         }
