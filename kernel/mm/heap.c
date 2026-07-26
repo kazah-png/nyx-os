@@ -21,6 +21,17 @@ void init_heap(void) {
 void* heap_alloc(size_t size) {
     heap_block_t* curr = free_list;
     while (curr) {
+        // Coalesce this free block with any following free blocks before checking fit.
+        // heap_free() only merges forward ONCE, so two blocks freed while a block between
+        // them was still in use stay split — over time that fragments the heap and a large
+        // request fails despite enough total free space. The list is address-ordered and each
+        // block is physically contiguous with its next (see the split below), so absorbing
+        // curr->next into curr is always valid; doing it here reclaims space freed in any order.
+        if (!curr->used)
+            while (curr->next && !curr->next->used) {
+                curr->size += sizeof(heap_block_t) + curr->next->size;
+                curr->next = curr->next->next;
+            }
         if (!curr->used && curr->size >= size) {
             if (curr->size > size + sizeof(heap_block_t) + 16) {
                 heap_block_t* new_block = (heap_block_t*)((uint8_t*)curr + sizeof(heap_block_t) + size);
