@@ -19,6 +19,6 @@
 void* tetris_create_ctx(void);
 void  tetris_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch);
 void  tetris_win_key(window_t* win, int key);
-void  tetris_win_tick(window_t* win);
+int   tetris_win_tick(window_t* win);
 
 #endif

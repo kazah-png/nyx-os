@@ -47,9 +47,9 @@ static void paddle_bounce(pong_ctx_t* p, int paddle_y) {
     if (p->vy == 0) p->vy = (rel < 0) ? -1 : 1;
 }
 
-void pong_win_tick(window_t* win) {
+int pong_win_tick(window_t* win) {
     pong_ctx_t* p = (pong_ctx_t*)win->reserved;
-    if (!p) return;
+    if (!p) return 0;
 
     p->ball_x += p->vx;
     p->ball_y += p->vy;
@@ -82,6 +82,7 @@ void pong_win_tick(window_t* win) {
     else if (p->rpaddle_y > target + 2) p->rpaddle_y -= speed;
     if (p->rpaddle_y < 0)               p->rpaddle_y = 0;
     if (p->rpaddle_y + PH > PONG_H)     p->rpaddle_y = PONG_H - PH;
+    return 1;                                            // the ball/paddles moved: redraw
 }
 
 void pong_win_mousemove(window_t* win, int mx, int my, int btns) {

@@ -12,6 +12,6 @@ void* pong_create_ctx(void);
 void  pong_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch);
 void  pong_win_key(window_t* win, int key);
 void  pong_win_mousemove(window_t* win, int mx, int my, int btns);
-void  pong_win_tick(window_t* win);
+int   pong_win_tick(window_t* win);
 
 #endif

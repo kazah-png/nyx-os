@@ -74,29 +74,30 @@ void* snake_create_ctx(void) {
     return s;
 }
 
-void snake_win_tick(window_t* win) {
+int snake_win_tick(window_t* win) {
     snake_ctx_t* s = (snake_ctx_t*)win->reserved;
-    if (!s || s->game_over) return;
-    if (++s->tick_ctr < STEP_TICKS) return;             // pace the snake below the frame rate
+    if (!s || s->game_over) return 1;
+    if (++s->tick_ctr < STEP_TICKS) return 1;           // pace the snake below the frame rate
     s->tick_ctr = 0;
 
     s->dx = s->ndx; s->dy = s->ndy;                     // commit the queued heading
     int nx = s->sx[0] + s->dx;
     int ny = s->sy[0] + s->dy;
 
-    if (nx < 0 || nx >= SNAKE_COLS || ny < 0 || ny >= SNAKE_ROWS) { s->game_over = 1; return; }
+    if (nx < 0 || nx >= SNAKE_COLS || ny < 0 || ny >= SNAKE_ROWS) { s->game_over = 1; return 1; }
 
     // Self-collision. The tail cell is exempt UNLESS we're about to grow (then it stays).
     int grow = (nx == s->food_x && ny == s->food_y);
     int check = s->len - (grow ? 0 : 1);
     for (int i = 0; i < check; i++)
-        if (s->sx[i] == nx && s->sy[i] == ny) { s->game_over = 1; return; }
+        if (s->sx[i] == nx && s->sy[i] == ny) { s->game_over = 1; return 1; }
 
     if (grow && s->len < SNAKE_MAX) s->len++;
     for (int i = s->len - 1; i > 0; i--) { s->sx[i] = s->sx[i-1]; s->sy[i] = s->sy[i-1]; }
     s->sx[0] = (uint8_t)nx; s->sy[0] = (uint8_t)ny;
 
     if (grow) { s->score++; place_food(s); }
+    return 1;                                           // the snake advanced: redraw
 }
 
 void snake_win_key(window_t* win, int key) {

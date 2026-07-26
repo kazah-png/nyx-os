@@ -131,12 +131,13 @@ static void step_down(tetris_ctx_t* s) {
     else lock_and_next(s);
 }
 
-void tetris_win_tick(window_t* win) {
+int tetris_win_tick(window_t* win) {
     tetris_ctx_t* s = (tetris_ctx_t*)win->reserved;
-    if (!s || s->game_over) return;
+    if (!s || s->game_over) return 1;
     int drop_ticks = 24 - (s->level - 1) * 2;            // faster as the level rises
     if (drop_ticks < 4) drop_ticks = 4;
     if (++s->drop_ctr >= drop_ticks) { s->drop_ctr = 0; step_down(s); }
+    return 1;
 }
 
 void tetris_win_key(window_t* win, int key) {

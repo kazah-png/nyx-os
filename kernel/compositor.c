@@ -1046,7 +1046,8 @@ void launch_selene(void) {
     if (!w->reserved) { window_destroy(w->id); return; }
     w->on_key   = selene_win_key;
     w->on_click = selene_win_click;
-    selene_first_load(w);      // blocks briefly while it fetches (http_get drives the net)
+    w->on_tick  = selene_win_tick;   // cooperative loader: streams in one image per tick, UI stays live
+    selene_first_load(w);      // fetches the main page (blocks briefly); images stream in via the tick
 }
 
 // Open the "Games" desktop folder — a window listing Minesweeper, DOOM and Pong as
@@ -2530,15 +2531,15 @@ done_click:
             redraw = 1;
         }
 
-        // Game-animation tick (~30 fps): drive any window that registered an on_tick
-        // (Pong). Kept separate from the 1 Hz clock so the ball moves smoothly.
+        // Periodic tick (~30 fps): drive any window that registered an on_tick (the games'
+        // animation, Selene's cooperative image loader). Each handler returns 1 only when it
+        // changed something, so an idle Selene window doesn't force a 30fps recomposite.
         static uint32_t game_tick_ms = 0;
         if (now - game_tick_ms >= 33) {
             game_tick_ms = now;
             for (int gi = 0; gi < MAX_WINDOWS; gi++)
                 if (windows[gi] && windows[gi]->on_tick && windows[gi]->visible) {
-                    windows[gi]->on_tick(windows[gi]);
-                    redraw = 1;
+                    if (windows[gi]->on_tick(windows[gi])) redraw = 1;
                 }
         }
 

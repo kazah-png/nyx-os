@@ -36,7 +36,6 @@
 #define SEL_MAX_IMGS   128      // <img>s per page; image id stored as a uint8 (index+1)
 #define SEL_IMG_BOX_W     24    // image display box width, in characters
 #define SEL_IMG_BOX_LINES 5     // image display box height, in text rows
-#define SEL_IMG_FETCH_MAX 8     // fetch + decode at most this many images per page load
 #define SEL_IMG_FETCH_CAP (512 * 1024)   // per-image download buffer (bytes)
 #define SEL_FIELD_W    22       // rendered width (chars) of a text-input box
 #define SEL_MAX_TABS   6        // browser tabs per Selene window
@@ -598,7 +597,7 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                 sel_img_t* im = &s->images[s->num_imgs];
                 strncpy(im->alt, alt, sizeof(im->alt)-1); im->alt[sizeof(im->alt)-1] = '\0';
                 strncpy(im->src, src, sizeof(im->src)-1); im->src[sizeof(im->src)-1] = '\0';
-                im->px = 0; im->iw = 0; im->ih = 0; im->tried = 0;   // decoded lazily by selene_fetch_visible
+                im->px = 0; im->iw = 0; im->ih = 0; im->tried = 0;   // fetched lazily by selene_win_tick
                 int imgid = s->num_imgs + 1; s->num_imgs++;
                 // Caption text: prefer alt, else the src filename, else "image" (kept short so the box fits a line).
                 const char* capsrc = alt[0] ? alt : 0;
@@ -743,27 +742,47 @@ static int selene_img_anchor(selene_ctx_t* s, int i) {
     return -1;
 }
 
-// Lazily fetch the images whose box is currently in view and hasn't been tried, redrawing after each
-// so they pop in one at a time. Off-screen images wait until they're scrolled into view.
-static void selene_fetch_visible(selene_ctx_t* s, int iface) {
-    if (iface < 0) return;
-    int rows = visible_rows(), got = 0;
-    for (int i = 0; i < s->num_imgs && got < SEL_IMG_FETCH_MAX; i++) {
+// The next <img> to load: the first currently-visible ([scroll, scroll+rows)), untried, not-yet-decoded
+// one, or -1 if none are pending. Pure (no I/O), so `imgtest` can pin the visibility gating offline.
+static int selene_next_img_index(selene_ctx_t* s, int rows) {
+    for (int i = 0; i < s->num_imgs; i++) {
         if (s->images[i].tried || s->images[i].px) continue;
         int aline = selene_img_anchor(s, i);
         if (aline < 0 || aline < s->scroll || aline >= s->scroll + rows) continue;   // not visible now
-        selene_fetch_one(s, i, iface);
-        s->images[i].tried = 1;
-        got++;
-        compositor_redraw_now();                                                     // pop the image in
+        return i;
     }
+    return -1;
 }
 
-// A scroll changed: repaint immediately (responsive), then lazily fetch any newly-visible images.
+// Fetch + decode AT MOST ONE visible, not-yet-tried image. Returns 1 if it fetched one (the caller
+// should redraw to pop it in), 0 if none are pending. Driven once per compositor tick by
+// selene_win_tick so image loading never freezes the browser: the page shows instantly and images
+// stream in one per frame, with scrolling / clicks / tab switches handled in between.
+static int selene_fetch_next(selene_ctx_t* s, int iface) {
+    if (iface < 0) return 0;
+    int i = selene_next_img_index(s, visible_rows());
+    if (i < 0) return 0;
+    selene_fetch_one(s, i, iface);
+    s->images[i].tried = 1;
+    return 1;
+}
+
+// Compositor ~30fps tick for a Selene window: cooperatively load one pending image per frame, so a
+// slow fetch never freezes the UI. Returns 1 (redraw) when it actually fetched an image this tick,
+// 0 when idle — so an open-but-quiet browser doesn't force a 30fps recomposite.
+int selene_win_tick(window_t* win) {
+    selene_tabs_t* T = (selene_tabs_t*)win->reserved;
+    if (!T) return 0;
+    selene_ctx_t* s = T->tab[T->active];
+    if (!s) return 0;
+    return selene_fetch_next(s, find_iface());
+}
+
+// A scroll changed: repaint immediately (responsive). Newly-visible images are picked up by
+// selene_win_tick on the next frame — no blocking fetch here, so scrolling stays instant.
 static void selene_after_scroll(selene_ctx_t* s) {
     clamp_scroll(s);
     compositor_redraw_now();
-    selene_fetch_visible(s, find_iface());
 }
 
 // Fetch ctx->url with `method` (+ optional form `body` for POST) and render the reply. Blocks
@@ -814,8 +833,7 @@ static void selene_load_ex(selene_ctx_t* s, const char* method, const uint8_t* b
              resp.status_code, resp.status_text,
              s->title[0] ? s->title : host, s->num_links);
     http_free(&resp);
-    compositor_redraw_now();                 // show the page right away (images are placeholders for now)
-    selene_fetch_visible(s, iface);          // then fetch only the on-screen images, popping each in
+    compositor_redraw_now();                 // show the page instantly; visible images stream in via selene_win_tick
 }
 
 static void selene_load(selene_ctx_t* s) { selene_load_ex(s, "GET", 0, 0); }
@@ -1596,6 +1614,31 @@ int selene_form_selftest(void) {
         }
         if (ok) { pass++; printf("selene-form: tab manager (new/switch/close) PASS\n"); }
         else printf("selene-form: tab manager FAIL\n");
+    }
+
+    // 8) cooperative image loader: the pure visibility gating selene_win_tick drives one-per-frame.
+    // Two <img>s (top + far down); assert selene_next_img_index picks the visible, untried one only.
+    total++;
+    {
+        for (int i = 0; i < s->num_imgs; i++) if (s->images[i].px) kfree(s->images[i].px);
+        for (int li = 0; li < SEL_MAX_LINES; li++) s->img_of[li][0] = 0;   // clear col-0 anchors
+        s->num_imgs = 2; s->num_lines = 1150; s->scroll = 0;
+        s->images[0].tried = 0; s->images[0].px = 0;
+        s->images[1].tried = 0; s->images[1].px = 0;
+        s->img_of[1][0]    = 1;                          // image 0 anchored on line 1 (near the top)
+        s->img_of[1100][0] = 2;                          // image 1 anchored on line 1100 (far down)
+        int rows = visible_rows();
+        int a = selene_next_img_index(s, rows);          // img0 visible + untried  -> 0
+        s->images[0].tried = 1;
+        int b = selene_next_img_index(s, rows);          // img0 tried, img1 off-screen -> -1
+        s->scroll = 1100;
+        int c = selene_next_img_index(s, rows);          // img1 now scrolled in, untried -> 1
+        s->images[1].px = (uint8_t*)1;                   // pretend it decoded
+        int d = selene_next_img_index(s, rows);          // nothing pending -> -1
+        s->images[1].px = 0;                             // clear the fake ptr before free
+        if (a == 0 && b == -1 && c == 1 && d == -1)
+            { pass++; printf("selene-form: image loader visibility gating (0,-1,1,-1) PASS\n"); }
+        else printf("selene-form: image loader FAIL (a=%d b=%d c=%d d=%d)\n", a, b, c, d);
     }
 
     selene_free_ctx(s);
