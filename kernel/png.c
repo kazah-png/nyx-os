@@ -26,7 +26,7 @@ static int png_paeth(int a, int b, int c) {
     return c;
 }
 
-int png_decode(const uint8_t* src, uint32_t srclen, png_image_t* img) {
+int png_decode(const uint8_t* src, uint32_t srclen, image_t* img) {
     static const uint8_t sig[8] = {0x89,'P','N','G',0x0d,0x0a,0x1a,0x0a};
     uint32_t w = 0, h = 0, idat_total = 0, p, channels, stride, raw_cap, io, got;
     int depth = 0, ctype = -1, interlace = 0, i, zr;
@@ -143,7 +143,7 @@ int png_decode(const uint8_t* src, uint32_t srclen, png_image_t* img) {
     return 0;
 }
 
-void png_free(png_image_t* img) {
+void png_free(image_t* img) {
     if (img && img->pixels) { kfree(img->pixels); img->pixels = 0; }
 }
 
@@ -251,7 +251,7 @@ static int png_bufeq(const uint8_t* a, const uint8_t* b, uint32_t n) {
 }
 static int png_case(const char* name, const uint8_t* file, uint32_t flen,
                     uint32_t w, uint32_t h, const uint8_t* want) {
-    png_image_t im; int rc = png_decode(file, flen, &im);
+    image_t im; int rc = png_decode(file, flen, &im);
     int ok = (rc == 0 && im.width == w && im.height == h && png_bufeq(im.pixels, want, w * h * 4));
     if (rc == 0) png_free(&im);
     if (ok) printf("png: %s PASS (%dx%d)\n", name, (int)w, (int)h);

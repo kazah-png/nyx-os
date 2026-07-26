@@ -22,6 +22,7 @@
 #include "x509.h"
 #include "inflate.h"
 #include "png.h"
+#include "bmp.h"
 #include "selene_win.h"
 #include "rsa.h"
 #include "sha512.h"
@@ -149,6 +150,7 @@ static void cmd_p384test(int argc, char** argv);
 static void cmd_skp384test(int argc, char** argv);
 static void cmd_deflatetest(int argc, char** argv);
 static void cmd_pngtest(int argc, char** argv);
+static void cmd_bmptest(int argc, char** argv);
 static void cmd_rsatest(int argc, char** argv);
 static void cmd_sha512test(int argc, char** argv);
 static void cmd_chaintest(int argc, char** argv);
@@ -252,6 +254,7 @@ static const command_t commands[] = {
     {"skp384test",cmd_skp384test,"ECDSA-P384 ServerKeyExchange verification self-test", false},
     {"deflatetest",cmd_deflatetest,"DEFLATE/zlib decompression self-test (for PNG images)", false},
     {"pngtest",   cmd_pngtest,   "PNG image decoder self-test (color types + filters)", false},
+    {"bmptest",   cmd_bmptest,   "BMP image decoder self-test (24/32/8-bit + top-down)", false},
     {"rsatest",   cmd_rsatest,   "RSA PKCS#1 v1.5 SHA-256 signature-verify self-test", false},
     {"sha512test",cmd_sha512test,"SHA-512 / SHA-384 self-test (FIPS 180-4 vectors)", false},
     {"chaintest", cmd_chaintest, "X.509 certificate-chain verification self-test (pinned root)", false},
@@ -1665,6 +1668,13 @@ static void cmd_pngtest(int argc, char** argv) {
     (void)argc; (void)argv;
     printf("Running PNG decoder self-test (color types 0/2/3/6 + filters, vs expected RGBA)...\n");
     png_selftest();
+}
+
+// `bmptest` — self-test the BMP decoder: 24-bit / 32-bit / 8-bit palette / top-down, vs expected RGBA.
+static void cmd_bmptest(int argc, char** argv) {
+    (void)argc; (void)argv;
+    printf("Running BMP decoder self-test (24/32/8-bit + top-down, vs expected RGBA)...\n");
+    bmp_selftest();
 }
 
 // `rsatest` — self-test RSA PKCS#1 v1.5 SHA-256 signature verification, needed to check the
