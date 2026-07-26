@@ -61,7 +61,9 @@ static int jpeg_bit(jbr* b) {
     return (int)((b->buf >> b->cnt) & 1);
 }
 static int jpeg_receive(jbr* b, int s) { int v = 0; while (s-- > 0) v = (v << 1) | jpeg_bit(b); return v; }
-static int jpeg_extend(int v, int s) { return (v < (1 << (s - 1))) ? v + (-1 << s) + 1 : v; }
+// JPEG EXTEND (T.81 F.12): sign-extend an s-bit magnitude. Uses -(1<<s) rather than (-1<<s) — the
+// latter is left-shift of a negative value (undefined behaviour); the two are numerically identical.
+static int jpeg_extend(int v, int s) { return (v < (1 << (s - 1))) ? v - (1 << s) + 1 : v; }
 
 // Byte-align and consume the next restart marker (FF D0..D7); resets the bit buffer.
 static void jpeg_restart(jbr* b) {

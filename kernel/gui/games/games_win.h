@@ -1,5 +1,5 @@
-#ifndef GAMES_WIN_H
-#define GAMES_WIN_H
+#ifndef GAMES_WIN_H_INCLUDED       // guard distinct from the GAMES_WIN_H window-height macro below
+#define GAMES_WIN_H_INCLUDED
 #include "../core/compositor.h"
 
 // The "Games" desktop folder (v5.9.40, +Snake v5.9.42, +Tetris v5.9.43). A plain

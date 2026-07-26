@@ -20,7 +20,9 @@ static int png_type_is(const uint8_t* t, char a, char b, char c, char d) {
 }
 static int png_paeth(int a, int b, int c) {
     int p = a + b - c, pa = p - a, pb = p - b, pc = p - c;
-    if (pa < 0) pa = -pa; if (pb < 0) pb = -pb; if (pc < 0) pc = -pc;
+    if (pa < 0) pa = -pa;
+    if (pb < 0) pb = -pb;
+    if (pc < 0) pc = -pc;
     if (pa <= pb && pa <= pc) return a;
     if (pb <= pc) return b;
     return c;

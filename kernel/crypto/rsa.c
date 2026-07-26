@@ -223,13 +223,15 @@ int rsa_selftest(void) {
         pass++; printf("rsa: RSA-2048 PKCS1-v1.5 SHA-256 valid signature PASS\n");
     } else   printf("rsa: RSA-2048 PKCS1-v1.5 SHA-256 valid signature FAIL\n");
 
-    for (int i = 0; i < 32; i++) h2[i] = hash[i]; h2[0] ^= 0x01;
+    for (int i = 0; i < 32; i++) h2[i] = hash[i];
+    h2[0] ^= 0x01;
     total++;
     if (rsa_pkcs1_sha256_verify(N, 256, 65537, sig, 256, h2) == -1) {
         pass++; printf("rsa: tampered hash rejected PASS\n");
     } else   printf("rsa: tampered hash rejected FAIL\n");
 
-    for (int i = 0; i < 256; i++) s2[i] = sig[i]; s2[100] ^= 0x01;
+    for (int i = 0; i < 256; i++) s2[i] = sig[i];
+    s2[100] ^= 0x01;
     total++;
     if (rsa_pkcs1_sha256_verify(N, 256, 65537, s2, 256, hash) == -1) {
         pass++; printf("rsa: tampered signature rejected PASS\n");
@@ -264,7 +266,8 @@ int rsa_selftest(void) {
         if (rsa_pkcs1_sha512_verify(Nb, 256, 65537, sb, 256, hb) == 0) {
             pass++; printf("rsa: RSA-2048 PKCS1-v1.5 SHA-512 valid signature PASS\n");
         } else   printf("rsa: RSA-2048 PKCS1-v1.5 SHA-512 valid signature FAIL\n");
-        for (int i = 0; i < 64; i++) hb2[i] = hb[i]; hb2[0] ^= 0x01;
+        for (int i = 0; i < 64; i++) hb2[i] = hb[i];
+        hb2[0] ^= 0x01;
         total++;
         if (rsa_pkcs1_sha512_verify(Nb, 256, 65537, sb, 256, hb2) == -1) {
             pass++; printf("rsa: SHA-512 tampered hash rejected PASS\n");
@@ -297,7 +300,8 @@ int rsa_selftest(void) {
         total++;
         if (rsa_pss_sha256_verify(pn, 256, 65537, psig, 256, ph) == 0) { pass++; printf("rsa: RSA-2048 PSS SHA-256 valid signature PASS\n"); }
         else   printf("rsa: RSA-2048 PSS SHA-256 valid signature FAIL\n");
-        for (int i = 0; i < 32; i++) ph2[i] = ph[i]; ph2[5] ^= 0x01;
+        for (int i = 0; i < 32; i++) ph2[i] = ph[i];
+        ph2[5] ^= 0x01;
         total++;
         if (rsa_pss_sha256_verify(pn, 256, 65537, psig, 256, ph2) == -1) { pass++; printf("rsa: PSS tampered hash rejected PASS\n"); }
         else   printf("rsa: PSS tampered hash rejected FAIL\n");

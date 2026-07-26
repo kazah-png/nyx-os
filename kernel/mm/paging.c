@@ -415,7 +415,7 @@ int vm_handle_fault(uint64_t cr2, uint64_t err) {
     // growing here would silently run the stack into whatever lies below).
     if ((err & 0x4) && p && cr2 >= USER_STACK_LOW - PAGE_SIZE && cr2 < USER_STACK_LOW) {
         printf("[stack overflow] pid=%u comm=%s hit the stack guard page (cr2=0x%lx)\n",
-               (unsigned)p->pid, p->comm ? p->comm : "?", cr2);
+               (unsigned)p->pid, p->comm, cr2);   // comm is a char[32] — always non-NULL
         return 0;
     }
 

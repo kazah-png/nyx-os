@@ -366,7 +366,8 @@ static int sel_tag_match(const uint8_t* body, uint32_t i, uint32_t e, const char
         else break; }
     name[n] = '\0';
     if (!sel_streq(name, nm)) return 0;
-    while (j < e && body[j] != '>') j++; if (j < e) j++;
+    while (j < e && body[j] != '>') j++;
+    if (j < e) j++;
     *past = j;
     return 1;
 }
@@ -390,7 +391,9 @@ static int sel_cell_text(const uint8_t* body, uint32_t s, uint32_t e, char* out,
                 if (n < cap - 1) { out[n++] = ' '; }
                 last_space = 1; continue;
             }
-            while (i < e && body[i] != '>') i++; if (i < e) i++; continue;
+            while (i < e && body[i] != '>') i++;
+            if (i < e) i++;
+            continue;
         }
         if (c == '&') { char eb[8]; uint32_t el, adv;
             if (decode_entity(body + i, e - i, eb, sizeof(eb), &el, &adv)) {
@@ -549,7 +552,8 @@ static void render_table(const uint8_t* body, uint32_t ts, uint32_t te,
     int total = 1; for (int c = 0; c < ncols; c++) total += colw[c] + 3;   // "|" + per col " x |"
     while (total > SEL_TBL_ROWCAP) {                                    // shrink widest column until it fits
         int mx = -1, mi = 0; for (int c = 0; c < ncols; c++) if (colw[c] > mx) { mx = colw[c]; mi = c; }
-        if (mx <= 3) break; colw[mi]--; total--;
+        if (mx <= 3) break;
+        colw[mi]--; total--;
     }
 
     // Build a horizontal rule "+----+---+" once (reused for top / header sep / bottom).
@@ -623,7 +627,13 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
     uint8_t* timg   = (uint8_t*)kmalloc(len + 1);
     uint8_t* tindent= (uint8_t*)kmalloc(len + 1);            // per-char <blockquote> nesting level (for wrap_text)
     if (!txt || !tlink || !tfield || !timg || !tindent) {
-        if (txt) kfree(txt); if (tlink) kfree(tlink); if (tfield) kfree(tfield); if (timg) kfree(timg); if (tindent) kfree(tindent); return; }
+        if (txt) kfree(txt);
+        if (tlink) kfree(tlink);
+        if (tfield) kfree(tfield);
+        if (timg) kfree(timg);
+        if (tindent) kfree(tindent);
+        return;
+    }
     __builtin_memset(tfield,  0, len + 1);
     __builtin_memset(timg,    0, len + 1);
     __builtin_memset(tindent, 0, len + 1);
@@ -1626,7 +1636,8 @@ void selene_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
                 int dW, dH;                                              // aspect-fit into the box
                 if ((int)mi->iw * BH >= (int)mi->ih * BW) { dW = BW; dH = (int)mi->ih * BW / (int)mi->iw; }
                 else { dH = BH; dW = (int)mi->iw * BH / (int)mi->ih; }
-                if (dW < 1) dW = 1; if (dH < 1) dH = 1;
+                if (dW < 1) dW = 1;
+                if (dH < 1) dH = 1;
                 int ox = bx + (BW - dW) / 2, oy = by + (BH - dH) / 2;
                 fb_fill_rect(bx, by, BW, BH, pg);                        // letterbox background
                 for (int dy = 0; dy < dH; dy++) {
