@@ -20,6 +20,7 @@
 #include "p256.h"
 #include "p384.h"
 #include "x509.h"
+#include "selene_win.h"
 #include "rsa.h"
 #include "sha512.h"
 #include "smp.h"
@@ -144,6 +145,7 @@ static void cmd_p384test(int argc, char** argv);
 static void cmd_rsatest(int argc, char** argv);
 static void cmd_sha512test(int argc, char** argv);
 static void cmd_chaintest(int argc, char** argv);
+static void cmd_formtest(int argc, char** argv);
 static void cmd_setip(int argc, char** argv);
 static void cmd_mount(int argc, char** argv);
 static void cmd_df(int argc, char** argv);
@@ -241,6 +243,7 @@ static const command_t commands[] = {
     {"rsatest",   cmd_rsatest,   "RSA PKCS#1 v1.5 SHA-256 signature-verify self-test", false},
     {"sha512test",cmd_sha512test,"SHA-512 / SHA-384 self-test (FIPS 180-4 vectors)", false},
     {"chaintest", cmd_chaintest, "X.509 certificate-chain verification self-test (pinned root)", false},
+    {"formtest",  cmd_formtest,  "Selene HTML-forms self-test (parse form + build GET URL)", false},
     {"setip",     cmd_setip,     "Set static IP: setip <ip> <mask> <gw>", false},
     {"mount",     cmd_mount,     "Mount EXT2: mount [drive] [part_lba]", false},
     {"ext2ls",    cmd_mount,     "Alias for mount", false},
@@ -1612,6 +1615,14 @@ static void cmd_chaintest(int argc, char** argv) {
     (void)argc; (void)argv;
     printf("Running X.509 certificate-chain verification self-test (pinned trust anchor)...\n");
     x509_selftest();
+}
+
+// `formtest` — self-test Selene's HTML-forms support: parse a known <form> + its <input>s and
+// build the GET submission URL (URL-encoding + hidden fields), all without a window or network.
+static void cmd_formtest(int argc, char** argv) {
+    (void)argc; (void)argv;
+    printf("Running Selene HTML-forms self-test (parse + GET submission URL)...\n");
+    selene_form_selftest();
 }
 
 // Add history entry (called from shell loop)
