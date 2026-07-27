@@ -189,9 +189,14 @@ static int tls_seal_record(const uint8_t key[16], const uint8_t iv4[4], uint64_t
 
 // Open a fragment (explicit_nonce(8) || ct || tag(16)); returns pt_len, or -1 on a bad tag.
 static int tls_open_record(const uint8_t key[16], const uint8_t iv4[4], uint64_t seq,
-                           uint8_t type, const uint8_t* in, uint32_t in_len, uint8_t* pt) {
+                           uint8_t type, const uint8_t* in, uint32_t in_len, uint8_t* pt, uint32_t pt_max) {
     if (in_len < 8 + 16) return -1;
     uint32_t ct_len = in_len - 8 - 16;
+    // The plaintext (== ciphertext length) is written into `pt`; refuse if it would not
+    // fit. The record length comes off the wire, so without this a malicious server could
+    // send an over-long record and make aes128_gcm_decrypt write far past `pt` — e.g. the
+    // 64-byte stack buffer the Finished path passes — a remote memory-corruption primitive.
+    if (ct_len > pt_max) return -1;
     uint8_t nonce[12], aad[13];
     for (int i = 0; i < 4; i++) nonce[i] = iv4[i];
     for (int i = 0; i < 8; i++) nonce[4 + i] = in[i];            // explicit nonce read off the wire
@@ -228,14 +233,14 @@ int tls_record_selftest(void) {
     if (flen == 40 && tls_eq(frag, want, 40)) { pass++; printf("tlsrec: GCM record seal PASS (exact wire bytes)\n"); }
     else                                        printf("tlsrec: GCM record seal FAIL\n");
 
-    int olen = tls_open_record(key, iv4, 0, 0x17, frag, 40, out);
+    int olen = tls_open_record(key, iv4, 0, 0x17, frag, 40, out, sizeof(out));
     total++;
     if (olen == 16 && tls_eq(out, pt, 16)) { pass++; printf("tlsrec: GCM record open PASS (plaintext recovered)\n"); }
     else                                     printf("tlsrec: GCM record open FAIL\n");
 
     frag[12] ^= 0x01;                                            // corrupt one ciphertext byte
     total++;
-    if (tls_open_record(key, iv4, 0, 0x17, frag, 40, out) == -1) { pass++; printf("tlsrec: record tamper rejected PASS\n"); }
+    if (tls_open_record(key, iv4, 0, 0x17, frag, 40, out, sizeof(out)) == -1) { pass++; printf("tlsrec: record tamper rejected PASS\n"); }
     else                                                          printf("tlsrec: record tamper rejected FAIL\n");
     frag[12] ^= 0x01;
 
@@ -439,7 +444,13 @@ int tls_https_request(const char* host, const char* path, const char* method,
             uint32_t cq = 3;
             while (cq + 3 <= 3 + clen && cq + 3 <= mlen) {
                 uint32_t one = (uint32_t)((m[cq] << 16) | (m[cq+1] << 8) | m[cq+2]);
-                if (ncerts == 0) { cert0 = one; leaf_ptr = m + cq + 3; }   // the leaf cert
+                // Record the leaf ONLY if its claimed length fits the message — same bound
+                // the chain[] entry below uses. Without it, a malformed Certificate with a
+                // huge 24-bit leaf length left cert0 huge and leaf_ptr into tls_hd[], and the
+                // SKE-signature path later passed (leaf_ptr, cert0) to der_x509_pubkey /
+                // tls_ecdsa_leaf_verify as the buffer bound — an out-of-bounds read past the
+                // 16 KB handshake buffer driven entirely by attacker-supplied lengths.
+                if (ncerts == 0 && cq + 3 + one <= mlen) { cert0 = one; leaf_ptr = m + cq + 3; }   // the leaf cert
                 if (chain_n < 8 && cq + 3 + one <= mlen) {                 // record the whole chain
                     chain_ptr[chain_n] = m + cq + 3; chain_len[chain_n] = one; chain_n++;
                 }
@@ -696,7 +707,7 @@ int tls_https_request(const char* host, const char* path, const char* method,
             else if (rt == 21 && rl >= 2 && !sawccs) { s_alert = 1; s_desc = tls_rx[pp+6]; }  // plaintext alert
             else if (rt == 22 && sawccs) {                      // the encrypted Finished
                 uint8_t fin[64];
-                int pl = tls_open_record(skey, siv, 0, 0x16, tls_rx + pp + 5, rl, fin);   // server seq 0
+                int pl = tls_open_record(skey, siv, 0, 0x16, tls_rx + pp + 5, rl, fin, sizeof(fin));   // server seq 0
                 if (pl == 16 && fin[0] == 0x14) {
                     if (tls_eq(fin + 4, svd_exp, 12)) verified = 1;
                     else TLSP("TLS: server Finished verify_data MISMATCH — transcript/keys disagree\n");
@@ -764,7 +775,7 @@ int tls_https_request(const char* host, const char* path, const char* method,
                     if (q + 5 + rl2 > r3) break;                         // not fully arrived yet
                     if (rt == 0x17) {                                    // application data
                         if (pn + rl2 > cap) { done = 1; break; }         // caller buffer full
-                        int pl = tls_open_record(skey, siv, sseq, 0x17, tls_rx + q + 5, rl2, out + pn);
+                        int pl = tls_open_record(skey, siv, sseq, 0x17, tls_rx + q + 5, rl2, out + pn, cap - pn);
                         if (pl < 0) { TLSP("TLS: could not decrypt application-data record %u\n", (unsigned)sseq); done = 1; break; }
                         pn += (uint32_t)pl; sseq++;
                     } else if (rt == 0x15) { done = 1; break; }          // close_notify — end of stream
