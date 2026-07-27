@@ -785,6 +785,7 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
     int pre_mode = 0;                                         // inside <pre> (preserve whitespace literally)
     int pre_skip_nl = 0;                                      // swallow one newline right after <pre> (like browsers)
     int quote_depth = 0;                                      // <blockquote> nesting (left margin level)
+    int qmark_depth = 0;                                      // <q> nesting: level 0 uses ", level 1 uses ', alternating
     struct { uint8_t ordered; uint16_t counter; } liststk[SEL_LIST_MAXDEPTH];  // <ul>/<ol> nesting
     int listdepth = 0;                                        // 0 = not in a list
     int cur_color = 0, cur_bg = 0, cur_bold = 0, cur_ul = 0, cur_st = 0, cur_align = 0;  // + text-align in effect
@@ -897,6 +898,19 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                         cur_color = nfg; cur_bg = nbg; cur_bold = nbold; cur_ul = nul; cur_st = nst; cur_align = nal;
                     }
                 }
+            }
+            if (sel_streq(name, "q")) {                        // <q>..</q>: inline quotation marks (nested q alternates " and ')
+                char qc;
+                if (!close) { qc = (qmark_depth % 2 == 0) ? '"' : '\''; qmark_depth++; }
+                else        { if (qmark_depth > 0) qmark_depth--; qc = (qmark_depth % 2 == 0) ? '"' : '\''; }
+                if (ti < len) { txt[ti]=qc; tlink[ti]=(uint8_t)cur_link; tfield[ti]=(uint8_t)cur_field;
+                    tcolor[ti]=(uint8_t)cur_color; tbgcol[ti]=(uint8_t)cur_bg;
+                    tbold[ti]=(uint8_t)(cur_bold|(cur_ul<<1)|(cur_st<<2)); talign[ti]=(uint8_t)cur_align;
+                    tindent[ti]=(uint8_t)quote_depth; ti++; }
+                last_space = 0;
+                uint32_t te = j; while (te < len && body[te] != '>') te++;
+                i = te; if (i < len) i++;
+                continue;
             }
             if (sel_streq(name, "a")) {                        // hyperlink open/close
                 uint32_t te = j; while (te < len && body[te] != '>') te++;
