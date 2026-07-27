@@ -165,20 +165,28 @@ void ip_handle_packet(uint8_t* packet, uint32_t len) {
     if (len < sizeof(ip_header_t)) return;
     ip_header_t* ip = (ip_header_t*)packet;
 
+    // Validate the header before trusting any field. Derive the real header length
+    // from IHL (don't assume 20 bytes) and bound it to the packet; then verify the
+    // header checksum over exactly that span and drop a corrupt header. Before this the
+    // RX checksum was never checked and IP options (IHL>5) were miscounted as payload,
+    // so a bad-checksum header or a malformed IHL was dispatched to TCP/UDP/ICMP
+    // unchecked. ip_len clamps to the IP total-length field rather than the frame length:
+    // small frames carry Ethernet padding past total_len that would otherwise count as
+    // payload (a padded 58->60 byte SYN-ACK once added 2 phantom bytes to the TCP ack).
+    uint32_t ihl = (uint32_t)(ip->ver_ihl & 0x0F) * 4;
+    uint16_t ip_total = ntohs(ip->total_len);
+    uint32_t ip_len = (ip_total >= sizeof(ip_header_t) && ip_total <= len) ? ip_total : len;
+    if (ihl < sizeof(ip_header_t) || ihl > ip_len) return;   // malformed header length
+    if (ip_checksum(packet, ihl) != 0) return;               // corrupt header — drop
+
     uint32_t dst_ip = ip->dst_ip;
     for (int i = 0; i < 8; i++) {
         if (!net_interfaces[i].name[0]) continue;
         if (net_interfaces[i].ip == dst_ip || dst_ip == 0xFFFFFFFF) {
             uint8_t protocol = ip->protocol;
             g_last_rx_ttl = ip->ttl;   // reported by ping
-            uint8_t* payload = packet + sizeof(ip_header_t);
-            // Use the IP total-length field, not the received frame length, to
-            // size the payload — small frames carry Ethernet padding that would
-            // otherwise be counted as extra payload (e.g. a 58-byte SYN-ACK gets
-            // padded to 60, adding 2 phantom bytes that broke the TCP ack number).
-            uint16_t ip_total = ntohs(ip->total_len);
-            uint32_t ip_len = (ip_total >= sizeof(ip_header_t) && ip_total <= len) ? ip_total : len;
-            uint32_t payload_len = ip_len - sizeof(ip_header_t);
+            uint8_t* payload = packet + ihl;
+            uint32_t payload_len = ip_len - ihl;
             uint32_t src_ip = ip->src_ip;
             if (protocol == IP_PROTO_UDP) udp_handle_packet(payload, payload_len, src_ip);
             else if (protocol == IP_PROTO_ICMP) icmp_handle_packet(payload, payload_len, src_ip);
