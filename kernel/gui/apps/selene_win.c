@@ -1243,6 +1243,10 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                 int lvl = listdepth > 0 ? listdepth : 1;              // a stray <li> (no list) acts as depth 1
                 for (int d = 0; d < (lvl - 1) * SEL_LIST_INDENT && ti < len; d++) { txt[ti]=' '; tlink[ti]=0; ti++; }
                 if (listdepth > 0 && liststk[listdepth-1].ordered) {  // ordered: marker + ". " (decimal / alpha / roman)
+                    uint32_t lite = j; while (lite < len && body[lite] != '>') lite++;   // <li value="N">: restart this item's number at N
+                    char liv[8] = {0}; extract_attr(body, j, lite, "value", liv, sizeof(liv));
+                    if (liv[0]) { int v = 0; for (const char* q = liv; *q >= '0' && *q <= '9'; q++) v = v * 10 + (*q - '0');
+                        if (v >= 1 && v <= 9999) liststk[listdepth-1].counter = (uint16_t)(v - 1); }   // ++ below makes it show N
                     uint16_t n = ++liststk[listdepth-1].counter;
                     uint8_t lt = liststk[listdepth-1].type;
                     char mark[16]; int ml;
