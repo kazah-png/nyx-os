@@ -95,6 +95,11 @@ typedef struct {
     uint8_t (*img_of)[SEL_LINE_COLS];  // per-char image id (0 = none, else image index+1)
     sel_img_t* images;                 // kmalloc'd SEL_MAX_IMGS
     int  num_imgs;
+    // Inline-CSS foreground colour: a per-char palette index (0 = the default text colour, else
+    // palette[idx-1]), set from style="color:.." and <font color=>. The palette is per-page + deduped.
+    uint8_t (*color_of)[SEL_LINE_COLS];
+    uint32_t palette[255];             // framebuffer pixel values, index 0 => palette id 1
+    int  npalette;
     // base for resolving relative links (from the loaded URL)
     char     base_host[128];
     uint16_t base_port;
@@ -224,7 +229,7 @@ static void selene_resolve(selene_ctx_t* s, const char* href, char* out) {
 // word-wrap) whose content sits at level L is prefixed with L*SEL_QUOTE_INDENT spaces, so a quoted
 // paragraph stays indented even where it wraps. Level 0 (the common case) is byte-for-byte unchanged.
 static void wrap_text(selene_ctx_t* s, const char* txt, const uint8_t* tlink, const uint8_t* tfield,
-                      const uint8_t* timg, const uint8_t* tindent, uint32_t ti) {
+                      const uint8_t* timg, const uint8_t* tcolor, const uint8_t* tindent, uint32_t ti) {
     int li = 0, col = 0, bol = 1;   // bol: at a HARD line start (after '\n') — preserve intentional leading indent
     s->lines[0][0] = '\0';
     uint32_t i = 0;
@@ -239,7 +244,7 @@ static void wrap_text(selene_ctx_t* s, const char* txt, const uint8_t* tlink, co
         }
         if (c == ' ') {
             // Leading spaces are dropped after a soft word-wrap, but kept after a hard '\n' (list indents).
-            if ((col > 0 || bol) && col < SEL_LINE_COLS - 1) { s->link_of[li][col] = tlink[i]; s->field_of[li][col] = tfield[i]; s->img_of[li][col] = timg[i]; s->lines[li][col++] = ' '; }
+            if ((col > 0 || bol) && col < SEL_LINE_COLS - 1) { s->link_of[li][col] = tlink[i]; s->field_of[li][col] = tfield[i]; s->img_of[li][col] = timg[i]; s->color_of[li][col] = tcolor[i]; s->lines[li][col++] = ' '; }
             i++;
             continue;
         }
@@ -265,6 +270,7 @@ static void wrap_text(selene_ctx_t* s, const char* txt, const uint8_t* tlink, co
                 s->link_of[li][col] = tlink[st + off + k];
                 s->field_of[li][col] = tfield[st + off + k];
                 s->img_of[li][col] = timg[st + off + k];
+                s->color_of[li][col] = tcolor[st + off + k];
                 s->lines[li][col++] = txt[st + off + k];
             }
             bol = 0;                                           // wrote content — no longer at a hard line start
@@ -613,31 +619,135 @@ static void selene_img_free(sel_img_t* im) {
 }
 
 // ---- strip HTML in `body` to text (capturing <a href> links + form controls), then wrap it ----
+// ---- inline CSS: parse a style="color:.." value and intern it into the page palette ----
+
+static int sel_ci_eqn(const char* a, const char* b, int n) {           // case-insensitive, n chars
+    for (int i = 0; i < n; i++) {
+        char x = a[i], y = b[i];
+        if (x >= 'A' && x <= 'Z') x = (char)(x + 32);
+        if (y >= 'A' && y <= 'Z') y = (char)(y + 32);
+        if (x != y) return 0;
+    }
+    return 1;
+}
+static int sel_ci_streq(const char* a, const char* b) {                 // case-insensitive, full string
+    int i = 0;
+    for (; a[i] && b[i]; i++) {
+        char x = a[i], y = b[i];
+        if (x >= 'A' && x <= 'Z') x = (char)(x + 32);
+        if (y >= 'A' && y <= 'Z') y = (char)(y + 32);
+        if (x != y) return 0;
+    }
+    return a[i] == 0 && b[i] == 0;
+}
+
+// Find a declaration `prop: value` among the `;`-separated declarations of an inline style string,
+// matching the property name exactly (so "color" does not also match "background-color"). 1 on success.
+static int sel_css_get(const char* style, const char* prop, char* out, int cap) {
+    int plen = (int)strlen(prop);
+    const char* p = style;
+    out[0] = '\0';
+    while (*p) {
+        while (*p == ' ' || *p == ';') p++;
+        const char* ds = p;
+        while (*p && *p != ':' && *p != ';') p++;
+        if (*p != ':') { while (*p && *p != ';') p++; continue; }       // no ':' in this decl
+        const char* pe = p; while (pe > ds && pe[-1] == ' ') pe--;      // trim property name
+        p++;
+        while (*p == ' ') p++;
+        const char* vs = p;
+        while (*p && *p != ';') p++;
+        const char* ve = p; while (ve > vs && ve[-1] == ' ') ve--;      // trim value
+        if ((int)(pe - ds) == plen && sel_ci_eqn(ds, prop, plen)) {
+            int vl = (int)(ve - vs); if (vl > cap - 1) vl = cap - 1; if (vl < 0) vl = 0;
+            for (int k = 0; k < vl; k++) out[k] = vs[k];
+            out[vl] = '\0';
+            return out[0] ? 1 : 0;
+        }
+    }
+    return 0;
+}
+
+static int sel_hexv(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+// Parse a CSS colour value (#rgb, #rrggbb, or a common named colour) into 0xRRGGBB. 1 on success.
+static int sel_parse_css_color(const char* v, uint32_t* rgb) {
+    while (*v == ' ') v++;
+    if (v[0] == '#') {
+        const char* h = v + 1;
+        int n = 0; while (n < 8 && sel_hexv(h[n]) >= 0) n++;
+        if (n == 6) {
+            *rgb = ((uint32_t)sel_hexv(h[0])<<20)|((uint32_t)sel_hexv(h[1])<<16)|
+                   ((uint32_t)sel_hexv(h[2])<<12)|((uint32_t)sel_hexv(h[3])<<8) |
+                   ((uint32_t)sel_hexv(h[4])<<4) | (uint32_t)sel_hexv(h[5]);
+            return 1;
+        }
+        if (n == 3) {                                                   // #abc -> #aabbcc
+            int r = sel_hexv(h[0]), g = sel_hexv(h[1]), b = sel_hexv(h[2]);
+            *rgb = ((uint32_t)((r<<4)|r)<<16)|((uint32_t)((g<<4)|g)<<8)|(uint32_t)((b<<4)|b);
+            return 1;
+        }
+        return 0;
+    }
+    static const struct { const char* n; uint32_t rgb; } NAMED[] = {
+        {"black",0x000000},{"white",0xFFFFFF},{"red",0xFF0000},{"green",0x008000},
+        {"lime",0x00FF00},{"blue",0x0000FF},{"yellow",0xFFFF00},{"cyan",0x00FFFF},
+        {"aqua",0x00FFFF},{"magenta",0xFF00FF},{"fuchsia",0xFF00FF},{"gray",0x808080},
+        {"grey",0x808080},{"silver",0xC0C0C0},{"maroon",0x800000},{"olive",0x808000},
+        {"navy",0x000080},{"teal",0x008080},{"purple",0x800080},{"orange",0xFFA500},
+        {"pink",0xFFC0CB},{"brown",0xA52A2A},{"gold",0xFFD700},{"indigo",0x4B0082},
+        {"darkred",0x8B0000},{"darkgreen",0x006400},{"darkblue",0x00008B},{"crimson",0xDC143C},
+        {0,0}
+    };
+    for (int i = 0; NAMED[i].n; i++) if (sel_ci_streq(v, NAMED[i].n)) { *rgb = NAMED[i].rgb; return 1; }
+    return 0;
+}
+
+// Intern an 0xRRGGBB colour into the page palette (stored as fb pixels, deduped). Returns a 1-based
+// index (0 = no room); index 0 is reserved for "the default text colour".
+static uint8_t sel_intern_color(selene_ctx_t* s, uint32_t rgb) {
+    uint32_t px = fb_rgb((rgb >> 16) & 0xFF, (rgb >> 8) & 0xFF, rgb & 0xFF);
+    for (int i = 0; i < s->npalette; i++) if (s->palette[i] == px) return (uint8_t)(i + 1);
+    if (s->npalette >= 255) return 0;
+    s->palette[s->npalette] = px;
+    return (uint8_t)(++s->npalette);
+}
+
 static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
     s->num_lines = 0; s->scroll = 0; s->title[0] = '\0';
     s->num_links = 0; s->sel_link = -1;
     s->num_fields = 0; s->num_forms = 0; s->sel_field = -1;
+    s->npalette = 0;                                          // reset the per-page inline-CSS colour palette
     for (int i = 0; i < s->num_imgs; i++) selene_img_free(&s->images[i]);   // free decoded pixels/frames on nav
     s->num_imgs = 0;
     __builtin_memset(s->link_of, 0, SEL_MAX_LINES * SEL_LINE_COLS);
     __builtin_memset(s->field_of, 0, SEL_MAX_LINES * SEL_LINE_COLS);
     __builtin_memset(s->img_of, 0, SEL_MAX_LINES * SEL_LINE_COLS);
+    __builtin_memset(s->color_of, 0, SEL_MAX_LINES * SEL_LINE_COLS);
     if (!body || !len) { s->num_lines = 0; return; }
     char*    txt    = (char*)kmalloc(len + 1);
     uint8_t* tlink  = (uint8_t*)kmalloc(len + 1);
     uint8_t* tfield = (uint8_t*)kmalloc(len + 1);
     uint8_t* timg   = (uint8_t*)kmalloc(len + 1);
+    uint8_t* tcolor = (uint8_t*)kmalloc(len + 1);            // per-char inline-CSS colour index (for wrap_text)
     uint8_t* tindent= (uint8_t*)kmalloc(len + 1);            // per-char <blockquote> nesting level (for wrap_text)
-    if (!txt || !tlink || !tfield || !timg || !tindent) {
+    if (!txt || !tlink || !tfield || !timg || !tcolor || !tindent) {
         if (txt) kfree(txt);
         if (tlink) kfree(tlink);
         if (tfield) kfree(tfield);
         if (timg) kfree(timg);
+        if (tcolor) kfree(tcolor);
         if (tindent) kfree(tindent);
         return;
     }
     __builtin_memset(tfield,  0, len + 1);
     __builtin_memset(timg,    0, len + 1);
+    __builtin_memset(tcolor,  0, len + 1);
     __builtin_memset(tindent, 0, len + 1);
     uint32_t ti = 0;
     int last_space = 1;
@@ -650,6 +760,9 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
     int quote_depth = 0;                                      // <blockquote> nesting (left margin level)
     struct { uint8_t ordered; uint16_t counter; } liststk[SEL_LIST_MAXDEPTH];  // <ul>/<ol> nesting
     int listdepth = 0;                                        // 0 = not in a list
+    int cur_color = 0;                                        // inline-CSS colour index in effect (0 = default)
+    struct { char tag[16]; uint8_t color; } colstk[16];       // colour stack: push a styled open, pop its close
+    int coldepth = 0;
     for (uint32_t i = 0; i < len && ti < len; ) {
         char c = (char)body[i];
         if (c == '<') {
@@ -682,6 +795,33 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                 s->title[tl] = '\0';
                 i = k;
                 continue;
+            }
+            // Inline CSS: a styled open tag (style="color:..") — or <font color=..> — pushes its
+            // foreground colour; the matching close pops it. Void elements never push (no close tag).
+            // This runs for EVERY tag before the specific handlers below, so any element can be coloured.
+            {
+                uint32_t cte = j; while (cte < len && body[cte] != '>') cte++;
+                if (close) {
+                    if (coldepth > 0 && sel_streq(colstk[coldepth - 1].tag, name)) {
+                        coldepth--;
+                        cur_color = coldepth > 0 ? colstk[coldepth - 1].color : 0;
+                    }
+                } else if (!(sel_streq(name,"br")||sel_streq(name,"hr")||sel_streq(name,"img")||
+                             sel_streq(name,"input")||sel_streq(name,"meta")||sel_streq(name,"link"))) {
+                    char cval[40]; cval[0] = '\0';
+                    char stylev[160]; extract_attr(body, j, cte, "style", stylev, sizeof(stylev));
+                    if (stylev[0]) sel_css_get(stylev, "color", cval, sizeof(cval));
+                    if (!cval[0] && sel_streq(name, "font")) extract_attr(body, j, cte, "color", cval, sizeof(cval));
+                    uint32_t rgb;
+                    if (cval[0] && sel_parse_css_color(cval, &rgb) && coldepth < 16) {
+                        uint8_t idx = sel_intern_color(s, rgb);
+                        if (idx) {
+                            strncpy(colstk[coldepth].tag, name, 15); colstk[coldepth].tag[15] = '\0';
+                            colstk[coldepth].color = idx; coldepth++;
+                            cur_color = idx;
+                        }
+                    }
+                }
             }
             if (sel_streq(name, "a")) {                        // hyperlink open/close
                 uint32_t te = j; while (te < len && body[te] != '>') te++;
@@ -891,11 +1031,11 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
             if (decode_entity(body + i, len - i, eb, sizeof(eb), &el, &adv)) {
                 for (uint32_t k = 0; k < el && ti < len; k++) {
                     char dec = eb[k];
-                    if (dec == ' ') { if (pre_mode || !last_space) { txt[ti] = ' '; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 1; } }
-                    else { if (cur_hd && dec >= 'a' && dec <= 'z') dec -= 32; txt[ti] = dec; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 0; }
+                    if (dec == ' ') { if (pre_mode || !last_space) { txt[ti] = ' '; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; tcolor[ti] = (uint8_t)cur_color; tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 1; } }
+                    else { if (cur_hd && dec >= 'a' && dec <= 'z') dec -= 32; txt[ti] = dec; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; tcolor[ti] = (uint8_t)cur_color; tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 0; }
                 }
                 i += adv;
-            } else { txt[ti] = '&'; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 0; i++; }
+            } else { txt[ti] = '&'; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; tcolor[ti] = (uint8_t)cur_color; tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 0; i++; }
             continue;
         }
         if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
@@ -904,22 +1044,22 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                 if (c == '\n') {
                     if (pre_skip_nl) { pre_skip_nl = 0; i++; continue; }   // swallow the single newline after <pre>
                     txt[ti] = '\n'; tlink[ti] = 0; tfield[ti] = 0; tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 1;
-                } else if (c == '\t') { pre_skip_nl = 0; for (int q = 0; q < SEL_PRE_TAB && ti < len; q++) { txt[ti]=' '; tlink[ti]=(uint8_t)cur_link; tfield[ti]=0; tindent[ti]=(uint8_t)quote_depth; ti++; } last_space = 0; }
-                else { pre_skip_nl = 0; txt[ti] = ' '; tlink[ti] = (uint8_t)cur_link; tfield[ti] = 0; tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 0; }
+                } else if (c == '\t') { pre_skip_nl = 0; for (int q = 0; q < SEL_PRE_TAB && ti < len; q++) { txt[ti]=' '; tlink[ti]=(uint8_t)cur_link; tfield[ti]=0; tcolor[ti]=(uint8_t)cur_color; tindent[ti]=(uint8_t)quote_depth; ti++; } last_space = 0; }
+                else { pre_skip_nl = 0; txt[ti] = ' '; tlink[ti] = (uint8_t)cur_link; tfield[ti] = 0; tcolor[ti] = (uint8_t)cur_color; tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 0; }
                 i++;
                 continue;
             }
-            if (!last_space) { txt[ti] = ' '; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 1; }
+            if (!last_space) { txt[ti] = ' '; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; tcolor[ti] = (uint8_t)cur_color; tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 1; }
             i++;
             continue;
         }
         if (cur_hd && c >= 'a' && c <= 'z') c -= 32;          // upper-case h1/h2 text
         pre_skip_nl = 0;                                       // real content: a later <pre> newline is significant
-        txt[ti] = c; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 0; i++;
+        txt[ti] = c; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; tcolor[ti] = (uint8_t)cur_color; tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 0; i++;
     }
     txt[ti] = '\0';
-    wrap_text(s, txt, tlink, tfield, timg, tindent, ti);
-    kfree(txt); kfree(tlink); kfree(tfield); kfree(timg); kfree(tindent);
+    wrap_text(s, txt, tlink, tfield, timg, tcolor, tindent, ti);
+    kfree(txt); kfree(tlink); kfree(tfield); kfree(timg); kfree(tcolor); kfree(tindent);
 }
 
 // Parse http[://]host[:port][/path] into host/port/path (same shape as `httpget`).
@@ -1269,8 +1409,9 @@ static selene_ctx_t* selene_new_ctx(void) {
     s->forms    = (sel_form_t*)kmalloc(SEL_MAX_FORMS * sizeof(sel_form_t));
     s->img_of   = (uint8_t(*)[SEL_LINE_COLS])kmalloc(SEL_MAX_LINES * SEL_LINE_COLS);
     s->images   = (sel_img_t*)kmalloc(SEL_MAX_IMGS * sizeof(sel_img_t));
+    s->color_of = (uint8_t(*)[SEL_LINE_COLS])kmalloc(SEL_MAX_LINES * SEL_LINE_COLS);
     if (!s->lines || !s->link_of || !s->field_of || !s->links || !s->fields || !s->forms ||
-        !s->img_of || !s->images) {
+        !s->img_of || !s->images || !s->color_of) {
         if (s->lines) kfree(s->lines);
         if (s->link_of) kfree(s->link_of);
         if (s->field_of) kfree(s->field_of);
@@ -1279,6 +1420,7 @@ static selene_ctx_t* selene_new_ctx(void) {
         if (s->forms) kfree(s->forms);
         if (s->img_of) kfree(s->img_of);
         if (s->images) kfree(s->images);
+        if (s->color_of) kfree(s->color_of);
         kfree(s); return NULL;
     }
     s->sel_field = -1;
@@ -1293,7 +1435,7 @@ static void selene_free_ctx(selene_ctx_t* s) {
     for (int i = 0; i < s->num_imgs; i++) selene_img_free(&s->images[i]);
     kfree(s->lines); kfree(s->link_of); kfree(s->field_of);
     kfree(s->links); kfree(s->fields); kfree(s->forms);
-    kfree(s->img_of); kfree(s->images); kfree(s);
+    kfree(s->img_of); kfree(s->images); kfree(s->color_of); kfree(s);
 }
 
 // The window's `reserved` is this manager: an array of tab contexts + the active index.
@@ -1537,7 +1679,21 @@ void selene_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
         int idx = s->scroll + r;
         if (idx >= s->num_lines) break;
         int py = cyy + SEL_PAD + r * SEL_LINE_H;
-        font_draw_string(cx + SEL_PAD, py, s->lines[idx], fb_rgb(28, 30, 40), pg);   // base text
+        // base text, drawn in per-run inline-CSS colours (color_of; 0 = the default dark text colour)
+        {
+            int blen = (int)strlen(s->lines[idx]);
+            int b0 = 0;
+            while (b0 < blen) {
+                uint8_t ck = s->color_of[idx][b0];
+                int b1 = b0; while (b1 < blen && s->color_of[idx][b1] == ck) b1++;
+                uint32_t fg = (ck && ck <= s->npalette) ? s->palette[ck - 1] : fb_rgb(28, 30, 40);
+                char sub[SEL_LINE_COLS]; int k = 0;
+                for (; k < b1 - b0 && k < SEL_LINE_COLS - 1; k++) sub[k] = s->lines[idx][b0 + k];
+                sub[k] = '\0';
+                font_draw_string(cx + SEL_PAD + b0 * FONT_WIDTH, py, sub, fg, pg);
+                b0 = b1;
+            }
+        }
 
         // overlay link runs on this line: colour + underline, highlight the selected one
         int llen = (int)strlen(s->lines[idx]);
