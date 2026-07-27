@@ -1221,8 +1221,12 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                             else if (sel_ci_streq(lst,"square")) lt = 2;
                             else if (sel_ci_streq(lst,"none"))   lt = 3;
                         }
+                        uint16_t startc = 0;                              // <ol start="N">: first item shows N (counter starts at N-1)
+                        if (ord) { char sv[8] = {0}; extract_attr(body, j, lte, "start", sv, sizeof(sv));
+                            if (sv[0]) { int v = 0; for (const char* q = sv; *q >= '0' && *q <= '9'; q++) v = v * 10 + (*q - '0');
+                                if (v >= 1 && v <= 9999) startc = (uint16_t)(v - 1); } }
                         liststk[listdepth].ordered = (uint8_t)ord;
-                        liststk[listdepth].counter = 0;
+                        liststk[listdepth].counter = startc;
                         liststk[listdepth].type = lt;
                         listdepth++;
                     }
