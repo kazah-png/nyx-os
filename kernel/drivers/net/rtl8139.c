@@ -160,11 +160,16 @@ int rtl8139_init(void) {
                 rtl_rx_offset = 0;
                 rtl_writew(RTL_REG_CAPR, 0xFFF0);
 
-                // Configure RX: accept broadcast/multicast/physical/all, plus
-                // MXDMA=unlimited (bits 8-10) and RXFTH=no threshold (bits 13-15).
-                // Without these the RX DMA never delivered packets to the ring.
-                // RCR is a 32-bit register — use a full 32-bit write.
-                rtl_writel(RTL_REG_RCR, RTL_RCR_AB | RTL_RCR_AM | RTL_RCR_APM | RTL_RCR_AAP
+                // Configure RX: accept broadcast + multicast + frames whose
+                // destination MAC matches ours (APM). Promiscuous mode (AAP) is
+                // deliberately NOT set, so the card drops frames addressed to
+                // other hosts in hardware and a stray unicast never reaches the
+                // stack; the eth_poll dst_mac check is now a defence-in-depth
+                // backstop rather than the primary filter. MXDMA=unlimited
+                // (bits 8-10) and RXFTH=no threshold (bits 13-15) are required
+                // or the RX DMA never delivers packets to the ring. RCR is a
+                // 32-bit register — use a full 32-bit write.
+                rtl_writel(RTL_REG_RCR, RTL_RCR_AB | RTL_RCR_AM | RTL_RCR_APM
                                         | (0x7 << 8) | (0x7 << 13));
 
                 // Enable transmitter and receiver
