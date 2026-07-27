@@ -131,7 +131,7 @@ static int sel_streq(const char* a, const char* b) { return strcmp(a, b) == 0; }
 static int is_block_tag(const char* n) {
     static const char* B[] = { "p","br","div","h1","h2","h3","h4","h5","h6","li","tr",
         "hr","ul","ol","table","section","article","header","footer","nav","form",
-        "blockquote","pre","dd","dt","dl","figure","center",0 };
+        "blockquote","pre","dd","dt","dl","center",0 };   // <figure>/<figcaption> have dedicated arms (indent + own line)
     for (int i = 0; B[i]; i++) if (sel_streq(n, B[i])) return 1;
     return 0;
 }
@@ -1259,6 +1259,14 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                 ti = sel_ensure_nl(txt, tlink, ti, len, 2);   // block break around the quote
                 if (!close) { if (quote_depth < SEL_QUOTE_MAXDEPTH) quote_depth++; }   // deeper left margin
                 else        { if (quote_depth > 0) quote_depth--; }
+                last_space = 1;
+            } else if (sel_streq(name, "figure")) {
+                ti = sel_ensure_nl(txt, tlink, ti, len, 2);   // block break around the figure
+                if (!close) { if (quote_depth < SEL_QUOTE_MAXDEPTH) quote_depth++; }   // indent the whole figure (a browser gives <figure> a left/right margin)
+                else        { if (quote_depth > 0) quote_depth--; }
+                last_space = 1;
+            } else if (sel_streq(name, "figcaption")) {
+                ti = sel_ensure_nl(txt, tlink, ti, len, 1);   // the caption sits on its own line under the figure content, sharing the figure's indent
                 last_space = 1;
             } else if (!close && sel_streq(name, "dd")) {
                 ti = sel_ensure_nl(txt, tlink, ti, len, 1);          // <dd>: the description on its own line, indented under its <dt> term
