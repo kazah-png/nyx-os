@@ -89,12 +89,19 @@ int dhcp_request(int iface_idx) {
             if (rx_xid == dhcp_xid && rx[0] == 2 && rx_cookie == DHCP_MAGIC_COOKIE) {
                 int o = 240;                 // options begin at 240
                 uint8_t msg_type = 0;
-                while (o < dhcp_rx_len && rx[o] != DHCP_OPT_END) {
-                    if (rx[o] == DHCP_OPT_MSG_TYPE && rx[o+1] == 1) {
+                // Bound every option field by dhcp_rx_len. The length byte rx[o+1] and the
+                // value byte rx[o+2] are attacker-controlled yet were read with only
+                // `o < dhcp_rx_len` checked, so a truncated or crafted packet could read
+                // past the received data — and past dhcp_rx_buf[] itself when dhcp_rx_len
+                // is its full size. Require the length byte in-bounds to enter the loop and
+                // the value in-bounds before dereferencing it.
+                while (o + 1 < dhcp_rx_len && rx[o] != DHCP_OPT_END) {
+                    uint8_t optlen = rx[o+1];
+                    if (rx[o] == DHCP_OPT_MSG_TYPE && optlen == 1 && o + 2 < dhcp_rx_len) {
                         msg_type = rx[o+2];
                         break;
                     }
-                    o += rx[o+1] + 2;
+                    o += optlen + 2;
                 }
 
                 if (msg_type == DHCP_OFFER && dhcp_state == 0) {
@@ -108,17 +115,24 @@ int dhcp_request(int iface_idx) {
                 if (msg_type == DHCP_ACK && dhcp_state == 2) {
                     net_interfaces[iface_idx].ip = dhcp_offered_ip;
                     int o2 = 240;                // options begin at 240
-                    while (o2 < dhcp_rx_len && rx[o2] != DHCP_OPT_END) {
-                        if (rx[o2] == DHCP_OPT_SUBNET_MASK && rx[o2+1] == 4)
-                            memcpy(&net_interfaces[iface_idx].netmask, &rx[o2+2], 4);
-                        if (rx[o2] == DHCP_OPT_ROUTER && rx[o2+1] >= 4)
-                            memcpy(&net_interfaces[iface_idx].gateway, &rx[o2+2], 4);
-                        if (rx[o2] == 6 && rx[o2+1] >= 4) { // DNS server
-                            uint32_t dns_ip;
-                            memcpy(&dns_ip, &rx[o2+2], 4);
-                            dns_set_server(dns_ip);
+                    while (o2 + 1 < dhcp_rx_len && rx[o2] != DHCP_OPT_END) {
+                        uint8_t optlen = rx[o2+1];
+                        // Only touch the option's value once the whole option fits in the
+                        // received packet: each memcpy below pulls 4 bytes into the interface
+                        // config, so a short/crafted option must never source them from past
+                        // dhcp_rx_len (same OOB concern as the msg-type loop above).
+                        if (o2 + 2 + optlen <= dhcp_rx_len) {
+                            if (rx[o2] == DHCP_OPT_SUBNET_MASK && optlen == 4)
+                                memcpy(&net_interfaces[iface_idx].netmask, &rx[o2+2], 4);
+                            if (rx[o2] == DHCP_OPT_ROUTER && optlen >= 4)
+                                memcpy(&net_interfaces[iface_idx].gateway, &rx[o2+2], 4);
+                            if (rx[o2] == 6 && optlen >= 4) { // DNS server
+                                uint32_t dns_ip;
+                                memcpy(&dns_ip, &rx[o2+2], 4);
+                                dns_set_server(dns_ip);
+                            }
                         }
-                        o2 += rx[o2+1] + 2;
+                        o2 += optlen + 2;
                     }
                     printf("[DHCP] ACK: IP=%d.%d.%d.%d mask=%d.%d.%d.%d gw=%d.%d.%d.%d\n",
                         IP4_OCTETS(dhcp_offered_ip),
