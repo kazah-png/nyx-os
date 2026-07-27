@@ -1299,6 +1299,14 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                 last_space = 1;
             } else if (sel_streq(name, "figcaption")) {
                 ti = sel_ensure_nl(txt, tlink, ti, len, 1);   // the caption sits on its own line under the figure content, sharing the figure's indent
+                if (!close) {                                 // text-align:center|right on the <figcaption> aligns its caption line
+                    uint32_t fte = j; while (fte < len && body[fte] != '>') fte++;
+                    char fstyle[80] = {0}, fal[16] = {0};
+                    extract_attr(body, j, fte, "style", fstyle, sizeof(fstyle));
+                    if (fstyle[0]) sel_css_get(fstyle, "text-align", fal, sizeof(fal));
+                    if      (sel_ci_streq(fal, "center")) cur_align = 1;
+                    else if (sel_ci_streq(fal, "right"))  cur_align = 2;
+                } else cur_align = 0;                         // restore left alignment once the caption ends
                 last_space = 1;
             } else if (!close && sel_streq(name, "dd")) {
                 ti = sel_ensure_nl(txt, tlink, ti, len, 1);          // <dd>: the description on its own line, indented under its <dt> term
