@@ -807,8 +807,8 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
     int qmark_depth = 0;                                      // <q> nesting: level 0 uses ", level 1 uses ', alternating
     struct { uint8_t ordered; uint16_t counter; uint8_t type; } liststk[SEL_LIST_MAXDEPTH];  // <ul>/<ol> nesting (+ list-style-type)
     int listdepth = 0;                                        // 0 = not in a list
-    int cur_color = 0, cur_bg = 0, cur_bold = 0, cur_ul = 0, cur_st = 0, cur_align = 0, cur_du = 0, cur_vo = 0;  // +text-align, +dotted-underline (<abbr>), +vert-offset (<sub>/<sup>)
-    struct { char tag[16]; uint8_t color, bg, bold, ul, st, al, du, vo; } colstk[16];  // style stack: push a styled open, pop its close
+    int cur_color = 0, cur_bg = 0, cur_bold = 0, cur_ul = 0, cur_st = 0, cur_align = 0, cur_du = 0, cur_vo = 0, cur_tt = 0;  // +text-align, +dotted-underline (<abbr>), +vert-offset (<sub>/<sup>), +text-transform
+    struct { char tag[16]; uint8_t color, bg, bold, ul, st, al, du, vo, tt; } colstk[16];  // style stack: push a styled open, pop its close
     int coldepth = 0;
     for (uint32_t i = 0; i < len && ti < len; ) {
         char c = (char)body[i];
@@ -859,11 +859,12 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                         cur_align = coldepth > 0 ? colstk[coldepth - 1].al    : 0;
                         cur_du    = coldepth > 0 ? colstk[coldepth - 1].du    : 0;
                         cur_vo    = coldepth > 0 ? colstk[coldepth - 1].vo    : 0;
+                        cur_tt    = coldepth > 0 ? colstk[coldepth - 1].tt    : 0;
                     }
                 } else if (!(sel_streq(name,"br")||sel_streq(name,"hr")||sel_streq(name,"img")||
                              sel_streq(name,"input")||sel_streq(name,"meta")||sel_streq(name,"link"))) {
                     char stylev[160]; extract_attr(body, j, cte, "style", stylev, sizeof(stylev));
-                    char cval[40] = {0}, bval[40] = {0}, wval[24] = {0}, dval[24] = {0}, aval[16] = {0};
+                    char cval[40] = {0}, bval[40] = {0}, wval[24] = {0}, dval[24] = {0}, aval[16] = {0}, tval[20] = {0};
                     if (stylev[0]) {
                         sel_css_get(stylev, "color", cval, sizeof(cval));
                         if (!sel_css_get(stylev, "background-color", bval, sizeof(bval)))
@@ -871,11 +872,12 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                         sel_css_get(stylev, "font-weight", wval, sizeof(wval));
                         sel_css_get(stylev, "text-decoration", dval, sizeof(dval));
                         sel_css_get(stylev, "text-align", aval, sizeof(aval));
+                        sel_css_get(stylev, "text-transform", tval, sizeof(tval));
                     }
                     if (!cval[0] && sel_streq(name, "font")) extract_attr(body, j, cte, "color",   cval, sizeof(cval));
                     if (!bval[0] && sel_streq(name, "font")) extract_attr(body, j, cte, "bgcolor", bval, sizeof(bval));
                     uint32_t rgb;
-                    uint8_t nfg = (uint8_t)cur_color, nbg = (uint8_t)cur_bg, nbold = (uint8_t)cur_bold, nul = (uint8_t)cur_ul, nst = (uint8_t)cur_st, nal = (uint8_t)cur_align, ndu = (uint8_t)cur_du, nvo = (uint8_t)cur_vo;  // inherit unless overridden
+                    uint8_t nfg = (uint8_t)cur_color, nbg = (uint8_t)cur_bg, nbold = (uint8_t)cur_bold, nul = (uint8_t)cur_ul, nst = (uint8_t)cur_st, nal = (uint8_t)cur_align, ndu = (uint8_t)cur_du, nvo = (uint8_t)cur_vo, ntt = (uint8_t)cur_tt;  // inherit unless overridden
                     int set = 0;
                     if (cval[0] && sel_parse_css_color(cval, &rgb)) { uint8_t x = sel_intern_color(s, rgb); if (x) { nfg = x; set = 1; } }
                     if (bval[0] && sel_parse_css_color(bval, &rgb)) { uint8_t x = sel_intern_color(s, rgb); if (x) { nbg = x; set = 1; } }
@@ -915,11 +917,17 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                         else if (sel_ci_streq(aval,"right")) { nal = 2; set = 1; }
                         else if (sel_ci_streq(aval,"left") || sel_ci_streq(aval,"justify")) { nal = 0; set = 1; }
                     }
+                    if (tval[0]) {                                        // text-transform: uppercase / lowercase / capitalize / none
+                        if (sel_ci_streq(tval,"uppercase"))       { ntt = 1; set = 1; }
+                        else if (sel_ci_streq(tval,"lowercase"))  { ntt = 2; set = 1; }
+                        else if (sel_ci_streq(tval,"capitalize")) { ntt = 3; set = 1; }
+                        else if (sel_ci_streq(tval,"none"))       { ntt = 0; set = 1; }
+                    }
                     if (set && coldepth < 16) {
                         strncpy(colstk[coldepth].tag, name, 15); colstk[coldepth].tag[15] = '\0';
                         colstk[coldepth].color = nfg; colstk[coldepth].bg = nbg; colstk[coldepth].bold = nbold;
-                        colstk[coldepth].ul = nul; colstk[coldepth].st = nst; colstk[coldepth].al = nal; colstk[coldepth].du = ndu; colstk[coldepth].vo = nvo; coldepth++;
-                        cur_color = nfg; cur_bg = nbg; cur_bold = nbold; cur_ul = nul; cur_st = nst; cur_align = nal; cur_du = ndu; cur_vo = nvo;
+                        colstk[coldepth].ul = nul; colstk[coldepth].st = nst; colstk[coldepth].al = nal; colstk[coldepth].du = ndu; colstk[coldepth].vo = nvo; colstk[coldepth].tt = ntt; coldepth++;
+                        cur_color = nfg; cur_bg = nbg; cur_bold = nbold; cur_ul = nul; cur_st = nst; cur_align = nal; cur_du = ndu; cur_vo = nvo; cur_tt = ntt;
                     }
                 }
             }
@@ -1198,7 +1206,9 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                 for (uint32_t k = 0; k < el && ti < len; k++) {
                     char dec = eb[k];
                     if (dec == ' ') { if (pre_mode || !last_space) { txt[ti] = ' '; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; tcolor[ti] = (uint8_t)cur_color; tbgcol[ti] = (uint8_t)cur_bg; tbold[ti] = (uint8_t)(cur_bold | (cur_ul << 1) | (cur_st << 2) | (cur_du << 3) | (cur_vo << 4)); talign[ti] = (uint8_t)cur_align; tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 1; } }
-                    else { if (cur_hd && dec >= 'a' && dec <= 'z') dec -= 32; txt[ti] = dec; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; tcolor[ti] = (uint8_t)cur_color; tbgcol[ti] = (uint8_t)cur_bg; tbold[ti] = (uint8_t)(cur_bold | (cur_ul << 1) | (cur_st << 2) | (cur_du << 3) | (cur_vo << 4)); talign[ti] = (uint8_t)cur_align; tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 0; }
+                    else { if (cur_hd && dec >= 'a' && dec <= 'z') dec -= 32;
+                        if (cur_tt == 1 && dec >= 'a' && dec <= 'z') dec -= 32; else if (cur_tt == 2 && dec >= 'A' && dec <= 'Z') dec += 32; else if (cur_tt == 3 && last_space && dec >= 'a' && dec <= 'z') dec -= 32;
+                        txt[ti] = dec; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; tcolor[ti] = (uint8_t)cur_color; tbgcol[ti] = (uint8_t)cur_bg; tbold[ti] = (uint8_t)(cur_bold | (cur_ul << 1) | (cur_st << 2) | (cur_du << 3) | (cur_vo << 4)); talign[ti] = (uint8_t)cur_align; tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 0; }
                 }
                 i += adv;
             } else { txt[ti] = '&'; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; tcolor[ti] = (uint8_t)cur_color; tbgcol[ti] = (uint8_t)cur_bg; tbold[ti] = (uint8_t)(cur_bold | (cur_ul << 1) | (cur_st << 2) | (cur_du << 3) | (cur_vo << 4)); talign[ti] = (uint8_t)cur_align; tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 0; i++; }
@@ -1220,6 +1230,9 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
             continue;
         }
         if (cur_hd && c >= 'a' && c <= 'z') c -= 32;          // upper-case h1/h2 text
+        if (cur_tt == 1 && c >= 'a' && c <= 'z') c -= 32;                        // text-transform: uppercase
+        else if (cur_tt == 2 && c >= 'A' && c <= 'Z') c += 32;                   // text-transform: lowercase
+        else if (cur_tt == 3 && last_space && c >= 'a' && c <= 'z') c -= 32;     // text-transform: capitalize (word start)
         pre_skip_nl = 0;                                       // real content: a later <pre> newline is significant
         txt[ti] = c; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; tcolor[ti] = (uint8_t)cur_color; tbgcol[ti] = (uint8_t)cur_bg; tbold[ti] = (uint8_t)(cur_bold | (cur_ul << 1) | (cur_st << 2) | (cur_du << 3) | (cur_vo << 4)); talign[ti] = (uint8_t)cur_align; tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 0; i++;
     }
