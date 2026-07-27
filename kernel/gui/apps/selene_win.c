@@ -491,9 +491,12 @@ static int sel_ci_streq(const char* a, const char* b);
 
 // Parse the table in body[ts..te) and emit it, aligned, into the text stream at *pti. has_border=1
 // draws the boxed +--+ rules and | separators; has_border=0 (border="0"/style border:none) lays the
-// same aligned columns out spaced apart, with no rules or pipes.
+// same aligned columns out spaced apart, with no rules or pipes. cellpad is the HTML cellpadding
+// (spaces of horizontal breathing room inside each cell, per side; default 1 keeps the old layout).
 static void render_table(const uint8_t* body, uint32_t ts, uint32_t te,
-                         char* txt, uint8_t* tlink, uint8_t* tfield, uint32_t* pti, uint32_t cap, int has_border) {
+                         char* txt, uint8_t* tlink, uint8_t* tfield, uint32_t* pti, uint32_t cap,
+                         int has_border, int cellpad) {
+    int pad = cellpad < 0 ? 0 : (cellpad > 8 ? 8 : cellpad);   // cellpadding: spaces INSIDE each cell, per side (default 1 == unchanged)
     sel_tcell_t* cells = (sel_tcell_t*)kmalloc(SEL_TBL_MAXCELLS * sizeof(sel_tcell_t));
     if (!cells) return;
     uint8_t* occ = (uint8_t*)kmalloc(SEL_TBL_MAXROWS * SEL_TBL_MAXCOLS);   // grid: 1 = covered by a span
@@ -567,7 +570,7 @@ static void render_table(const uint8_t* body, uint32_t ts, uint32_t te,
         char cb[SEL_TBL_ROWCAP + 2];
         int need = sel_cell_text(body, cells[m].s, cells[m].e, cb, sizeof(cb), cells[m].th);
         if (need > SEL_TBL_ROWCAP) need = SEL_TBL_ROWCAP;
-        int span = 3 * (cs - 1); for (int k = 0; k < cs; k++) span += colw[c0 + k];
+        int span = (2 * pad + 1) * (cs - 1); for (int k = 0; k < cs; k++) span += colw[c0 + k];
         while (span < need) {
             int bumped = 0;
             for (int k = 0; k < cs && span < need; k++) if (colw[c0 + k] < SEL_TBL_COLCAP) { colw[c0 + k]++; span++; bumped = 1; }
@@ -575,7 +578,7 @@ static void render_table(const uint8_t* body, uint32_t ts, uint32_t te,
         }
     }
 
-    int total = 1; for (int c = 0; c < ncols; c++) total += colw[c] + 3;   // "|" + per col " x |"
+    int total = 1; for (int c = 0; c < ncols; c++) total += colw[c] + 2 * pad + 1;   // "|" + per col (pad + x + pad + "|")
     while (total > SEL_TBL_ROWCAP) {                                    // shrink widest column until it fits
         int mx = -1, mi = 0; for (int c = 0; c < ncols; c++) if (colw[c] > mx) { mx = colw[c]; mi = c; }
         if (mx <= 3) break;
@@ -585,7 +588,7 @@ static void render_table(const uint8_t* body, uint32_t ts, uint32_t te,
     // Build a horizontal rule "+----+---+" once (reused for top / header sep / bottom).
     char rule[SEL_LINE_COLS]; { int p = 0; rule[p++] = '+';
         for (int c = 0; c < ncols && p < SEL_LINE_COLS - 2; c++) {
-            for (int z = 0; z < colw[c] + 2 && p < SEL_LINE_COLS - 2; z++) rule[p++] = '-';
+            for (int z = 0; z < colw[c] + 2 * pad && p < SEL_LINE_COLS - 2; z++) rule[p++] = '-';
             rule[p++] = '+'; } rule[p] = '\0'; }
 
     *pti = sel_ensure_nl(txt, tlink, *pti, cap, 2);
@@ -638,18 +641,20 @@ static void render_table(const uint8_t* body, uint32_t ts, uint32_t te,
             for (int m = 0; m < ncells; m++) if (cells[m].row == r && cells[m].col == c) { found = m; break; }
             if (found >= 0) {                                          // a cell starts here — draw across its cspan
                 int cs = cells[found].cspan; if (c + cs > ncols) cs = ncols - c;
-                int spanw = 3 * (cs - 1); for (int k = 0; k < cs; k++) spanw += colw[c + k];
+                int spanw = (2 * pad + 1) * (cs - 1); for (int k = 0; k < cs; k++) spanw += colw[c + k];
                 char cb[SEL_TBL_ROWCAP + 2];
                 int w = sel_cell_text(body, cells[found].s, cells[found].e, cb, spanw + 1, cells[found].th);
-                line[p++] = ' ';
+                for (int pp = 0; pp < pad && p < SEL_LINE_COLS - 2; pp++) line[p++] = ' ';   // left cellpadding
                 int z = 0; for (; z < w && z < spanw && p < SEL_LINE_COLS - 2; z++) line[p++] = cb[z];
                 for (; z < spanw && p < SEL_LINE_COLS - 2; z++) line[p++] = ' ';
-                line[p++] = ' '; line[p++] = bch;
+                for (int pp = 0; pp < pad && p < SEL_LINE_COLS - 2; pp++) line[p++] = ' ';   // right cellpadding
+                line[p++] = bch;
                 c += cs;
             } else {                                                  // empty, or covered by a span — blank column
-                line[p++] = ' ';
+                for (int pp = 0; pp < pad && p < SEL_LINE_COLS - 2; pp++) line[p++] = ' ';   // left cellpadding
                 for (int z = 0; z < colw[c] && p < SEL_LINE_COLS - 2; z++) line[p++] = ' ';
-                line[p++] = ' '; line[p++] = bch;
+                for (int pp = 0; pp < pad && p < SEL_LINE_COLS - 2; pp++) line[p++] = ' ';   // right cellpadding
+                line[p++] = bch;
                 c += 1;
             }
         }
@@ -1108,6 +1113,9 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                   if (tb[0]) { int allz = 1; for (const char* q = tb; *q; q++) if (*q != '0') { allz = 0; break; } if (allz) has_border = 0; }
                   extract_attr(body, j, inner, "style", tsty, sizeof(tsty));
                   if (tsty[0] && sel_css_get(tsty, "border", bv, sizeof(bv)) && (sel_ci_streq(bv, "none") || bv[0] == '0')) has_border = 0; }
+                int cellpad = 1;                               // HTML cellpadding: spaces inside each cell per side (default 1)
+                { char cp[8] = {0}; extract_attr(body, j, inner, "cellpadding", cp, sizeof(cp));
+                  if (cp[0]) { int v = 0; for (const char* q = cp; *q >= '0' && *q <= '9'; q++) v = v * 10 + (*q - '0'); if (v >= 0 && v <= 8) cellpad = v; } }
                 int depth = 1; uint32_t k = inner, innerEnd = len;  // match the closing </table> (nesting-aware)
                 while (k < len) {
                     if (body[k] == '<') { int c4; uint32_t p4;
@@ -1117,7 +1125,7 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                             k = p4; continue; } }
                     k++;
                 }
-                render_table(body, inner, innerEnd, txt, tlink, tfield, &ti, len, has_border);
+                render_table(body, inner, innerEnd, txt, tlink, tfield, &ti, len, has_border, cellpad);
                 last_space = 1;
                 i = k; continue;
             }
