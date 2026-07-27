@@ -149,6 +149,14 @@ static uint32_t ext2_now(void) {
 }
 
 static int read_block_group_bgd(uint32_t group, ext2_bgd_t* bgd) {
+    // Reject an out-of-range group before deriving a disk location from it. Every inode
+    // path (ext2_read_inode / ext2_write_inode / ext2_free_inode) computes
+    // group = (ino-1)/inodes_per_group from an inode number that ultimately comes off an
+    // on-disk directory entry — untrusted on a corrupt or hostile image — so a bogus inode
+    // number would otherwise read (and on the write/free paths, write) a block-group
+    // descriptor at an arbitrary block far outside the BGD table. block_groups is the fixed
+    // FS geometry computed once at mount; a real inode always lands in [0, block_groups).
+    if (group >= ext2_fs.block_groups) return -1;
     uint32_t bgd_per_block = ext2_fs.block_size / sizeof(ext2_bgd_t);
     uint32_t bgd_block_offset = group / bgd_per_block;
     uint32_t bgd_in_block = group % bgd_per_block;
@@ -205,8 +213,8 @@ int ext2_mount(uint8_t drive, uint32_t part_lba) {
     else
         ext2_fs.bgd_block = 1;
 
-    uint32_t block_groups = (ext2_fs.sb.total_blocks + ext2_fs.blocks_per_group - 1) / ext2_fs.blocks_per_group;
-    uint32_t bgd_size = block_groups * sizeof(ext2_bgd_t);
+    ext2_fs.block_groups = (ext2_fs.sb.total_blocks + ext2_fs.blocks_per_group - 1) / ext2_fs.blocks_per_group;
+    uint32_t bgd_size = ext2_fs.block_groups * sizeof(ext2_bgd_t);
     ext2_fs.bgd_blocks = (bgd_size + ext2_fs.block_size - 1) / ext2_fs.block_size;
 
     return 0;

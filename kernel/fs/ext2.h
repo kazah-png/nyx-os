@@ -112,6 +112,7 @@ typedef struct {
     uint32_t bgd_blocks;
     uint32_t bgd_block;
     uint32_t inode_size;
+    uint32_t block_groups;      // number of block groups; bounds every group index (v5.9.118)
 } ext2_fs_t;
 
 extern ext2_fs_t ext2_fs;
