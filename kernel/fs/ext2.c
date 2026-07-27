@@ -597,6 +597,16 @@ int ext2_write_file(const char* path, const void* buf, uint32_t len) {
     // Calculate how many blocks needed
     uint32_t blocks_needed = (len + ext2_fs.block_size - 1) / ext2_fs.block_size;
 
+    // The writer only maps up to single-indirect (12 direct + one indirect block of
+    // pointers); it has no double-indirect path (the else-branch in the loop returns -1).
+    // Reject a too-large file HERE, before allocating anything, so a doomed write fails
+    // cleanly instead of allocating ~268 blocks, hitting the double-indirect wall mid-loop,
+    // and LEAKING them: the loop's early `return -1` never writes the inode back, so those
+    // blocks stay marked used in the bitmap while owned by no inode — e2fsck then reports
+    // block-bitmap differences (a `cp` of a >single-indirect file did exactly this).
+    // (block_size/4 is the pointers-per-block; kept inline so it doesn't shadow the loop's.)
+    if (blocks_needed > 12 + ext2_fs.block_size / 4) return -1;
+
     // Write data block by block
     const uint8_t* data = (const uint8_t*)buf;
     uint32_t remaining = len;
