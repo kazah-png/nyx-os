@@ -719,6 +719,23 @@ static int sel_hexv(char c) {
     return -1;
 }
 
+// Parse a CSS text-indent length into whole character cells (one cell = FONT_WIDTH = 8px). Supports
+// "Npx" (or a unitless number, treated as px) and "Nem"/"Nrem" (1em ~= the 16px font = 2 cells). A
+// fractional part is ignored and a negative indent clamps to 0 (Selene never hangs text left of the margin).
+static int sel_parse_indent(const char* v) {
+    while (*v == ' ') v++;
+    if (*v == '-') return 0;
+    int n = 0; while (*v >= '0' && *v <= '9') { n = n * 10 + (*v - '0'); v++; }
+    if (*v == '.') { v++; while (*v >= '0' && *v <= '9') v++; }   // ignore any fractional part
+    while (*v == ' ') v++;
+    int cells;
+    if      (v[0] == 'e' && v[1] == 'm')                 cells = n * 2;   // em  -> 2 cells (16px)
+    else if (v[0] == 'r' && v[1] == 'e' && v[2] == 'm')  cells = n * 2;   // rem -> 2 cells
+    else                                                 cells = (n + 4) / 8;   // px (or unitless): round to nearest cell
+    if (cells > 40) cells = 40;                          // never exceed the wrap width
+    return cells;
+}
+
 // Parse a CSS colour value (#rgb, #rrggbb, or a common named colour) into 0xRRGGBB. 1 on success.
 static int sel_parse_css_color(const char* v, uint32_t* rgb) {
     while (*v == ' ') v++;
@@ -1237,6 +1254,19 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                 last_space = 1;
             } else if (is_block_tag(name)) {
                 ti = sel_ensure_nl(txt, tlink, ti, len, 2);
+                if (!close) {                                         // CSS text-indent: indent this block's FIRST line only
+                    uint32_t bte = j; while (bte < len && body[bte] != '>') bte++;
+                    char bstyle[160] = {0}, tiv[24] = {0};
+                    extract_attr(body, j, bte, "style", bstyle, sizeof(bstyle));
+                    if (bstyle[0] && sel_css_get(bstyle, "text-indent", tiv, sizeof(tiv))) {
+                        int cells = sel_parse_indent(tiv);              // leading spaces at a hard line start survive wrap_text
+                        for (int d = 0; d < cells && ti < len; d++) {   // (bol=1), and are dropped on soft-wrapped continuations
+                            txt[ti] = ' '; tlink[ti] = 0; tfield[ti] = 0; timg[ti] = 0;
+                            tcolor[ti] = (uint8_t)cur_color; tbgcol[ti] = (uint8_t)cur_bg; tbold[ti] = 0;
+                            talign[ti] = (uint8_t)cur_align; trule[ti] = 0; tindent[ti] = (uint8_t)quote_depth; ti++;
+                        }
+                    }
+                }
                 last_space = 1;
             }
             i = j;
