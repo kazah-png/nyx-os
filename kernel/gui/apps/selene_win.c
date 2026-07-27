@@ -100,7 +100,7 @@ typedef struct {
     // Both index the same per-page, deduped palette.
     uint8_t (*color_of)[SEL_LINE_COLS];
     uint8_t (*bgcolor_of)[SEL_LINE_COLS];
-    uint8_t (*bold_of)[SEL_LINE_COLS]; // per-char text-style flags: bit0 = bold (<b>/<strong>/font-weight), bit1 = underline (<u>/text-decoration)
+    uint8_t (*bold_of)[SEL_LINE_COLS]; // per-char text-style flags: bit0=bold, bit1=underline, bit2=line-through (<b>/<u>/<s>/<del>/style)
     uint32_t palette[255];             // framebuffer pixel values, index 0 => palette id 1
     int  npalette;
     // base for resolving relative links (from the loaded URL)
@@ -774,8 +774,8 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
     int quote_depth = 0;                                      // <blockquote> nesting (left margin level)
     struct { uint8_t ordered; uint16_t counter; } liststk[SEL_LIST_MAXDEPTH];  // <ul>/<ol> nesting
     int listdepth = 0;                                        // 0 = not in a list
-    int cur_color = 0, cur_bg = 0, cur_bold = 0, cur_ul = 0; // inline-CSS fg/bg indices + bold + underline in effect
-    struct { char tag[16]; uint8_t color, bg, bold, ul; } colstk[16];  // style stack: push a styled open, pop its close
+    int cur_color = 0, cur_bg = 0, cur_bold = 0, cur_ul = 0, cur_st = 0;  // fg/bg + bold + underline + strike in effect
+    struct { char tag[16]; uint8_t color, bg, bold, ul, st; } colstk[16];  // style stack: push a styled open, pop its close
     int coldepth = 0;
     for (uint32_t i = 0; i < len && ti < len; ) {
         char c = (char)body[i];
@@ -822,6 +822,7 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                         cur_bg    = coldepth > 0 ? colstk[coldepth - 1].bg    : 0;
                         cur_bold  = coldepth > 0 ? colstk[coldepth - 1].bold  : 0;
                         cur_ul    = coldepth > 0 ? colstk[coldepth - 1].ul    : 0;
+                        cur_st    = coldepth > 0 ? colstk[coldepth - 1].st    : 0;
                     }
                 } else if (!(sel_streq(name,"br")||sel_streq(name,"hr")||sel_streq(name,"img")||
                              sel_streq(name,"input")||sel_streq(name,"meta")||sel_streq(name,"link"))) {
@@ -837,7 +838,7 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                     if (!cval[0] && sel_streq(name, "font")) extract_attr(body, j, cte, "color",   cval, sizeof(cval));
                     if (!bval[0] && sel_streq(name, "font")) extract_attr(body, j, cte, "bgcolor", bval, sizeof(bval));
                     uint32_t rgb;
-                    uint8_t nfg = (uint8_t)cur_color, nbg = (uint8_t)cur_bg, nbold = (uint8_t)cur_bold, nul = (uint8_t)cur_ul;  // inherit unless overridden
+                    uint8_t nfg = (uint8_t)cur_color, nbg = (uint8_t)cur_bg, nbold = (uint8_t)cur_bold, nul = (uint8_t)cur_ul, nst = (uint8_t)cur_st;  // inherit unless overridden
                     int set = 0;
                     if (cval[0] && sel_parse_css_color(cval, &rgb)) { uint8_t x = sel_intern_color(s, rgb); if (x) { nfg = x; set = 1; } }
                     if (bval[0] && sel_parse_css_color(bval, &rgb)) { uint8_t x = sel_intern_color(s, rgb); if (x) { nbg = x; set = 1; } }
@@ -850,15 +851,17 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                                  sel_ci_streq(wval,"500")) { nbold = 0; set = 1; }
                     }
                     if (sel_streq(name,"u")) { nul = 1; set = 1; }                                   // <u> = underline
+                    if (sel_streq(name,"s") || sel_streq(name,"strike") || sel_streq(name,"del")) { nst = 1; set = 1; }  // = line-through
                     if (dval[0]) {                                                                    // text-decoration
-                        if (sel_ci_streq(dval,"underline")) { nul = 1; set = 1; }
-                        else if (sel_ci_streq(dval,"none")) { nul = 0; set = 1; }
+                        if (sel_ci_streq(dval,"underline"))         { nul = 1; set = 1; }
+                        else if (sel_ci_streq(dval,"line-through")) { nst = 1; set = 1; }
+                        else if (sel_ci_streq(dval,"none"))         { nul = 0; nst = 0; set = 1; }
                     }
                     if (set && coldepth < 16) {
                         strncpy(colstk[coldepth].tag, name, 15); colstk[coldepth].tag[15] = '\0';
                         colstk[coldepth].color = nfg; colstk[coldepth].bg = nbg; colstk[coldepth].bold = nbold;
-                        colstk[coldepth].ul = nul; coldepth++;
-                        cur_color = nfg; cur_bg = nbg; cur_bold = nbold; cur_ul = nul;
+                        colstk[coldepth].ul = nul; colstk[coldepth].st = nst; coldepth++;
+                        cur_color = nfg; cur_bg = nbg; cur_bold = nbold; cur_ul = nul; cur_st = nst;
                     }
                 }
             }
@@ -1070,11 +1073,11 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
             if (decode_entity(body + i, len - i, eb, sizeof(eb), &el, &adv)) {
                 for (uint32_t k = 0; k < el && ti < len; k++) {
                     char dec = eb[k];
-                    if (dec == ' ') { if (pre_mode || !last_space) { txt[ti] = ' '; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; tcolor[ti] = (uint8_t)cur_color; tbgcol[ti] = (uint8_t)cur_bg; tbold[ti] = (uint8_t)(cur_bold | (cur_ul << 1)); tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 1; } }
-                    else { if (cur_hd && dec >= 'a' && dec <= 'z') dec -= 32; txt[ti] = dec; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; tcolor[ti] = (uint8_t)cur_color; tbgcol[ti] = (uint8_t)cur_bg; tbold[ti] = (uint8_t)(cur_bold | (cur_ul << 1)); tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 0; }
+                    if (dec == ' ') { if (pre_mode || !last_space) { txt[ti] = ' '; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; tcolor[ti] = (uint8_t)cur_color; tbgcol[ti] = (uint8_t)cur_bg; tbold[ti] = (uint8_t)(cur_bold | (cur_ul << 1) | (cur_st << 2)); tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 1; } }
+                    else { if (cur_hd && dec >= 'a' && dec <= 'z') dec -= 32; txt[ti] = dec; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; tcolor[ti] = (uint8_t)cur_color; tbgcol[ti] = (uint8_t)cur_bg; tbold[ti] = (uint8_t)(cur_bold | (cur_ul << 1) | (cur_st << 2)); tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 0; }
                 }
                 i += adv;
-            } else { txt[ti] = '&'; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; tcolor[ti] = (uint8_t)cur_color; tbgcol[ti] = (uint8_t)cur_bg; tbold[ti] = (uint8_t)(cur_bold | (cur_ul << 1)); tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 0; i++; }
+            } else { txt[ti] = '&'; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; tcolor[ti] = (uint8_t)cur_color; tbgcol[ti] = (uint8_t)cur_bg; tbold[ti] = (uint8_t)(cur_bold | (cur_ul << 1) | (cur_st << 2)); tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 0; i++; }
             continue;
         }
         if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
@@ -1083,18 +1086,18 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                 if (c == '\n') {
                     if (pre_skip_nl) { pre_skip_nl = 0; i++; continue; }   // swallow the single newline after <pre>
                     txt[ti] = '\n'; tlink[ti] = 0; tfield[ti] = 0; tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 1;
-                } else if (c == '\t') { pre_skip_nl = 0; for (int q = 0; q < SEL_PRE_TAB && ti < len; q++) { txt[ti]=' '; tlink[ti]=(uint8_t)cur_link; tfield[ti]=0; tcolor[ti]=(uint8_t)cur_color; tbgcol[ti]=(uint8_t)cur_bg; tbold[ti]=(uint8_t)(cur_bold|(cur_ul<<1)); tindent[ti]=(uint8_t)quote_depth; ti++; } last_space = 0; }
-                else { pre_skip_nl = 0; txt[ti] = ' '; tlink[ti] = (uint8_t)cur_link; tfield[ti] = 0; tcolor[ti] = (uint8_t)cur_color; tbgcol[ti] = (uint8_t)cur_bg; tbold[ti] = (uint8_t)(cur_bold | (cur_ul << 1)); tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 0; }
+                } else if (c == '\t') { pre_skip_nl = 0; for (int q = 0; q < SEL_PRE_TAB && ti < len; q++) { txt[ti]=' '; tlink[ti]=(uint8_t)cur_link; tfield[ti]=0; tcolor[ti]=(uint8_t)cur_color; tbgcol[ti]=(uint8_t)cur_bg; tbold[ti]=(uint8_t)(cur_bold|(cur_ul<<1)|(cur_st<<2)); tindent[ti]=(uint8_t)quote_depth; ti++; } last_space = 0; }
+                else { pre_skip_nl = 0; txt[ti] = ' '; tlink[ti] = (uint8_t)cur_link; tfield[ti] = 0; tcolor[ti] = (uint8_t)cur_color; tbgcol[ti] = (uint8_t)cur_bg; tbold[ti] = (uint8_t)(cur_bold | (cur_ul << 1) | (cur_st << 2)); tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 0; }
                 i++;
                 continue;
             }
-            if (!last_space) { txt[ti] = ' '; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; tcolor[ti] = (uint8_t)cur_color; tbgcol[ti] = (uint8_t)cur_bg; tbold[ti] = (uint8_t)(cur_bold | (cur_ul << 1)); tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 1; }
+            if (!last_space) { txt[ti] = ' '; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; tcolor[ti] = (uint8_t)cur_color; tbgcol[ti] = (uint8_t)cur_bg; tbold[ti] = (uint8_t)(cur_bold | (cur_ul << 1) | (cur_st << 2)); tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 1; }
             i++;
             continue;
         }
         if (cur_hd && c >= 'a' && c <= 'z') c -= 32;          // upper-case h1/h2 text
         pre_skip_nl = 0;                                       // real content: a later <pre> newline is significant
-        txt[ti] = c; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; tcolor[ti] = (uint8_t)cur_color; tbgcol[ti] = (uint8_t)cur_bg; tbold[ti] = (uint8_t)(cur_bold | (cur_ul << 1)); tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 0; i++;
+        txt[ti] = c; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; tcolor[ti] = (uint8_t)cur_color; tbgcol[ti] = (uint8_t)cur_bg; tbold[ti] = (uint8_t)(cur_bold | (cur_ul << 1) | (cur_st << 2)); tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 0; i++;
     }
     txt[ti] = '\0';
     wrap_text(s, txt, tlink, tfield, timg, tcolor, tbgcol, tbold, tindent, ti);
@@ -1740,6 +1743,7 @@ void selene_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
                 font_draw_string(rx, py, sub, fg, bg);
                 if (bd & 1) font_draw_string_trans(rx + 1, py, sub, fg);   // bit0: synthetic bold (2nd glyph pass, +1px)
                 if (bd & 2) fb_fill_rect(rx, py + FONT_HEIGHT - 1, (uint32_t)((b1 - b0) * FONT_WIDTH), 1, fg);  // bit1: underline
+                if (bd & 4) fb_fill_rect(rx, py + FONT_HEIGHT / 2, (uint32_t)((b1 - b0) * FONT_WIDTH), 1, fg);  // bit2: line-through
                 b0 = b1;
             }
         }
