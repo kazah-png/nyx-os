@@ -127,6 +127,7 @@ static void cmd_pong(int argc, char** argv);
 static void cmd_snake(int argc, char** argv);
 static void cmd_tetris(int argc, char** argv);
 static void cmd_selene(int argc, char** argv);
+static void cmd_imageview(int argc, char** argv);
 static void cmd_jobs(int argc, char** argv);
 static void cmd_wait(int argc, char** argv);
 static void cmd_nice(int argc, char** argv);
@@ -233,6 +234,7 @@ static const command_t commands[] = {
     {"snake",     cmd_snake,     "Play Snake (arrows/WASD)", false},
     {"tetris",    cmd_tetris,    "Play Tetris (arrows, Space=drop)", false},
     {"selene",    cmd_selene,    "Open Selene, the web browser", false},
+    {"imageview", cmd_imageview, "View an image (PNG/BMP/GIF/JPEG): imageview <path>", false},
     {"jobs",      cmd_jobs,      "List background jobs", false},
     {"wait",      cmd_wait,      "Wait for background jobs: wait [pid]", false},
     {"nice",      cmd_nice,      "Spawn ELF at a scheduler weight: nice <weight> <file>", false},
@@ -1014,6 +1016,14 @@ static void cmd_tetris(int argc, char** argv) {
 static void cmd_selene(int argc, char** argv) {
     (void)argc; (void)argv;
     launch_selene();
+}
+
+static void cmd_imageview(int argc, char** argv) {
+    launch_imageview(argc >= 2 ? argv[1] : NULL);
+    if (argc >= 2)
+        printf("[imageview] opening %s\n", argv[1]);
+    else
+        printf("[imageview] opened (test pattern; pass a path, e.g. imageview /mnt/pic.gif)\n");
 }
 
 static void cmd_spawn(int argc, char** argv) {

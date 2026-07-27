@@ -1044,6 +1044,22 @@ void launch_selene(void) {
     selene_first_load(w);      // fetches the main page (blocks briefly); images stream in via the tick
 }
 
+// Open the Image Viewer, optionally on a file. Mirrors launch_selene: a centred window wired for
+// keyboard + the animated-GIF tick + close cleanup, then loads `path` (PNG/BMP/GIF/JPEG) if given.
+void launch_imageview(const char* path) {
+    int px = ((int)fb_get_width()  - 540) / 2;            if (px < 0) px = 0;
+    int py = ((int)fb_get_height() - 420 - TITLE_H) / 2;  if (py < 0) py = 0;
+    window_t* w = window_create(px, py, 540, 420, "Image Viewer", imageview_win_draw);
+    if (!w) return;
+    w->reserved = imageview_create_ctx();
+    if (!w->reserved) { window_destroy(w->id); return; }
+    w->on_key   = imageview_win_key;
+    w->on_tick  = imageview_win_tick;    // animated-GIF playback
+    w->on_close = imageview_win_close;   // free decoded pixels / GIF frames on close
+    if (path && path[0])
+        imageview_open_file((imageview_win_t*)w->reserved, path);
+}
+
 // Open the "Games" desktop folder — a window listing Minesweeper, DOOM and Pong as
 // clickable emblems (games_win.c). Its click handler calls the three launchers above.
 void launch_games_folder(void) {
@@ -1082,6 +1098,8 @@ static void do_start_menu_action(int idx) {
                     iwin->reserved = imageview_create_ctx();
                     if (iwin->reserved) {
                         iwin->on_key = imageview_win_key;
+                        iwin->on_tick = imageview_win_tick;    // drive animated-GIF playback
+                        iwin->on_close = imageview_win_close;  // free decoded pixels / GIF frames
                     }
                 }
             }
@@ -1490,6 +1508,8 @@ void window_destroy(int id) {
     for (int i = 0; i < MAX_WINDOWS; i++)
         if (windows[i] == win) { windows[i] = NULL; break; }
     window_count--;
+    if (win->on_close)          // let the app release ctx sub-allocations while `reserved` is still valid
+        win->on_close(win);
     if (win->reserved)
         kfree(win->reserved);
     kfree(win);
