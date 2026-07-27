@@ -615,13 +615,20 @@ static void render_table(const uint8_t* body, uint32_t ts, uint32_t te,
             { uint32_t k = i + 1; while (k < te && body[k] != '>') k++; if (k < te) k++; i = k; }   // skip other tag
         }
         if (have_cap) {
-            char cstyle[80] = {0}, csv[24] = {0};                        // caption-side lives on the <caption> tag
+            char cstyle[80] = {0}, csv[24] = {0}, calign[16] = {0};      // caption-side + text-align live on the <caption> tag
             extract_attr(body, ctag, cs, "style", cstyle, sizeof(cstyle));
-            if (cstyle[0] && sel_css_get(cstyle, "caption-side", csv, sizeof(csv)) && sel_ci_streq(csv, "bottom")) cap_bottom = 1;
+            if (cstyle[0]) {
+                if (sel_css_get(cstyle, "caption-side", csv, sizeof(csv)) && sel_ci_streq(csv, "bottom")) cap_bottom = 1;
+                sel_css_get(cstyle, "text-align", calign, sizeof(calign));   // left/right override the centred default
+            }
             char capbuf[SEL_LINE_COLS];
             int w = sel_cell_text(body, cs, ce, capbuf, SEL_LINE_COLS, 0);
             if (w > 0) {
-                int pad = (total - w) / 2; if (pad < 0) pad = 0;         // centre the caption over the table width
+                int pad;                                                 // horizontal placement of the caption over the table width
+                if      (sel_ci_streq(calign, "left"))  pad = 0;         // flush left
+                else if (sel_ci_streq(calign, "right")) pad = total - w; // flush right
+                else                                    pad = (total - w) / 2;   // centre (default / "center")
+                if (pad < 0) pad = 0;
                 int q = 0; for (; q < pad && q < SEL_LINE_COLS - 1; q++) capline[q] = ' ';
                 for (int z = 0; capbuf[z] && q < SEL_LINE_COLS - 1; z++) capline[q++] = capbuf[z];
                 capline[q] = '\0'; cap_ready = 1;
