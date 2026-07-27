@@ -34,7 +34,11 @@ int icmp_send_echo(uint32_t dst_ip, uint16_t id, uint16_t seq, int iface_idx) {
     icmp->id = htons(id);
     icmp->seq = htons(seq);
     for (uint32_t i = 0; i < 56; i++) icmp->data[i] = i;
-    icmp->checksum = icmp_checksum(packet, packet_len);
+    // icmp_checksum() reads the message big-endian and returns the value as a host
+    // integer, so it must be stored network-order (htons) — exactly like the IP and TCP
+    // checksums. A plain store put the two bytes on the wire reversed, so the checksum
+    // was invalid and a compliant peer (real host or slirp) dropped our echo request.
+    icmp->checksum = htons(icmp_checksum(packet, packet_len));
     int result = ip_send(dst_ip, 1, packet, packet_len, iface_idx);
     kfree(packet);
     return result;
@@ -55,6 +59,12 @@ static volatile uint32_t ping_reply_len   = 0;
 
 void icmp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip) {
     if (len < sizeof(icmp_header_t)) return;
+    // Verify the ICMP message checksum before acting: a corrupt echo request must not
+    // be answered, and a corrupt echo reply must not be counted as a valid ping
+    // response. This is the ICMP checksum over [type..data]; the IP header checksum is
+    // verified separately in ip.c. icmp_checksum() folds the received checksum field
+    // back in, so a valid message sums to 0 (and it already pads an odd final byte).
+    if (icmp_checksum(packet, len) != 0) return;
     icmp_header_t* icmp = (icmp_header_t*)packet;
 
     if (icmp->type == ICMP_TYPE_ECHO_REQUEST) {
@@ -68,7 +78,7 @@ void icmp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip) {
         r->type = ICMP_TYPE_ECHO_REPLY;
         r->code = 0;
         r->checksum = 0;
-        r->checksum = icmp_checksum(reply, len);
+        r->checksum = htons(icmp_checksum(reply, len));   // network order, like send_echo above
         ip_send(src_ip, 1, reply, len, -1);
         kfree(reply);
         return;
