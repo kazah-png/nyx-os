@@ -88,6 +88,14 @@ void arp_send_request(uint32_t target_ip, int iface_idx) {
 void arp_handle_packet(uint8_t* packet, uint32_t len) {
     if (len < sizeof(arp_packet_t)) return;
     arp_packet_t* arp = (arp_packet_t*)packet;
+    // Only process well-formed IPv4-over-Ethernet ARP (RFC 826 checks the hardware and
+    // protocol types first). The sender_mac/sender_ip and target_* fields sit at fixed
+    // offsets that assume hlen=6/plen=4; a packet with a different hardware/protocol type
+    // or address lengths lays those fields out elsewhere, so caching the sender or
+    // matching target_ip would act on misread bytes. Real ARP on our links is always
+    // Ethernet/IPv4, so this rejects only malformed or non-IPv4 ARP.
+    if (ntohs(arp->htype) != ARP_HTYPE_ETHERNET || ntohs(arp->ptype) != ARP_PTYPE_IP ||
+        arp->hlen != ARP_HLEN || arp->plen != ARP_PLEN) return;
     uint16_t oper = ntohs(arp->oper);
     uint32_t sender_ip = (uint32_t)arp->sender_ip[0] |
                          ((uint32_t)arp->sender_ip[1] << 8) |
