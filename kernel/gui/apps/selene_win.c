@@ -582,6 +582,39 @@ static void render_table(const uint8_t* body, uint32_t ts, uint32_t te,
             rule[p++] = '+'; } rule[p] = '\0'; }
 
     *pti = sel_ensure_nl(txt, tlink, *pti, cap, 2);
+    // <caption>: emit its text centred over the table, above the top rule (HTML's default caption-side:top).
+    // It is scanned here rather than consumed as a cell, so a data table can carry a real title instead of
+    // silently dropping the caption text. A caption belonging to a nested table is skipped by tracking
+    // <table> nesting depth; only the top-level caption of THIS table is used.
+    {
+        uint32_t cs = 0, ce = 0; int have_cap = 0, tdepth = 0;
+        for (uint32_t i = ts; i < te && !have_cap; ) {
+            if (body[i] != '<') { i++; continue; }
+            int cl; uint32_t p;
+            if (sel_tag_match(body, i, te, "table", &cl, &p)) { if (cl) { if (tdepth > 0) tdepth--; } else tdepth++; i = p; continue; }
+            if (tdepth == 0 && sel_tag_match(body, i, te, "caption", &cl, &p) && !cl) {
+                cs = p; uint32_t k = p;                                   // caption text starts just after <caption>
+                while (k < te) { int c2; uint32_t p2;
+                    if (body[k] == '<' && sel_tag_match(body, k, te, "caption", &c2, &p2) && c2) break;   // </caption>
+                    k++; }
+                ce = k; have_cap = 1; break;
+            }
+            { uint32_t k = i + 1; while (k < te && body[k] != '>') k++; if (k < te) k++; i = k; }   // skip other tag
+        }
+        if (have_cap) {
+            char capbuf[SEL_LINE_COLS];
+            int w = sel_cell_text(body, cs, ce, capbuf, SEL_LINE_COLS, 0);
+            if (w > 0) {
+                int pad = (total - w) / 2; if (pad < 0) pad = 0;         // centre the caption over the table width
+                char sp[SEL_LINE_COLS]; int z = 0;
+                for (; z < pad && z < SEL_LINE_COLS - 1; z++) sp[z] = ' ';
+                sp[z] = '\0';
+                sel_emit(txt, tlink, tfield, pti, cap, sp, 0);           // leading pad to centre the title
+                sel_emit(txt, tlink, tfield, pti, cap, capbuf, 0);       // the caption text itself
+                sel_emit(txt, tlink, tfield, pti, cap, "\n", 0);
+            }
+        }
+    }
     sel_emit(txt, tlink, tfield, pti, cap, rule, 0); sel_emit(txt, tlink, tfield, pti, cap, "\n", 0);
     for (int r = 0; r < nrows; r++) {
         char line[SEL_LINE_COLS]; int p = 0; line[p++] = '|';
