@@ -1206,7 +1206,15 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                     /* <ul> list-style-type:none -- just the indent, no bullet */
                 } else if (ti + 1 < len) {                             // unordered: a bullet glyph + ' '
                     char b = (char)0xF9;                               // disc (default): a small filled bullet
-                    if (listdepth > 0) { uint8_t lt = liststk[listdepth-1].type; if (lt == 1) b = (char)0xF8; else if (lt == 2) b = (char)0xFE; }  // circle / square
+                    if (listdepth > 0) {
+                        uint8_t lt = liststk[listdepth-1].type;
+                        if      (lt == 1) b = (char)0xF8;              // list-style-type:circle (explicit, all levels)
+                        else if (lt == 2) b = (char)0xFE;              // list-style-type:square (explicit, all levels)
+                        else {                                        // unset: cycle disc -> circle -> square by nesting depth,
+                            if      (listdepth == 2) b = (char)0xF8;  // matching a browser's default nested <ul> markers
+                            else if (listdepth >= 3) b = (char)0xFE;  // (level 1 disc, level 2 circle, level 3+ square)
+                        }
+                    }
                     txt[ti]=b; tlink[ti]=0; ti++; txt[ti]=' '; tlink[ti]=0; ti++;
                 }
                 last_space = 1;
