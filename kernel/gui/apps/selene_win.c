@@ -131,7 +131,7 @@ static int sel_streq(const char* a, const char* b) { return strcmp(a, b) == 0; }
 static int is_block_tag(const char* n) {
     static const char* B[] = { "p","br","div","h1","h2","h3","h4","h5","h6","li","tr",
         "hr","ul","ol","table","section","article","header","footer","nav","form",
-        "blockquote","pre","dd","dt","figure","center",0 };
+        "blockquote","pre","dd","dt","dl","figure","center",0 };
     for (int i = 0; B[i]; i++) if (sel_streq(n, B[i])) return 1;
     return 0;
 }
@@ -1187,8 +1187,12 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                 if (!close) { if (quote_depth < SEL_QUOTE_MAXDEPTH) quote_depth++; }   // deeper left margin
                 else        { if (quote_depth > 0) quote_depth--; }
                 last_space = 1;
+            } else if (!close && sel_streq(name, "dd")) {
+                ti = sel_ensure_nl(txt, tlink, ti, len, 1);          // <dd>: the description on its own line, indented under its <dt> term
+                for (int d = 0; d < SEL_QUOTE_INDENT && ti < len; d++) { txt[ti] = ' '; tlink[ti] = 0; ti++; }
+                last_space = 1;
             } else if (sel_streq(name,"br") || sel_streq(name,"tr") || sel_streq(name,"dd") || sel_streq(name,"dt")) {
-                ti = sel_ensure_nl(txt, tlink, ti, len, 1);
+                ti = sel_ensure_nl(txt, tlink, ti, len, 1);          // <dt>, </dd>, <br>, <tr>: a plain line break (term sits at the left margin)
                 last_space = 1;
             } else if (is_block_tag(name)) {
                 ti = sel_ensure_nl(txt, tlink, ti, len, 2);
