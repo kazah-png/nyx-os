@@ -489,9 +489,11 @@ static uint32_t sel_flatten_nested(const uint8_t* body, uint32_t i, uint32_t e, 
 static int sel_css_get(const char* style, const char* prop, char* out, int cap);
 static int sel_ci_streq(const char* a, const char* b);
 
-// Parse the table in body[ts..te) and emit it, aligned, into the text stream at *pti.
+// Parse the table in body[ts..te) and emit it, aligned, into the text stream at *pti. has_border=1
+// draws the boxed +--+ rules and | separators; has_border=0 (border="0"/style border:none) lays the
+// same aligned columns out spaced apart, with no rules or pipes.
 static void render_table(const uint8_t* body, uint32_t ts, uint32_t te,
-                         char* txt, uint8_t* tlink, uint8_t* tfield, uint32_t* pti, uint32_t cap) {
+                         char* txt, uint8_t* tlink, uint8_t* tfield, uint32_t* pti, uint32_t cap, int has_border) {
     sel_tcell_t* cells = (sel_tcell_t*)kmalloc(SEL_TBL_MAXCELLS * sizeof(sel_tcell_t));
     if (!cells) return;
     uint8_t* occ = (uint8_t*)kmalloc(SEL_TBL_MAXROWS * SEL_TBL_MAXCOLS);   // grid: 1 = covered by a span
@@ -626,9 +628,10 @@ static void render_table(const uint8_t* body, uint32_t ts, uint32_t te,
     if (cap_ready && !cap_bottom) {                                       // caption-side:top (default) -- above the box
         sel_emit(txt, tlink, tfield, pti, cap, capline, 0); sel_emit(txt, tlink, tfield, pti, cap, "\n", 0);
     }
-    sel_emit(txt, tlink, tfield, pti, cap, rule, 0); sel_emit(txt, tlink, tfield, pti, cap, "\n", 0);
+    char bch = has_border ? '|' : ' ';                                   // column separator: pipe when boxed, space when borderless
+    if (has_border) { sel_emit(txt, tlink, tfield, pti, cap, rule, 0); sel_emit(txt, tlink, tfield, pti, cap, "\n", 0); }
     for (int r = 0; r < nrows; r++) {
-        char line[SEL_LINE_COLS]; int p = 0; line[p++] = '|';
+        char line[SEL_LINE_COLS]; int p = 0; line[p++] = bch;
         int c = 0;
         while (c < ncols && p < SEL_LINE_COLS - 2) {
             int found = -1;
@@ -641,20 +644,20 @@ static void render_table(const uint8_t* body, uint32_t ts, uint32_t te,
                 line[p++] = ' ';
                 int z = 0; for (; z < w && z < spanw && p < SEL_LINE_COLS - 2; z++) line[p++] = cb[z];
                 for (; z < spanw && p < SEL_LINE_COLS - 2; z++) line[p++] = ' ';
-                line[p++] = ' '; line[p++] = '|';
+                line[p++] = ' '; line[p++] = bch;
                 c += cs;
             } else {                                                  // empty, or covered by a span — blank column
                 line[p++] = ' ';
                 for (int z = 0; z < colw[c] && p < SEL_LINE_COLS - 2; z++) line[p++] = ' ';
-                line[p++] = ' '; line[p++] = '|';
+                line[p++] = ' '; line[p++] = bch;
                 c += 1;
             }
         }
         line[p] = '\0';
         sel_emit(txt, tlink, tfield, pti, cap, line, 0); sel_emit(txt, tlink, tfield, pti, cap, "\n", 0);
-        if (r == 0 && has_header) { sel_emit(txt, tlink, tfield, pti, cap, rule, 0); sel_emit(txt, tlink, tfield, pti, cap, "\n", 0); }
+        if (r == 0 && has_header && has_border) { sel_emit(txt, tlink, tfield, pti, cap, rule, 0); sel_emit(txt, tlink, tfield, pti, cap, "\n", 0); }
     }
-    sel_emit(txt, tlink, tfield, pti, cap, rule, 0);
+    if (has_border) sel_emit(txt, tlink, tfield, pti, cap, rule, 0);
     if (cap_ready && cap_bottom) {                                        // caption-side:bottom -- below the box
         sel_emit(txt, tlink, tfield, pti, cap, "\n", 0);
         sel_emit(txt, tlink, tfield, pti, cap, capline, 0);
@@ -1099,6 +1102,12 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
             }
             if (!close && sel_streq(name, "table")) {          // <table>...</table>: aligned column layout
                 uint32_t inner = j; while (inner < len && body[inner] != '>') inner++; if (inner < len) inner++;
+                int has_border = 1;                            // default boxed; border="0" or style="border:none|0" -> borderless
+                { char tb[16] = {0}, tsty[96] = {0}, bv[24] = {0};
+                  extract_attr(body, j, inner, "border", tb, sizeof(tb));
+                  if (tb[0]) { int allz = 1; for (const char* q = tb; *q; q++) if (*q != '0') { allz = 0; break; } if (allz) has_border = 0; }
+                  extract_attr(body, j, inner, "style", tsty, sizeof(tsty));
+                  if (tsty[0] && sel_css_get(tsty, "border", bv, sizeof(bv)) && (sel_ci_streq(bv, "none") || bv[0] == '0')) has_border = 0; }
                 int depth = 1; uint32_t k = inner, innerEnd = len;  // match the closing </table> (nesting-aware)
                 while (k < len) {
                     if (body[k] == '<') { int c4; uint32_t p4;
@@ -1108,7 +1117,7 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                             k = p4; continue; } }
                     k++;
                 }
-                render_table(body, inner, innerEnd, txt, tlink, tfield, &ti, len);
+                render_table(body, inner, innerEnd, txt, tlink, tfield, &ti, len, has_border);
                 last_space = 1;
                 i = k; continue;
             }
