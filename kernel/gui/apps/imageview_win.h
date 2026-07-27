@@ -21,6 +21,8 @@ typedef struct {
     int      cur_frame;
     uint32_t anim_ms;             // milliseconds accumulated on the current frame
     int      loops_done;
+
+    int      fit_pending;         // 1 => on the next draw, pick a zoom that fits the image to the window
 } imageview_win_t;
 
 imageview_win_t* imageview_create_ctx(void);

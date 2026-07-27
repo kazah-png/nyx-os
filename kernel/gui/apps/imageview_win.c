@@ -75,7 +75,7 @@ imageview_win_t* imageview_create_ctx(void) {
     if (iv->pixels) {
         generate_test_pattern(iv->pixels, iv->img_w, iv->img_h);
     }
-    snprintf(iv->status, sizeof(iv->status), "512x384 test pattern | +/- zoom, arrows to pan");
+    snprintf(iv->status, sizeof(iv->status), "512x384 test pattern | +/- zoom, f=fit, r=1:1, arrows pan");
     strncpy(iv->filename, "test_pattern", sizeof(iv->filename) - 1);
     return iv;
 }
@@ -94,6 +94,21 @@ void imageview_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch)
 
     // Fill background
     fb_fill_rect(cx, area_y, cw, area_h, fb_rgb(25,25,28));
+
+    // Fit-to-window: choose a zoom so the whole image is visible in the current content area
+    // (never upscaling a small image past 1:1). Done here, in draw, because only here do we know
+    // the live window size. Requested on load and by the 'f' key.
+    if (iv->fit_pending && iv->img_w > 0 && iv->img_h > 0 && area_h > 8 && cw > 8) {
+        float zx = (float)((int)cw - 8) / (float)iv->img_w;
+        float zy = (float)(area_h - 8)  / (float)iv->img_h;
+        float z  = zx < zy ? zx : zy;
+        if (z > 1.0f)  z = 1.0f;      // don't blow small images up past their native size
+        if (z < 0.05f) z = 0.05f;     // floor so an enormous image is still at least a little visible
+        iv->zoom = z;
+        iv->offset_x = 0;
+        iv->offset_y = 0;
+        iv->fit_pending = 0;
+    }
 
     // Draw the image using blit
     int draw_x = cx + 4 + iv->offset_x;
@@ -153,6 +168,9 @@ void imageview_win_key(window_t* win, int key) {
         iv->offset_x = 0;
         iv->offset_y = 0;
         iv->zoom = 1.0f;
+        iv->fit_pending = 0;      // 'r' is an explicit 1:1 view, so cancel any pending fit
+    } else if (key == 'f' || key == 'F') {
+        iv->fit_pending = 1;      // re-fit to the current window size
     }
 }
 
@@ -235,6 +253,7 @@ int imageview_open_file(imageview_win_t* iv, const char* path) {
     iv->offset_x = 0;
     iv->offset_y = 0;
     iv->zoom = 1.0f;
+    iv->fit_pending = 1;      // auto-fit the freshly loaded image to the window on the next draw
 
     if (animated) {
         iv->anim = ga;                          // take ownership of the frame array

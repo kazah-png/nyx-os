@@ -1060,6 +1060,24 @@ void launch_imageview(const char* path) {
         imageview_open_file((imageview_win_t*)w->reserved, path);
 }
 
+// Open the File Manager, optionally at a starting directory (so `files /mnt` lands there). Mirrors the
+// desktop-icon path; lets the File Manager be launched from the shell like the other apps.
+void launch_fileman(const char* path) {
+    window_t* w = window_create(100, 100, 550, 380, "File Manager", fileman_win_draw);
+    if (!w) return;
+    w->reserved = fileman_create_ctx();
+    if (!w->reserved) { window_destroy(w->id); return; }
+    w->on_click     = fileman_win_click;
+    w->on_key       = fileman_win_key;
+    w->on_mousemove = fileman_win_mousemove;
+    fileman_win_t* fm = (fileman_win_t*)w->reserved;
+    if (path && path[0]) {
+        strncpy(fm->cwd, path, sizeof(fm->cwd) - 1);
+        fm->cwd[sizeof(fm->cwd) - 1] = 0;
+    }
+    fileman_refresh(fm);
+}
+
 // Open the "Games" desktop folder — a window listing Minesweeper, DOOM and Pong as
 // clickable emblems (games_win.c). Its click handler calls the three launchers above.
 void launch_games_folder(void) {

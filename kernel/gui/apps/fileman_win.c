@@ -131,6 +131,37 @@ static int fileman_get_path(fileman_win_t* fm, const char* name, char* path, int
     return 0;
 }
 
+// 1 if `name` ends with a known image extension (case-insensitive) — decides which app opens it.
+static int fileman_is_image(const char* name) {
+    static const char* const exts[] = { ".png", ".gif", ".jpg", ".jpeg", ".bmp", 0 };
+    int n = 0; while (name[n]) n++;
+    for (int e = 0; exts[e]; e++) {
+        int m = 0; while (exts[e][m]) m++;
+        if (n < m) continue;
+        int match = 1;
+        for (int k = 0; k < m; k++) {
+            char a = name[n - m + k];
+            if (a >= 'A' && a <= 'Z') a = (char)(a + 32);   // ASCII tolower
+            if (a != exts[e][k]) { match = 0; break; }
+        }
+        if (match) return 1;
+    }
+    return 0;
+}
+
+// Open a file the user activated (double-click / Enter): image files go to the Image Viewer,
+// everything else to the Text Editor. `name` is the display name for the status line.
+static void fileman_activate_file(fileman_win_t* fm, const char* path, const char* name) {
+    if (fileman_is_image(name)) {
+        launch_imageview(path);
+        snprintf(fm->status, sizeof(fm->status), "Opened in Image Viewer: %s", name);
+    } else if (compositor_open_editor(path)) {
+        snprintf(fm->status, sizeof(fm->status), "Opened in editor: %s", name);
+    } else {
+        snprintf(fm->status, sizeof(fm->status), "Cannot open editor");
+    }
+}
+
 static void fileman_delete(fileman_win_t* fm) {
     if (fm->sel_index < 0 || fm->sel_index >= fm->entry_count) {
         snprintf(fm->status, sizeof(fm->status), "No file selected");
@@ -519,25 +550,27 @@ void fileman_win_click(window_t* win, int mx, int my, int btn) {
                 fileman_get_path(fm, fm->entries[real_idx], path, sizeof(path));
                 uint32_t now = get_ticks();
                 if (fm->last_click_idx == real_idx && (now - fm->last_click_tick) < 400) {
-                    // Second click on the same file within the double-click window:
-                    // open it in a Text Editor window.
-                    if (compositor_open_editor(path))
-                        snprintf(fm->status, sizeof(fm->status), "Opened in editor: %s", fm->entries[real_idx]);
-                    else
-                        snprintf(fm->status, sizeof(fm->status), "Cannot open editor");
+                    // Second click on the same file within the double-click window: open it
+                    // (images -> Image Viewer, everything else -> Text Editor).
+                    fileman_activate_file(fm, path, fm->entries[real_idx]);
                     fm->last_click_idx = -1;   // don't re-fire on a third click
                 } else {
-                    // First click: select + preview the first bytes in the status bar.
-                    int fd = vfs_open(path, 0, 0);
-                    if (fd >= 0) {
-                        char buf[512];
-                        int n = vfs_read(fd, buf, sizeof(buf)-1);
-                        vfs_close(fd);
-                        if (n > 0) {
-                            buf[n] = '\0';
-                            snprintf(fm->status, sizeof(fm->status), "%s (%d bytes) - double-click to edit: %.170s", fm->entries[real_idx], n, buf);
-                        } else {
-                            snprintf(fm->status, sizeof(fm->status), "%s (empty) - double-click to edit", fm->entries[real_idx]);
+                    // First click: select. An image just gets a hint; a text file previews its
+                    // first bytes (dumping a binary image's bytes into the status bar is garbage).
+                    if (fileman_is_image(fm->entries[real_idx])) {
+                        snprintf(fm->status, sizeof(fm->status), "%s (image) - double-click to view", fm->entries[real_idx]);
+                    } else {
+                        int fd = vfs_open(path, 0, 0);
+                        if (fd >= 0) {
+                            char buf[512];
+                            int n = vfs_read(fd, buf, sizeof(buf)-1);
+                            vfs_close(fd);
+                            if (n > 0) {
+                                buf[n] = '\0';
+                                snprintf(fm->status, sizeof(fm->status), "%s (%d bytes) - double-click to edit: %.170s", fm->entries[real_idx], n, buf);
+                            } else {
+                                snprintf(fm->status, sizeof(fm->status), "%s (empty) - double-click to edit", fm->entries[real_idx]);
+                            }
                         }
                     }
                     fm->last_click_tick = now;
@@ -826,13 +859,10 @@ void fileman_win_key(window_t* win, int key) {
             if (fm->entry_types[fm->sel_index]) {
                 fileman_cd(fm, fm->entries[fm->sel_index], win);
             } else {
-                // Enter on a file opens it in the Text Editor (like double-click).
+                // Enter on a file opens it (image -> Image Viewer, else Text Editor), like double-click.
                 char path[256];
                 fileman_get_path(fm, fm->entries[fm->sel_index], path, sizeof(path));
-                if (compositor_open_editor(path))
-                    snprintf(fm->status, sizeof(fm->status), "Opened in editor: %s", fm->entries[fm->sel_index]);
-                else
-                    snprintf(fm->status, sizeof(fm->status), "Cannot open editor");
+                fileman_activate_file(fm, path, fm->entries[fm->sel_index]);
             }
             return;
         }

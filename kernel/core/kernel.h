@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "5.9.127"
+#define KERNEL_VERSION "5.9.128"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -1019,6 +1019,7 @@ void launch_minesweeper(void);          // open the Minesweeper window (composit
 void launch_games_folder(void);         // open the "Games" desktop folder (compositor.c)
 void launch_selene(void);               // open Selene, the web browser (compositor.c)
 void launch_imageview(const char* path);// open the Image Viewer, optionally on a file (compositor.c)
+void launch_fileman(const char* path);  // open the File Manager, optionally at a directory (compositor.c)
 void reap_zombies(void);
 int do_clone(uint64_t fn, uint64_t stack, uint64_t arg, uint64_t flags); // CLONE_VM thread
 int do_futex(uint64_t uaddr, int op, uint32_t val);                     // FUTEX_WAIT/WAKE
