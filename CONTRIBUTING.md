@@ -91,6 +91,24 @@ tracks the warning count across releases — a regression is a blocker.
 3. Ensure the build produces zero warnings.
 4. Mention what you tested and how.
 
+## AI-assisted contributions
+
+NyxOS embraces AI tools for writing and debugging code — they are a great way
+to accelerate implementation. However:
+
+- **AI is a tool for building, not for planning.** Infrastructure decisions,
+  architecture design and action plans should be made by people who understand
+  the full context of the kernel. Let AI write the code, but own the design
+  yourself.
+- **All code is reviewed by hand before it lands.** Every line an AI produces
+  is read, understood and often tweaked by a human maintainer before it is
+  committed. Treat AI output as a draft, not as final.
+- **You are responsible for what AI generates.** If a bug or security issue
+  originates from AI-written code, the human who submitted it owns the fix.
+
+Follow these guidelines and you are welcome to use whatever tools help you
+write better NyxOS code.
+
 ## What needs help
 
 Check the "Next features to add" section at the end of `AGENTS.md` — it
