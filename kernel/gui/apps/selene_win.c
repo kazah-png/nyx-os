@@ -1061,8 +1061,25 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                 if (close) ti = sel_ensure_nl(txt, tlink, ti, len, 2);
                 last_space = 1;
             } else if (sel_streq(name, "hr")) {
+                // Parse width (style="width:N%" or the legacy width="N"/"N%") and alignment (align= or text-align).
+                uint32_t hte = j; while (hte < len && body[hte] != '>') hte++;
+                char hw[24] = {0}, ha[16] = {0}, hstyle[120] = {0};
+                extract_attr(body, j, hte, "width", hw, sizeof(hw));
+                extract_attr(body, j, hte, "align", ha, sizeof(ha));
+                extract_attr(body, j, hte, "style", hstyle, sizeof(hstyle));
+                if (!hw[0] && hstyle[0]) sel_css_get(hstyle, "width", hw, sizeof(hw));
+                if (!ha[0] && hstyle[0]) sel_css_get(hstyle, "text-align", ha, sizeof(ha));
+                int hpct = 100;                                  // default = full content width
+                if (hw[0]) {
+                    const char* p = hw; while (*p == ' ') p++;
+                    int n = 0; for (; *p >= '0' && *p <= '9'; p++) n = n * 10 + (*p - '0');
+                    if (*p == '%') { if (n > 0 && n <= 100) hpct = n; }                       // "N%" = percentage
+                    else if (n > 0) { int av = SELENE_W - 2 * SEL_PAD; hpct = n >= av ? 100 : (n * 100 / av); if (hpct < 1) hpct = 1; }  // "N" = px -> %
+                }
+                int hal = 0;                                     // 0 = left (default), 1 = center, 2 = right
+                if (sel_ci_streq(ha, "center")) hal = 1; else if (sel_ci_streq(ha, "right")) hal = 2;
                 ti = sel_ensure_nl(txt, tlink, ti, len, 1);
-                if (ti < len) { txt[ti] = ' '; tlink[ti] = 0; trule[ti] = 1; ti++; }  // one marker char flags this line as a real rule (drawn, not 64 dashes)
+                if (ti < len) { txt[ti] = ' '; tlink[ti] = 0; trule[ti] = (uint8_t)hpct; talign[ti] = (uint8_t)hal; ti++; }  // marker: trule = width%, talign = rule alignment
                 ti = sel_ensure_nl(txt, tlink, ti, len, 1);
                 last_space = 1;
             } else if (sel_streq(name,"ul") || sel_streq(name,"ol")) {
@@ -1777,9 +1794,14 @@ void selene_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
         int idx = s->scroll + r;
         if (idx >= s->num_lines) break;
         int py = cyy + SEL_PAD + r * SEL_LINE_H;
-        if (s->line_rule[idx]) {                                 // <hr>: a real 2px horizontal rule across the content width (no text/overlays on this line)
-            int rw = SELENE_W - 2 * SEL_PAD;
-            fb_fill_rect(cx + SEL_PAD, py + FONT_HEIGHT / 2 - 1, (uint32_t)rw, 2, fb_rgb(150, 154, 168));
+        if (s->line_rule[idx]) {                                 // <hr>: a real 2px rule; width% = line_rule, alignment = line_align (no text/overlays on this line)
+            int avail = SELENE_W - 2 * SEL_PAD;
+            int pct = s->line_rule[idx]; if (pct > 100) pct = 100;
+            int rw = avail * pct / 100; if (rw < 1) rw = 1;
+            int rx0 = cx + SEL_PAD;
+            if (s->line_align[idx] == 1) rx0 += (avail - rw) / 2;    // centre
+            else if (s->line_align[idx] == 2) rx0 += (avail - rw);   // right
+            fb_fill_rect(rx0, py + FONT_HEIGHT / 2 - 1, (uint32_t)rw, 2, fb_rgb(150, 154, 168));
             continue;
         }
         // text-align: shift the whole line right by lpad for centre/right (line_align 0=left, unchanged)
