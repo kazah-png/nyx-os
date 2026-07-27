@@ -1069,6 +1069,12 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                 extract_attr(body, j, hte, "style", hstyle, sizeof(hstyle));
                 if (!hw[0] && hstyle[0]) sel_css_get(hstyle, "width", hw, sizeof(hw));
                 if (!ha[0] && hstyle[0]) sel_css_get(hstyle, "text-align", ha, sizeof(ha));
+                uint8_t hcol = 0;                                // rule colour index (0 = the default grey)
+                if (hstyle[0]) {
+                    char hc[40] = {0}; uint32_t hrgb;
+                    if (!sel_css_get(hstyle, "color", hc, sizeof(hc))) sel_css_get(hstyle, "border-color", hc, sizeof(hc));
+                    if (hc[0] && sel_parse_css_color(hc, &hrgb)) hcol = sel_intern_color(s, hrgb);
+                }
                 int hpct = 100;                                  // default = full content width
                 if (hw[0]) {
                     const char* p = hw; while (*p == ' ') p++;
@@ -1079,7 +1085,7 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                 int hal = 0;                                     // 0 = left (default), 1 = center, 2 = right
                 if (sel_ci_streq(ha, "center")) hal = 1; else if (sel_ci_streq(ha, "right")) hal = 2;
                 ti = sel_ensure_nl(txt, tlink, ti, len, 1);
-                if (ti < len) { txt[ti] = ' '; tlink[ti] = 0; trule[ti] = (uint8_t)hpct; talign[ti] = (uint8_t)hal; ti++; }  // marker: trule = width%, talign = rule alignment
+                if (ti < len) { txt[ti] = ' '; tlink[ti] = 0; trule[ti] = (uint8_t)hpct; talign[ti] = (uint8_t)hal; tcolor[ti] = hcol; ti++; }  // marker: trule = width%, talign = alignment, tcolor = rule colour
                 ti = sel_ensure_nl(txt, tlink, ti, len, 1);
                 last_space = 1;
             } else if (sel_streq(name,"ul") || sel_streq(name,"ol")) {
@@ -1801,7 +1807,9 @@ void selene_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
             int rx0 = cx + SEL_PAD;
             if (s->line_align[idx] == 1) rx0 += (avail - rw) / 2;    // centre
             else if (s->line_align[idx] == 2) rx0 += (avail - rw);   // right
-            fb_fill_rect(rx0, py + FONT_HEIGHT / 2 - 1, (uint32_t)rw, 2, fb_rgb(150, 154, 168));
+            uint8_t hc = s->color_of[idx][0];                        // rule colour (marker char's colour slot); 0 = default grey
+            uint32_t rulecol = (hc && hc <= s->npalette) ? s->palette[hc - 1] : fb_rgb(150, 154, 168);
+            fb_fill_rect(rx0, py + FONT_HEIGHT / 2 - 1, (uint32_t)rw, 2, rulecol);
             continue;
         }
         // text-align: shift the whole line right by lpad for centre/right (line_align 0=left, unchanged)
