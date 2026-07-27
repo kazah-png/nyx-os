@@ -484,6 +484,11 @@ static uint32_t sel_flatten_nested(const uint8_t* body, uint32_t i, uint32_t e, 
     return i;
 }
 
+// Inline-CSS helpers (defined below, after the table code) — forward-declared so render_table can read
+// a <caption>'s caption-side property.
+static int sel_css_get(const char* style, const char* prop, char* out, int cap);
+static int sel_ci_streq(const char* a, const char* b);
+
 // Parse the table in body[ts..te) and emit it, aligned, into the text stream at *pti.
 static void render_table(const uint8_t* body, uint32_t ts, uint32_t te,
                          char* txt, uint8_t* tlink, uint8_t* tfield, uint32_t* pti, uint32_t cap) {
@@ -582,18 +587,21 @@ static void render_table(const uint8_t* body, uint32_t ts, uint32_t te,
             rule[p++] = '+'; } rule[p] = '\0'; }
 
     *pti = sel_ensure_nl(txt, tlink, *pti, cap, 2);
-    // <caption>: emit its text centred over the table, above the top rule (HTML's default caption-side:top).
-    // It is scanned here rather than consumed as a cell, so a data table can carry a real title instead of
-    // silently dropping the caption text. A caption belonging to a nested table is skipped by tracking
-    // <table> nesting depth; only the top-level caption of THIS table is used.
+    // <caption>: render its text centred over the table. By default it sits above the top rule (HTML
+    // caption-side:top); style="caption-side:bottom" on the <caption> moves it below the bottom rule.
+    // It is scanned here rather than consumed as a cell, so a data table can carry a real title. A
+    // caption belonging to a nested table is skipped by tracking <table> nesting depth; only THIS
+    // table's top-level caption is used. The centred line is built once into capline and emitted at
+    // whichever end caption-side selects.
+    char capline[SEL_LINE_COLS] = {0}; int cap_ready = 0, cap_bottom = 0;
     {
-        uint32_t cs = 0, ce = 0; int have_cap = 0, tdepth = 0;
+        uint32_t ctag = 0, cs = 0, ce = 0; int have_cap = 0, tdepth = 0;
         for (uint32_t i = ts; i < te && !have_cap; ) {
             if (body[i] != '<') { i++; continue; }
             int cl; uint32_t p;
             if (sel_tag_match(body, i, te, "table", &cl, &p)) { if (cl) { if (tdepth > 0) tdepth--; } else tdepth++; i = p; continue; }
             if (tdepth == 0 && sel_tag_match(body, i, te, "caption", &cl, &p) && !cl) {
-                cs = p; uint32_t k = p;                                   // caption text starts just after <caption>
+                ctag = i; cs = p; uint32_t k = p;                        // tag is [ctag,cs); caption text starts at cs
                 while (k < te) { int c2; uint32_t p2;
                     if (body[k] == '<' && sel_tag_match(body, k, te, "caption", &c2, &p2) && c2) break;   // </caption>
                     k++; }
@@ -602,18 +610,21 @@ static void render_table(const uint8_t* body, uint32_t ts, uint32_t te,
             { uint32_t k = i + 1; while (k < te && body[k] != '>') k++; if (k < te) k++; i = k; }   // skip other tag
         }
         if (have_cap) {
+            char cstyle[80] = {0}, csv[24] = {0};                        // caption-side lives on the <caption> tag
+            extract_attr(body, ctag, cs, "style", cstyle, sizeof(cstyle));
+            if (cstyle[0] && sel_css_get(cstyle, "caption-side", csv, sizeof(csv)) && sel_ci_streq(csv, "bottom")) cap_bottom = 1;
             char capbuf[SEL_LINE_COLS];
             int w = sel_cell_text(body, cs, ce, capbuf, SEL_LINE_COLS, 0);
             if (w > 0) {
                 int pad = (total - w) / 2; if (pad < 0) pad = 0;         // centre the caption over the table width
-                char sp[SEL_LINE_COLS]; int z = 0;
-                for (; z < pad && z < SEL_LINE_COLS - 1; z++) sp[z] = ' ';
-                sp[z] = '\0';
-                sel_emit(txt, tlink, tfield, pti, cap, sp, 0);           // leading pad to centre the title
-                sel_emit(txt, tlink, tfield, pti, cap, capbuf, 0);       // the caption text itself
-                sel_emit(txt, tlink, tfield, pti, cap, "\n", 0);
+                int q = 0; for (; q < pad && q < SEL_LINE_COLS - 1; q++) capline[q] = ' ';
+                for (int z = 0; capbuf[z] && q < SEL_LINE_COLS - 1; z++) capline[q++] = capbuf[z];
+                capline[q] = '\0'; cap_ready = 1;
             }
         }
+    }
+    if (cap_ready && !cap_bottom) {                                       // caption-side:top (default) -- above the box
+        sel_emit(txt, tlink, tfield, pti, cap, capline, 0); sel_emit(txt, tlink, tfield, pti, cap, "\n", 0);
     }
     sel_emit(txt, tlink, tfield, pti, cap, rule, 0); sel_emit(txt, tlink, tfield, pti, cap, "\n", 0);
     for (int r = 0; r < nrows; r++) {
@@ -644,6 +655,10 @@ static void render_table(const uint8_t* body, uint32_t ts, uint32_t te,
         if (r == 0 && has_header) { sel_emit(txt, tlink, tfield, pti, cap, rule, 0); sel_emit(txt, tlink, tfield, pti, cap, "\n", 0); }
     }
     sel_emit(txt, tlink, tfield, pti, cap, rule, 0);
+    if (cap_ready && cap_bottom) {                                        // caption-side:bottom -- below the box
+        sel_emit(txt, tlink, tfield, pti, cap, "\n", 0);
+        sel_emit(txt, tlink, tfield, pti, cap, capline, 0);
+    }
     *pti = sel_ensure_nl(txt, tlink, *pti, cap, 2);
     kfree(cells); kfree(occ);
 }
