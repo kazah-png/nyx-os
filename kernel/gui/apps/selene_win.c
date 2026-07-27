@@ -729,6 +729,25 @@ static uint8_t sel_intern_color(selene_ctx_t* s, uint32_t rgb) {
     return (uint8_t)(++s->npalette);
 }
 
+// Format an <ol> counter as base-26 letters (1->a, 26->z, 27->aa). out must hold >=8 bytes.
+static int sel_fmt_alpha(uint16_t n, char* out, int upper) {
+    char tmp[8]; int t = 0;
+    if (n == 0) { out[0] = '?'; out[1] = '\0'; return 1; }
+    while (n > 0 && t < 6) { uint16_t r = (uint16_t)((n - 1) % 26); tmp[t++] = (char)((upper ? 'A' : 'a') + r); n = (uint16_t)((n - 1) / 26); }
+    int o = 0; while (t > 0) out[o++] = tmp[--t];   // reverse into most-significant-first order
+    out[o] = '\0'; return o;
+}
+// Format an <ol> counter as a Roman numeral (1..3999). out must hold >=16 bytes.
+static int sel_fmt_roman(uint16_t n, char* out, int upper) {
+    static const uint16_t val[13] = {1000,900,500,400,100,90,50,40,10,9,5,4,1};
+    static const char* const sym[13] = {"m","cm","d","cd","c","xc","l","xl","x","ix","v","iv","i"};
+    int o = 0;
+    if (n == 0 || n > 3999) { out[0] = '?'; out[1] = '\0'; return 1; }
+    for (int k = 0; k < 13 && n > 0; k++)
+        while (n >= val[k] && o < 15) { for (const char* sp = sym[k]; *sp && o < 15; sp++) out[o++] = (char)(upper ? *sp - 32 : *sp); n = (uint16_t)(n - val[k]); }
+    out[o] = '\0'; return o;
+}
+
 static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
     s->num_lines = 0; s->scroll = 0; s->title[0] = '\0';
     s->num_links = 0; s->sel_link = -1;
@@ -786,7 +805,7 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
     int pre_skip_nl = 0;                                      // swallow one newline right after <pre> (like browsers)
     int quote_depth = 0;                                      // <blockquote> nesting (left margin level)
     int qmark_depth = 0;                                      // <q> nesting: level 0 uses ", level 1 uses ', alternating
-    struct { uint8_t ordered; uint16_t counter; } liststk[SEL_LIST_MAXDEPTH];  // <ul>/<ol> nesting
+    struct { uint8_t ordered; uint16_t counter; uint8_t type; } liststk[SEL_LIST_MAXDEPTH];  // <ul>/<ol> nesting (+ list-style-type)
     int listdepth = 0;                                        // 0 = not in a list
     int cur_color = 0, cur_bg = 0, cur_bold = 0, cur_ul = 0, cur_st = 0, cur_align = 0, cur_du = 0, cur_vo = 0;  // +text-align, +dotted-underline (<abbr>), +vert-offset (<sub>/<sup>)
     struct { char tag[16]; uint8_t color, bg, bold, ul, st, al, du, vo; } colstk[16];  // style stack: push a styled open, pop its close
@@ -1094,8 +1113,27 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                 if (!close) {
                     ti = sel_ensure_nl(txt, tlink, ti, len, listdepth == 0 ? 2 : 1);
                     if (listdepth < SEL_LIST_MAXDEPTH) {
-                        liststk[listdepth].ordered = sel_streq(name,"ol") ? 1 : 0;
+                        int ord = sel_streq(name,"ol") ? 1 : 0;
+                        // list-style-type: prefer style="list-style-type:X", else the legacy type= attribute
+                        uint32_t lte = j; while (lte < len && body[lte] != '>') lte++;
+                        char lstyle[80] = {0}, lst[24] = {0};
+                        extract_attr(body, j, lte, "style", lstyle, sizeof(lstyle));
+                        if (!(lstyle[0] && sel_css_get(lstyle, "list-style-type", lst, sizeof(lst))))
+                            extract_attr(body, j, lte, "type", lst, sizeof(lst));
+                        uint8_t lt = 0;
+                        if (ord) {                                    // <ol>: 0 decimal, 1 lower-alpha, 2 upper-alpha, 3 lower-roman, 4 upper-roman
+                            if      (sel_ci_streq(lst,"lower-alpha")||sel_ci_streq(lst,"lower-latin")||sel_streq(lst,"a")) lt = 1;
+                            else if (sel_ci_streq(lst,"upper-alpha")||sel_ci_streq(lst,"upper-latin")||sel_streq(lst,"A")) lt = 2;
+                            else if (sel_ci_streq(lst,"lower-roman")||sel_streq(lst,"i")) lt = 3;
+                            else if (sel_ci_streq(lst,"upper-roman")||sel_streq(lst,"I")) lt = 4;
+                        } else {                                      // <ul>: 0 disc, 1 circle, 2 square, 3 none
+                            if      (sel_ci_streq(lst,"circle")) lt = 1;
+                            else if (sel_ci_streq(lst,"square")) lt = 2;
+                            else if (sel_ci_streq(lst,"none"))   lt = 3;
+                        }
+                        liststk[listdepth].ordered = (uint8_t)ord;
                         liststk[listdepth].counter = 0;
+                        liststk[listdepth].type = lt;
                         listdepth++;
                     }
                 } else {
@@ -1110,14 +1148,25 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                 ti = sel_ensure_nl(txt, tlink, ti, len, 1);
                 int lvl = listdepth > 0 ? listdepth : 1;              // a stray <li> (no list) acts as depth 1
                 for (int d = 0; d < (lvl - 1) * SEL_LIST_INDENT && ti < len; d++) { txt[ti]=' '; tlink[ti]=0; ti++; }
-                if (listdepth > 0 && liststk[listdepth-1].ordered) {  // ordered: "N. "
+                if (listdepth > 0 && liststk[listdepth-1].ordered) {  // ordered: marker + ". " (decimal / alpha / roman)
                     uint16_t n = ++liststk[listdepth-1].counter;
-                    char num[8]; int nn = 0;
-                    do { num[nn++] = (char)('0' + n % 10); n /= 10; } while (n > 0 && nn < 6);
-                    while (nn > 0 && ti < len) { txt[ti] = num[--nn]; tlink[ti] = 0; ti++; }
+                    uint8_t lt = liststk[listdepth-1].type;
+                    char mark[16]; int ml;
+                    if      (lt == 1) ml = sel_fmt_alpha(n, mark, 0);   // a, b, c
+                    else if (lt == 2) ml = sel_fmt_alpha(n, mark, 1);   // A, B, C
+                    else if (lt == 3) ml = sel_fmt_roman(n, mark, 0);   // i, ii, iii
+                    else if (lt == 4) ml = sel_fmt_roman(n, mark, 1);   // I, II, III
+                    else { char num[8]; int nn = 0; uint16_t m = n;     // decimal (default)
+                        do { num[nn++] = (char)('0' + m % 10); m /= 10; } while (m > 0 && nn < 6);
+                        ml = 0; while (nn > 0 && ml < 15) mark[ml++] = num[--nn]; mark[ml] = '\0'; }
+                    for (int z = 0; z < ml && ti < len; z++) { txt[ti] = mark[z]; tlink[ti] = 0; ti++; }
                     if (ti + 1 < len) { txt[ti]='.'; tlink[ti]=0; ti++; txt[ti]=' '; tlink[ti]=0; ti++; }
-                } else if (ti + 1 < len) {                             // unordered: "- "
-                    txt[ti]='-'; tlink[ti]=0; ti++; txt[ti]=' '; tlink[ti]=0; ti++;
+                } else if (listdepth > 0 && liststk[listdepth-1].type == 3) {
+                    /* <ul> list-style-type:none -- just the indent, no bullet */
+                } else if (ti + 1 < len) {                             // unordered: a bullet glyph + ' '
+                    char b = (char)0xF9;                               // disc (default): a small filled bullet
+                    if (listdepth > 0) { uint8_t lt = liststk[listdepth-1].type; if (lt == 1) b = (char)0xF8; else if (lt == 2) b = (char)0xFE; }  // circle / square
+                    txt[ti]=b; tlink[ti]=0; ti++; txt[ti]=' '; tlink[ti]=0; ti++;
                 }
                 last_space = 1;
             } else if (sel_streq(name, "pre")) {
