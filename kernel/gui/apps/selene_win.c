@@ -857,6 +857,18 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                         else if (sel_ci_streq(dval,"line-through")) { nst = 1; set = 1; }
                         else if (sel_ci_streq(dval,"none"))         { nul = 0; nst = 0; set = 1; }
                     }
+                    // Semantic inline tags mapped onto the existing colour/decoration machinery.
+                    if (sel_streq(name,"mark")) {                          // <mark> = black text on a yellow highlight
+                        uint8_t hy = sel_intern_color(s, 0xFFFF00), bk = sel_intern_color(s, 0x000000);
+                        if (hy) { nbg = hy; set = 1; }
+                        if (bk) { nfg = bk; set = 1; }
+                    }
+                    if (sel_streq(name,"ins")) { nul = 1; set = 1; }      // <ins> (inserted text) = underlined, the <del> counterpart
+                    if (sel_streq(name,"code") || sel_streq(name,"kbd") ||
+                        sel_streq(name,"samp") || sel_streq(name,"tt")) { // monospace-ish tags: a subtle grey code background
+                        uint8_t cg = sel_intern_color(s, 0xE6E6E6);
+                        if (cg) { nbg = cg; set = 1; }
+                    }
                     if (set && coldepth < 16) {
                         strncpy(colstk[coldepth].tag, name, 15); colstk[coldepth].tag[15] = '\0';
                         colstk[coldepth].color = nfg; colstk[coldepth].bg = nbg; colstk[coldepth].bold = nbold;
