@@ -104,6 +104,7 @@ typedef struct {
     uint32_t palette[255];             // framebuffer pixel values, index 0 => palette id 1
     int  npalette;
     uint8_t line_align[SEL_MAX_LINES]; // per-line text alignment: 0=left (default), 1=center, 2=right
+    uint8_t line_rule[SEL_MAX_LINES];  // per-line <hr> flag: 1 = draw a real horizontal rule (not text)
     // base for resolving relative links (from the loaded URL)
     char     base_host[128];
     uint16_t base_port;
@@ -234,7 +235,8 @@ static void selene_resolve(selene_ctx_t* s, const char* href, char* out) {
 // paragraph stays indented even where it wraps. Level 0 (the common case) is byte-for-byte unchanged.
 static void wrap_text(selene_ctx_t* s, const char* txt, const uint8_t* tlink, const uint8_t* tfield,
                       const uint8_t* timg, const uint8_t* tcolor, const uint8_t* tbgcol,
-                      const uint8_t* tbold, const uint8_t* talign, const uint8_t* tindent, uint32_t ti) {
+                      const uint8_t* tbold, const uint8_t* talign, const uint8_t* trule,
+                      const uint8_t* tindent, uint32_t ti) {
     int li = 0, col = 0, bol = 1;   // bol: at a HARD line start (after '\n') — preserve intentional leading indent
     s->lines[0][0] = '\0';
     uint32_t i = 0;
@@ -249,7 +251,7 @@ static void wrap_text(selene_ctx_t* s, const char* txt, const uint8_t* tlink, co
         }
         if (c == ' ') {
             // Leading spaces are dropped after a soft word-wrap, but kept after a hard '\n' (list indents).
-            if ((col > 0 || bol) && col < SEL_LINE_COLS - 1) { s->link_of[li][col] = tlink[i]; s->field_of[li][col] = tfield[i]; s->img_of[li][col] = timg[i]; s->color_of[li][col] = tcolor[i]; s->bgcolor_of[li][col] = tbgcol[i]; s->bold_of[li][col] = tbold[i]; s->line_align[li] = talign[i]; s->lines[li][col++] = ' '; }
+            if ((col > 0 || bol) && col < SEL_LINE_COLS - 1) { s->link_of[li][col] = tlink[i]; s->field_of[li][col] = tfield[i]; s->img_of[li][col] = timg[i]; s->color_of[li][col] = tcolor[i]; s->bgcolor_of[li][col] = tbgcol[i]; s->bold_of[li][col] = tbold[i]; s->line_align[li] = talign[i]; s->line_rule[li] = trule[i]; s->lines[li][col++] = ' '; }
             i++;
             continue;
         }
@@ -279,6 +281,7 @@ static void wrap_text(selene_ctx_t* s, const char* txt, const uint8_t* tlink, co
                 s->bgcolor_of[li][col] = tbgcol[st + off + k];
                 s->bold_of[li][col] = tbold[st + off + k];
                 s->line_align[li] = talign[st + off + k];
+                s->line_rule[li] = trule[st + off + k];
                 s->lines[li][col++] = txt[st + off + k];
             }
             bol = 0;                                           // wrote content — no longer at a hard line start
@@ -740,6 +743,7 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
     __builtin_memset(s->bgcolor_of, 0, SEL_MAX_LINES * SEL_LINE_COLS);
     __builtin_memset(s->bold_of, 0, SEL_MAX_LINES * SEL_LINE_COLS);
     __builtin_memset(s->line_align, 0, SEL_MAX_LINES);
+    __builtin_memset(s->line_rule, 0, SEL_MAX_LINES);
     if (!body || !len) { s->num_lines = 0; return; }
     char*    txt    = (char*)kmalloc(len + 1);
     uint8_t* tlink  = (uint8_t*)kmalloc(len + 1);
@@ -749,8 +753,9 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
     uint8_t* tbgcol = (uint8_t*)kmalloc(len + 1);            // per-char inline-CSS background index (for wrap_text)
     uint8_t* tbold  = (uint8_t*)kmalloc(len + 1);            // per-char bold flag (for wrap_text)
     uint8_t* talign = (uint8_t*)kmalloc(len + 1);            // per-char text-align (for wrap_text -> line_align)
+    uint8_t* trule  = (uint8_t*)kmalloc(len + 1);            // per-char <hr> flag (for wrap_text -> line_rule)
     uint8_t* tindent= (uint8_t*)kmalloc(len + 1);            // per-char <blockquote> nesting level (for wrap_text)
-    if (!txt || !tlink || !tfield || !timg || !tcolor || !tbgcol || !tbold || !talign || !tindent) {
+    if (!txt || !tlink || !tfield || !timg || !tcolor || !tbgcol || !tbold || !talign || !trule || !tindent) {
         if (txt) kfree(txt);
         if (tlink) kfree(tlink);
         if (tfield) kfree(tfield);
@@ -759,6 +764,7 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
         if (tbgcol) kfree(tbgcol);
         if (tbold) kfree(tbold);
         if (talign) kfree(talign);
+        if (trule) kfree(trule);
         if (tindent) kfree(tindent);
         return;
     }
@@ -768,6 +774,7 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
     __builtin_memset(tbgcol,  0, len + 1);
     __builtin_memset(tbold,   0, len + 1);
     __builtin_memset(talign,  0, len + 1);
+    __builtin_memset(trule,   0, len + 1);
     __builtin_memset(tindent, 0, len + 1);
     uint32_t ti = 0;
     int last_space = 1;
@@ -1036,7 +1043,7 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                 last_space = 1;
             } else if (sel_streq(name, "hr")) {
                 ti = sel_ensure_nl(txt, tlink, ti, len, 1);
-                for (int d = 0; d < 64 && ti < len; d++) { txt[ti] = '-'; tlink[ti] = 0; ti++; }
+                if (ti < len) { txt[ti] = ' '; tlink[ti] = 0; trule[ti] = 1; ti++; }  // one marker char flags this line as a real rule (drawn, not 64 dashes)
                 ti = sel_ensure_nl(txt, tlink, ti, len, 1);
                 last_space = 1;
             } else if (sel_streq(name,"ul") || sel_streq(name,"ol")) {
@@ -1126,8 +1133,8 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
         txt[ti] = c; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; tcolor[ti] = (uint8_t)cur_color; tbgcol[ti] = (uint8_t)cur_bg; tbold[ti] = (uint8_t)(cur_bold | (cur_ul << 1) | (cur_st << 2)); talign[ti] = (uint8_t)cur_align; tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 0; i++;
     }
     txt[ti] = '\0';
-    wrap_text(s, txt, tlink, tfield, timg, tcolor, tbgcol, tbold, talign, tindent, ti);
-    kfree(txt); kfree(tlink); kfree(tfield); kfree(timg); kfree(tcolor); kfree(tbgcol); kfree(tbold); kfree(talign); kfree(tindent);
+    wrap_text(s, txt, tlink, tfield, timg, tcolor, tbgcol, tbold, talign, trule, tindent, ti);
+    kfree(txt); kfree(tlink); kfree(tfield); kfree(timg); kfree(tcolor); kfree(tbgcol); kfree(tbold); kfree(talign); kfree(trule); kfree(tindent);
 }
 
 // Parse http[://]host[:port][/path] into host/port/path (same shape as `httpget`).
@@ -1751,6 +1758,11 @@ void selene_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
         int idx = s->scroll + r;
         if (idx >= s->num_lines) break;
         int py = cyy + SEL_PAD + r * SEL_LINE_H;
+        if (s->line_rule[idx]) {                                 // <hr>: a real 2px horizontal rule across the content width (no text/overlays on this line)
+            int rw = SELENE_W - 2 * SEL_PAD;
+            fb_fill_rect(cx + SEL_PAD, py + FONT_HEIGHT / 2 - 1, (uint32_t)rw, 2, fb_rgb(150, 154, 168));
+            continue;
+        }
         // text-align: shift the whole line right by lpad for centre/right (line_align 0=left, unchanged)
         int lpad = 0;
         if (s->line_align[idx]) {
