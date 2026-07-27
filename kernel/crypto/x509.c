@@ -225,13 +225,24 @@ int x509_selftest(void) {
     // 2) Flip one byte inside the leaf's tbsCertificate: the leaf link must be detected as forged.
     total++;
     {
-        static uint8_t bad_leaf[1003];
-        for (int i = 0; i < (int)TESTCHAIN_LEN[0]; i++) bad_leaf[i] = TESTCHAIN_0[i];
-        bad_leaf[400] ^= 0x01;                               // a byte well inside the tbsCertificate
-        const uint8_t* cc[4] = { bad_leaf, TESTCHAIN_1, TESTCHAIN_2, TESTCHAIN_3 };
-        int r = x509_verify_chain(cc, TESTCHAIN_LEN, 4, msg, sizeof(msg));
-        if (r == X509_FORGED) { pass++; printf("x509: tampered leaf -> REJECTED (%s) PASS\n", msg); }
-        else                    printf("x509: tampered leaf NOT rejected (code %d) FAIL\n", r);
+        // Copy the leaf so a byte can be flipped. The buffer was sized (1003) to the CURRENT
+        // pinned example.com leaf and the copy was unbounded — but the pinned chain is
+        // re-captured periodically (certs rotate ~quarterly), and the next capture with a
+        // larger leaf would silently overflow this static buffer. Size it generously and
+        // bound the copy so no future test cert can overrun it; guard the flip index too.
+        static uint8_t bad_leaf[2048];
+        uint32_t l0 = TESTCHAIN_LEN[0];
+        if (l0 > sizeof(bad_leaf) || l0 <= 400) {
+            printf("x509: tampered-leaf test can't run (leaf %u B vs %u B buffer) FAIL\n",
+                   (unsigned)l0, (unsigned)sizeof(bad_leaf));
+        } else {
+            for (uint32_t i = 0; i < l0; i++) bad_leaf[i] = TESTCHAIN_0[i];
+            bad_leaf[400] ^= 0x01;                           // a byte well inside the tbsCertificate
+            const uint8_t* cc[4] = { bad_leaf, TESTCHAIN_1, TESTCHAIN_2, TESTCHAIN_3 };
+            int r = x509_verify_chain(cc, TESTCHAIN_LEN, 4, msg, sizeof(msg));
+            if (r == X509_FORGED) { pass++; printf("x509: tampered leaf -> REJECTED (%s) PASS\n", msg); }
+            else                    printf("x509: tampered leaf NOT rejected (code %d) FAIL\n", r);
+        }
     }
 
     // 3) A chain that stops before the root (leaf..transit): links verify, but the top is not the
