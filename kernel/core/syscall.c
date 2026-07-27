@@ -1319,8 +1319,15 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
             static uint8_t* fbp_scratch = 0;
             static uint64_t fbp_scratch_sz = 0;
             uint32_t w = (uint32_t)a2, h = (uint32_t)a3;
+            // Bound each dimension BEFORE multiplying: w and h are raw user args, and
+            // (uint64_t)w * h * 4 overflows 64 bits for large values (e.g. w=h=0x80000000
+            // makes it wrap to 0), which would slip past the 8 MB cap below and then have
+            // fb_present_kbuf read the true w*h*4 bytes from a scratch sized to the wrapped
+            // (tiny) value — a ring-3-triggerable out-of-bounds read blitted to the screen.
+            // 16384 covers any real screen and keeps the product far inside 64 bits.
+            if (w == 0 || h == 0 || w > 16384 || h > 16384) return (uint64_t)-1;
             uint64_t bytes = (uint64_t)w * h * 4;
-            if (w == 0 || h == 0 || bytes > (8u * 1024 * 1024)) return (uint64_t)-1;
+            if (bytes > (8u * 1024 * 1024)) return (uint64_t)-1;
             if (!user_ptr_ok(a1, bytes)) return (uint64_t)-1;
             if (bytes > fbp_scratch_sz) {                 // grow the reusable scratch
                 uint8_t* n = (uint8_t*)krealloc(fbp_scratch, bytes);
