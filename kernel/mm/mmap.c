@@ -48,7 +48,16 @@ uint64_t do_mmap(uint64_t addr, uint64_t length, int prot, int flags,
      * be handed the same region and either can munmap what the other mapped. */
     process_t* p = tg_leader(get_current_process());
     if (!p || length == 0) return (uint64_t)-1;
+    uint64_t req_length = length;
     length = (length + 0xFFF) & ~0xFFFULL;              /* round up to whole pages */
+    // A length within 0xFFF of UINT64_MAX overflows the round-up above and wraps to a
+    // smaller value (0 for the very top page). A wrapped-to-zero length then slips through
+    // the base+length range check below (base+0 is in-range, no wrap), so mmap would hand
+    // back a bogus zero-length VMA and a success address instead of MAP_FAILED. do_mprotect
+    // and do_munmap already reject an overflowing length via their end<=addr wrap test;
+    // do_mmap needs its own. Rounding up never shrinks a valid length, so this only fires
+    // on the overflow.
+    if (length < req_length) return (uint64_t)-1;
     if (p->mmap_next < MMAP_BASE) p->mmap_next = MMAP_BASE;   /* lazy first-use init */
 
     int slot = -1;
