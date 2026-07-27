@@ -607,6 +607,31 @@ int ext2_write_file(const char* path, const void* buf, uint32_t len) {
     // (block_size/4 is the pointers-per-block; kept inline so it doesn't shadow the loop's.)
     if (blocks_needed > 12 + ext2_fs.block_size / 4) return -1;
 
+    // Reject up front if the filesystem can't hold the blocks this write must NEWLY
+    // allocate. Otherwise a mid-write ext2_alloc_block() failure (disk full) returns -1
+    // WITHOUT writing the inode back, orphaning the blocks already grabbed — they stay
+    // marked used in the bitmap while owned by no inode, which e2fsck reports as "Block
+    // bitmap differences" that survive a reboot. Count ONLY new allocations: an in-place
+    // overwrite reuses its existing blocks, so it must not be rejected here. Under the FS
+    // lock sb.free_blocks is stable and consistent with the bitmap, so the count is exact.
+    {
+        uint32_t need = 0, ndir = blocks_needed < 12 ? blocks_needed : 12;
+        for (uint32_t ib = 0; ib < ndir; ib++) if (inode.block[ib] == 0) need++;
+        if (blocks_needed > 12) {
+            uint32_t nind = blocks_needed - 12;              // data blocks in the single-indirect region
+            if (inode.block[12] == 0) {
+                need += 1 + nind;                            // a fresh indirect block + all its data blocks
+            } else {                                         // reuse the indirect block; count only its holes
+                uint8_t* pib = get_aux_buf();
+                if (!pib) return -1;
+                ext2_read_block(inode.block[12], pib);
+                uint32_t* pind = (uint32_t*)pib;
+                for (uint32_t s = 0; s < nind; s++) if (pind[s] == 0) need++;
+            }
+        }
+        if (need > ext2_fs.sb.free_blocks) return -1;
+    }
+
     // Write data block by block
     const uint8_t* data = (const uint8_t*)buf;
     uint32_t remaining = len;
