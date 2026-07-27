@@ -243,6 +243,13 @@ int ext2_read_inode(uint32_t ino, ext2_inode_t* inode) {
 }
 
 int ext2_read_block(uint32_t block, void* buf) {
+    // Reject an out-of-range block before turning it into an LBA. Block numbers come from
+    // inode and indirect-block pointers read off disk (untrusted on a corrupt/hostile
+    // image); block_to_lba(block) = block * sectors_per_block would overflow uint32 for a
+    // huge value and read an arbitrary (wrapped) disk sector. A valid FS only references
+    // blocks in [0, total_blocks) — block 0 is the boot block, and callers check a
+    // pointer for 0 before calling here, so a valid read never hits this bound.
+    if (block >= ext2_fs.sb.total_blocks) return -1;
     uint32_t lba = block_to_lba(block);
     uint32_t sectors = ext2_fs.block_size / 512;
     for (uint32_t i = 0; i < sectors; i++)
@@ -262,7 +269,9 @@ int ext2_read_inode_block(ext2_inode_t* inode, uint32_t iblock, void* buf) {
     if (iblock < ptrs_per_block) {
         if (inode->block[12] == 0) return -1;
         uint32_t* indirect = (uint32_t*)get_aux_buf();   /* buf may BE buffer 0 */
-        ext2_read_block(inode->block[12], indirect);
+        // Propagate the indirect-block read: ext2_read_block now rejects an out-of-range
+        // pointer, and using indirect[] after a failed read would parse a stale buffer.
+        if (ext2_read_block(inode->block[12], indirect) < 0) return -1;
         if (indirect[iblock] == 0) return -1;
         return ext2_read_block(indirect[iblock], buf);
     }
@@ -271,11 +280,11 @@ int ext2_read_inode_block(ext2_inode_t* inode, uint32_t iblock, void* buf) {
     if (iblock < ptrs_per_block * ptrs_per_block) {
         if (inode->block[13] == 0) return -1;
         uint32_t* dindirect = (uint32_t*)get_aux_buf();
-        ext2_read_block(inode->block[13], dindirect);
+        if (ext2_read_block(inode->block[13], dindirect) < 0) return -1;
         uint32_t block_idx = dindirect[iblock / ptrs_per_block];
         if (block_idx == 0) return -1;
         uint32_t* indirect = (uint32_t*)get_aux2_buf(); /* dindirect[] still live */
-        ext2_read_block(block_idx, indirect);
+        if (ext2_read_block(block_idx, indirect) < 0) return -1;
         uint32_t target = indirect[iblock % ptrs_per_block];
         if (target == 0) return -1;
         return ext2_read_block(target, buf);
