@@ -150,7 +150,14 @@ static const sel_entity_t SEL_ENTITIES[] = {
     {"times",215,"x"}, {"divide",247,"/"},{"plusmn",177,"+/-"},
     {"frac12",189,"1/2"},{"frac14",188,"1/4"},{"frac34",190,"3/4"},
     {"deg",176,"\xf8"},{"sect",167,"S"},  {"para",182,"P"},   {"euro",8364,"EUR"},
-    {"pound",163,"GBP"},{"cent",162,"c"},
+    {"pound",163,"GBP"},{"cent",162,"c"},   {"yen",165,"\x9d"}, {"micro",181,"\xe6"},   // CP437: yen 0x9D, micro (mu) 0xE6
+    {"iexcl",161,"\xad"},{"iquest",191,"\xa8"},{"ordf",170,"\xa6"},{"ordm",186,"\xa7"},{"not",172,"\xaa"},{"szlig",223,"\xe1"},  // Latin-1 letters/marks as CP437 glyphs (iexcl/iquest = Spanish, szlig = ss-ligature)
+    {"sup2",178,"\xfd"},{"sup3",179,"3"},    // superscripts (CP437 has a glyph only for squared)
+    {"larr",8592,"\x1b"},{"uarr",8593,"\x18"},{"rarr",8594,"\x1a"},{"darr",8595,"\x19"},{"harr",8596,"\x1d"},   // arrows (CP437 control-range glyphs 0x18-0x1D)
+    {"hearts",9829,"\x03"},{"diams",9830,"\x04"},{"clubs",9827,"\x05"},{"spades",9824,"\x06"},   // card suits (CP437 0x03-0x06)
+    {"equiv",8801,"\xf0"},{"ge",8805,"\xf2"},{"le",8804,"\xf3"},{"ne",8800,"!="},{"minus",8722,"-"},   // math relations (CP437: equiv 0xF0, ge 0xF2, le 0xF3)
+    {"radic",8730,"\xfb"},{"infin",8734,"\xec"},{"cap",8745,"\xef"},   // math symbols (CP437: sqrt 0xFB, infinity 0xEC, intersection 0xEF)
+    {"dagger",8224,"+"},{"Dagger",8225,"++"},{"prime",8242,"'"},{"Prime",8243,"\""},   // typographic marks (ASCII fallbacks; no CP437 glyph)
 };
 #define SEL_NENT (int)(sizeof(SEL_ENTITIES)/sizeof(SEL_ENTITIES[0]))
 
