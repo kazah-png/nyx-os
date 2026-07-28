@@ -1250,6 +1250,17 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                 i = te; if (i < len) i++;
                 continue;
             }
+            if (sel_streq(name, "kbd")) {                      // <kbd>..</kbd>: bracket the (grey-background) key text as a keycap "[Key]"
+                char kc = close ? ']' : '[';                   // the grey background is applied to the content by the style block above; the brackets stay plain (tbgcol 0)
+                if (ti < len) { txt[ti]=kc; tlink[ti]=(uint8_t)cur_link; tfield[ti]=(uint8_t)cur_field;
+                    tcolor[ti]=(uint8_t)cur_color; tbgcol[ti]=0;
+                    tbold[ti]=(uint8_t)(cur_bold|(cur_ul<<1)|(cur_st<<2)|(cur_du<<3)|(cur_vo<<4)|(cur_ol<<6)); talign[ti]=(uint8_t)cur_align;
+                    tindent[ti]=(uint8_t)quote_depth; ti++; }
+                last_space = 0;
+                uint32_t te = j; while (te < len && body[te] != '>') te++;
+                i = te; if (i < len) i++;
+                continue;
+            }
             if (sel_streq(name, "a")) {                        // hyperlink open/close
                 uint32_t te = j; while (te < len && body[te] != '>') te++;
                 if (close) {
