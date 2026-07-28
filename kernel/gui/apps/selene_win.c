@@ -388,6 +388,20 @@ static int sel_span_attr(const uint8_t* body, uint32_t s, uint32_t e, const char
     return v;
 }
 
+// Parse a decimal string like "70" or "0.7" into thousandths (70 -> 70000, 0.7 -> 700); -1 if no digits.
+// Used for <progress>/<meter> value/max/min, which may be fractional, without needing floating point.
+static int sel_parse_milli(const char* s) {
+    while (*s == ' ') s++;
+    long v = 0; int any = 0;
+    for (; *s >= '0' && *s <= '9'; s++) { v = v * 10 + (*s - '0'); any = 1; }
+    v *= 1000;
+    if (*s == '.') { s++; int frac = 0, fd = 0;
+        for (; *s >= '0' && *s <= '9' && fd < 3; s++) { frac = frac * 10 + (*s - '0'); fd++; any = 1; }
+        while (fd < 3) { frac *= 10; fd++; }
+        v += frac; }
+    return any ? (int)v : -1;
+}
+
 // If body[i] opens/closes exactly tag `nm`, return 1, set *close (1=closing) and *past (just after '>').
 static int sel_tag_match(const uint8_t* body, uint32_t i, uint32_t e, const char* nm, int* close, uint32_t* past) {
     if (i >= e || body[i] != '<') return 0;
@@ -1577,6 +1591,44 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                 if (!close) { const char* mk = "[-] ";          // expanded disclosure marker; summary rendered bold
                     for (int z = 0; mk[z] && ti < len; z++) { txt[ti] = mk[z]; tlink[ti] = 0; tbold[ti] = 1; ti++; } }
                 last_space = 1;
+            } else if (!close && (sel_streq(name, "progress") || sel_streq(name, "meter"))) {
+                // <progress value max> / <meter value min max>: draw a CP437 block bar + a percentage,
+                // inline in the text flow, then skip the element's fallback content up to its close tag.
+                uint32_t pte = j; while (pte < len && body[pte] != '>') pte++;
+                char vv[16] = {0}, mv[16] = {0}, nv[16] = {0};
+                extract_attr(body, j, pte, "value", vv, sizeof(vv));
+                extract_attr(body, j, pte, "max",   mv, sizeof(mv));
+                extract_attr(body, j, pte, "min",   nv, sizeof(nv));
+                int val = sel_parse_milli(vv); if (val < 0) val = 0;
+                int mx  = sel_parse_milli(mv); if (mx <= 0) mx = 1000;   // default max = 1
+                int mn  = sel_parse_milli(nv); if (mn < 0) mn = 0;       // <meter min> (progress has none)
+                if (mx <= mn) mx = mn + 1000;
+                if (val < mn) val = mn; if (val > mx) val = mx;
+                int per = (int)(((long)(val - mn) * 1000) / (mx - mn));  // 0..1000 permille filled
+                const int NB = 16; int filled = per * NB / 1000; if (filled > NB) filled = NB;
+                uint8_t bd = (uint8_t)(cur_bold | (cur_ul << 1) | (cur_st << 2) | (cur_du << 3) | (cur_vo << 4) | (cur_ol << 6));
+                for (int z = 0; z < NB && ti < len; z++) {              // filled = full block 0xDB, empty = light shade 0xB0
+                    txt[ti] = (z < filled) ? (char)0xDB : (char)0xB0; tlink[ti] = 0; tfield[ti] = 0;
+                    tcolor[ti] = (uint8_t)cur_color; tbgcol[ti] = (uint8_t)cur_bg; tbold[ti] = bd;
+                    talign[ti] = (uint8_t)cur_align; tindent[ti] = (uint8_t)quote_depth; ti++;
+                }
+                char pct[8]; int pp = 0, pv = per / 10;                 // trailing " NN%"
+                pct[pp++] = ' ';
+                if (pv >= 100) { pct[pp++] = '1'; pct[pp++] = '0'; pct[pp++] = '0'; }
+                else { if (pv >= 10) pct[pp++] = (char)('0' + pv / 10); pct[pp++] = (char)('0' + pv % 10); }
+                pct[pp++] = '%'; pct[pp] = '\0';
+                for (int z = 0; pct[z] && ti < len; z++) {
+                    txt[ti] = pct[z]; tlink[ti] = 0; tfield[ti] = 0;
+                    tcolor[ti] = (uint8_t)cur_color; tbgcol[ti] = (uint8_t)cur_bg; tbold[ti] = bd;
+                    talign[ti] = (uint8_t)cur_align; tindent[ti] = (uint8_t)quote_depth; ti++;
+                }
+                uint32_t k = (pte < len) ? pte + 1 : len;               // skip fallback content to the matching close tag
+                while (k < len) { int pc; uint32_t ppast;
+                    if (body[k] == '<' && ((sel_tag_match(body, k, len, "progress", &pc, &ppast) && pc) ||
+                                           (sel_tag_match(body, k, len, "meter", &pc, &ppast) && pc))) { k = ppast; break; }
+                    k++;
+                }
+                i = k; last_space = 0; continue;
             } else if (!close && sel_streq(name, "dd")) {
                 ti = sel_ensure_nl(txt, tlink, ti, len, 1);          // <dd>: the description on its own line, indented under its <dt> term
                 for (int d = 0; d < SEL_QUOTE_INDENT && ti < len; d++) { txt[ti] = ' '; tlink[ti] = 0; ti++; }
