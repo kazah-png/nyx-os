@@ -2,30 +2,31 @@
   <img src="https://capsule-render.vercel.app/api?type=waving&color=0:0a0a0a,50:1a1a1a,100:2d2d2d&height=140&section=header&text=NyxOS&fontSize=52&fontColor=825AD2&animation=fadeIn&fontAlignY=55" />
 </div>
 
-<div align="center">
-  <strong>Custom x86_64 kernel · C and Assembly · General-purpose OS</strong>
-  <br/><br/>
-  <!-- Badges -->
-  <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.9.0-LTS">
-    <img src="https://img.shields.io/badge/release-v5.9.0--LTS-825AD2?style=flat" />
-  </a>
+<p align="center"><strong>Custom x86_64 kernel · C and Assembly · General-purpose OS</strong></p>
+
+<p align="center">
+  <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.9.0-LTS"><img src="https://img.shields.io/badge/release-v5.9.0--LTS-825AD2?style=flat" /></a>
+  &nbsp;
   <img src="https://img.shields.io/badge/status-v5.9.180-825AD2?style=flat" />
+  &nbsp;
   <img src="https://img.shields.io/badge/TCP-yes-825AD2?style=flat" />
+</p>
+
+<p align="center">
   <img src="https://img.shields.io/badge/GUI-window%20compositor-825AD2?style=flat" />
+  &nbsp;
   <img src="https://img.shields.io/badge/%F0%9F%8C%99%20NyxC-runtime-8b5cf6?style=flat" />
-  <a href="https://github.com/kazah-png/nyx-os/issues/1">
-    <img src="https://img.shields.io/badge/status%20report-View-0d1117?style=flat&logo=github" />
-  </a>
-  <a href="https://dsc.gg/nyxos">
-    <img src="https://img.shields.io/badge/Discord-NyxOS-5865F2?style=flat&logo=discord&logoColor=white" />
-  </a>
-  <a href="https://kazah-png.github.io/nyx-os/">
-    <img src="https://img.shields.io/badge/website-up-825AD2?style=flat&logo=githubpages&logoColor=white" />
-  </a>
-  <a href="https://github.com/kazah-png/nyx-os/wiki">
-    <img src="https://img.shields.io/badge/wiki-online-800080?style=flat&logo=github&logoColor=white" />
-  </a>
-</div>
+  &nbsp;
+  <a href="https://github.com/kazah-png/nyx-os/issues/1"><img src="https://img.shields.io/badge/status%20report-View-0d1117?style=flat&logo=github" /></a>
+</p>
+
+<p align="center">
+  <a href="https://dsc.gg/nyxos"><img src="https://img.shields.io/badge/Discord-NyxOS-5865F2?style=flat&logo=discord&logoColor=white" /></a>
+  &nbsp;
+  <a href="https://kazah-png.github.io/nyx-os/"><img src="https://img.shields.io/badge/website-up-825AD2?style=flat&logo=githubpages&logoColor=white" /></a>
+  &nbsp;
+  <a href="https://github.com/kazah-png/nyx-os/wiki"><img src="https://img.shields.io/badge/wiki-online-800080?style=flat&logo=github&logoColor=white" /></a>
+</p>
 
 ---
 
