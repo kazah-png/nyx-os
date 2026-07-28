@@ -1360,8 +1360,14 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                 }
                 int hal = 0;                                     // 0 = left (default), 1 = center, 2 = right
                 if (sel_ci_streq(ha, "center")) hal = 1; else if (sel_ci_streq(ha, "right")) hal = 2;
+                int hsz = 2;                                     // rule thickness in px (legacy size= or CSS height); default 2, clamped 1..8
+                { char hs[16] = {0}; extract_attr(body, j, hte, "size", hs, sizeof(hs));
+                  if (!hs[0] && hstyle[0]) sel_css_get(hstyle, "height", hs, sizeof(hs));
+                  if (hs[0]) { const char* p = hs; while (*p == ' ') p++; int n = 0;
+                    for (; *p >= '0' && *p <= '9'; p++) n = n * 10 + (*p - '0');
+                    if (n >= 1) hsz = n > 8 ? 8 : n; } }
                 ti = sel_ensure_nl(txt, tlink, ti, len, 1);
-                if (ti < len) { txt[ti] = ' '; tlink[ti] = 0; trule[ti] = (uint8_t)hpct; talign[ti] = (uint8_t)hal; tcolor[ti] = hcol; ti++; }  // marker: trule = width%, talign = alignment, tcolor = rule colour
+                if (ti < len) { txt[ti] = ' '; tlink[ti] = 0; trule[ti] = (uint8_t)hpct; talign[ti] = (uint8_t)hal; tcolor[ti] = hcol; tbgcol[ti] = (uint8_t)hsz; ti++; }  // marker: trule = width%, talign = alignment, tcolor = rule colour, tbgcol = thickness px
                 ti = sel_ensure_nl(txt, tlink, ti, len, 1);
                 last_space = 1;
             } else if (sel_streq(name,"ul") || sel_streq(name,"ol")) {
@@ -2226,7 +2232,8 @@ void selene_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
             else if (s->line_align[idx] == 2) rx0 += (avail - rw);   // right
             uint8_t hc = s->color_of[idx][0];                        // rule colour (marker char's colour slot); 0 = default grey
             uint32_t rulecol = (hc && hc <= s->npalette) ? s->palette[hc - 1] : fb_rgb(150, 154, 168);
-            fb_fill_rect(rx0, py + FONT_HEIGHT / 2 - 1, (uint32_t)rw, 2, rulecol);
+            int hsz = s->bgcolor_of[idx][0]; if (hsz < 1) hsz = 2; if (hsz > 8) hsz = 8;   // <hr size> thickness (px), carried in the marker's bg slot
+            fb_fill_rect(rx0, py + FONT_HEIGHT / 2 - hsz / 2, (uint32_t)rw, (uint32_t)hsz, rulecol);
             continue;
         }
         // text-align: shift the whole line right by lpad for centre/right (line_align 0=left, unchanged)
