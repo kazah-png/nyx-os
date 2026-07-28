@@ -100,7 +100,7 @@ typedef struct {
     // Both index the same per-page, deduped palette.
     uint8_t (*color_of)[SEL_LINE_COLS];
     uint8_t (*bgcolor_of)[SEL_LINE_COLS];
-    uint8_t (*bold_of)[SEL_LINE_COLS]; // per-char text-style flags: bit0=bold, bit1=underline, bit2=line-through (<b>/<u>/<s>/<del>/style)
+    uint8_t (*bold_of)[SEL_LINE_COLS]; // per-char text-style flags: bit0=bold, bit1=underline, bit2=line-through, bits4-5=sub/sup, bit6=overline (<b>/<u>/<s>/<del>/style)
     uint32_t palette[255];             // framebuffer pixel values, index 0 => palette id 1
     int  npalette;
     uint8_t line_align[SEL_MAX_LINES]; // per-line text alignment: 0=left (default), 1=center, 2=right
@@ -969,8 +969,8 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
     int qmark_depth = 0;                                      // <q> nesting: level 0 uses ", level 1 uses ', alternating
     struct { uint8_t ordered; uint16_t counter; uint8_t type; uint8_t rev; } liststk[SEL_LIST_MAXDEPTH];  // <ul>/<ol> nesting (+ list-style-type, +<ol reversed>)
     int listdepth = 0;                                        // 0 = not in a list
-    int cur_color = 0, cur_bg = 0, cur_bold = 0, cur_ul = 0, cur_st = 0, cur_align = 0, cur_du = 0, cur_vo = 0, cur_tt = 0;  // +text-align, +dotted-underline (<abbr>), +vert-offset (<sub>/<sup>), +text-transform
-    struct { char tag[16]; uint8_t color, bg, bold, ul, st, al, du, vo, tt; } colstk[16];  // style stack: push a styled open, pop its close
+    int cur_color = 0, cur_bg = 0, cur_bold = 0, cur_ul = 0, cur_st = 0, cur_align = 0, cur_du = 0, cur_vo = 0, cur_tt = 0, cur_ol = 0;  // +text-align, +dotted-underline (<abbr>), +vert-offset (<sub>/<sup>), +text-transform, +overline
+    struct { char tag[16]; uint8_t color, bg, bold, ul, st, al, du, vo, tt, ol; } colstk[16];  // style stack: push a styled open, pop its close
     int coldepth = 0;
     for (uint32_t i = 0; i < len && ti < len; ) {
         char c = (char)body[i];
@@ -1055,6 +1055,7 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                         cur_bold  = coldepth > 0 ? colstk[coldepth - 1].bold  : 0;
                         cur_ul    = coldepth > 0 ? colstk[coldepth - 1].ul    : 0;
                         cur_st    = coldepth > 0 ? colstk[coldepth - 1].st    : 0;
+                        cur_ol    = coldepth > 0 ? colstk[coldepth - 1].ol    : 0;
                         cur_align = coldepth > 0 ? colstk[coldepth - 1].al    : 0;
                         cur_du    = coldepth > 0 ? colstk[coldepth - 1].du    : 0;
                         cur_vo    = coldepth > 0 ? colstk[coldepth - 1].vo    : 0;
@@ -1076,7 +1077,7 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                     if (!cval[0] && sel_streq(name, "font")) extract_attr(body, j, cte, "color",   cval, sizeof(cval));
                     if (!bval[0] && sel_streq(name, "font")) extract_attr(body, j, cte, "bgcolor", bval, sizeof(bval));
                     uint32_t rgb;
-                    uint8_t nfg = (uint8_t)cur_color, nbg = (uint8_t)cur_bg, nbold = (uint8_t)cur_bold, nul = (uint8_t)cur_ul, nst = (uint8_t)cur_st, nal = (uint8_t)cur_align, ndu = (uint8_t)cur_du, nvo = (uint8_t)cur_vo, ntt = (uint8_t)cur_tt;  // inherit unless overridden
+                    uint8_t nfg = (uint8_t)cur_color, nbg = (uint8_t)cur_bg, nbold = (uint8_t)cur_bold, nul = (uint8_t)cur_ul, nst = (uint8_t)cur_st, nal = (uint8_t)cur_align, ndu = (uint8_t)cur_du, nvo = (uint8_t)cur_vo, ntt = (uint8_t)cur_tt, nol = (uint8_t)cur_ol;  // inherit unless overridden
                     int set = 0;
                     if (cval[0] && sel_parse_css_color(cval, &rgb)) { uint8_t x = sel_intern_color(s, rgb); if (x) { nfg = x; set = 1; } }
                     if (bval[0] && sel_parse_css_color(bval, &rgb)) { uint8_t x = sel_intern_color(s, rgb); if (x) { nbg = x; set = 1; } }
@@ -1093,7 +1094,8 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                     if (dval[0]) {                                                                    // text-decoration
                         if (sel_ci_streq(dval,"underline"))         { nul = 1; set = 1; }
                         else if (sel_ci_streq(dval,"line-through")) { nst = 1; set = 1; }
-                        else if (sel_ci_streq(dval,"none"))         { nul = 0; nst = 0; set = 1; }
+                        else if (sel_ci_streq(dval,"overline"))     { nol = 1; set = 1; }
+                        else if (sel_ci_streq(dval,"none"))         { nul = 0; nst = 0; nol = 0; set = 1; }
                     }
                     // Semantic inline tags mapped onto the existing colour/decoration machinery.
                     if (sel_streq(name,"mark")) {                          // <mark> = black text on a yellow highlight
@@ -1125,8 +1127,8 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                     if (set && coldepth < 16) {
                         strncpy(colstk[coldepth].tag, name, 15); colstk[coldepth].tag[15] = '\0';
                         colstk[coldepth].color = nfg; colstk[coldepth].bg = nbg; colstk[coldepth].bold = nbold;
-                        colstk[coldepth].ul = nul; colstk[coldepth].st = nst; colstk[coldepth].al = nal; colstk[coldepth].du = ndu; colstk[coldepth].vo = nvo; colstk[coldepth].tt = ntt; coldepth++;
-                        cur_color = nfg; cur_bg = nbg; cur_bold = nbold; cur_ul = nul; cur_st = nst; cur_align = nal; cur_du = ndu; cur_vo = nvo; cur_tt = ntt;
+                        colstk[coldepth].ul = nul; colstk[coldepth].st = nst; colstk[coldepth].al = nal; colstk[coldepth].du = ndu; colstk[coldepth].vo = nvo; colstk[coldepth].tt = ntt; colstk[coldepth].ol = nol; coldepth++;
+                        cur_color = nfg; cur_bg = nbg; cur_bold = nbold; cur_ul = nul; cur_st = nst; cur_align = nal; cur_du = ndu; cur_vo = nvo; cur_tt = ntt; cur_ol = nol;
                     }
                 }
             }
@@ -1136,7 +1138,7 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                 else        { if (qmark_depth > 0) qmark_depth--; qc = (qmark_depth % 2 == 0) ? '"' : '\''; }
                 if (ti < len) { txt[ti]=qc; tlink[ti]=(uint8_t)cur_link; tfield[ti]=(uint8_t)cur_field;
                     tcolor[ti]=(uint8_t)cur_color; tbgcol[ti]=(uint8_t)cur_bg;
-                    tbold[ti]=(uint8_t)(cur_bold|(cur_ul<<1)|(cur_st<<2)|(cur_du<<3)|(cur_vo<<4)); talign[ti]=(uint8_t)cur_align;
+                    tbold[ti]=(uint8_t)(cur_bold|(cur_ul<<1)|(cur_st<<2)|(cur_du<<3)|(cur_vo<<4)|(cur_ol<<6)); talign[ti]=(uint8_t)cur_align;
                     tindent[ti]=(uint8_t)quote_depth; ti++; }
                 last_space = 0;
                 uint32_t te = j; while (te < len && body[te] != '>') te++;
@@ -1475,13 +1477,13 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
             if (decode_entity(body + i, len - i, eb, sizeof(eb), &el, &adv)) {
                 for (uint32_t k = 0; k < el && ti < len; k++) {
                     char dec = eb[k];
-                    if (dec == ' ') { if (pre_mode || !last_space) { txt[ti] = ' '; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; tcolor[ti] = (uint8_t)cur_color; tbgcol[ti] = (uint8_t)cur_bg; tbold[ti] = (uint8_t)(cur_bold | (cur_ul << 1) | (cur_st << 2) | (cur_du << 3) | (cur_vo << 4)); talign[ti] = (uint8_t)cur_align; tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 1; } }
+                    if (dec == ' ') { if (pre_mode || !last_space) { txt[ti] = ' '; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; tcolor[ti] = (uint8_t)cur_color; tbgcol[ti] = (uint8_t)cur_bg; tbold[ti] = (uint8_t)(cur_bold | (cur_ul << 1) | (cur_st << 2) | (cur_du << 3) | (cur_vo << 4) | (cur_ol << 6)); talign[ti] = (uint8_t)cur_align; tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 1; } }
                     else { if (cur_hd && dec >= 'a' && dec <= 'z') dec -= 32;
                         if (cur_tt == 1 && dec >= 'a' && dec <= 'z') dec -= 32; else if (cur_tt == 2 && dec >= 'A' && dec <= 'Z') dec += 32; else if (cur_tt == 3 && last_space && dec >= 'a' && dec <= 'z') dec -= 32;
-                        txt[ti] = dec; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; tcolor[ti] = (uint8_t)cur_color; tbgcol[ti] = (uint8_t)cur_bg; tbold[ti] = (uint8_t)(cur_bold | (cur_ul << 1) | (cur_st << 2) | (cur_du << 3) | (cur_vo << 4)); talign[ti] = (uint8_t)cur_align; tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 0; }
+                        txt[ti] = dec; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; tcolor[ti] = (uint8_t)cur_color; tbgcol[ti] = (uint8_t)cur_bg; tbold[ti] = (uint8_t)(cur_bold | (cur_ul << 1) | (cur_st << 2) | (cur_du << 3) | (cur_vo << 4) | (cur_ol << 6)); talign[ti] = (uint8_t)cur_align; tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 0; }
                 }
                 i += adv;
-            } else { txt[ti] = '&'; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; tcolor[ti] = (uint8_t)cur_color; tbgcol[ti] = (uint8_t)cur_bg; tbold[ti] = (uint8_t)(cur_bold | (cur_ul << 1) | (cur_st << 2) | (cur_du << 3) | (cur_vo << 4)); talign[ti] = (uint8_t)cur_align; tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 0; i++; }
+            } else { txt[ti] = '&'; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; tcolor[ti] = (uint8_t)cur_color; tbgcol[ti] = (uint8_t)cur_bg; tbold[ti] = (uint8_t)(cur_bold | (cur_ul << 1) | (cur_st << 2) | (cur_du << 3) | (cur_vo << 4) | (cur_ol << 6)); talign[ti] = (uint8_t)cur_align; tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 0; i++; }
             continue;
         }
         if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {
@@ -1490,12 +1492,12 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                 if (c == '\n') {
                     if (pre_skip_nl) { pre_skip_nl = 0; i++; continue; }   // swallow the single newline after <pre>
                     txt[ti] = '\n'; tlink[ti] = 0; tfield[ti] = 0; tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 1;
-                } else if (c == '\t') { pre_skip_nl = 0; for (int q = 0; q < SEL_PRE_TAB && ti < len; q++) { txt[ti]=' '; tlink[ti]=(uint8_t)cur_link; tfield[ti]=0; tcolor[ti]=(uint8_t)cur_color; tbgcol[ti]=(uint8_t)cur_bg; tbold[ti]=(uint8_t)(cur_bold|(cur_ul<<1)|(cur_st<<2)|(cur_du<<3)|(cur_vo<<4)); talign[ti]=(uint8_t)cur_align; tindent[ti]=(uint8_t)quote_depth; ti++; } last_space = 0; }
-                else { pre_skip_nl = 0; txt[ti] = ' '; tlink[ti] = (uint8_t)cur_link; tfield[ti] = 0; tcolor[ti] = (uint8_t)cur_color; tbgcol[ti] = (uint8_t)cur_bg; tbold[ti] = (uint8_t)(cur_bold | (cur_ul << 1) | (cur_st << 2) | (cur_du << 3) | (cur_vo << 4)); talign[ti] = (uint8_t)cur_align; tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 0; }
+                } else if (c == '\t') { pre_skip_nl = 0; for (int q = 0; q < SEL_PRE_TAB && ti < len; q++) { txt[ti]=' '; tlink[ti]=(uint8_t)cur_link; tfield[ti]=0; tcolor[ti]=(uint8_t)cur_color; tbgcol[ti]=(uint8_t)cur_bg; tbold[ti]=(uint8_t)(cur_bold|(cur_ul<<1)|(cur_st<<2)|(cur_du<<3)|(cur_vo<<4)|(cur_ol<<6)); talign[ti]=(uint8_t)cur_align; tindent[ti]=(uint8_t)quote_depth; ti++; } last_space = 0; }
+                else { pre_skip_nl = 0; txt[ti] = ' '; tlink[ti] = (uint8_t)cur_link; tfield[ti] = 0; tcolor[ti] = (uint8_t)cur_color; tbgcol[ti] = (uint8_t)cur_bg; tbold[ti] = (uint8_t)(cur_bold | (cur_ul << 1) | (cur_st << 2) | (cur_du << 3) | (cur_vo << 4) | (cur_ol << 6)); talign[ti] = (uint8_t)cur_align; tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 0; }
                 i++;
                 continue;
             }
-            if (!last_space) { txt[ti] = ' '; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; tcolor[ti] = (uint8_t)cur_color; tbgcol[ti] = (uint8_t)cur_bg; tbold[ti] = (uint8_t)(cur_bold | (cur_ul << 1) | (cur_st << 2) | (cur_du << 3) | (cur_vo << 4)); talign[ti] = (uint8_t)cur_align; tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 1; }
+            if (!last_space) { txt[ti] = ' '; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; tcolor[ti] = (uint8_t)cur_color; tbgcol[ti] = (uint8_t)cur_bg; tbold[ti] = (uint8_t)(cur_bold | (cur_ul << 1) | (cur_st << 2) | (cur_du << 3) | (cur_vo << 4) | (cur_ol << 6)); talign[ti] = (uint8_t)cur_align; tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 1; }
             i++;
             continue;
         }
@@ -1504,7 +1506,7 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
         else if (cur_tt == 2 && c >= 'A' && c <= 'Z') c += 32;                   // text-transform: lowercase
         else if (cur_tt == 3 && last_space && c >= 'a' && c <= 'z') c -= 32;     // text-transform: capitalize (word start)
         pre_skip_nl = 0;                                       // real content: a later <pre> newline is significant
-        txt[ti] = c; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; tcolor[ti] = (uint8_t)cur_color; tbgcol[ti] = (uint8_t)cur_bg; tbold[ti] = (uint8_t)(cur_bold | (cur_ul << 1) | (cur_st << 2) | (cur_du << 3) | (cur_vo << 4)); talign[ti] = (uint8_t)cur_align; tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 0; i++;
+        txt[ti] = c; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; tcolor[ti] = (uint8_t)cur_color; tbgcol[ti] = (uint8_t)cur_bg; tbold[ti] = (uint8_t)(cur_bold | (cur_ul << 1) | (cur_st << 2) | (cur_du << 3) | (cur_vo << 4) | (cur_ol << 6)); talign[ti] = (uint8_t)cur_align; tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 0; i++;
     }
     txt[ti] = '\0';
     wrap_text(s, txt, tlink, tfield, timg, tcolor, tbgcol, tbold, talign, trule, tindent, ti);
@@ -2175,6 +2177,7 @@ void selene_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
                 if (bd & 2) fb_fill_rect(rx, ry + FONT_HEIGHT - 1, (uint32_t)((b1 - b0) * FONT_WIDTH), 1, fg);  // bit1: underline
                 if (bd & 4) fb_fill_rect(rx, ry + FONT_HEIGHT / 2, (uint32_t)((b1 - b0) * FONT_WIDTH), 1, fg);  // bit2: line-through
                 if (bd & 8) { int uw = (b1 - b0) * FONT_WIDTH; for (int dx = 0; dx < uw; dx += 2) fb_fill_rect(rx + dx, ry + FONT_HEIGHT - 1, 1, 1, fg); }  // bit3: dotted underline (<abbr>)
+                if (bd & 64) fb_fill_rect(rx, ry, (uint32_t)((b1 - b0) * FONT_WIDTH), 1, fg);  // bit6: overline (rule at glyph top)
                 b0 = b1;
             }
         }
