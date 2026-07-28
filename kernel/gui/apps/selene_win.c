@@ -143,7 +143,7 @@ static int is_block_tag(const char* n) {
 typedef struct { const char* name; uint32_t cp; const char* str; } sel_entity_t;
 static const sel_entity_t SEL_ENTITIES[] = {
     {"amp",38,"&"},    {"lt",60,"<"},     {"gt",62,">"},      {"quot",34,"\""}, {"apos",39,"'"},
-    {"nbsp",160," "},  {"copy",169,"(c)"},{"reg",174,"(r)"},  {"trade",8482,"(tm)"},
+    {"nbsp",160,"\xff"},{"copy",169,"(c)"},{"reg",174,"(r)"}, {"trade",8482,"(tm)"},   // 0xFF = a blank-rendering, non-breaking space (wrap_text won't split on it)
     {"mdash",8212,"--"},{"ndash",8211,"-"},{"hellip",8230,"..."},
     {"lsquo",8216,"'"},{"rsquo",8217,"'"},{"ldquo",8220,"\""},{"rdquo",8221,"\""},
     {"laquo",171,"<<"},{"raquo",187,">>"},{"middot",183,"*"}, {"bull",8226,"*"},
@@ -178,7 +178,7 @@ static int decode_entity(const uint8_t* p, uint32_t len, char* out, uint32_t cap
             }
         }
         for (int k = 0; k < SEL_NENT && !s; k++) if (SEL_ENTITIES[k].cp == v) s = SEL_ENTITIES[k].str;
-        if (!s) { tmp[0] = (v >= 0x20 && v < 0x7F) ? (char)v : (v == 0xA0 ? ' ' : '?'); tmp[1] = '\0'; s = tmp; }
+        if (!s) { tmp[0] = (v >= 0x20 && v < 0x7F) ? (char)v : (v == 0xA0 ? (char)0xFF : '?'); tmp[1] = '\0'; s = tmp; }   // U+00A0 -> non-breaking space (0xFF)
     } else {
         char name[8]; uint32_t nl = 0;
         for (uint32_t i = 1; i < semi && nl < 7; i++) name[nl++] = (char)p[i];
