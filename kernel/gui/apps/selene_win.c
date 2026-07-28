@@ -103,6 +103,7 @@ typedef struct {
     uint8_t (*bold_of)[SEL_LINE_COLS]; // per-char text-style flags: bit0=bold, bit1=underline, bit2=line-through, bits4-5=sub/sup, bit6=overline (<b>/<u>/<s>/<del>/style)
     uint32_t palette[255];             // framebuffer pixel values, index 0 => palette id 1
     int  npalette;
+    uint8_t page_bg, page_fg;          // <body bgcolor>/<body text> (+ CSS body background/color): page background & default text colour (palette idx, 0 = default)
     uint8_t line_align[SEL_MAX_LINES]; // per-line text alignment: 0=left (default), 1=center, 2=right
     uint8_t line_rule[SEL_MAX_LINES];  // per-line <hr> flag: 1 = draw a real horizontal rule (not text)
     // base for resolving relative links (from the loaded URL)
@@ -947,6 +948,7 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
     s->num_links = 0; s->sel_link = -1;
     s->num_fields = 0; s->num_forms = 0; s->sel_field = -1;
     s->npalette = 0;                                          // reset the per-page inline-CSS colour palette
+    s->page_bg = 0; s->page_fg = 0;                           // reset <body> page background / text colour
     for (int i = 0; i < s->num_imgs; i++) selene_img_free(&s->images[i]);   // free decoded pixels/frames on nav
     s->num_imgs = 0;
     __builtin_memset(s->link_of, 0, SEL_MAX_LINES * SEL_LINE_COLS);
@@ -1035,6 +1037,20 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                 }
                 s->title[tl] = '\0';
                 i = k;
+                continue;
+            }
+            if (!close && sel_streq(name,"body")) {            // <body bgcolor=/text=> or style background/color -> page background & default text colour
+                uint32_t bce = j; while (bce < len && body[bce] != '>') bce++;
+                char bb[40] = {0}, bt[40] = {0}, bsty[120] = {0}; uint32_t brgb;
+                extract_attr(body, j, bce, "bgcolor", bb, sizeof(bb));
+                extract_attr(body, j, bce, "text",    bt, sizeof(bt));
+                extract_attr(body, j, bce, "style",   bsty, sizeof(bsty));
+                if (!bb[0] && bsty[0]) { if (!sel_css_get(bsty, "background-color", bb, sizeof(bb))) sel_css_get(bsty, "background", bb, sizeof(bb)); }
+                if (!bt[0] && bsty[0]) sel_css_get(bsty, "color", bt, sizeof(bt));
+                if (bb[0] && sel_parse_css_color(bb, &brgb)) { uint8_t x = sel_intern_color(s, brgb); if (x) s->page_bg = x; }
+                if (bt[0] && sel_parse_css_color(bt, &brgb)) { uint8_t x = sel_intern_color(s, brgb); if (x) s->page_fg = x; }
+                if (bce < len) bce++;
+                i = bce;
                 continue;
             }
             // display:none / hidden / visibility:hidden -> skip the element's entire subtree, like
@@ -2213,8 +2229,8 @@ void selene_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
 
     int cyy = cy + SEL_BAR + SEL_TABS_H;
     int content_h = SELENE_H - SEL_BAR - SEL_TABS_H - SEL_STATUS;
-    uint32_t pg = fb_rgb(248, 248, 250);
-    fb_fill_rect(cx, cyy, SELENE_W, content_h, pg);          // page (light)
+    uint32_t pg = (s->page_bg && s->page_bg <= s->npalette) ? s->palette[s->page_bg - 1] : fb_rgb(248, 248, 250);   // <body bgcolor> page background, else light
+    fb_fill_rect(cx, cyy, SELENE_W, content_h, pg);          // page
 
     int rows = visible_rows();
     int find_wl = -1, find_wc = -1;                          // the current find match's (line,col)
@@ -2254,7 +2270,8 @@ void selene_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
                 uint8_t ck = s->color_of[idx][b0], bk = s->bgcolor_of[idx][b0], bd = s->bold_of[idx][b0];
                 int b1 = b0; while (b1 < blen && s->color_of[idx][b1] == ck && s->bgcolor_of[idx][b1] == bk
                                               && s->bold_of[idx][b1] == bd) b1++;
-                uint32_t fg = (ck && ck <= s->npalette) ? s->palette[ck - 1] : fb_rgb(28, 30, 40);
+                uint32_t fg = (ck && ck <= s->npalette) ? s->palette[ck - 1]
+                              : (s->page_fg && s->page_fg <= s->npalette) ? s->palette[s->page_fg - 1] : fb_rgb(28, 30, 40);   // <body text> default fg, else dark
                 uint32_t bg = (bk && bk <= s->npalette) ? s->palette[bk - 1] : pg;
                 char sub[SEL_LINE_COLS]; int k = 0;
                 for (; k < b1 - b0 && k < SEL_LINE_COLS - 1; k++) sub[k] = s->lines[idx][b0 + k];
