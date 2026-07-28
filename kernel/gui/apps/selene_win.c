@@ -1110,6 +1110,7 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                     }
                     if (!cval[0] && sel_streq(name, "font")) extract_attr(body, j, cte, "color",   cval, sizeof(cval));
                     if (!bval[0] && sel_streq(name, "font")) extract_attr(body, j, cte, "bgcolor", bval, sizeof(bval));
+                    if (!aval[0]) extract_attr(body, j, cte, "align", aval, sizeof(aval));   // legacy presentational align= on a block (<p>/<div>/<h1..h6>); CSS text-align above takes precedence
                     uint32_t rgb;
                     uint8_t nfg = (uint8_t)cur_color, nbg = (uint8_t)cur_bg, nbold = (uint8_t)cur_bold, nul = (uint8_t)cur_ul, nst = (uint8_t)cur_st, nal = (uint8_t)cur_align, ndu = (uint8_t)cur_du, nvo = (uint8_t)cur_vo, ntt = (uint8_t)cur_tt, nol = (uint8_t)cur_ol, nnw = (uint8_t)cur_nowrap;  // inherit unless overridden
                     int set = 0;
