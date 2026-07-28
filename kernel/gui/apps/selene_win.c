@@ -827,6 +827,41 @@ static int sel_fmt_roman(uint16_t n, char* out, int upper) {
         while (n >= val[k] && o < 15) { for (const char* sp = sym[k]; *sp && o < 15; sp++) out[o++] = (char)(upper ? *sp - 32 : *sp); n = (uint16_t)(n - val[k]); }
     out[o] = '\0'; return o;
 }
+// Is a boolean (valueless) attribute `name` present in the tag span body[s..e)? Word-bounded and
+// case-insensitive, so <ol reversed> matches but class="reversed-x" does not. Used for <ol reversed>.
+static int sel_attr_present(const uint8_t* body, uint32_t s, uint32_t e, const char* name) {
+    uint32_t nl = 0; while (name[nl]) nl++;
+    for (uint32_t i = s; i + nl <= e; i++) {
+        if (i > s) { char pv = (char)body[i - 1]; if (!(pv==' '||pv=='\t'||pv=='\n'||pv=='\r')) continue; }
+        uint32_t k = 0;
+        for (; k < nl; k++) { char a = (char)body[i + k]; if (a >= 'A' && a <= 'Z') a = (char)(a + 32); if (a != name[k]) break; }
+        if (k != nl) continue;
+        char nx = (i + nl < e) ? (char)body[i + nl] : ' ';
+        if (nx==' '||nx=='\t'||nx=='\n'||nx=='\r'||nx=='>'||nx=='/'||nx=='=') return 1;
+    }
+    return 0;
+}
+// Count the top-level <li> of the list being entered: scan body[from..len) tracking <ol>/<ul>
+// nesting (depth 1 = this list) until its matching close, counting <li> only at depth 1. For
+// <ol reversed> the first item's number equals this count. Capped at 9999.
+static int sel_count_li(const uint8_t* body, uint32_t from, uint32_t len) {
+    int depth = 1, count = 0;
+    for (uint32_t i = from; i < len && depth > 0; ) {
+        if (body[i] != '<') { i++; continue; }
+        uint32_t k = i + 1; int close = 0;
+        if (k < len && body[k] == '/') { close = 1; k++; }
+        char nm[4]; int nl = 0;
+        while (k < len && nl < 3) { char ch = (char)body[k];
+            if (ch >= 'A' && ch <= 'Z') ch = (char)(ch + 32);
+            if (!((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9'))) break;
+            nm[nl++] = ch; k++; }
+        nm[nl] = '\0';
+        if ((nm[0]=='o'||nm[0]=='u') && nm[1]=='l' && nm[2]=='\0') { if (close) depth--; else depth++; }
+        else if (!close && nm[0]=='l' && nm[1]=='i' && nm[2]=='\0' && depth == 1 && count < 9999) count++;
+        i = k;
+    }
+    return count;
+}
 
 static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
     s->num_lines = 0; s->scroll = 0; s->title[0] = '\0';
@@ -885,7 +920,7 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
     int pre_skip_nl = 0;                                      // swallow one newline right after <pre> (like browsers)
     int quote_depth = 0;                                      // <blockquote> nesting (left margin level)
     int qmark_depth = 0;                                      // <q> nesting: level 0 uses ", level 1 uses ', alternating
-    struct { uint8_t ordered; uint16_t counter; uint8_t type; } liststk[SEL_LIST_MAXDEPTH];  // <ul>/<ol> nesting (+ list-style-type)
+    struct { uint8_t ordered; uint16_t counter; uint8_t type; uint8_t rev; } liststk[SEL_LIST_MAXDEPTH];  // <ul>/<ol> nesting (+ list-style-type, +<ol reversed>)
     int listdepth = 0;                                        // 0 = not in a list
     int cur_color = 0, cur_bg = 0, cur_bold = 0, cur_ul = 0, cur_st = 0, cur_align = 0, cur_du = 0, cur_vo = 0, cur_tt = 0;  // +text-align, +dotted-underline (<abbr>), +vert-offset (<sub>/<sup>), +text-transform
     struct { char tag[16]; uint8_t color, bg, bold, ul, st, al, du, vo, tt; } colstk[16];  // style stack: push a styled open, pop its close
@@ -1229,12 +1264,22 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                             else if (sel_ci_streq(lst,"none"))   lt = 3;
                         }
                         uint16_t startc = 0;                              // <ol start="N">: first item shows N (counter starts at N-1)
+                        uint8_t rev = 0;                                  // <ol reversed>: number downward
                         if (ord) { char sv[8] = {0}; extract_attr(body, j, lte, "start", sv, sizeof(sv));
-                            if (sv[0]) { int v = 0; for (const char* q = sv; *q >= '0' && *q <= '9'; q++) v = v * 10 + (*q - '0');
-                                if (v >= 1 && v <= 9999) startc = (uint16_t)(v - 1); } }
+                            int sval = 0, has_start = 0;
+                            if (sv[0]) { for (const char* q = sv; *q >= '0' && *q <= '9'; q++) sval = sval * 10 + (*q - '0');
+                                if (sval >= 1 && sval <= 9999) has_start = 1; }
+                            if (sel_attr_present(body, j, lte, "reversed")) {   // reversed: first item = start (if given) else the item count
+                                rev = 1;
+                                int first = has_start ? sval : sel_count_li(body, lte + 1, len);
+                                if (first < 1) first = 1; else if (first > 9999) first = 9999;
+                                startc = (uint16_t)(first + 1);            // the <li> step (--, clamped) then shows `first`
+                            } else if (has_start) startc = (uint16_t)(sval - 1);   // forward: ++ then shows `sval`
+                        }
                         liststk[listdepth].ordered = (uint8_t)ord;
                         liststk[listdepth].counter = startc;
                         liststk[listdepth].type = lt;
+                        liststk[listdepth].rev = rev;
                         listdepth++;
                     }
                 } else {
@@ -1251,10 +1296,13 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                 for (int d = 0; d < (lvl - 1) * SEL_LIST_INDENT && ti < len; d++) { txt[ti]=' '; tlink[ti]=0; ti++; }
                 if (listdepth > 0 && liststk[listdepth-1].ordered) {  // ordered: marker + ". " (decimal / alpha / roman)
                     uint32_t lite = j; while (lite < len && body[lite] != '>') lite++;   // <li value="N">: restart this item's number at N
+                    uint8_t rev = liststk[listdepth-1].rev;
                     char liv[8] = {0}; extract_attr(body, j, lite, "value", liv, sizeof(liv));
                     if (liv[0]) { int v = 0; for (const char* q = liv; *q >= '0' && *q <= '9'; q++) v = v * 10 + (*q - '0');
-                        if (v >= 1 && v <= 9999) liststk[listdepth-1].counter = (uint16_t)(v - 1); }   // ++ below makes it show N
-                    uint16_t n = ++liststk[listdepth-1].counter;
+                        if (v >= 1 && v <= 9999) liststk[listdepth-1].counter = (uint16_t)(rev ? v + 1 : v - 1); }   // step below shows N
+                    uint16_t n;
+                    if (rev) { if (liststk[listdepth-1].counter > 1) liststk[listdepth-1].counter--; n = liststk[listdepth-1].counter; }
+                    else n = ++liststk[listdepth-1].counter;
                     uint8_t lt = liststk[listdepth-1].type;
                     char mark[16]; int ml;
                     if      (lt == 1) ml = sel_fmt_alpha(n, mark, 0);   // a, b, c
