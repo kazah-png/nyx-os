@@ -159,6 +159,12 @@ static const sel_entity_t SEL_ENTITIES[] = {
     {"equiv",8801,"\xf0"},{"ge",8805,"\xf2"},{"le",8804,"\xf3"},{"ne",8800,"!="},{"minus",8722,"-"},   // math relations (CP437: equiv 0xF0, ge 0xF2, le 0xF3)
     {"radic",8730,"\xfb"},{"infin",8734,"\xec"},{"cap",8745,"\xef"},   // math symbols (CP437: sqrt 0xFB, infinity 0xEC, intersection 0xEF)
     {"dagger",8224,"+"},{"Dagger",8225,"++"},{"prime",8242,"'"},{"Prime",8243,"\""},   // typographic marks (ASCII fallbacks; no CP437 glyph)
+    {"alpha",945,"\xe0"},{"beta",946,"\xe1"},{"Gamma",915,"\xe2"},{"pi",960,"\xe3"},{"Pi",928,"\xe3"},   // Greek letters (CP437 0xE0-0xEE)
+    {"Sigma",931,"\xe4"},{"sigma",963,"\xe5"},{"mu",956,"\xe6"},{"tau",964,"\xe7"},{"Phi",934,"\xe8"},
+    {"Theta",920,"\xe9"},{"Omega",937,"\xea"},{"delta",948,"\xeb"},{"phi",966,"\xed"},{"epsilon",949,"\xee"},
+    {"aacute",225,"\xa0"},{"eacute",233,"\x82"},{"iacute",237,"\xa1"},{"oacute",243,"\xa2"},{"uacute",250,"\xa3"},   // accented Latin-1 letters (CP437)
+    {"ntilde",241,"\xa4"},{"Ntilde",209,"\xa5"},{"agrave",224,"\x85"},{"egrave",232,"\x8a"},{"ccedil",231,"\x87"},{"Ccedil",199,"\x80"},
+    {"uuml",252,"\x81"},{"ouml",246,"\x94"},{"auml",228,"\x84"},{"Uuml",220,"\x9a"},{"Ouml",214,"\x99"},{"Auml",196,"\x8e"},
 };
 #define SEL_NENT (int)(sizeof(SEL_ENTITIES)/sizeof(SEL_ENTITIES[0]))
 
