@@ -365,7 +365,7 @@ static void sel_emit(char* txt, uint8_t* tlink, uint8_t* tfield, uint32_t* ti, u
 #define SEL_TBL_COLCAP   22      // max display width of one column (chars)
 #define SEL_TBL_ROWCAP   84      // max total row width (< SEL_WRAP, so rows never word-wrap)
 
-typedef struct { uint32_t s, e; uint16_t row, col; uint8_t th, cspan, rspan; } sel_tcell_t;
+typedef struct { uint32_t s, e; uint16_t row, col; uint8_t th, cspan, rspan, align; } sel_tcell_t;  // align: 0 left, 1 center, 2 right
 
 // Read an integer tag attribute (e.g. colspan/rowspan) from the tag in body[s..e); 0 if absent.
 static int sel_span_attr(const uint8_t* body, uint32_t s, uint32_t e, const char* name) {
@@ -545,9 +545,16 @@ static void render_table(const uint8_t* body, uint32_t ts, uint32_t te,
                 char cb[SEL_TBL_ROWCAP + 2];
                 int w = sel_cell_text(body, cpast, k, cb, sizeof(cb), 0);
                 if (cspan == 1) { if (w > SEL_TBL_COLCAP) w = SEL_TBL_COLCAP; if (w > colw[curcol]) colw[curcol] = w; }
+                uint8_t calign = 0;                                       // <td/th align= or style=text-align: 0 left, 1 center, 2 right
+                { char av[16] = {0}; extract_attr(body, i, cpast, "align", av, sizeof(av));
+                  if (!av[0]) { char cst[64] = {0}; extract_attr(body, i, cpast, "style", cst, sizeof(cst));
+                      if (cst[0]) sel_css_get(cst, "text-align", av, sizeof(av)); }
+                  if      (sel_ci_streq(av, "center")) calign = 1;
+                  else if (sel_ci_streq(av, "right"))  calign = 2; }
                 cells[ncells].s = cpast; cells[ncells].e = k;
                 cells[ncells].row = (uint16_t)row; cells[ncells].col = (uint16_t)curcol;
                 cells[ncells].th = (uint8_t)isth; cells[ncells].cspan = (uint8_t)cspan; cells[ncells].rspan = (uint8_t)rspan;
+                cells[ncells].align = calign;
                 ncells++;
                 if (isth) has_header = 1;
                 if (curcol + cspan > ncols) ncols = curcol + cspan;
@@ -652,8 +659,12 @@ static void render_table(const uint8_t* body, uint32_t ts, uint32_t te,
                 char cb[SEL_TBL_ROWCAP + 2];
                 int w = sel_cell_text(body, cells[found].s, cells[found].e, cb, spanw + 1, cells[found].th);
                 for (int pp = 0; pp < pad && p < SEL_LINE_COLS - 2; pp++) line[p++] = ' ';   // left cellpadding
-                int z = 0; for (; z < w && z < spanw && p < SEL_LINE_COLS - 2; z++) line[p++] = cb[z];
-                for (; z < spanw && p < SEL_LINE_COLS - 2; z++) line[p++] = ' ';
+                int tw = w > spanw ? spanw : w;                                     // visible text width in the cell
+                int fill = spanw - tw;                                              // padding to distribute for alignment
+                int lead = cells[found].align == 2 ? fill : (cells[found].align == 1 ? fill / 2 : 0);  // right=all before, center=half
+                for (int q = 0; q < lead && p < SEL_LINE_COLS - 2; q++) line[p++] = ' ';    // leading pad (right / center)
+                for (int z = 0; z < tw && p < SEL_LINE_COLS - 2; z++) line[p++] = cb[z];    // the cell text
+                for (int q = 0; q < fill - lead && p < SEL_LINE_COLS - 2; q++) line[p++] = ' ';  // trailing pad
                 for (int pp = 0; pp < pad && p < SEL_LINE_COLS - 2; pp++) line[p++] = ' ';   // right cellpadding
                 line[p++] = bch;
                 c += cs;
