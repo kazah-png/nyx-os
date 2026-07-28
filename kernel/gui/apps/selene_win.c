@@ -1630,6 +1630,40 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                     k++;
                 }
                 i = k; last_space = 0; continue;
+            } else if (!close && (sel_streq(name, "audio") || sel_streq(name, "video"))) {
+                // <audio>/<video>: draw a small inline placeholder "[<glyph> audio/video: name]"
+                // (CP437 music note 0x0E / play triangle 0x10), then skip the element's fallback content
+                // and its <source> children up to the matching close tag. Non-breaking spaces keep the box whole.
+                int isvid = sel_streq(name, "video");
+                uint32_t ate = j; while (ate < len && body[ate] != '>') ate++;
+                char src[80] = {0};
+                extract_attr(body, j, ate, "src", src, sizeof(src));
+                uint32_t k = (ate < len) ? ate + 1 : len;
+                while (k < len) { int mc; uint32_t mpast;
+                    if (body[k] == '<') {
+                        if ((sel_tag_match(body, k, len, "audio", &mc, &mpast) && mc) ||
+                            (sel_tag_match(body, k, len, "video", &mc, &mpast) && mc)) { k = mpast; break; }
+                        if (!src[0] && sel_tag_match(body, k, len, "source", &mc, &mpast) && !mc) {   // grab a <source src> if the tag had none
+                            uint32_t se = k; while (se < len && body[se] != '>') se++;
+                            extract_attr(body, k, se, "src", src, sizeof(src));
+                        }
+                    }
+                    k++;
+                }
+                const char* bn = src; for (const char* p = src; *p; p++) if (*p == '/') bn = p + 1;   // basename of the src
+                char box[80]; int bp = 0;
+                box[bp++] = '['; box[bp++] = isvid ? (char)0x10 : (char)0x0E; box[bp++] = (char)0xFF;   // 0xFF = non-breaking space
+                const char* lbl = isvid ? "video" : "audio";
+                for (int z = 0; lbl[z] && bp < 70; z++) box[bp++] = lbl[z];
+                if (bn[0]) { box[bp++] = ':'; box[bp++] = (char)0xFF; for (int z = 0; bn[z] && z < 40 && bp < 76; z++) box[bp++] = bn[z]; }
+                box[bp++] = ']'; box[bp] = '\0';
+                uint8_t bd = (uint8_t)(cur_bold | (cur_ul << 1) | (cur_st << 2) | (cur_du << 3) | (cur_vo << 4) | (cur_ol << 6));
+                for (int z = 0; box[z] && ti < len; z++) {
+                    txt[ti] = box[z]; tlink[ti] = 0; tfield[ti] = 0;
+                    tcolor[ti] = (uint8_t)cur_color; tbgcol[ti] = (uint8_t)cur_bg; tbold[ti] = bd;
+                    talign[ti] = (uint8_t)cur_align; tindent[ti] = (uint8_t)quote_depth; ti++;
+                }
+                i = k; last_space = 0; continue;
             } else if (!close && sel_streq(name, "dd")) {
                 ti = sel_ensure_nl(txt, tlink, ti, len, 1);          // <dd>: the description on its own line, indented under its <dt> term
                 for (int d = 0; d < SEL_QUOTE_INDENT && ti < len; d++) { txt[ti] = ' '; tlink[ti] = 0; ti++; }
