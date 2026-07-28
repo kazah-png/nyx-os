@@ -373,7 +373,7 @@ static void sel_emit(char* txt, uint8_t* tlink, uint8_t* tfield, uint32_t* ti, u
 #define SEL_TBL_COLCAP   22      // max display width of one column (chars)
 #define SEL_TBL_ROWCAP   84      // max total row width (< SEL_WRAP, so rows never word-wrap)
 
-typedef struct { uint32_t s, e; uint16_t row, col; uint8_t th, cspan, rspan, align; } sel_tcell_t;  // align: 0 left, 1 center, 2 right
+typedef struct { uint32_t s, e; uint16_t row, col; uint8_t th, cspan, rspan, align, bg; } sel_tcell_t;  // align: 0 left, 1 center, 2 right; bg: cell background palette idx (0 = none)
 
 // Read an integer tag attribute (e.g. colspan/rowspan) from the tag in body[s..e); 0 if absent.
 static int sel_span_attr(const uint8_t* body, uint32_t s, uint32_t e, const char* name) {
@@ -496,13 +496,15 @@ static uint32_t sel_flatten_nested(const uint8_t* body, uint32_t i, uint32_t e, 
 // a <caption>'s caption-side property.
 static int sel_css_get(const char* style, const char* prop, char* out, int cap);
 static int sel_ci_streq(const char* a, const char* b);
+static int sel_parse_css_color(const char* v, uint32_t* rgb);
+static uint8_t sel_intern_color(selene_ctx_t* s, uint32_t rgb);
 
 // Parse the table in body[ts..te) and emit it, aligned, into the text stream at *pti. has_border=1
 // draws the boxed +--+ rules and | separators; has_border=0 (border="0"/style border:none) lays the
 // same aligned columns out spaced apart, with no rules or pipes. cellpad is the HTML cellpadding
 // (spaces of horizontal breathing room inside each cell, per side; default 1 keeps the old layout).
-static void render_table(const uint8_t* body, uint32_t ts, uint32_t te,
-                         char* txt, uint8_t* tlink, uint8_t* tfield, uint32_t* pti, uint32_t cap,
+static void render_table(selene_ctx_t* sx, const uint8_t* body, uint32_t ts, uint32_t te,
+                         char* txt, uint8_t* tlink, uint8_t* tfield, uint8_t* tbgcol, uint32_t* pti, uint32_t cap,
                          int has_border, int cellpad) {
     int pad = cellpad < 0 ? 0 : (cellpad > 8 ? 8 : cellpad);   // cellpadding: spaces INSIDE each cell, per side (default 1 == unchanged)
     sel_tcell_t* cells = (sel_tcell_t*)kmalloc(SEL_TBL_MAXCELLS * sizeof(sel_tcell_t));
@@ -512,7 +514,7 @@ static void render_table(const uint8_t* body, uint32_t ts, uint32_t te,
     for (int z = 0; z < SEL_TBL_MAXROWS * SEL_TBL_MAXCOLS; z++) occ[z] = 0;
     int colw[SEL_TBL_MAXCOLS]; for (int c = 0; c < SEL_TBL_MAXCOLS; c++) colw[c] = 0;
     uint8_t col_align[SEL_TBL_MAXCOLS]; for (int c = 0; c < SEL_TBL_MAXCOLS; c++) col_align[c] = 0;  // <col>/<colgroup align> per-column default
-    int ncols = 0, nrows = 0, ncells = 0, has_header = 0, row = -1, curcol = 0, cur_row_align = 0, colidx = 0;
+    int ncols = 0, nrows = 0, ncells = 0, has_header = 0, row = -1, curcol = 0, cur_row_align = 0, cur_row_bg = 0, colidx = 0;
 
     // Pass 1 — collect cells (row, col, col/row span, th?, byte range). colspan/rowspan cells reserve
     // their footprint in the occupancy grid so later cells skip past covered columns and stay aligned.
@@ -527,6 +529,11 @@ static void render_table(const uint8_t* body, uint32_t ts, uint32_t te,
                     if (rst[0]) sel_css_get(rst, "text-align", rav, sizeof(rav)); }
                 if      (sel_ci_streq(rav, "center")) cur_row_align = 1;
                 else if (sel_ci_streq(rav, "right"))  cur_row_align = 2;
+                cur_row_bg = 0;                                           // <tr bgcolor> / style background: a row-wide cell background
+                { char rbg[40] = {0}; extract_attr(body, i, past, "bgcolor", rbg, sizeof(rbg));
+                  char rst2[80] = {0}; extract_attr(body, i, past, "style", rst2, sizeof(rst2));
+                  if (!rbg[0] && rst2[0]) { if (!sel_css_get(rst2, "background-color", rbg, sizeof(rbg))) sel_css_get(rst2, "background", rbg, sizeof(rbg)); }
+                  uint32_t rr = 0; if (rbg[0] && sel_parse_css_color(rbg, &rr)) cur_row_bg = sel_intern_color(sx, rr); }
             }
             i = past; continue;
         }
@@ -569,10 +576,15 @@ static void render_table(const uint8_t* body, uint32_t ts, uint32_t te,
                   if      (sel_ci_streq(av, "center")) calign = 1;
                   else if (sel_ci_streq(av, "right"))  calign = 2;
                   else if (sel_ci_streq(av, "left"))   calign = 0; }
+                uint8_t cbg = (uint8_t)cur_row_bg;                        // start from the <tr> row default; a cell bgcolor= / style overrides
+                { char cbv[40] = {0}; extract_attr(body, i, cpast, "bgcolor", cbv, sizeof(cbv));
+                  char cbs[80] = {0}; extract_attr(body, i, cpast, "style", cbs, sizeof(cbs));
+                  if (!cbv[0] && cbs[0]) { if (!sel_css_get(cbs, "background-color", cbv, sizeof(cbv))) sel_css_get(cbs, "background", cbv, sizeof(cbv)); }
+                  uint32_t cr = 0; if (cbv[0] && sel_parse_css_color(cbv, &cr)) { uint8_t x = sel_intern_color(sx, cr); if (x) cbg = x; } }
                 cells[ncells].s = cpast; cells[ncells].e = k;
                 cells[ncells].row = (uint16_t)row; cells[ncells].col = (uint16_t)curcol;
                 cells[ncells].th = (uint8_t)isth; cells[ncells].cspan = (uint8_t)cspan; cells[ncells].rspan = (uint8_t)rspan;
-                cells[ncells].align = calign;
+                cells[ncells].align = calign; cells[ncells].bg = cbg;
                 ncells++;
                 if (isth) has_header = 1;
                 if (curcol + cspan > ncols) ncols = curcol + cspan;
@@ -683,10 +695,12 @@ static void render_table(const uint8_t* body, uint32_t ts, uint32_t te,
     for (int r = 0; r < nrows; r++) {
         char line[SEL_LINE_COLS]; int p = 0; line[p++] = bch;
         int c = 0;
+        struct { int a, b; uint8_t bg; } seg[SEL_TBL_MAXCOLS + 1]; int nseg = 0;   // per-cell colour bands, painted into tbgcol after the line is emitted
         while (c < ncols && p < SEL_LINE_COLS - 2) {
             int found = -1;
             for (int m = 0; m < ncells; m++) if (cells[m].row == r && cells[m].col == c) { found = m; break; }
             if (found >= 0) {                                          // a cell starts here — draw across its cspan
+                int seg_a = p;                                         // first column of this cell's band (after the border pipe)
                 int cs = cells[found].cspan; if (c + cs > ncols) cs = ncols - c;
                 int spanw = (2 * pad + 1) * (cs - 1); for (int k = 0; k < cs; k++) spanw += colw[c + k];
                 char cb[SEL_TBL_ROWCAP + 2];
@@ -699,6 +713,7 @@ static void render_table(const uint8_t* body, uint32_t ts, uint32_t te,
                 for (int z = 0; z < tw && p < SEL_LINE_COLS - 2; z++) line[p++] = cb[z];    // the cell text
                 for (int q = 0; q < fill - lead && p < SEL_LINE_COLS - 2; q++) line[p++] = ' ';  // trailing pad
                 for (int pp = 0; pp < pad && p < SEL_LINE_COLS - 2; pp++) line[p++] = ' ';   // right cellpadding
+                if (cells[found].bg && nseg <= SEL_TBL_MAXCOLS) { seg[nseg].a = seg_a; seg[nseg].b = p; seg[nseg].bg = cells[found].bg; nseg++; }
                 line[p++] = bch;
                 c += cs;
             } else {                                                  // empty, or covered by a span — blank column
@@ -710,7 +725,11 @@ static void render_table(const uint8_t* body, uint32_t ts, uint32_t te,
             }
         }
         line[p] = '\0';
-        sel_emit(txt, tlink, tfield, pti, cap, line, 0); sel_emit(txt, tlink, tfield, pti, cap, "\n", 0);
+        uint32_t rbase = *pti;                                          // txt[] index where this row's line starts (sel_emit writes 1:1)
+        sel_emit(txt, tlink, tfield, pti, cap, line, 0);
+        for (int m2 = 0; m2 < nseg; m2++)                               // paint each coloured cell band into tbgcol
+            for (int q = seg[m2].a; q < seg[m2].b && rbase + (uint32_t)q < cap; q++) tbgcol[rbase + (uint32_t)q] = seg[m2].bg;
+        sel_emit(txt, tlink, tfield, pti, cap, "\n", 0);
         if (r == 0 && has_header && has_border) { sel_emit(txt, tlink, tfield, pti, cap, rule, 0); sel_emit(txt, tlink, tfield, pti, cap, "\n", 0); }
     }
     if (has_border) sel_emit(txt, tlink, tfield, pti, cap, rule, 0);
@@ -1308,7 +1327,7 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                             k = p4; continue; } }
                     k++;
                 }
-                render_table(body, inner, innerEnd, txt, tlink, tfield, &ti, len, has_border, cellpad);
+                render_table(s, body, inner, innerEnd, txt, tlink, tfield, tbgcol, &ti, len, has_border, cellpad);
                 last_space = 1;
                 i = k; continue;
             }
