@@ -1287,6 +1287,14 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                 extract_attr(body, j, te, "name",  nm,   sizeof(nm));
                 extract_attr(body, j, te, "value", val,  sizeof(val));
                 for (int z = 0; type[z]; z++) if (type[z] >= 'A' && type[z] <= 'Z') type[z] += 32;
+                if (sel_streq(type,"checkbox") || sel_streq(type,"radio")) {   // render a state glyph; the `checked` attribute = filled
+                    int checked = sel_attr_present(body, j, te, "checked");
+                    const char* g = sel_streq(type,"radio") ? (checked ? "(*)" : "( )") : (checked ? "[x]" : "[ ]");
+                    sel_emit(txt, tlink, tfield, &ti, len, " ", 0);
+                    sel_emit(txt, tlink, tfield, &ti, len, g, 0);
+                    sel_emit(txt, tlink, tfield, &ti, len, " ", 0);
+                    last_space = 1; i = te; if (i < len) i++; continue;
+                }
                 int kind = SEL_FLD_TEXT;                        // default (text) if no/unknown type
                 if (sel_streq(type, "submit")) kind = SEL_FLD_SUBMIT;
                 else if (sel_streq(type, "hidden")) kind = SEL_FLD_HIDDEN;
