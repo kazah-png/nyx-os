@@ -862,6 +862,14 @@ static int sel_count_li(const uint8_t* body, uint32_t from, uint32_t len) {
     }
     return count;
 }
+// Void (self-closing) HTML elements: they have no end tag, so display:none must NOT skip-to-close
+// on them (there is nothing to skip to -- it would swallow the rest of the page).
+static int sel_is_void_tag(const char* n) {
+    static const char* const V[] = {"img","input","br","hr","meta","link","area","base",
+                                     "col","embed","source","track","wbr","param",0};
+    for (int i = 0; V[i]; i++) if (sel_streq(n, V[i])) return 1;
+    return 0;
+}
 
 static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
     s->num_lines = 0; s->scroll = 0; s->title[0] = '\0';
@@ -957,6 +965,43 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                 s->title[tl] = '\0';
                 i = k;
                 continue;
+            }
+            // display:none / hidden / visibility:hidden -> skip the element's entire subtree, like
+            // <script>/<style>. Only for a non-void container with a real close tag: a void element
+            // (img/input/br/hr/...) has none, so scanning to a missing close would swallow the page.
+            if (!close && nl > 0 && !sel_is_void_tag(name)) {
+                uint32_t hte = j; while (hte < len && body[hte] != '>') hte++;
+                int self_close = (hte > j && body[hte - 1] == '/');
+                int hide = sel_attr_present(body, j, hte, "hidden");
+                if (!hide) {
+                    char hsty[96] = {0}, dv[24] = {0};
+                    extract_attr(body, j, hte, "style", hsty, sizeof(hsty));
+                    if (hsty[0]) {
+                        if (sel_css_get(hsty, "display", dv, sizeof(dv)) && sel_ci_streq(dv, "none")) hide = 1;
+                        else { dv[0] = '\0'; if (sel_css_get(hsty, "visibility", dv, sizeof(dv)) && sel_ci_streq(dv, "hidden")) hide = 1; }
+                    }
+                }
+                if (hide && !self_close) {
+                    uint32_t k = (hte < len) ? hte + 1 : len;    // scan from just after this open tag's '>'
+                    int nest = 1;
+                    while (k < len && nest > 0) {
+                        if (body[k] != '<') { k++; continue; }
+                        uint32_t m = k + 1; int kclose = 0;
+                        if (m < len && body[m] == '/') { kclose = 1; m++; }
+                        char kn[16]; int knl = 0;
+                        while (m < len && knl < 15) { char t = (char)body[m];
+                            if ((t>='a'&&t<='z')||(t>='A'&&t<='Z')||(t>='0'&&t<='9')) { kn[knl++] = (t>='A'&&t<='Z')?t+32:t; m++; } else break; }
+                        kn[knl] = '\0';
+                        if (sel_streq(kn, name)) {
+                            if (kclose) nest--;
+                            else { uint32_t e2 = m; while (e2 < len && body[e2] != '>') e2++; if (!(e2 > m && body[e2-1] == '/')) nest++; }
+                        }
+                        k = m;
+                    }
+                    while (k < len && body[k] != '>') k++;        // step past the matching close tag's '>'
+                    i = (k < len) ? k + 1 : len;
+                    continue;
+                }
             }
             // Inline CSS: a styled open tag (style="color:..") — or <font color=..> — pushes its
             // foreground colour; the matching close pops it. Void elements never push (no close tag).
