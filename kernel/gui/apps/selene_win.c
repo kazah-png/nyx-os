@@ -1223,6 +1223,7 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                         if (sel_ci_streq(wsval,"nowrap"))      { nnw = 1; set = 1; }
                         else if (sel_ci_streq(wsval,"normal")) { nnw = 0; set = 1; }
                     }
+                    if (sel_streq(name,"nobr")) { nnw = 1; set = 1; }     // <nobr>: legacy no-wrap element (== white-space:nowrap)
                     if (set && coldepth < 16) {
                         strncpy(colstk[coldepth].tag, name, 15); colstk[coldepth].tag[15] = '\0';
                         colstk[coldepth].color = nfg; colstk[coldepth].bg = nbg; colstk[coldepth].bold = nbold;
