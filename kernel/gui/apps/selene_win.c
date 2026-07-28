@@ -514,6 +514,7 @@ static void render_table(selene_ctx_t* sx, const uint8_t* body, uint32_t ts, uin
     for (int z = 0; z < SEL_TBL_MAXROWS * SEL_TBL_MAXCOLS; z++) occ[z] = 0;
     int colw[SEL_TBL_MAXCOLS]; for (int c = 0; c < SEL_TBL_MAXCOLS; c++) colw[c] = 0;
     uint8_t col_align[SEL_TBL_MAXCOLS]; for (int c = 0; c < SEL_TBL_MAXCOLS; c++) col_align[c] = 0;  // <col>/<colgroup align> per-column default
+    uint8_t col_bg[SEL_TBL_MAXCOLS];    for (int c = 0; c < SEL_TBL_MAXCOLS; c++) col_bg[c] = 0;     // <col>/<colgroup bgcolor> per-column default background
     int ncols = 0, nrows = 0, ncells = 0, has_header = 0, row = -1, curcol = 0, cur_row_align = 0, cur_row_bg = 0, colidx = 0;
 
     // Pass 1 — collect cells (row, col, col/row span, th?, byte range). colspan/rowspan cells reserve
@@ -576,7 +577,8 @@ static void render_table(selene_ctx_t* sx, const uint8_t* body, uint32_t ts, uin
                   if      (sel_ci_streq(av, "center")) calign = 1;
                   else if (sel_ci_streq(av, "right"))  calign = 2;
                   else if (sel_ci_streq(av, "left"))   calign = 0; }
-                uint8_t cbg = (uint8_t)cur_row_bg;                        // start from the <tr> row default; a cell bgcolor= / style overrides
+                uint8_t cbg = col_bg[curcol];                            // column default (<col>/<colgroup bgcolor>)
+                if (cur_row_bg) cbg = (uint8_t)cur_row_bg;                // an explicit <tr bgcolor> overrides the column; a cell bgcolor= / style overrides both
                 { char cbv[40] = {0}; extract_attr(body, i, cpast, "bgcolor", cbv, sizeof(cbv));
                   char cbs[80] = {0}; extract_attr(body, i, cpast, "style", cbs, sizeof(cbs));
                   if (!cbv[0] && cbs[0]) { if (!sel_css_get(cbs, "background-color", cbv, sizeof(cbv))) sel_css_get(cbs, "background", cbv, sizeof(cbv)); }
@@ -599,12 +601,15 @@ static void render_table(selene_ctx_t* sx, const uint8_t* body, uint32_t ts, uin
             else if (sel_tag_match(body, i, te, "col", &close, &past) && !close) is_col = 1;
             if (is_cg || is_col) {
                 char cav[16] = {0}; extract_attr(body, i, past, "align", cav, sizeof(cav));
-                if (!cav[0]) { char cstyl[64] = {0}; extract_attr(body, i, past, "style", cstyl, sizeof(cstyl));
-                    if (cstyl[0]) sel_css_get(cstyl, "text-align", cav, sizeof(cav)); }
-                if (is_cg && !cav[0]) { i = past; continue; }        // a plain <colgroup> container: its <col> children fill
+                char cbgv[40] = {0}; extract_attr(body, i, past, "bgcolor", cbgv, sizeof(cbgv));
+                { char cstyl[80] = {0}; extract_attr(body, i, past, "style", cstyl, sizeof(cstyl));
+                  if (cstyl[0]) { if (!cav[0]) sel_css_get(cstyl, "text-align", cav, sizeof(cav));
+                      if (!cbgv[0]) { if (!sel_css_get(cstyl, "background-color", cbgv, sizeof(cbgv))) sel_css_get(cstyl, "background", cbgv, sizeof(cbgv)); } } }
+                if (is_cg && !cav[0] && !cbgv[0]) { i = past; continue; }        // a plain <colgroup> container: its <col> children fill
                 uint8_t ca = sel_ci_streq(cav, "center") ? 1 : (sel_ci_streq(cav, "right") ? 2 : 0);
+                uint8_t cbg = 0; uint32_t crgb = 0; if (cbgv[0] && sel_parse_css_color(cbgv, &crgb)) cbg = sel_intern_color(sx, crgb);   // <col bgcolor> column default
                 int sp = sel_span_attr(body, i, past, "span"); if (sp < 1) sp = 1; if (sp > SEL_TBL_MAXCOLS) sp = SEL_TBL_MAXCOLS;
-                for (int q = 0; q < sp && colidx < SEL_TBL_MAXCOLS; q++) col_align[colidx++] = ca;
+                for (int q = 0; q < sp && colidx < SEL_TBL_MAXCOLS; q++) { col_align[colidx] = ca; col_bg[colidx] = cbg; colidx++; }
                 i = past; continue;
             }
         }
