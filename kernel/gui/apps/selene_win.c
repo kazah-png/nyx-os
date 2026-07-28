@@ -282,8 +282,11 @@ static void wrap_text(selene_ctx_t* s, const char* txt, const uint8_t* tlink, co
                 if (li >= SEL_MAX_LINES) break;
                 s->lines[li][0] = '\0';
             }
-            if (col == 0 && indent > 0)                        // fresh line inside a <blockquote>: left margin
-                for (int q = 0; q < indent && col < SEL_LINE_COLS - 1; q++) s->lines[li][col++] = ' ';
+            if (col == 0 && indent > 0)                        // fresh line inside a <blockquote>: left margin, with a "|" bar (CP437 0xB3) at each nesting level
+                for (int q = 0; q < indent && col < SEL_LINE_COLS - 1; q++) {
+                    s->color_of[li][col] = 0; s->bgcolor_of[li][col] = 0; s->bold_of[li][col] = 0;   // clear the synthesized margin cells so the bar draws in the default colour
+                    s->lines[li][col++] = (q % SEL_QUOTE_INDENT == 0) ? (char)0xB3 : ' ';
+                }
             int take = wlen;
             if (take > SEL_WRAP - col) take = SEL_WRAP - col; // hard-split an over-long word
             if (take <= 0) { s->lines[li][col] = '\0'; li++; col = 0; bol = 0; if (li < SEL_MAX_LINES) s->lines[li][0]='\0'; continue; }
