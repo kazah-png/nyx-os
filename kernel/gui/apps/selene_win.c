@@ -1450,6 +1450,50 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                     else if (sel_ci_streq(fal, "right"))  cur_align = 2;
                 } else cur_align = 0;                         // restore left alignment once the caption ends
                 last_space = 1;
+            } else if (sel_streq(name, "details")) {
+                ti = sel_ensure_nl(txt, tlink, ti, len, 2);   // block break around the disclosure widget
+                if (!close) {
+                    uint32_t dte = j; while (dte < len && body[dte] != '>') dte++;
+                    if (!sel_attr_present(body, j, dte, "open")) {   // collapsed (no `open`): show ONLY the <summary>, hide the rest
+                        uint32_t k = (dte < len) ? dte + 1 : len; int nest = 1; uint32_t cstart = k;
+                        while (k < len && nest > 0) {           // scan to the matching </details> (nesting-aware)
+                            if (body[k] != '<') { k++; continue; }
+                            int dc; uint32_t dpast;
+                            if (sel_tag_match(body, k, len, "details", &dc, &dpast)) { if (dc) nest--; else nest++; k = dpast; continue; }
+                            k++;
+                        }
+                        uint32_t dend = k;                      // just past </details>'s '>' (or len)
+                        char sbuf[120] = {0};                   // extract the first <summary>..</summary> text
+                        for (uint32_t sp = cstart; sp < dend; ) {
+                            if (body[sp] != '<') { sp++; continue; }
+                            int sc; uint32_t spast;
+                            if (sel_tag_match(body, sp, dend, "summary", &sc, &spast) && !sc) {
+                                uint32_t e2 = dend;
+                                for (uint32_t q = spast; q < dend; ) {
+                                    if (body[q] != '<') { q++; continue; }
+                                    int sc2; uint32_t sp2;
+                                    if (sel_tag_match(body, q, dend, "summary", &sc2, &sp2) && sc2) { e2 = q; break; }
+                                    q++;
+                                }
+                                sel_cell_text(body, spast, e2, sbuf, sizeof(sbuf), 0);
+                                break;
+                            }
+                            sp++;
+                        }
+                        if (!sbuf[0]) { sbuf[0]='D'; sbuf[1]='e'; sbuf[2]='t'; sbuf[3]='a'; sbuf[4]='i'; sbuf[5]='l'; sbuf[6]='s'; sbuf[7]='\0'; }
+                        const char* mk = "[+] ";                // collapsed disclosure marker; summary rendered bold
+                        for (int z = 0; mk[z] && ti < len; z++) { txt[ti] = mk[z]; tlink[ti] = 0; tbold[ti] = 1; ti++; }
+                        for (int z = 0; sbuf[z] && ti < len; z++) { txt[ti] = sbuf[z]; tlink[ti] = 0; tbold[ti] = 1; ti++; }
+                        ti = sel_ensure_nl(txt, tlink, ti, len, 2);
+                        i = dend; last_space = 1; continue;     // skip the whole collapsed subtree
+                    }
+                }
+                last_space = 1;                                 // <details open> / </details>: block break only; content renders normally
+            } else if (sel_streq(name, "summary")) {            // reached only inside an OPEN <details> (collapsed ones are skipped above)
+                ti = sel_ensure_nl(txt, tlink, ti, len, 1);
+                if (!close) { const char* mk = "[-] ";          // expanded disclosure marker; summary rendered bold
+                    for (int z = 0; mk[z] && ti < len; z++) { txt[ti] = mk[z]; tlink[ti] = 0; tbold[ti] = 1; ti++; } }
+                last_space = 1;
             } else if (!close && sel_streq(name, "dd")) {
                 ti = sel_ensure_nl(txt, tlink, ti, len, 1);          // <dd>: the description on its own line, indented under its <dt> term
                 for (int d = 0; d < SEL_QUOTE_INDENT && ti < len; d++) { txt[ti] = ' '; tlink[ti] = 0; ti++; }
