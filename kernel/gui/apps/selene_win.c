@@ -1205,6 +1205,8 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                     if (sel_streq(name,"abbr")) { ndu = 1; set = 1; }     // <abbr> = dotted underline (the title tooltip is not shown headless)
                     if (sel_streq(name,"sub")) { nvo = 1; set = 1; }      // <sub> = subscript (glyph shifted down)
                     if (sel_streq(name,"sup")) { nvo = 2; set = 1; }      // <sup> = superscript (glyph shifted up)
+                    if (sel_streq(name,"i") || sel_streq(name,"em") || sel_streq(name,"cite") ||
+                        sel_streq(name,"var") || sel_streq(name,"dfn")) { nul = 1; set = 1; }   // italic family: no italic glyphs, so underline it (the classic text-mode italic fallback)
                     if (sel_streq(name,"code") || sel_streq(name,"kbd") ||
                         sel_streq(name,"samp") || sel_streq(name,"tt")) { // monospace-ish tags: a subtle grey code background
                         uint8_t cg = sel_intern_color(s, 0xE6E6E6);
