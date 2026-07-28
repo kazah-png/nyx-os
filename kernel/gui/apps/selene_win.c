@@ -793,6 +793,34 @@ static int sel_parse_css_color(const char* v, uint32_t* rgb) {
         {"navy",0x000080},{"teal",0x008080},{"purple",0x800080},{"orange",0xFFA500},
         {"pink",0xFFC0CB},{"brown",0xA52A2A},{"gold",0xFFD700},{"indigo",0x4B0082},
         {"darkred",0x8B0000},{"darkgreen",0x006400},{"darkblue",0x00008B},{"crimson",0xDC143C},
+        // greys / neutrals
+        {"lightgray",0xD3D3D3},{"lightgrey",0xD3D3D3},{"darkgray",0xA9A9A9},{"darkgrey",0xA9A9A9},
+        {"dimgray",0x696969},{"dimgrey",0x696969},{"slategray",0x708090},{"slategrey",0x708090},
+        {"lightslategray",0x778899},{"gainsboro",0xDCDCDC},{"whitesmoke",0xF5F5F5},{"snow",0xFFFAFA},
+        // blues
+        {"lightblue",0xADD8E6},{"skyblue",0x87CEEB},{"lightskyblue",0x87CEFA},{"deepskyblue",0x00BFFF},
+        {"dodgerblue",0x1E90FF},{"cornflowerblue",0x6495ED},{"steelblue",0x4682B4},{"royalblue",0x4169E1},
+        {"midnightblue",0x191970},{"mediumblue",0x0000CD},{"powderblue",0xB0E0E6},{"cadetblue",0x5F9EA0},
+        // greens
+        {"lightgreen",0x90EE90},{"palegreen",0x98FB98},{"springgreen",0x00FF7F},{"seagreen",0x2E8B57},
+        {"mediumseagreen",0x3CB371},{"forestgreen",0x228B22},{"limegreen",0x32CD32},{"yellowgreen",0x9ACD32},
+        {"greenyellow",0xADFF2F},{"chartreuse",0x7FFF00},{"olivedrab",0x6B8E23},{"darkseagreen",0x8FBC8F},
+        // reds / oranges / pinks
+        {"tomato",0xFF6347},{"orangered",0xFF4500},{"darkorange",0xFF8C00},{"coral",0xFF7F50},
+        {"salmon",0xFA8072},{"lightsalmon",0xFFA07A},{"indianred",0xCD5C5C},{"firebrick",0xB22222},
+        {"hotpink",0xFF69B4},{"deeppink",0xFF1493},{"lightpink",0xFFB6C1},{"palevioletred",0xDB7093},
+        // yellows / browns / tans
+        {"khaki",0xF0E68C},{"darkkhaki",0xBDB76B},{"tan",0xD2B48C},{"wheat",0xF5DEB3},
+        {"beige",0xF5F5DC},{"ivory",0xFFFFF0},{"chocolate",0xD2691E},{"sienna",0xA0522D},
+        {"peru",0xCD853F},{"sandybrown",0xF4A460},{"goldenrod",0xDAA520},{"saddlebrown",0x8B4513},
+        // purples / violets
+        {"violet",0xEE82EE},{"orchid",0xDA70D6},{"plum",0xDDA0DD},{"thistle",0xD8BFD8},
+        {"darkviolet",0x9400D3},{"darkorchid",0x9932CC},{"darkmagenta",0x8B008B},{"mediumpurple",0x9370DB},
+        {"blueviolet",0x8A2BE2},{"slateblue",0x6A5ACD},{"mediumslateblue",0x7B68EE},{"lavender",0xE6E6FA},
+        {"rebeccapurple",0x663399},
+        // cyans / teals
+        {"turquoise",0x40E0D0},{"mediumturquoise",0x48D1CC},{"darkturquoise",0x00CED1},{"lightcyan",0xE0FFFF},
+        {"aquamarine",0x7FFFD4},{"darkcyan",0x008B8B},{"lightseagreen",0x20B2AA},{"paleturquoise",0xAFEEEE},
         {0,0}
     };
     for (int i = 0; NAMED[i].n; i++) if (sel_ci_streq(v, NAMED[i].n)) { *rgb = NAMED[i].rgb; return 1; }
