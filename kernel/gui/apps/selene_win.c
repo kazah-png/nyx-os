@@ -1688,6 +1688,42 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                     talign[ti] = (uint8_t)cur_align; tindent[ti] = (uint8_t)quote_depth; ti++;
                 }
                 i = k; last_space = 0; continue;
+            } else if (!close && sel_streq(name, "select")) {
+                // <select>: render a dropdown "[ option v]" showing the selected <option> (or the first if none
+                // is selected), then skip the option list up to the matching close tag. 0x1F = CP437 down-triangle.
+                uint32_t ste = j; while (ste < len && body[ste] != '>') ste++;
+                uint32_t k = (ste < len) ? ste + 1 : len;
+                char opt[64] = {0}; int have_opt = 0, have_sel = 0;
+                while (k < len) { int oc; uint32_t opast;
+                    if (body[k] == '<') {
+                        if (sel_tag_match(body, k, len, "select", &oc, &opast) && oc) { k = opast; break; }   // </select>
+                        if (!have_sel && sel_tag_match(body, k, len, "option", &oc, &opast) && !oc) {
+                            uint32_t oend = k; while (oend < len && body[oend] != '>') oend++;
+                            int is_sel = sel_attr_present(body, k, oend, "selected");
+                            if (!have_opt || is_sel) {                            // first option, or a selected one (which wins)
+                                uint32_t ts = (oend < len) ? oend + 1 : len, te2 = ts;
+                                while (te2 < len && body[te2] != '<') te2++;
+                                while (ts < te2 && (body[ts]==' '||body[ts]=='\n'||body[ts]=='\r'||body[ts]=='\t')) ts++;
+                                int b = 0; for (uint32_t z = ts; z < te2 && b < 60; z++) { char c2 = (char)body[z]; if (c2=='\n'||c2=='\r'||c2=='\t') c2=' '; opt[b++]=c2; }
+                                while (b > 0 && opt[b-1]==' ') b--; opt[b]='\0';
+                                have_opt = 1; if (is_sel) have_sel = 1;
+                            }
+                            k = opast; continue;
+                        }
+                    }
+                    k++;
+                }
+                if (!opt[0]) { opt[0]='?'; opt[1]='\0'; }
+                char box[80]; int bp = 0; box[bp++]='['; box[bp++]=(char)0xFF;
+                for (int z = 0; opt[z] && bp < 72; z++) box[bp++] = (opt[z]==' ') ? (char)0xFF : opt[z];
+                box[bp++]=(char)0xFF; box[bp++]=(char)0x1F; box[bp++]=']'; box[bp]='\0';
+                uint8_t bd = (uint8_t)(cur_bold|(cur_ul<<1)|(cur_st<<2)|(cur_du<<3)|(cur_vo<<4)|(cur_ol<<6));
+                for (int z = 0; box[z] && ti < len; z++) {
+                    txt[ti]=box[z]; tlink[ti]=0; tfield[ti]=0;
+                    tcolor[ti]=(uint8_t)cur_color; tbgcol[ti]=(uint8_t)cur_bg; tbold[ti]=bd;
+                    talign[ti]=(uint8_t)cur_align; tindent[ti]=(uint8_t)quote_depth; ti++;
+                }
+                i = k; last_space = 0; continue;
             } else if (!close && sel_streq(name, "dd")) {
                 ti = sel_ensure_nl(txt, tlink, ti, len, 1);          // <dd>: the description on its own line, indented under its <dt> term
                 for (int d = 0; d < SEL_QUOTE_INDENT && ti < len; d++) { txt[ti] = ' '; tlink[ti] = 0; ti++; }
