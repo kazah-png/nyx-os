@@ -503,7 +503,7 @@ static void render_table(const uint8_t* body, uint32_t ts, uint32_t te,
     if (!occ) { kfree(cells); return; }
     for (int z = 0; z < SEL_TBL_MAXROWS * SEL_TBL_MAXCOLS; z++) occ[z] = 0;
     int colw[SEL_TBL_MAXCOLS]; for (int c = 0; c < SEL_TBL_MAXCOLS; c++) colw[c] = 0;
-    int ncols = 0, nrows = 0, ncells = 0, has_header = 0, row = -1, curcol = 0;
+    int ncols = 0, nrows = 0, ncells = 0, has_header = 0, row = -1, curcol = 0, cur_row_align = 0;
 
     // Pass 1 — collect cells (row, col, col/row span, th?, byte range). colspan/rowspan cells reserve
     // their footprint in the occupancy grid so later cells skip past covered columns and stay aligned.
@@ -511,7 +511,14 @@ static void render_table(const uint8_t* body, uint32_t ts, uint32_t te,
         if (body[i] != '<') { i++; continue; }
         int close; uint32_t past;
         if (sel_tag_match(body, i, te, "tr", &close, &past)) {
-            if (!close && row < SEL_TBL_MAXROWS - 1) { row++; if (row + 1 > nrows) nrows = row + 1; curcol = 0; }
+            if (!close && row < SEL_TBL_MAXROWS - 1) { row++; if (row + 1 > nrows) nrows = row + 1; curcol = 0;
+                cur_row_align = 0;                                        // <tr align> / style text-align: a row-wide default
+                char rav[16] = {0}; extract_attr(body, i, past, "align", rav, sizeof(rav));
+                if (!rav[0]) { char rst[64] = {0}; extract_attr(body, i, past, "style", rst, sizeof(rst));
+                    if (rst[0]) sel_css_get(rst, "text-align", rav, sizeof(rav)); }
+                if      (sel_ci_streq(rav, "center")) cur_row_align = 1;
+                else if (sel_ci_streq(rav, "right"))  cur_row_align = 2;
+            }
             i = past; continue;
         }
         int isth = 0, isopen = 0; uint32_t cpast = i;
@@ -545,12 +552,13 @@ static void render_table(const uint8_t* body, uint32_t ts, uint32_t te,
                 char cb[SEL_TBL_ROWCAP + 2];
                 int w = sel_cell_text(body, cpast, k, cb, sizeof(cb), 0);
                 if (cspan == 1) { if (w > SEL_TBL_COLCAP) w = SEL_TBL_COLCAP; if (w > colw[curcol]) colw[curcol] = w; }
-                uint8_t calign = 0;                                       // <td/th align= or style=text-align: 0 left, 1 center, 2 right
+                uint8_t calign = (uint8_t)cur_row_align;                  // inherit the <tr> row default; a cell align= overrides
                 { char av[16] = {0}; extract_attr(body, i, cpast, "align", av, sizeof(av));
                   if (!av[0]) { char cst[64] = {0}; extract_attr(body, i, cpast, "style", cst, sizeof(cst));
                       if (cst[0]) sel_css_get(cst, "text-align", av, sizeof(av)); }
                   if      (sel_ci_streq(av, "center")) calign = 1;
-                  else if (sel_ci_streq(av, "right"))  calign = 2; }
+                  else if (sel_ci_streq(av, "right"))  calign = 2;
+                  else if (sel_ci_streq(av, "left"))   calign = 0; }
                 cells[ncells].s = cpast; cells[ncells].e = k;
                 cells[ncells].row = (uint16_t)row; cells[ncells].col = (uint16_t)curcol;
                 cells[ncells].th = (uint8_t)isth; cells[ncells].cspan = (uint8_t)cspan; cells[ncells].rspan = (uint8_t)rspan;
