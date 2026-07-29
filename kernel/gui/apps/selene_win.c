@@ -1042,6 +1042,7 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
     int last_space = 1;
     int cur_link = 0;                                         // link id in progress (0 = none)
     int cur_field = 0;                                        // field id in progress (<button> label text)
+    int btn_open = 0;                                         // inside a <button>: guards the closing pill padding cap
     int cur_form = -1;                                        // the <form> currently open (-1 = none)
     int cur_hd = 0;                                           // inside an <h1>/<h2> (upper-case its text)
     int pre_mode = 0;                                         // inside <pre> (preserve whitespace literally)
@@ -1341,18 +1342,29 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                 i = te; if (i < len) i++;
                 continue;
             }
-            if (sel_streq(name, "button")) {                   // <button> ... </button> (submit-style)
+            if (sel_streq(name, "button")) {                   // <button>..</button>: a filled "pill" button
                 uint32_t te = j; while (te < len && body[te] != '>') te++;
-                if (close) { if (cur_field) sel_emit(txt, tlink, tfield, &ti, len, " ]", cur_field); cur_field = 0; last_space = 0; }
-                else if (s->num_fields < SEL_MAX_FIELDS) {
+                if (close) {
+                    if (btn_open) {                            // right pill cap: a padding cell carrying the button's field + colours
+                        if (ti < len) { txt[ti]=' '; tlink[ti]=(uint8_t)cur_link; tfield[ti]=(uint8_t)cur_field;
+                            tcolor[ti]=(uint8_t)cur_color; tbgcol[ti]=(uint8_t)cur_bg; tbold[ti]=0;
+                            talign[ti]=(uint8_t)cur_align; tindent[ti]=(uint8_t)quote_depth; ti++; }
+                        btn_open = 0; cur_field = 0; last_space = 0;
+                    }
+                } else {
+                    // A styled <button style="background:..;color:.."> has already had cur_bg/cur_color set by
+                    // the inline-CSS block above; the submit-field draw pass reads those (via bgcolor_of/color_of
+                    // at the pill's first cell) so the pill takes the button's own colours, else a default.
                     char type[16]; extract_attr(body, j, te, "type", type, sizeof(type));
                     for (int z = 0; type[z]; z++) if (type[z] >= 'A' && type[z] <= 'Z') type[z] += 32;
-                    if (!sel_streq(type, "button") && !sel_streq(type, "reset")) {   // default is submit
+                    if (!sel_streq(type, "button") && !sel_streq(type, "reset") && s->num_fields < SEL_MAX_FIELDS) {   // submit-style: clickable form field
                         sel_field_t* f = &s->fields[s->num_fields];
                         f->form = cur_form; f->kind = SEL_FLD_SUBMIT; f->name[0] = '\0'; f->value[0] = '\0';
                         cur_field = s->num_fields + 1; s->num_fields++;
-                        sel_emit(txt, tlink, tfield, &ti, len, " [ ", cur_field);
                     }
+                    if (ti < len) { txt[ti]=' '; tlink[ti]=(uint8_t)cur_link; tfield[ti]=0; tcolor[ti]=0; tbgcol[ti]=0; tbold[ti]=0; talign[ti]=(uint8_t)cur_align; tindent[ti]=(uint8_t)quote_depth; ti++; }   // separator (no pill) before the pill
+                    if (ti < len) { txt[ti]=' '; tlink[ti]=(uint8_t)cur_link; tfield[ti]=(uint8_t)cur_field; tcolor[ti]=(uint8_t)cur_color; tbgcol[ti]=(uint8_t)cur_bg; tbold[ti]=0; talign[ti]=(uint8_t)cur_align; tindent[ti]=(uint8_t)quote_depth; ti++; }   // left pill cap (padding cell, carries the button's colours)
+                    btn_open = 1; last_space = 0;
                 }
                 i = te; if (i < len) i++;
                 continue;
@@ -2514,12 +2526,17 @@ void selene_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
                     if (focused) { int caret = px + 3 + vl * FONT_WIDTH;
                         if (caret < px + wpx - 2) fb_fill_rect(caret, py, 1, FONT_HEIGHT, fb_rgb(120, 90, 210)); }
                 } else if (f->kind == SEL_FLD_SUBMIT) {
-                    uint32_t bg = focused ? fb_rgb(120, 90, 210) : fb_rgb(90, 80, 130);
+                    // Honour the button's own CSS background/colour (carried in bgcolor_of/color_of at the
+                    // pill's first cell); fall back to the theme purple pill with light text when unstyled.
+                    uint8_t bbk = s->bgcolor_of[idx][c0], ffk = s->color_of[idx][c0];
+                    uint32_t bg = focused ? fb_rgb(120, 90, 210)
+                                : (bbk && bbk <= s->npalette) ? s->palette[bbk - 1] : fb_rgb(90, 80, 130);
+                    uint32_t txc = (ffk && ffk <= s->npalette) ? s->palette[ffk - 1] : fb_rgb(240, 240, 250);
                     fb_fill_rect(px, py - 1, wpx, FONT_HEIGHT + 2, bg);
                     char sub[SEL_LINE_COLS]; int k = 0;
                     for (; k < c1f - c0 && k < SEL_LINE_COLS - 1; k++) sub[k] = s->lines[idx][c0 + k];
                     sub[k] = '\0';
-                    font_draw_string(px, py, sub, fb_rgb(240, 240, 250), bg);
+                    font_draw_string(px, py, sub, txc, bg);
                 }
             }
             c0 = c1f;
