@@ -1877,6 +1877,28 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                 if (!close) { const char* mk = "[-] ";          // expanded disclosure marker; summary rendered bold
                     for (int z = 0; mk[z] && ti < len; z++) { txt[ti] = mk[z]; tlink[ti] = 0; tbold[ti] = 1; ti++; } }
                 last_space = 1;
+            } else if (sel_streq(name, "dialog")) {
+                // <dialog>: a modal/popover container. Per spec it is display:none UNLESS it carries the
+                // `open` attribute, so a hidden dialog (the common case -- modal markup present in the DOM
+                // but not shown) must render NOTHING instead of leaking its text into the page flow; an
+                // open dialog renders as a block. Mirrors the <details> collapsed-skip machinery below
+                // (nesting-aware, bounded by len). The main render loop's post-statement is empty, so
+                // `i = k; continue;` resumes exactly past </dialog> with no char skipped.
+                if (!close) {
+                    uint32_t dte = j; while (dte < len && body[dte] != '>') dte++;
+                    if (!sel_attr_present(body, j, dte, "open")) {     // no `open` -> hidden: skip the whole subtree
+                        uint32_t k = (dte < len) ? dte + 1 : len; int nest = 1;
+                        while (k < len && nest > 0) {                  // scan to the matching </dialog>
+                            if (body[k] != '<') { k++; continue; }
+                            int dc; uint32_t dpast;
+                            if (sel_tag_match(body, k, len, "dialog", &dc, &dpast)) { if (dc) nest--; else nest++; k = dpast; continue; }
+                            k++;
+                        }
+                        i = k; continue;                              // emit nothing; keep the surrounding flow intact
+                    }
+                }
+                ti = sel_ensure_nl(txt, tlink, ti, len, 2);           // <dialog open> / </dialog>: shown -> block break
+                last_space = 1;
             } else if (!close && (sel_streq(name, "progress") || sel_streq(name, "meter"))) {
                 // <progress value max> / <meter value min max>: draw a CP437 block bar + a percentage,
                 // inline in the text flow, then skip the element's fallback content up to its close tag.
