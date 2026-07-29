@@ -39,6 +39,7 @@
 #define SEL_BOX_INSET    5      // px each nested box is inset on both sides
 #define SEL_BOX_TOP    200      // line_rule sentinel: this marker line is a box TOP edge (> hr's 1..100)
 #define SEL_BOX_BOT    201      // line_rule sentinel: this marker line is a box BOTTOM edge
+#define SEL_MAX_CELL_BOXES 32   // bordered-<div>-in-a-table-cell outlines drawn per page
 #define SEL_PRE_TAB       4     // a tab in <pre> text expands to this many spaces
 #define SEL_MAX_LINKS 240       // per page; link id stored as a uint8 (index+1)
 #define SEL_HIST      32        // Back history depth
@@ -110,6 +111,10 @@ typedef struct {
     uint8_t page_bg, page_fg;          // <body bgcolor>/<body text> (+ CSS body background/color): page background & default text colour (palette idx, 0 = default)
     uint8_t line_align[SEL_MAX_LINES]; // per-line text alignment: 0=left (default), 1=center, 2=right
     uint8_t line_rule[SEL_MAX_LINES];  // per-line <hr> flag: 1 = draw a real horizontal rule (not text)
+    // Bordered <div> INSIDE a table cell -> a drawn outline rectangle. render_table records each in txt-index
+    // space (txt0/txt1) + the cell's column span; after wrap_text the txt indices are resolved to line0/line1.
+    struct { uint32_t txt0, txt1; uint16_t line0, line1; uint8_t col0, col1, col, used; } cell_boxes[SEL_MAX_CELL_BOXES];
+    int num_cell_boxes;
     // base for resolving relative links (from the loaded URL)
     char     base_host[128];
     uint16_t base_port;
@@ -258,12 +263,17 @@ static void selene_resolve(selene_ctx_t* s, const char* href, char* out) {
 // tindent[i] = the <blockquote> nesting level in effect at char i; a fresh line (hard '\n' OR soft
 // word-wrap) whose content sits at level L is prefixed with L*SEL_QUOTE_INDENT spaces, so a quoted
 // paragraph stays indented even where it wraps. Level 0 (the common case) is byte-for-byte unchanged.
+// line_start (optional, may be NULL) is a pure side table: line_start[li] = the txt index of the first
+// char placed on final line li. It is only WRITTEN here (never read, never alters wrapping), so s->lines
+// and every per-char array are byte-identical with or without it; render_table uses it after wrap to map
+// a cell's line-start txt index to its final line number for the in-cell box outline.
 static void wrap_text(selene_ctx_t* s, const char* txt, const uint8_t* tlink, const uint8_t* tfield,
                       const uint8_t* timg, const uint8_t* tcolor, const uint8_t* tbgcol,
                       const uint8_t* tbold, const uint8_t* talign, const uint8_t* trule,
-                      const uint8_t* tindent, uint32_t ti) {
+                      const uint8_t* tindent, uint32_t* line_start, uint32_t ti) {
     int li = 0, col = 0, bol = 1;   // bol: at a HARD line start (after '\n') — preserve intentional leading indent
     s->lines[0][0] = '\0';
+    if (line_start) line_start[0] = 0;
     uint32_t i = 0;
     while (i < ti && li < SEL_MAX_LINES) {
         char c = txt[i];
@@ -271,6 +281,7 @@ static void wrap_text(selene_ctx_t* s, const char* txt, const uint8_t* tlink, co
             s->lines[li][col] = '\0';
             li++; col = 0; bol = 1;
             if (li < SEL_MAX_LINES) s->lines[li][0] = '\0';
+            if (line_start && li < SEL_MAX_LINES) line_start[li] = i + 1;   // next line's first char
             i++;
             continue;
         }
@@ -292,6 +303,7 @@ static void wrap_text(selene_ctx_t* s, const char* txt, const uint8_t* tlink, co
                 li++; col = 0; bol = 0;                        // soft-wrapped continuation (indent re-applied below)
                 if (li >= SEL_MAX_LINES) break;
                 s->lines[li][0] = '\0';
+                if (line_start) line_start[li] = st + off;      // this line's first (word) char
             }
             if (col == 0 && indent > 0)                        // fresh line inside a <blockquote>: left margin, with a "|" bar (CP437 0xB3) at each nesting level
                 for (int q = 0; q < indent && col < SEL_LINE_COLS - 1; q++) {
@@ -300,7 +312,7 @@ static void wrap_text(selene_ctx_t* s, const char* txt, const uint8_t* tlink, co
                 }
             int take = wlen;
             if (take > SEL_WRAP - col) take = SEL_WRAP - col; // hard-split an over-long word
-            if (take <= 0) { s->lines[li][col] = '\0'; li++; col = 0; bol = 0; if (li < SEL_MAX_LINES) s->lines[li][0]='\0'; continue; }
+            if (take <= 0) { s->lines[li][col] = '\0'; li++; col = 0; bol = 0; if (li < SEL_MAX_LINES) s->lines[li][0]='\0'; if (line_start && li < SEL_MAX_LINES) line_start[li] = st + off; continue; }
             for (int k = 0; k < take && col < SEL_LINE_COLS - 1; k++) {
                 s->link_of[li][col] = tlink[st + off + k];
                 s->field_of[li][col] = tfield[st + off + k];
@@ -635,6 +647,34 @@ static int sel_cell_text_styled(selene_ctx_t* sx, const uint8_t* body, uint32_t 
     return n;
 }
 
+// Does the cell body[s..e) contain a bordered <div> (a <div style="border..."> whose border is not
+// none / 0)? If so return 1 and set *colout to its border-colour palette index (0 = grey default),
+// resolved exactly like the top-level box in the main loop (explicit border-color, else the colour token
+// in the border shorthand). Used to draw an outline around a panel that lives inside a table cell.
+static int sel_cell_bordered_div(selene_ctx_t* sx, const uint8_t* body, uint32_t s, uint32_t e, uint8_t* colout) {
+    *colout = 0;
+    for (uint32_t i = s; i + 4 < e; i++) {
+        if (body[i] != '<') continue;
+        char a = (char)body[i+1], b = (char)body[i+2], c = (char)body[i+3];
+        if (!((a=='d'||a=='D') && (b=='i'||b=='I') && (c=='v'||c=='V'))) continue;   // "<div"
+        uint32_t te2 = i + 4; while (te2 < e && body[te2] != '>') te2++;
+        char st[160] = {0}; extract_attr(body, i + 4, te2, "style", st, sizeof(st));
+        if (!st[0]) continue;
+        char bv[48] = {0};
+        if (!(sel_css_get(st, "border", bv, sizeof(bv)) || sel_css_get(st, "border-width", bv, sizeof(bv)) ||
+              sel_css_get(st, "border-top", bv, sizeof(bv)) || sel_css_get(st, "border-style", bv, sizeof(bv)))) continue;
+        if (sel_ci_streq(bv, "none") || bv[0] == '0') continue;                       // border explicitly off
+        char bc[40] = {0}; uint32_t brgb;                                              // resolve the stroke colour
+        if (sel_css_get(st, "border-color", bc, sizeof(bc))) { if (sel_parse_css_color(bc, &brgb)) *colout = sel_intern_color(sx, brgb); }
+        else for (int z = 0; bv[z]; ) { while (bv[z] == ' ') z++; int e3 = z; while (bv[e3] && bv[e3] != ' ') e3++;
+            char tok[40]; int tl = 0; for (int q = z; q < e3 && tl < 39; q++) tok[tl++] = bv[q]; tok[tl] = '\0';
+            if (tl && sel_parse_css_color(tok, &brgb)) { *colout = sel_intern_color(sx, brgb); break; }
+            z = e3; if (!bv[z]) break; }
+        return 1;
+    }
+    return 0;
+}
+
 // Parse the table in body[ts..te) and emit it, aligned, into the text stream at *pti. has_border=1
 // draws the boxed +--+ rules and | separators; has_border=0 (border="0"/style border:none) lays the
 // same aligned columns out spaced apart, with no rules or pipes. cellpad is the HTML cellpadding
@@ -843,7 +883,7 @@ static void render_table(selene_ctx_t* sx, const uint8_t* body, uint32_t ts, uin
     uint8_t* pd = (uint8_t*)kmalloc(SEL_TBL_MAXCOLS * SEL_CELL_CAP);
     uint8_t* pl = (uint8_t*)kmalloc(SEL_TBL_MAXCOLS * SEL_CELL_CAP);
     if (!pt || !pc || !pb || !pd || !pl) { if (pt) kfree(pt); if (pc) kfree(pc); if (pb) kfree(pb); if (pd) kfree(pd); if (pl) kfree(pl); kfree(cells); kfree(occ); return; }
-    struct { int used, mcell, cs, spanw, nlines; int lbrk[SEL_CELL_MAXLINES], llen[SEL_CELL_MAXLINES]; uint8_t align, th, bg; } wr[SEL_TBL_MAXCOLS];
+    struct { int used, mcell, cs, spanw, nlines; int lbrk[SEL_CELL_MAXLINES], llen[SEL_CELL_MAXLINES]; uint8_t align, th, bg, boxed, boxcol; int boxidx; } wr[SEL_TBL_MAXCOLS];
     for (int r = 0; r < nrows; r++) {
         // ---- Phase A: extract + word-wrap each cell of this row; H = tallest cell's line count ----
         int H = 1;
@@ -873,6 +913,8 @@ static void render_table(selene_ctx_t* sx, const uint8_t* body, uint32_t ts, uin
             if (nl == 0) { wr[c].lbrk[0] = 0; wr[c].llen[0] = 0; nl = 1; }   // empty cell = one blank line
             wr[c].used = 1; wr[c].mcell = found; wr[c].cs = cs; wr[c].spanw = spanw; wr[c].nlines = nl;
             wr[c].align = cells[found].align; wr[c].th = cells[found].th; wr[c].bg = cells[found].bg;
+            wr[c].boxed = (uint8_t)sel_cell_bordered_div(sx, body, cells[found].s, cells[found].e, &wr[c].boxcol);   // cell content is a bordered <div> -> draw an outline around this cell block
+            wr[c].boxidx = -1;
             if (nl > H) H = nl;
             c += cs;
           }
@@ -883,6 +925,7 @@ static void render_table(selene_ctx_t* sx, const uint8_t* body, uint32_t ts, uin
             uint8_t lcol[SEL_LINE_COLS], lbg[SEL_LINE_COLS], lbld[SEL_LINE_COLS], llnk[SEL_LINE_COLS];   // this line's per-column cell-text styling, painted after emit
             for (int z = 0; z < SEL_LINE_COLS; z++) { lcol[z] = 0; lbg[z] = 0; lbld[z] = 0; llnk[z] = 0; }
             struct { int a, b; uint8_t bg; } seg[SEL_TBL_MAXCOLS + 1]; int nseg = 0;
+            struct { int c, a, b; } lboxes[SEL_TBL_MAXCOLS]; int nlbox = 0;   // boxed cells emitted on this line (col span), for the in-cell outline
             int c = 0;
             while (c < ncols && p < SEL_LINE_COLS - 2) {
                 if (wr[c].used) {                                        // a cell starts here — draw its line h across its cspan
@@ -899,6 +942,7 @@ static void render_table(selene_ctx_t* sx, const uint8_t* body, uint32_t ts, uin
                     for (int q = 0; q < fill - lead && p < SEL_LINE_COLS - 2; q++) line[p++] = ' ';  // trailing pad
                     for (int pp = 0; pp < pad && p < SEL_LINE_COLS - 2; pp++) line[p++] = ' ';   // right cellpadding
                     if (wr[c].bg && nseg <= SEL_TBL_MAXCOLS) { seg[nseg].a = seg_a; seg[nseg].b = p; seg[nseg].bg = wr[c].bg; nseg++; }
+                    if (wr[c].boxed && nlbox < SEL_TBL_MAXCOLS) { lboxes[nlbox].c = c; lboxes[nlbox].a = seg_a; lboxes[nlbox].b = p; nlbox++; }   // this boxed cell's column span on this line
                     line[p++] = bch;
                     c += wr[c].cs;
                 } else {                                                // empty, or covered by a span — blank column
@@ -912,6 +956,17 @@ static void render_table(selene_ctx_t* sx, const uint8_t* body, uint32_t ts, uin
             line[p] = '\0';
             uint32_t rbase = *pti;                                          // txt[] index where this line starts (sel_emit writes 1:1)
             sel_emit(txt, tlink, tfield, pti, cap, line, 0);
+            for (int b = 0; b < nlbox; b++) {                               // in-cell box outline: open at this cell's first line (h==0), close at its last (h==H-1). txt = line start (matches wrap's line_start[])
+                int cc2 = lboxes[b].c;
+                if (h == 0 && wr[cc2].boxidx < 0 && sx->num_cell_boxes < SEL_MAX_CELL_BOXES) {
+                    int bi = sx->num_cell_boxes++;
+                    sx->cell_boxes[bi].txt0 = rbase; sx->cell_boxes[bi].txt1 = rbase;   // txt1 provisional; updated at h==H-1
+                    sx->cell_boxes[bi].col0 = (uint8_t)lboxes[b].a; sx->cell_boxes[bi].col1 = (uint8_t)(lboxes[b].b - 1);
+                    sx->cell_boxes[bi].col = wr[cc2].boxcol; sx->cell_boxes[bi].used = 1;
+                    wr[cc2].boxidx = bi;
+                }
+                if (h == H - 1 && wr[cc2].boxidx >= 0) sx->cell_boxes[wr[cc2].boxidx].txt1 = rbase;
+            }
             for (int m2 = 0; m2 < nseg; m2++)                               // paint each coloured cell band into tbgcol
                 for (int q = seg[m2].a; q < seg[m2].b && rbase + (uint32_t)q < cap; q++) tbgcol[rbase + (uint32_t)q] = seg[m2].bg;
             for (int q = 0; q < p && rbase + (uint32_t)q < cap; q++) {       // paint the cell text's own inline styling (overrides the cell-level band where present)
@@ -1171,6 +1226,7 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
     __builtin_memset(s->bold_of, 0, SEL_MAX_LINES * SEL_LINE_COLS);
     __builtin_memset(s->line_align, 0, SEL_MAX_LINES);
     __builtin_memset(s->line_rule, 0, SEL_MAX_LINES);
+    s->num_cell_boxes = 0;                                   // in-cell bordered-<div> outlines, collected by render_table this render
     if (!body || !len) { s->num_lines = 0; return; }
     char*    txt    = (char*)kmalloc(len + 1);
     uint8_t* tlink  = (uint8_t*)kmalloc(len + 1);
@@ -1203,6 +1259,8 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
     __builtin_memset(talign,  0, len + 1);
     __builtin_memset(trule,   0, len + 1);
     __builtin_memset(tindent, 0, len + 1);
+    uint32_t* line_start = (uint32_t*)kmalloc(SEL_MAX_LINES * sizeof(uint32_t));   // optional txt-idx -> line map for in-cell box resolution (NULL = skip boxes)
+    if (line_start) __builtin_memset(line_start, 0xFF, SEL_MAX_LINES * sizeof(uint32_t));
     uint32_t ti = 0;
     int last_space = 1;
     int cur_link = 0;                                         // link id in progress (0 = none)
@@ -2002,7 +2060,19 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
         txt[ti] = c; tlink[ti] = (uint8_t)cur_link; tfield[ti] = (uint8_t)cur_field; tcolor[ti] = (uint8_t)cur_color; tbgcol[ti] = (uint8_t)cur_bg; tbold[ti] = (uint8_t)(cur_bold | (cur_ul << 1) | (cur_st << 2) | (cur_du << 3) | (cur_vo << 4) | (cur_ol << 6)); talign[ti] = (uint8_t)cur_align; tindent[ti] = (uint8_t)quote_depth; ti++; last_space = 0; i++;
     }
     txt[ti] = '\0';
-    wrap_text(s, txt, tlink, tfield, timg, tcolor, tbgcol, tbold, talign, trule, tindent, ti);
+    wrap_text(s, txt, tlink, tfield, timg, tcolor, tbgcol, tbold, talign, trule, tindent, line_start, ti);
+    if (line_start) {                                            // resolve each in-cell box's line-start txt indices to final line numbers
+        for (int b = 0; b < s->num_cell_boxes; b++) {
+            int l0 = -1, l1 = -1;
+            for (int li = 0; li < s->num_lines; li++) {
+                if (line_start[li] == s->cell_boxes[b].txt0) l0 = li;
+                if (line_start[li] == s->cell_boxes[b].txt1) l1 = li;
+            }
+            if (l0 >= 0 && l1 >= l0) { s->cell_boxes[b].line0 = (uint16_t)l0; s->cell_boxes[b].line1 = (uint16_t)l1; }
+            else s->cell_boxes[b].used = 0;                       // couldn't map (soft-wrap / overflow) -> drop this box, never mis-draw
+        }
+        kfree(line_start);
+    } else s->num_cell_boxes = 0;                                // no map -> no in-cell boxes this render
     kfree(txt); kfree(tlink); kfree(tfield); kfree(timg); kfree(tcolor); kfree(tbgcol); kfree(tbold); kfree(talign); kfree(trule); kfree(tindent);
 }
 
@@ -2835,6 +2905,26 @@ void selene_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
             fb_fill_rect(bx, by, BW, 1, brd); fb_fill_rect(bx, by + BH - 1, BW, 1, brd);
             fb_fill_rect(bx, by, 1, BH, brd); fb_fill_rect(bx + BW - 1, by, 1, BH, brd);
         }
+    }
+
+    // in-cell bordered-<div> outlines: stroke each recorded cell box (top+bottom rule + side verticals), clipped to the content viewport
+    for (int b = 0; b < s->num_cell_boxes; b++) {
+        if (!s->cell_boxes[b].used) continue;
+        int l0 = s->cell_boxes[b].line0, l1 = s->cell_boxes[b].line1;
+        if (l1 < s->scroll || l0 >= s->scroll + rows) continue;         // fully scrolled out of view
+        int ctop = cyy, cbot = cyy + content_h;
+        int y0 = cyy + SEL_PAD + (l0 - s->scroll) * SEL_LINE_H - (SEL_LINE_H - FONT_HEIGHT) / 2;
+        int y1 = cyy + SEL_PAD + (l1 - s->scroll) * SEL_LINE_H - (SEL_LINE_H - FONT_HEIGHT) / 2 + SEL_LINE_H;
+        int cy0 = y0 < ctop ? ctop : y0, cy1 = y1 > cbot ? cbot : y1;   // vertical span clipped to the content area
+        if (cy1 <= cy0) continue;
+        int x0 = cx + SEL_PAD + (int)s->cell_boxes[b].col0 * FONT_WIDTH - 2;
+        int x1 = cx + SEL_PAD + ((int)s->cell_boxes[b].col1 + 1) * FONT_WIDTH + 1;
+        if (x0 < cx) x0 = cx; if (x1 > cx + SELENE_W - 2) x1 = cx + SELENE_W - 2;
+        uint8_t ck = s->cell_boxes[b].col;
+        uint32_t bc = (ck && ck <= s->npalette) ? s->palette[ck - 1] : fb_rgb(120, 128, 150);
+        fb_fill_rect(x0, cy0, 1, (uint32_t)(cy1 - cy0), bc); fb_fill_rect(x1, cy0, 1, (uint32_t)(cy1 - cy0), bc);   // side verticals
+        if (y0 >= ctop && y0 < cbot) fb_fill_rect(x0, y0, (uint32_t)(x1 - x0 + 1), 1, bc);          // top edge (top row visible)
+        if (y1 - 1 >= ctop && y1 - 1 < cbot) fb_fill_rect(x0, y1 - 1, (uint32_t)(x1 - x0 + 1), 1, bc);   // bottom edge
     }
 
     if (s->num_lines > rows) {                               // scrollbar
