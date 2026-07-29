@@ -1216,7 +1216,7 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
     int qmark_depth = 0;                                      // <q> nesting: level 0 uses ", level 1 uses ', alternating
     struct { uint8_t ordered; uint16_t counter; uint8_t type; uint8_t rev; } liststk[SEL_LIST_MAXDEPTH];  // <ul>/<ol> nesting (+ list-style-type, +<ol reversed>)
     int listdepth = 0;                                        // 0 = not in a list
-    uint8_t boxstk[SEL_BOX_MAXDEPTH]; int boxsp = 0;          // bordered-<div> stack: each open <div> pushes whether it has a CSS border, so the matching </div> can close the box
+    struct { uint8_t bordered, col; } boxstk[SEL_BOX_MAXDEPTH]; int boxsp = 0;   // bordered-<div> stack: each open <div> pushes {has a CSS border, its border-colour palette idx} so the matching </div> closes + colours the box
     int cur_color = 0, cur_bg = 0, cur_bold = 0, cur_ul = 0, cur_st = 0, cur_align = 0, cur_du = 0, cur_vo = 0, cur_tt = 0, cur_ol = 0, cur_nowrap = 0;  // +text-align, +dotted-underline (<abbr>), +vert-offset (<sub>/<sup>), +text-transform, +overline, +white-space:nowrap
     struct { char tag[16]; uint8_t color, bg, bold, ul, st, al, du, vo, tt, ol, nw; } colstk[16];  // style stack: push a styled open, pop its close
     int coldepth = 0;
@@ -1925,24 +1925,34 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                         }
                     }
                     if (is_div && boxsp < SEL_BOX_MAXDEPTH) {          // a <div> opens a box level: bordered iff its CSS declares a (non-zero) border
-                        uint8_t bordered = 0;
+                        uint8_t bordered = 0, bcol = 0;
                         if (bstyle[0]) { char bv[48] = {0};
                             if (sel_css_get(bstyle, "border", bv, sizeof(bv)) || sel_css_get(bstyle, "border-width", bv, sizeof(bv)) ||
                                 sel_css_get(bstyle, "border-top", bv, sizeof(bv)) || sel_css_get(bstyle, "border-style", bv, sizeof(bv))) {
                                 if (!(sel_ci_streq(bv, "none") || bv[0] == '0')) bordered = 1;   // any border except none / 0[px]
                             }
+                            if (bordered) {                            // box stroke colour: explicit border-color, else the colour token in the border shorthand (else grey default)
+                                char bc[40] = {0}; uint32_t brgb;
+                                if (sel_css_get(bstyle, "border-color", bc, sizeof(bc))) { if (sel_parse_css_color(bc, &brgb)) bcol = sel_intern_color(s, brgb); }
+                                else for (int z = 0; bv[z]; ) {        // scan the shorthand's space-separated tokens for the first that parses as a colour (e.g. "1px solid #30363d")
+                                    while (bv[z] == ' ') z++; int e2 = z; while (bv[e2] && bv[e2] != ' ') e2++;
+                                    char tok[40]; int tl = 0; for (int q = z; q < e2 && tl < 39; q++) tok[tl++] = bv[q]; tok[tl] = '\0';
+                                    if (tl && sel_parse_css_color(tok, &brgb)) { bcol = sel_intern_color(s, brgb); break; }
+                                    z = e2; if (!bv[z]) break;
+                                }
+                            }
                         }
-                        boxstk[boxsp++] = bordered;                     // every <div> pushes (bordered or not) so the matching </div> pops correctly
-                        if (bordered && ti < len) {                    // emit a box-TOP marker line: its own blank line, drawn as the top edge (carries no text)
-                            txt[ti] = ' '; tlink[ti] = 0; tfield[ti] = 0; timg[ti] = 0; tcolor[ti] = 0; tbgcol[ti] = 0; tbold[ti] = 0;
+                        boxstk[boxsp].bordered = bordered; boxstk[boxsp].col = bcol; boxsp++;   // every <div> pushes (bordered or not) so the matching </div> pops correctly
+                        if (bordered && ti < len) {                    // emit a box-TOP marker line: its own blank line, drawn as the top edge (tcolor carries the border colour)
+                            txt[ti] = ' '; tlink[ti] = 0; tfield[ti] = 0; timg[ti] = 0; tcolor[ti] = bcol; tbgcol[ti] = 0; tbold[ti] = 0;
                             talign[ti] = 0; trule[ti] = SEL_BOX_TOP; tindent[ti] = (uint8_t)quote_depth; ti++;
                             ti = sel_ensure_nl(txt, tlink, ti, len, 1);
                         }
                     }
-                } else if (is_div && boxsp > 0) {                      // </div>: close the box level; if it was bordered, emit a box-BOTTOM marker line
-                    uint8_t bordered = boxstk[--boxsp];
+                } else if (is_div && boxsp > 0) {                      // </div>: close the box level; if it was bordered, emit a box-BOTTOM marker line in the same colour
+                    uint8_t bordered = boxstk[--boxsp].bordered, bcol = boxstk[boxsp].col;
                     if (bordered && ti < len) {
-                        txt[ti] = ' '; tlink[ti] = 0; tfield[ti] = 0; timg[ti] = 0; tcolor[ti] = 0; tbgcol[ti] = 0; tbold[ti] = 0;
+                        txt[ti] = ' '; tlink[ti] = 0; tfield[ti] = 0; timg[ti] = 0; tcolor[ti] = bcol; tbgcol[ti] = 0; tbold[ti] = 0;
                         talign[ti] = 0; trule[ti] = SEL_BOX_BOT; tindent[ti] = (uint8_t)quote_depth; ti++;
                         ti = sel_ensure_nl(txt, tlink, ti, len, 1);
                     }
@@ -2613,10 +2623,11 @@ void selene_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     int rows = visible_rows();
     int find_wl = -1, find_wc = -1;                          // the current find match's (line,col)
     if (s->find_active && s->find_len > 0 && s->find_matches > 0) find_scan(s, s->find_cur, &find_wl, &find_wc);
-    int box_depth = 0;                                       // bordered-<div> box nesting at the first visible line: replay the box markers scrolled off the top
+    int box_depth = 0; uint8_t boxcol[SEL_BOX_MAXDEPTH];     // bordered-<div> box nesting + per-level stroke colour at the first visible line: replay the box markers scrolled off the top
     for (int q = 0; q < s->scroll && q < s->num_lines; q++) {
         uint8_t lr = s->line_rule[q];
-        if (lr == SEL_BOX_TOP) box_depth++; else if (lr == SEL_BOX_BOT && box_depth > 0) box_depth--;
+        if (lr == SEL_BOX_TOP) { if (box_depth < SEL_BOX_MAXDEPTH) boxcol[box_depth] = s->color_of[q][0]; box_depth++; }
+        else if (lr == SEL_BOX_BOT && box_depth > 0) box_depth--;
     }
     for (int r = 0; r < rows; r++) {
         int idx = s->scroll + r;
@@ -2629,18 +2640,21 @@ void selene_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
             int inset = lvl * SEL_BOX_INSET;
             int bx0 = cx + SEL_PAD - 3 + inset, bx1 = cx + SELENE_W - SEL_PAD + 2 - inset;
             int vy = py - (SEL_LINE_H - FONT_HEIGHT) / 2;                 // row top; vertical spans SEL_LINE_H so rows join seamlessly
-            uint32_t boxc = fb_rgb(120, 128, 150);
+            uint8_t bck = s->color_of[idx][0];                           // the marker carries its box's border colour in the colour slot (0 = grey default)
+            uint32_t boxc = (bck && bck <= s->npalette) ? s->palette[bck - 1] : fb_rgb(120, 128, 150);
             fb_fill_rect(bx0, vy, 1, SEL_LINE_H, boxc); fb_fill_rect(bx1, vy, 1, SEL_LINE_H, boxc);
             int ey = (lrb == SEL_BOX_TOP) ? vy : vy + SEL_LINE_H - 1;     // horizontal edge at the row top (open) or bottom (close)
             fb_fill_rect(bx0, ey, (uint32_t)(bx1 - bx0 + 1), 1, boxc);
-            if (lrb == SEL_BOX_TOP) box_depth++; else if (box_depth > 0) box_depth--;
+            if (lrb == SEL_BOX_TOP) { if (box_depth < SEL_BOX_MAXDEPTH) boxcol[box_depth] = bck; box_depth++; }   // push this box's colour for the content rows' verticals
+            else if (box_depth > 0) box_depth--;
             continue;
         }
-        if (box_depth > 0) {                                     // a normal line inside a bordered box: draw the side verticals (in the SEL_PAD gutter, clear of the text)
+        if (box_depth > 0) {                                     // a normal line inside a bordered box: draw the side verticals (in the SEL_PAD gutter, clear of the text) in the box's colour
             int inset = (box_depth - 1) * SEL_BOX_INSET;
             int bx0 = cx + SEL_PAD - 3 + inset, bx1 = cx + SELENE_W - SEL_PAD + 2 - inset;
             int vy = py - (SEL_LINE_H - FONT_HEIGHT) / 2;
-            uint32_t boxc = fb_rgb(120, 128, 150);
+            uint8_t bck = (box_depth - 1 < SEL_BOX_MAXDEPTH) ? boxcol[box_depth - 1] : 0;
+            uint32_t boxc = (bck && bck <= s->npalette) ? s->palette[bck - 1] : fb_rgb(120, 128, 150);
             fb_fill_rect(bx0, vy, 1, SEL_LINE_H, boxc); fb_fill_rect(bx1, vy, 1, SEL_LINE_H, boxc);
         }
         if (s->line_rule[idx]) {                                 // <hr>: a real 2px rule; width% = line_rule, alignment = line_align (no text/overlays on this line)
