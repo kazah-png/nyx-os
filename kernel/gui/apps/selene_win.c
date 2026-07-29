@@ -141,7 +141,7 @@ static int sel_streq(const char* a, const char* b) { return strcmp(a, b) == 0; }
 static int is_block_tag(const char* n) {
     static const char* B[] = { "p","br","div","h1","h2","h3","h4","h5","h6","li","tr",
         "hr","ul","ol","table","section","article","header","footer","nav","form",
-        "blockquote","pre","dd","dt","dl","center",0 };   // <figure>/<figcaption> have dedicated arms (indent + own line)
+        "blockquote","pre","dd","dt","dl","center","main","aside","address",0 };   // <figure>/<figcaption> have dedicated arms (indent + own line); main/aside/address are HTML5 block elements too
     for (int i = 0; B[i]; i++) if (sel_streq(n, B[i])) return 1;
     return 0;
 }
@@ -1456,7 +1456,7 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                     if (sel_streq(name,"sub")) { nvo = 1; set = 1; }      // <sub> = subscript (glyph shifted down)
                     if (sel_streq(name,"sup")) { nvo = 2; set = 1; }      // <sup> = superscript (glyph shifted up)
                     if (sel_streq(name,"i") || sel_streq(name,"em") || sel_streq(name,"cite") ||
-                        sel_streq(name,"var") || sel_streq(name,"dfn")) { nul = 1; set = 1; }   // italic family: no italic glyphs, so underline it (the classic text-mode italic fallback)
+                        sel_streq(name,"var") || sel_streq(name,"dfn") || sel_streq(name,"address")) { nul = 1; set = 1; }   // italic family: no italic glyphs, so underline it (the classic text-mode italic fallback); <address> is italic too
                     if (sel_streq(name,"code") || sel_streq(name,"kbd") ||
                         sel_streq(name,"samp") || sel_streq(name,"tt")) { // monospace-ish tags: a subtle grey code background
                         uint8_t cg = sel_intern_color(s, 0xE6E6E6);
