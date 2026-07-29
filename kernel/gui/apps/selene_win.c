@@ -1967,6 +1967,27 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
             } else if (sel_streq(name,"br") || sel_streq(name,"tr") || sel_streq(name,"dd") || sel_streq(name,"dt")) {
                 ti = sel_ensure_nl(txt, tlink, ti, len, 1);          // <dt>, </dd>, <br>, <tr>: a plain line break (term sits at the left margin)
                 last_space = 1;
+            } else if (sel_streq(name, "fieldset")) {                // <fieldset>: a form-grouping element -> render as a bordered card (like a bordered <div>, but always bordered). Its <legend> renders as ordinary text inside.
+                ti = sel_ensure_nl(txt, tlink, ti, len, 2);
+                if (!close) {
+                    if (boxsp < SEL_BOX_MAXDEPTH) {
+                        uint8_t bcol = 0;                            // honour a CSS border-color if the fieldset sets one, else the theme grey default
+                        uint32_t fte = j; while (fte < len && body[fte] != '>') fte++;
+                        char fst[160] = {0}; extract_attr(body, j, fte, "style", fst, sizeof(fst));
+                        if (fst[0]) { char bc[40] = {0}; uint32_t frgb;
+                            if (sel_css_get(fst, "border-color", bc, sizeof(bc)) && sel_parse_css_color(bc, &frgb)) bcol = sel_intern_color(s, frgb); }
+                        boxstk[boxsp].bordered = 1; boxstk[boxsp].col = bcol; boxsp++;   // always bordered; pop on </fieldset>
+                        if (ti < len) { txt[ti]=' '; tlink[ti]=0; tfield[ti]=0; timg[ti]=0; tcolor[ti]=bcol; tbgcol[ti]=0; tbold[ti]=0;
+                            talign[ti]=0; trule[ti]=SEL_BOX_TOP; tindent[ti]=(uint8_t)quote_depth; ti++;
+                            ti = sel_ensure_nl(txt, tlink, ti, len, 1); }
+                    }
+                } else if (boxsp > 0) {
+                    uint8_t bcol = boxstk[--boxsp].col;
+                    if (ti < len) { txt[ti]=' '; tlink[ti]=0; tfield[ti]=0; timg[ti]=0; tcolor[ti]=bcol; tbgcol[ti]=0; tbold[ti]=0;
+                        talign[ti]=0; trule[ti]=SEL_BOX_BOT; tindent[ti]=(uint8_t)quote_depth; ti++;
+                        ti = sel_ensure_nl(txt, tlink, ti, len, 1); }
+                }
+                last_space = 1;
             } else if (is_block_tag(name)) {
                 ti = sel_ensure_nl(txt, tlink, ti, len, 2);
                 int is_div = sel_streq(name, "div");
