@@ -675,6 +675,20 @@ static int sel_cell_bordered_div(selene_ctx_t* sx, const uint8_t* body, uint32_t
     return 0;
 }
 
+// A subtle "panel" background tint derived from the page background: a touch lighter on a dark page, a
+// touch darker on a light one (so a bordered card reads as a filled panel like a real repo page, without
+// hurting text contrast). Interned into the page palette; the 24 low bits of a palette entry are RGB
+// regardless of framebuffer bpp (fb_rgb packs r<<16|g<<8|b), so the page bg's channels read back directly.
+static uint8_t sel_panel_tint(selene_ctx_t* sx) {
+    uint32_t bgpx = (sx->page_bg && sx->page_bg <= sx->npalette) ? sx->palette[sx->page_bg - 1] : fb_rgb(248, 248, 250);
+    int r = (bgpx >> 16) & 0xFF, g = (bgpx >> 8) & 0xFF, b = bgpx & 0xFF;
+    int lum = (r * 30 + g * 59 + b * 11) / 100;
+    int d = lum < 128 ? 12 : -10;   // dark page -> panel a touch lighter; light page -> a touch darker
+    r += d; g += d; b += d;
+    if (r < 0) r = 0; if (r > 255) r = 255; if (g < 0) g = 0; if (g > 255) g = 255; if (b < 0) b = 0; if (b > 255) b = 255;
+    return sel_intern_color(sx, ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b);
+}
+
 // Parse the table in body[ts..te) and emit it, aligned, into the text stream at *pti. has_border=1
 // draws the boxed +--+ rules and | separators; has_border=0 (border="0"/style border:none) lays the
 // same aligned columns out spaced apart, with no rules or pipes. cellpad is the HTML cellpadding
@@ -884,6 +898,7 @@ static void render_table(selene_ctx_t* sx, const uint8_t* body, uint32_t ts, uin
     uint8_t* pl = (uint8_t*)kmalloc(SEL_TBL_MAXCOLS * SEL_CELL_CAP);
     if (!pt || !pc || !pb || !pd || !pl) { if (pt) kfree(pt); if (pc) kfree(pc); if (pb) kfree(pb); if (pd) kfree(pd); if (pl) kfree(pl); kfree(cells); kfree(occ); return; }
     struct { int used, mcell, cs, spanw, nlines; int lbrk[SEL_CELL_MAXLINES], llen[SEL_CELL_MAXLINES]; uint8_t align, th, bg, boxed, boxcol; int boxidx; } wr[SEL_TBL_MAXCOLS];
+    int tint = -1;                                            // subtle panel-fill tint, interned lazily only if a boxed cell without its own bg needs it (so a table with none stays byte-identical)
     for (int r = 0; r < nrows; r++) {
         // ---- Phase A: extract + word-wrap each cell of this row; H = tallest cell's line count ----
         int H = 1;
@@ -941,7 +956,9 @@ static void render_table(selene_ctx_t* sx, const uint8_t* body, uint32_t ts, uin
                     for (int z = 0; z < tw && p < SEL_LINE_COLS - 2; z++) { lcol[p] = xc[off + z]; lbg[p] = xb[off + z]; lbld[p] = xd[off + z]; llnk[p] = xl[off + z]; line[p++] = ct[off + z]; }   // this line's cell text + styling
                     for (int q = 0; q < fill - lead && p < SEL_LINE_COLS - 2; q++) line[p++] = ' ';  // trailing pad
                     for (int pp = 0; pp < pad && p < SEL_LINE_COLS - 2; pp++) line[p++] = ' ';   // right cellpadding
-                    if (wr[c].bg && nseg <= SEL_TBL_MAXCOLS) { seg[nseg].a = seg_a; seg[nseg].b = p; seg[nseg].bg = wr[c].bg; nseg++; }
+                    uint8_t cellbg = wr[c].bg;               // a boxed cell (a bordered-<div> panel) with no explicit bg gets the subtle panel tint so it reads as a filled card
+                    if (!cellbg && wr[c].boxed) { if (tint < 0) tint = sel_panel_tint(sx); cellbg = (uint8_t)tint; }
+                    if (cellbg && nseg <= SEL_TBL_MAXCOLS) { seg[nseg].a = seg_a; seg[nseg].b = p; seg[nseg].bg = cellbg; nseg++; }
                     if (wr[c].boxed && nlbox < SEL_TBL_MAXCOLS) { lboxes[nlbox].c = c; lboxes[nlbox].a = seg_a; lboxes[nlbox].b = p; nlbox++; }   // this boxed cell's column span on this line
                     line[p++] = bch;
                     c += wr[c].cs;
