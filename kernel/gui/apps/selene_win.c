@@ -381,6 +381,8 @@ static void sel_emit(char* txt, uint8_t* tlink, uint8_t* tfield, uint32_t* ti, u
 #define SEL_TBL_MAXCELLS 480     // total cells captured (kmalloc'd)
 #define SEL_TBL_COLCAP   22      // max display width of one column (chars)
 #define SEL_TBL_ROWCAP   84      // max total row width (< SEL_WRAP, so rows never word-wrap)
+#define SEL_CELL_CAP     320     // per-cell chars extracted for multi-line wrapping (>= one line; bounds a cell's height)
+#define SEL_CELL_MAXLINES 12     // max wrapped lines a single table cell may occupy (bounds a row's height)
 
 typedef struct { uint32_t s, e; uint16_t row, col; uint8_t th, cspan, rspan, align, bg; } sel_tcell_t;  // align: 0 left, 1 center, 2 right; bg: cell background palette idx (0 = none)
 
@@ -801,55 +803,93 @@ static void render_table(selene_ctx_t* sx, const uint8_t* body, uint32_t ts, uin
     }
     char bch = has_border ? '|' : ' ';                                   // column separator: pipe when boxed, space when borderless
     if (has_border) { sel_emit(txt, tlink, tfield, pti, cap, rule, 0); sel_emit(txt, tlink, tfield, pti, cap, "\n", 0); }
+    // Multi-line cells: extract each cell's FULL styled text, word-wrap it to the column width, and emit as
+    // many stacked text lines as the tallest cell in the row needs (H). Per-column pools hold each cell's
+    // text + attrs (a cell starting at column c uses slice c); wr[] holds the wrap result. On OOM, degrade
+    // like the cells/occ allocation above (render nothing).
+    char*    pt = (char*)   kmalloc(SEL_TBL_MAXCOLS * SEL_CELL_CAP);
+    uint8_t* pc = (uint8_t*)kmalloc(SEL_TBL_MAXCOLS * SEL_CELL_CAP);
+    uint8_t* pb = (uint8_t*)kmalloc(SEL_TBL_MAXCOLS * SEL_CELL_CAP);
+    uint8_t* pd = (uint8_t*)kmalloc(SEL_TBL_MAXCOLS * SEL_CELL_CAP);
+    uint8_t* pl = (uint8_t*)kmalloc(SEL_TBL_MAXCOLS * SEL_CELL_CAP);
+    if (!pt || !pc || !pb || !pd || !pl) { if (pt) kfree(pt); if (pc) kfree(pc); if (pb) kfree(pb); if (pd) kfree(pd); if (pl) kfree(pl); kfree(cells); kfree(occ); return; }
+    struct { int used, mcell, cs, spanw, nlines; int lbrk[SEL_CELL_MAXLINES], llen[SEL_CELL_MAXLINES]; uint8_t align, th, bg; } wr[SEL_TBL_MAXCOLS];
     for (int r = 0; r < nrows; r++) {
-        char line[SEL_LINE_COLS]; int p = 0; line[p++] = bch;
-        int c = 0;
-        uint8_t lcol[SEL_LINE_COLS], lbg[SEL_LINE_COLS], lbld[SEL_LINE_COLS], llnk[SEL_LINE_COLS];   // per-column inline styling of this row's cell text (colour/background/bold/link), painted after emit
-        for (int z = 0; z < SEL_LINE_COLS; z++) { lcol[z] = 0; lbg[z] = 0; lbld[z] = 0; llnk[z] = 0; }
-        struct { int a, b; uint8_t bg; } seg[SEL_TBL_MAXCOLS + 1]; int nseg = 0;   // per-cell colour bands, painted into tbgcol after the line is emitted
-        while (c < ncols && p < SEL_LINE_COLS - 2) {
+        // ---- Phase A: extract + word-wrap each cell of this row; H = tallest cell's line count ----
+        int H = 1;
+        for (int cc = 0; cc < ncols; cc++) wr[cc].used = 0;
+        { int c = 0;
+          while (c < ncols) {
             int found = -1;
             for (int m = 0; m < ncells; m++) if (cells[m].row == r && cells[m].col == c) { found = m; break; }
-            if (found >= 0) {                                          // a cell starts here — draw across its cspan
-                int seg_a = p;                                         // first column of this cell's band (after the border pipe)
-                int cs = cells[found].cspan; if (c + cs > ncols) cs = ncols - c;
-                int spanw = (2 * pad + 1) * (cs - 1); for (int k = 0; k < cs; k++) spanw += colw[c + k];
-                char cb[SEL_TBL_ROWCAP + 2];
-                uint8_t ccol[SEL_TBL_ROWCAP + 2], cbgc[SEL_TBL_ROWCAP + 2], cbld[SEL_TBL_ROWCAP + 2], clnk[SEL_TBL_ROWCAP + 2];   // the cell text's per-char inline styling
-                int w = sel_cell_text_styled(sx, body, cells[found].s, cells[found].e, cb, ccol, cbgc, cbld, clnk, spanw + 1, cells[found].th);
-                for (int pp = 0; pp < pad && p < SEL_LINE_COLS - 2; pp++) line[p++] = ' ';   // left cellpadding
-                int tw = w > spanw ? spanw : w;                                     // visible text width in the cell
-                int fill = spanw - tw;                                              // padding to distribute for alignment
-                int lead = cells[found].align == 2 ? fill : (cells[found].align == 1 ? fill / 2 : 0);  // right=all before, center=half
-                for (int q = 0; q < lead && p < SEL_LINE_COLS - 2; q++) line[p++] = ' ';    // leading pad (right / center)
-                for (int z = 0; z < tw && p < SEL_LINE_COLS - 2; z++) { lcol[p] = ccol[z]; lbg[p] = cbgc[z]; lbld[p] = cbld[z]; llnk[p] = clnk[z]; line[p++] = cb[z]; }   // cell text + its inline styling
-                for (int q = 0; q < fill - lead && p < SEL_LINE_COLS - 2; q++) line[p++] = ' ';  // trailing pad
-                for (int pp = 0; pp < pad && p < SEL_LINE_COLS - 2; pp++) line[p++] = ' ';   // right cellpadding
-                if (cells[found].bg && nseg <= SEL_TBL_MAXCOLS) { seg[nseg].a = seg_a; seg[nseg].b = p; seg[nseg].bg = cells[found].bg; nseg++; }
-                line[p++] = bch;
-                c += cs;
-            } else {                                                  // empty, or covered by a span — blank column
-                for (int pp = 0; pp < pad && p < SEL_LINE_COLS - 2; pp++) line[p++] = ' ';   // left cellpadding
-                for (int z = 0; z < colw[c] && p < SEL_LINE_COLS - 2; z++) line[p++] = ' ';
-                for (int pp = 0; pp < pad && p < SEL_LINE_COLS - 2; pp++) line[p++] = ' ';   // right cellpadding
-                line[p++] = bch;
-                c += 1;
+            if (found < 0) { c += 1; continue; }                        // empty / rowspan-covered: handled per line in Phase B
+            int cs = cells[found].cspan; if (c + cs > ncols) cs = ncols - c;
+            int spanw = (2 * pad + 1) * (cs - 1); for (int k = 0; k < cs; k++) spanw += colw[c + k];
+            char* ct = pt + c * SEL_CELL_CAP; uint8_t* xc = pc + c * SEL_CELL_CAP, *xb = pb + c * SEL_CELL_CAP, *xd = pd + c * SEL_CELL_CAP, *xl = pl + c * SEL_CELL_CAP;
+            int w = sel_cell_text_styled(sx, body, cells[found].s, cells[found].e, ct, xc, xb, xd, xl, SEL_CELL_CAP, cells[found].th);
+            int nl = 0, i = 0;
+            while (i < w && nl < SEL_CELL_MAXLINES) {                    // word-wrap ct[0..w) to width spanw
+                int start = i, lastsp = -1, j = i;
+                while (j < w && j - start < spanw) { if (ct[j] == ' ') lastsp = j; j++; }
+                int end = (j >= w) ? w : (lastsp > start ? lastsp : j);  // break at last space in the run, else hard break a long word
+                wr[c].lbrk[nl] = start; wr[c].llen[nl] = end - start; nl++;
+                i = end; while (i < w && ct[i] == ' ') i++;              // swallow the break space(s)
             }
+            if (nl == 0) { wr[c].lbrk[0] = 0; wr[c].llen[0] = 0; nl = 1; }   // empty cell = one blank line
+            wr[c].used = 1; wr[c].mcell = found; wr[c].cs = cs; wr[c].spanw = spanw; wr[c].nlines = nl;
+            wr[c].align = cells[found].align; wr[c].th = cells[found].th; wr[c].bg = cells[found].bg;
+            if (nl > H) H = nl;
+            c += cs;
+          }
         }
-        line[p] = '\0';
-        uint32_t rbase = *pti;                                          // txt[] index where this row's line starts (sel_emit writes 1:1)
-        sel_emit(txt, tlink, tfield, pti, cap, line, 0);
-        for (int m2 = 0; m2 < nseg; m2++)                               // paint each coloured cell band into tbgcol
-            for (int q = seg[m2].a; q < seg[m2].b && rbase + (uint32_t)q < cap; q++) tbgcol[rbase + (uint32_t)q] = seg[m2].bg;
-        for (int q = 0; q < p && rbase + (uint32_t)q < cap; q++) {       // paint the cell text's own inline styling (overrides the cell-level band where present)
-            if (lcol[q]) tcolor[rbase + (uint32_t)q] = lcol[q];
-            if (lbg[q])  tbgcol[rbase + (uint32_t)q] = lbg[q];
-            if (lbld[q]) tbold[rbase + (uint32_t)q] |= lbld[q];
-            if (llnk[q]) tlink[rbase + (uint32_t)q]  = llnk[q];          // a link inside the cell -> clickable + blue via the draw link overlay
+        // ---- Phase B: emit H stacked text lines; a cell shows its line h (or blanks past its last line) ----
+        for (int h = 0; h < H; h++) {
+            char line[SEL_LINE_COLS]; int p = 0; line[p++] = bch;
+            uint8_t lcol[SEL_LINE_COLS], lbg[SEL_LINE_COLS], lbld[SEL_LINE_COLS], llnk[SEL_LINE_COLS];   // this line's per-column cell-text styling, painted after emit
+            for (int z = 0; z < SEL_LINE_COLS; z++) { lcol[z] = 0; lbg[z] = 0; lbld[z] = 0; llnk[z] = 0; }
+            struct { int a, b; uint8_t bg; } seg[SEL_TBL_MAXCOLS + 1]; int nseg = 0;
+            int c = 0;
+            while (c < ncols && p < SEL_LINE_COLS - 2) {
+                if (wr[c].used) {                                        // a cell starts here — draw its line h across its cspan
+                    int seg_a = p, spanw = wr[c].spanw;
+                    int off = 0, tw = 0;
+                    if (h < wr[c].nlines) { off = wr[c].lbrk[h]; tw = wr[c].llen[h]; }   // else the cell has run out of lines -> blank band
+                    if (tw > spanw) tw = spanw;
+                    int fill = spanw - tw;                                              // padding to distribute for alignment
+                    int lead = wr[c].align == 2 ? fill : (wr[c].align == 1 ? fill / 2 : 0);  // right=all before, center=half
+                    char* ct = pt + c * SEL_CELL_CAP; uint8_t* xc = pc + c * SEL_CELL_CAP, *xb = pb + c * SEL_CELL_CAP, *xd = pd + c * SEL_CELL_CAP, *xl = pl + c * SEL_CELL_CAP;
+                    for (int pp = 0; pp < pad && p < SEL_LINE_COLS - 2; pp++) line[p++] = ' ';   // left cellpadding
+                    for (int q = 0; q < lead && p < SEL_LINE_COLS - 2; q++) line[p++] = ' ';    // leading pad (right / center)
+                    for (int z = 0; z < tw && p < SEL_LINE_COLS - 2; z++) { lcol[p] = xc[off + z]; lbg[p] = xb[off + z]; lbld[p] = xd[off + z]; llnk[p] = xl[off + z]; line[p++] = ct[off + z]; }   // this line's cell text + styling
+                    for (int q = 0; q < fill - lead && p < SEL_LINE_COLS - 2; q++) line[p++] = ' ';  // trailing pad
+                    for (int pp = 0; pp < pad && p < SEL_LINE_COLS - 2; pp++) line[p++] = ' ';   // right cellpadding
+                    if (wr[c].bg && nseg <= SEL_TBL_MAXCOLS) { seg[nseg].a = seg_a; seg[nseg].b = p; seg[nseg].bg = wr[c].bg; nseg++; }
+                    line[p++] = bch;
+                    c += wr[c].cs;
+                } else {                                                // empty, or covered by a span — blank column
+                    for (int pp = 0; pp < pad && p < SEL_LINE_COLS - 2; pp++) line[p++] = ' ';   // left cellpadding
+                    for (int z = 0; z < colw[c] && p < SEL_LINE_COLS - 2; z++) line[p++] = ' ';
+                    for (int pp = 0; pp < pad && p < SEL_LINE_COLS - 2; pp++) line[p++] = ' ';   // right cellpadding
+                    line[p++] = bch;
+                    c += 1;
+                }
+            }
+            line[p] = '\0';
+            uint32_t rbase = *pti;                                          // txt[] index where this line starts (sel_emit writes 1:1)
+            sel_emit(txt, tlink, tfield, pti, cap, line, 0);
+            for (int m2 = 0; m2 < nseg; m2++)                               // paint each coloured cell band into tbgcol
+                for (int q = seg[m2].a; q < seg[m2].b && rbase + (uint32_t)q < cap; q++) tbgcol[rbase + (uint32_t)q] = seg[m2].bg;
+            for (int q = 0; q < p && rbase + (uint32_t)q < cap; q++) {       // paint the cell text's own inline styling (overrides the cell-level band where present)
+                if (lcol[q]) tcolor[rbase + (uint32_t)q] = lcol[q];
+                if (lbg[q])  tbgcol[rbase + (uint32_t)q] = lbg[q];
+                if (lbld[q]) tbold[rbase + (uint32_t)q] |= lbld[q];
+                if (llnk[q]) tlink[rbase + (uint32_t)q]  = llnk[q];          // a link inside the cell -> clickable + blue via the draw link overlay
+            }
+            sel_emit(txt, tlink, tfield, pti, cap, "\n", 0);
+            if (r == 0 && has_header && has_border && h == H - 1) { sel_emit(txt, tlink, tfield, pti, cap, rule, 0); sel_emit(txt, tlink, tfield, pti, cap, "\n", 0); }   // header rule after the header row's last line
         }
-        sel_emit(txt, tlink, tfield, pti, cap, "\n", 0);
-        if (r == 0 && has_header && has_border) { sel_emit(txt, tlink, tfield, pti, cap, rule, 0); sel_emit(txt, tlink, tfield, pti, cap, "\n", 0); }
     }
+    kfree(pt); kfree(pc); kfree(pb); kfree(pd); kfree(pl);
     if (has_border) sel_emit(txt, tlink, tfield, pti, cap, rule, 0);
     if (cap_ready && cap_bottom) {                                        // caption-side:bottom -- below the box
         sel_emit(txt, tlink, tfield, pti, cap, "\n", 0);
