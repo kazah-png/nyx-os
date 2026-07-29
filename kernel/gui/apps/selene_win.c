@@ -571,6 +571,9 @@ static int sel_cell_text_styled(selene_ctx_t* sx, const uint8_t* body, uint32_t 
                         cur_link = sx->num_links + 1; sx->num_links++; }
                 }
             }
+            if (is_block_tag(nm)) {                                         // <br> or a block boundary (open OR close) -> a hard line break in the multi-line cell, marked by a non-rendering sentinel (0x01)
+                if (n > 0 && out[n-1] != 0x01 && n < cap - 1) { out[n]=0x01; ocol[n]=0; obg[n]=0; obold[n]=0; olink[n]=0; n++; last_space = 1; }   // suppress a leading break + collapse runs
+            }
             if (close) {
                 if (sd > 0 && sel_streq(stk[sd-1].tag, nm)) { sd--; cc = sd?stk[sd-1].col:0; cbgv = sd?stk[sd-1].bg:0; cbold = sd?stk[sd-1].bold:0; }
             } else if (nl > 0) {
@@ -607,7 +610,7 @@ static int sel_cell_text_styled(selene_ctx_t* sx, const uint8_t* body, uint32_t 
         if (upper && c>='a'&&c<='z') c -= 32;
         out[n]=c; ocol[n]=cc; obg[n]=cbgv; obold[n]=cbold; olink[n]=(uint8_t)cur_link; n++; last_space = 0; i++;
     }
-    while (n > 0 && out[n-1] == ' ') n--;   // trim trailing space
+    while (n > 0 && (out[n-1] == ' ' || out[n-1] == 0x01)) n--;   // trim trailing spaces + a dangling hard-break sentinel
     out[n] = '\0';
     return n;
 }
@@ -835,12 +838,17 @@ static void render_table(selene_ctx_t* sx, const uint8_t* body, uint32_t ts, uin
             char* ct = pt + c * SEL_CELL_CAP; uint8_t* xc = pc + c * SEL_CELL_CAP, *xb = pb + c * SEL_CELL_CAP, *xd = pd + c * SEL_CELL_CAP, *xl = pl + c * SEL_CELL_CAP;
             int w = sel_cell_text_styled(sx, body, cells[found].s, cells[found].e, ct, xc, xb, xd, xl, SEL_CELL_CAP, cells[found].th);
             int nl = 0, i = 0;
-            while (i < w && nl < SEL_CELL_MAXLINES) {                    // word-wrap ct[0..w) to width spanw
+            while (i < w && nl < SEL_CELL_MAXLINES) {                    // word-wrap ct[0..w) to width spanw, breaking HARD at a 0x01 sentinel (<br>/block boundary)
                 int start = i, lastsp = -1, j = i;
-                while (j < w && j - start < spanw) { if (ct[j] == ' ') lastsp = j; j++; }
-                int end = (j >= w) ? w : (lastsp > start ? lastsp : j);  // break at last space in the run, else hard break a long word
+                while (j < w && ct[j] != 0x01 && j - start < spanw) { if (ct[j] == ' ') lastsp = j; j++; }
+                int end;
+                if (j < w && ct[j] == 0x01)  end = j;                    // forced break at the sentinel
+                else if (j >= w)             end = w;                    // rest fits
+                else                         end = (lastsp > start) ? lastsp : j;   // soft word-wrap (last space, else hard-break a long word)
                 wr[c].lbrk[nl] = start; wr[c].llen[nl] = end - start; nl++;
-                i = end; while (i < w && ct[i] == ' ') i++;              // swallow the break space(s)
+                i = end;
+                if (i < w && ct[i] == 0x01) i++;                         // consume the forced-break sentinel
+                else while (i < w && ct[i] == ' ') i++;                  // else swallow the soft-break space(s)
             }
             if (nl == 0) { wr[c].lbrk[0] = 0; wr[c].llen[0] = 0; nl = 1; }   // empty cell = one blank line
             wr[c].used = 1; wr[c].mcell = found; wr[c].cs = cs; wr[c].spanw = spanw; wr[c].nlines = nl;
