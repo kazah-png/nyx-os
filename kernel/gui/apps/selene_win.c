@@ -1409,7 +1409,7 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                 } else if (!(sel_streq(name,"br")||sel_streq(name,"hr")||sel_streq(name,"img")||
                              sel_streq(name,"input")||sel_streq(name,"meta")||sel_streq(name,"link"))) {
                     char stylev[160]; extract_attr(body, j, cte, "style", stylev, sizeof(stylev));
-                    char cval[40] = {0}, bval[40] = {0}, wval[24] = {0}, dval[24] = {0}, aval[16] = {0}, tval[20] = {0}, wsval[16] = {0};
+                    char cval[40] = {0}, bval[40] = {0}, wval[24] = {0}, dval[24] = {0}, aval[16] = {0}, tval[20] = {0}, wsval[16] = {0}, sval[20] = {0};
                     if (stylev[0]) {
                         sel_css_get(stylev, "color", cval, sizeof(cval));
                         if (!sel_css_get(stylev, "background-color", bval, sizeof(bval)))
@@ -1419,6 +1419,7 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                         sel_css_get(stylev, "text-align", aval, sizeof(aval));
                         sel_css_get(stylev, "text-transform", tval, sizeof(tval));
                         sel_css_get(stylev, "white-space", wsval, sizeof(wsval));
+                        sel_css_get(stylev, "font-style", sval, sizeof(sval));
                     }
                     if (!cval[0] && sel_streq(name, "font")) extract_attr(body, j, cte, "color",   cval, sizeof(cval));
                     if (!bval[0] && sel_streq(name, "font")) extract_attr(body, j, cte, "bgcolor", bval, sizeof(bval));
@@ -1457,6 +1458,7 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                     if (sel_streq(name,"sup")) { nvo = 2; set = 1; }      // <sup> = superscript (glyph shifted up)
                     if (sel_streq(name,"i") || sel_streq(name,"em") || sel_streq(name,"cite") ||
                         sel_streq(name,"var") || sel_streq(name,"dfn") || sel_streq(name,"address")) { nul = 1; set = 1; }   // italic family: no italic glyphs, so underline it (the classic text-mode italic fallback); <address> is italic too
+                    if (sval[0] && (sel_ci_streq(sval,"italic") || sel_ci_streq(sval,"oblique"))) { nul = 1; set = 1; }   // CSS font-style: italic/oblique -> the SAME underline-as-italic fallback the <i>/<em> family uses. No `normal`->nul=0 branch: nul doubles as the underline flag, so clearing it could strip an inherited <u>/text-decoration:underline.
                     if (sel_streq(name,"code") || sel_streq(name,"kbd") ||
                         sel_streq(name,"samp") || sel_streq(name,"tt")) { // monospace-ish tags: a subtle grey code background
                         uint8_t cg = sel_intern_color(s, 0xE6E6E6);
