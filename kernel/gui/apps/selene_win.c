@@ -434,7 +434,7 @@ static int sel_tag_match(const uint8_t* body, uint32_t i, uint32_t e, const char
 // Flatten a nested <table> (body[i] at its '<table' open) into a compact inline "[ a b / c d ]"
 // so a table inside a cell reads in place instead of corrupting the grid. Declared here, used by
 // sel_cell_text below; defined after it (it calls back into sel_cell_text for each inner cell).
-static uint32_t sel_flatten_nested(const uint8_t* body, uint32_t i, uint32_t e, char* out, int* n, int cap);
+static uint32_t sel_flatten_nested(const uint8_t* body, uint32_t i, uint32_t e, char* out, int* n, int cap, int break_rows);
 
 // Plain text of a table cell body[s..e): strip inner tags, decode entities, collapse whitespace, trim.
 // A nested <table> is replaced by sel_flatten_nested's compact "[ ... ]" form (kept in place, not merged).
@@ -446,7 +446,7 @@ static int sel_cell_text(const uint8_t* body, uint32_t s, uint32_t e, char* out,
             int tc; uint32_t tp;
             if (sel_tag_match(body, i, e, "table", &tc, &tp) && !tc) {    // nested table -> inline "[ ... ]"
                 if (!last_space && n < cap - 1) out[n++] = ' ';
-                i = sel_flatten_nested(body, i, e, out, &n, cap);
+                i = sel_flatten_nested(body, i, e, out, &n, cap, 0);   // break_rows=0: the plain "[ a b / c d ]" one-line form (used for column-width measurement + captions — must not contain 0x01)
                 if (n < cap - 1) { out[n++] = ' '; }
                 last_space = 1; continue;
             }
@@ -476,12 +476,12 @@ static int sel_cell_text(const uint8_t* body, uint32_t s, uint32_t e, char* out,
 // (cells space-separated, rows separated by " / "), appended into out[*n..cap). A table nested inside
 // this one collapses to "[..]" (no unbounded recursion). Returns the index just past the matching
 // </table>, so the caller resumes after the whole nested table.
-static uint32_t sel_flatten_nested(const uint8_t* body, uint32_t i, uint32_t e, char* out, int* n, int cap) {
+static uint32_t sel_flatten_nested(const uint8_t* body, uint32_t i, uint32_t e, char* out, int* n, int cap, int break_rows) {
     int c0; uint32_t past;
     if (!sel_tag_match(body, i, e, "table", &c0, &past)) return i + 1;   // shouldn't happen; skip one byte
     i = past;
     #define SFN_PUT(ch) do { if (*n < cap - 1) out[(*n)++] = (char)(ch); } while (0)
-    SFN_PUT('['); SFN_PUT(' ');
+    if (!break_rows) { SFN_PUT('['); SFN_PUT(' '); }   // break_rows: no "[ ]" wrapper — rows will stack, one per line
     int firstrow = 1, firstcell = 1, depth = 1;
     while (i < e && depth > 0) {
         if (body[i] != '<') { i++; continue; }
@@ -499,7 +499,7 @@ static uint32_t sel_flatten_nested(const uint8_t* body, uint32_t i, uint32_t e, 
             i = m; continue;
         }
         if (sel_tag_match(body, i, e, "tr", &cl, &p)) {                 // new row
-            if (!cl) { if (!firstrow) { SFN_PUT(' '); SFN_PUT('/'); SFN_PUT(' '); } firstrow = 0; firstcell = 1; }
+            if (!cl) { if (!firstrow) { if (break_rows) SFN_PUT(0x01); else { SFN_PUT(' '); SFN_PUT('/'); SFN_PUT(' '); } } firstrow = 0; firstcell = 1; }   // break_rows: a hard line break (0x01) between rows so each renders on its own line
             i = p; continue;
         }
         if ((sel_tag_match(body, i, e, "td", &cl, &p) || sel_tag_match(body, i, e, "th", &cl, &p)) && !cl) {
@@ -519,7 +519,7 @@ static uint32_t sel_flatten_nested(const uint8_t* body, uint32_t i, uint32_t e, 
         }
         { uint32_t k = i + 1; while (k < e && body[k] != '>') k++; if (k < e) k++; i = k; }   // skip other tag
     }
-    SFN_PUT(' '); SFN_PUT(']');
+    if (!break_rows) { SFN_PUT(' '); SFN_PUT(']'); }
     #undef SFN_PUT
     return i;
 }
@@ -550,7 +550,7 @@ static int sel_cell_text_styled(selene_ctx_t* sx, const uint8_t* body, uint32_t 
             int tc; uint32_t tp;
             if (sel_tag_match(body, i, e, "table", &tc, &tp) && !tc) {      // nested table -> flatten (no styling)
                 if (!last_space && n < cap - 1) { out[n]=' '; ocol[n]=cc; obg[n]=cbgv; obold[n]=cbold; olink[n]=(uint8_t)cur_link; n++; }
-                int n0 = n; i = sel_flatten_nested(body, i, e, out, &n, cap);
+                int n0 = n; i = sel_flatten_nested(body, i, e, out, &n, cap, 1);   // break_rows=1: a nested table renders one row per line inside this cell
                 for (int z = n0; z < n; z++) { ocol[z]=0; obg[z]=0; obold[z]=0; olink[z]=0; }
                 if (n < cap - 1) { out[n]=' '; ocol[n]=0; obg[n]=0; obold[n]=0; olink[n]=0; n++; }
                 last_space = 1; continue;
