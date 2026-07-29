@@ -127,7 +127,7 @@ int http_parse_response(uint8_t* buf, uint32_t total, http_response_t* resp)
             while (p < end && *p != '\n') p++;      // skip chunk-ext + CR up to LF
             if (p < end) p++;                        // consume LF
             if (!any || sz == 0) break;              // 0-size chunk terminates
-            if (olen + sz > body_avail) sz = body_avail - olen;
+            if (sz > body_avail - olen) sz = body_avail - olen;   // overflow-safe: olen <= body_avail is invariant, so this never does the wrapping `olen + sz` (a server-controlled huge chunk size could wrap it and skip the clamp -> heap overflow of `out`)
             for (uint32_t k = 0; k < sz && p < end; k++) out[olen++] = (uint8_t)*p++;
             if (p < end && *p == '\r') p++;          // trailing CRLF after data
             if (p < end && *p == '\n') p++;
