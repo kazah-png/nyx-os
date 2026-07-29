@@ -224,7 +224,14 @@ static void selene_resolve(selene_ctx_t* s, const char* href, char* out) {
     const char* scheme = s->base_https ? "https" : "http";
     if (strncmp(href, "http://", 7) == 0)  { strncpy(out, href, 191); out[191] = '\0'; return; }
     if (strncmp(href, "https://", 8) == 0) { strncpy(out, href, 191); out[191] = '\0'; return; }   // keep https — Selene speaks TLS now
-    if (href[0] == '#' || href[0] == '\0') return;
+    if (href[0] == '#') {                                  // in-page anchor (href="#" / "#section"): a real link to the CURRENT page (browsers render it blue), so resolve to this page instead of dropping it
+        char hp[160]; uint16_t dp = s->base_https ? 443 : 80;
+        if (s->base_port != dp) snprintf(hp, sizeof(hp), "%s:%u", s->base_host, s->base_port);
+        else                    snprintf(hp, sizeof(hp), "%s", s->base_host);
+        snprintf(out, 192, "%s://%s%s", scheme, hp, s->base_path);
+        return;
+    }
+    if (href[0] == '\0') return;                           // <a> with no href (e.g. a named anchor <a name=..>) is not a link
     if (strncmp(href, "mailto:", 7) == 0 || strncmp(href, "javascript:", 11) == 0) return;
     if (href[0] == '/' && href[1] == '/')  { snprintf(out, 192, "%s:%s", scheme, href); return; }
 
