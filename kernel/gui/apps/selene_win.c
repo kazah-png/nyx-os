@@ -522,12 +522,83 @@ static int sel_ci_streq(const char* a, const char* b);
 static int sel_parse_css_color(const char* v, uint32_t* rgb);
 static uint8_t sel_intern_color(selene_ctx_t* s, uint32_t rgb);
 
+// Styled variant of sel_cell_text: identical plain-text extraction, but ALSO records the inline styling
+// of each output char -- colour (ocol), background (obg) and bold (obold) -- from the cell's own tags:
+// <b>/<strong> (bold), style="color:"/"background[-color]:", <font color/bgcolor>, <mark>, and the
+// monospace family <code>/<kbd>/<samp>/<tt> (grey background). Colours are interned into the page palette
+// via sx, exactly like the main parse loop, so a coloured word or a background "pill" inside a <td>/<th>
+// renders instead of being flattened to plain text. A nested <table> still collapses to "[ ... ]" and its
+// synthesized chars carry no styling. ocol/obg/obold must each hold at least `cap` bytes.
+static int sel_cell_text_styled(selene_ctx_t* sx, const uint8_t* body, uint32_t s, uint32_t e,
+                                char* out, uint8_t* ocol, uint8_t* obg, uint8_t* obold, int cap, int upper) {
+    int n = 0, last_space = 1;
+    struct { char tag[12]; uint8_t col, bg, bold; } stk[10]; int sd = 0;   // inline style stack within the cell
+    uint8_t cc = 0, cbgv = 0, cbold = 0;                                   // current colour / background / bold
+    for (uint32_t i = s; i < e && n < cap - 1; ) {
+        char c = (char)body[i];
+        if (c == '<') {
+            int tc; uint32_t tp;
+            if (sel_tag_match(body, i, e, "table", &tc, &tp) && !tc) {      // nested table -> flatten (no styling)
+                if (!last_space && n < cap - 1) { out[n]=' '; ocol[n]=cc; obg[n]=cbgv; obold[n]=cbold; n++; }
+                int n0 = n; i = sel_flatten_nested(body, i, e, out, &n, cap);
+                for (int z = n0; z < n; z++) { ocol[z]=0; obg[z]=0; obold[z]=0; }
+                if (n < cap - 1) { out[n]=' '; ocol[n]=0; obg[n]=0; obold[n]=0; n++; }
+                last_space = 1; continue;
+            }
+            uint32_t m = i + 1; int close = 0;
+            if (m < e && body[m] == '/') { close = 1; m++; }
+            char nm[12]; int nl = 0;
+            while (m < e && nl < 11) { char t = (char)body[m];
+                if ((t>='a'&&t<='z')||(t>='A'&&t<='Z')||(t>='0'&&t<='9')) { nm[nl++]=(t>='A'&&t<='Z')?t+32:t; m++; } else break; }
+            nm[nl] = '\0';
+            uint32_t te2 = m; while (te2 < e && body[te2] != '>') te2++;
+            if (close) {
+                if (sd > 0 && sel_streq(stk[sd-1].tag, nm)) { sd--; cc = sd?stk[sd-1].col:0; cbgv = sd?stk[sd-1].bg:0; cbold = sd?stk[sd-1].bold:0; }
+            } else if (nl > 0) {
+                uint8_t ncol = cc, nbg = cbgv, nbold = cbold; int set = 0;
+                char stylev[128]; extract_attr(body, m, te2, "style", stylev, sizeof(stylev));
+                char cval[40] = {0}, bval[40] = {0}; uint32_t rgb;
+                if (stylev[0]) { sel_css_get(stylev, "color", cval, sizeof(cval));
+                    if (!sel_css_get(stylev, "background-color", bval, sizeof(bval))) sel_css_get(stylev, "background", bval, sizeof(bval)); }
+                if (!cval[0] && sel_streq(nm,"font")) extract_attr(body, m, te2, "color",   cval, sizeof(cval));
+                if (!bval[0] && sel_streq(nm,"font")) extract_attr(body, m, te2, "bgcolor", bval, sizeof(bval));
+                if (cval[0] && sel_parse_css_color(cval, &rgb)) { uint8_t x = sel_intern_color(sx, rgb); if (x) { ncol = x; set = 1; } }
+                if (bval[0] && sel_parse_css_color(bval, &rgb)) { uint8_t x = sel_intern_color(sx, rgb); if (x) { nbg  = x; set = 1; } }
+                if (sel_streq(nm,"b") || sel_streq(nm,"strong")) { nbold = 1; set = 1; }
+                if (sel_streq(nm,"mark")) { uint8_t hy = sel_intern_color(sx, 0xFFFF00), bk = sel_intern_color(sx, 0x000000); if (hy) { nbg = hy; set = 1; } if (bk) { ncol = bk; set = 1; } }
+                if (sel_streq(nm,"code")||sel_streq(nm,"kbd")||sel_streq(nm,"samp")||sel_streq(nm,"tt")) { uint8_t g = sel_intern_color(sx, 0xE6E6E6); if (g) { nbg = g; set = 1; } }
+                int voidtag = sel_streq(nm,"br")||sel_streq(nm,"img")||sel_streq(nm,"input")||sel_streq(nm,"hr")||sel_streq(nm,"meta")||sel_streq(nm,"wbr");
+                if (set && !voidtag && sd < 10) {
+                    strncpy(stk[sd].tag, nm, 11); stk[sd].tag[11]='\0';
+                    stk[sd].col = ncol; stk[sd].bg = nbg; stk[sd].bold = nbold; sd++;
+                    cc = ncol; cbgv = nbg; cbold = nbold;
+                }
+            }
+            i = (te2 < e) ? te2 + 1 : e;
+            continue;
+        }
+        if (c == '&') { char eb[8]; uint32_t el, adv;
+            if (decode_entity(body + i, e - i, eb, sizeof(eb), &el, &adv)) {
+                for (uint32_t k = 0; k < el && n < cap - 1; k++) { char d = eb[k];
+                    if (d == ' ') { if (!last_space) { out[n]=' '; ocol[n]=cc; obg[n]=cbgv; obold[n]=cbold; n++; last_space = 1; } }
+                    else { if (upper && d>='a'&&d<='z') d -= 32; out[n]=d; ocol[n]=cc; obg[n]=cbgv; obold[n]=cbold; n++; last_space = 0; } }
+                i += adv; continue; }
+            out[n]='&'; ocol[n]=cc; obg[n]=cbgv; obold[n]=cbold; n++; last_space = 0; i++; continue; }
+        if (c==' '||c=='\t'||c=='\n'||c=='\r') { if (!last_space) { out[n]=' '; ocol[n]=cc; obg[n]=cbgv; obold[n]=cbold; n++; last_space = 1; } i++; continue; }
+        if (upper && c>='a'&&c<='z') c -= 32;
+        out[n]=c; ocol[n]=cc; obg[n]=cbgv; obold[n]=cbold; n++; last_space = 0; i++;
+    }
+    while (n > 0 && out[n-1] == ' ') n--;   // trim trailing space
+    out[n] = '\0';
+    return n;
+}
+
 // Parse the table in body[ts..te) and emit it, aligned, into the text stream at *pti. has_border=1
 // draws the boxed +--+ rules and | separators; has_border=0 (border="0"/style border:none) lays the
 // same aligned columns out spaced apart, with no rules or pipes. cellpad is the HTML cellpadding
 // (spaces of horizontal breathing room inside each cell, per side; default 1 keeps the old layout).
 static void render_table(selene_ctx_t* sx, const uint8_t* body, uint32_t ts, uint32_t te,
-                         char* txt, uint8_t* tlink, uint8_t* tfield, uint8_t* tbgcol, uint32_t* pti, uint32_t cap,
+                         char* txt, uint8_t* tlink, uint8_t* tfield, uint8_t* tbgcol, uint8_t* tcolor, uint8_t* tbold, uint32_t* pti, uint32_t cap,
                          int has_border, int cellpad) {
     int pad = cellpad < 0 ? 0 : (cellpad > 8 ? 8 : cellpad);   // cellpadding: spaces INSIDE each cell, per side (default 1 == unchanged)
     sel_tcell_t* cells = (sel_tcell_t*)kmalloc(SEL_TBL_MAXCELLS * sizeof(sel_tcell_t));
@@ -723,6 +794,8 @@ static void render_table(selene_ctx_t* sx, const uint8_t* body, uint32_t ts, uin
     for (int r = 0; r < nrows; r++) {
         char line[SEL_LINE_COLS]; int p = 0; line[p++] = bch;
         int c = 0;
+        uint8_t lcol[SEL_LINE_COLS], lbg[SEL_LINE_COLS], lbld[SEL_LINE_COLS];   // per-column inline styling of this row's cell text (colour/background/bold), painted after emit
+        for (int z = 0; z < SEL_LINE_COLS; z++) { lcol[z] = 0; lbg[z] = 0; lbld[z] = 0; }
         struct { int a, b; uint8_t bg; } seg[SEL_TBL_MAXCOLS + 1]; int nseg = 0;   // per-cell colour bands, painted into tbgcol after the line is emitted
         while (c < ncols && p < SEL_LINE_COLS - 2) {
             int found = -1;
@@ -732,13 +805,14 @@ static void render_table(selene_ctx_t* sx, const uint8_t* body, uint32_t ts, uin
                 int cs = cells[found].cspan; if (c + cs > ncols) cs = ncols - c;
                 int spanw = (2 * pad + 1) * (cs - 1); for (int k = 0; k < cs; k++) spanw += colw[c + k];
                 char cb[SEL_TBL_ROWCAP + 2];
-                int w = sel_cell_text(body, cells[found].s, cells[found].e, cb, spanw + 1, cells[found].th);
+                uint8_t ccol[SEL_TBL_ROWCAP + 2], cbgc[SEL_TBL_ROWCAP + 2], cbld[SEL_TBL_ROWCAP + 2];   // the cell text's per-char inline styling
+                int w = sel_cell_text_styled(sx, body, cells[found].s, cells[found].e, cb, ccol, cbgc, cbld, spanw + 1, cells[found].th);
                 for (int pp = 0; pp < pad && p < SEL_LINE_COLS - 2; pp++) line[p++] = ' ';   // left cellpadding
                 int tw = w > spanw ? spanw : w;                                     // visible text width in the cell
                 int fill = spanw - tw;                                              // padding to distribute for alignment
                 int lead = cells[found].align == 2 ? fill : (cells[found].align == 1 ? fill / 2 : 0);  // right=all before, center=half
                 for (int q = 0; q < lead && p < SEL_LINE_COLS - 2; q++) line[p++] = ' ';    // leading pad (right / center)
-                for (int z = 0; z < tw && p < SEL_LINE_COLS - 2; z++) line[p++] = cb[z];    // the cell text
+                for (int z = 0; z < tw && p < SEL_LINE_COLS - 2; z++) { lcol[p] = ccol[z]; lbg[p] = cbgc[z]; lbld[p] = cbld[z]; line[p++] = cb[z]; }   // cell text + its inline styling
                 for (int q = 0; q < fill - lead && p < SEL_LINE_COLS - 2; q++) line[p++] = ' ';  // trailing pad
                 for (int pp = 0; pp < pad && p < SEL_LINE_COLS - 2; pp++) line[p++] = ' ';   // right cellpadding
                 if (cells[found].bg && nseg <= SEL_TBL_MAXCOLS) { seg[nseg].a = seg_a; seg[nseg].b = p; seg[nseg].bg = cells[found].bg; nseg++; }
@@ -757,6 +831,11 @@ static void render_table(selene_ctx_t* sx, const uint8_t* body, uint32_t ts, uin
         sel_emit(txt, tlink, tfield, pti, cap, line, 0);
         for (int m2 = 0; m2 < nseg; m2++)                               // paint each coloured cell band into tbgcol
             for (int q = seg[m2].a; q < seg[m2].b && rbase + (uint32_t)q < cap; q++) tbgcol[rbase + (uint32_t)q] = seg[m2].bg;
+        for (int q = 0; q < p && rbase + (uint32_t)q < cap; q++) {       // paint the cell text's own inline styling (overrides the cell-level band where present)
+            if (lcol[q]) tcolor[rbase + (uint32_t)q] = lcol[q];
+            if (lbg[q])  tbgcol[rbase + (uint32_t)q] = lbg[q];
+            if (lbld[q]) tbold[rbase + (uint32_t)q] |= lbld[q];
+        }
         sel_emit(txt, tlink, tfield, pti, cap, "\n", 0);
         if (r == 0 && has_header && has_border) { sel_emit(txt, tlink, tfield, pti, cap, rule, 0); sel_emit(txt, tlink, tfield, pti, cap, "\n", 0); }
     }
@@ -1389,7 +1468,7 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                             k = p4; continue; } }
                     k++;
                 }
-                render_table(s, body, inner, innerEnd, txt, tlink, tfield, tbgcol, &ti, len, has_border, cellpad);
+                render_table(s, body, inner, innerEnd, txt, tlink, tfield, tbgcol, tcolor, tbold, &ti, len, has_border, cellpad);
                 last_space = 1;
                 i = k; continue;
             }
