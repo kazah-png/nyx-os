@@ -1429,6 +1429,7 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                     if (cval[0] && sel_parse_css_color(cval, &rgb)) { uint8_t x = sel_intern_color(s, rgb); if (x) { nfg = x; set = 1; } }
                     if (bval[0] && sel_parse_css_color(bval, &rgb)) { uint8_t x = sel_intern_color(s, rgb); if (x) { nbg = x; set = 1; } }
                     if (sel_streq(name,"b") || sel_streq(name,"strong")) { nbold = 1; set = 1; }   // <b>/<strong> = bold
+                    if (sel_streq(name,"legend")) { nbold = 1; set = 1; }   // <fieldset>'s <legend> caption = bold (its group title), via the same style stack (pops on </legend>)
                     if (wval[0]) {                                                                // font-weight: bold-ish vs normal
                         if (sel_ci_streq(wval,"bold")||sel_ci_streq(wval,"bolder")||sel_ci_streq(wval,"600")||
                             sel_ci_streq(wval,"700")||sel_ci_streq(wval,"800")||sel_ci_streq(wval,"900")) { nbold = 1; set = 1; }
