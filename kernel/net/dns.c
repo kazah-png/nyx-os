@@ -70,22 +70,28 @@ static void dns_response_handler(uint8_t* data, uint32_t len, uint32_t src_ip, u
     }
 }
 
-// Encode a domain name into DNS format (e.g. "www.google.com" -> \x03www\x06google\x03com\x00)
-static int encode_dns_name(uint8_t* buf, const char* name) {
-    int pos = 0;
+// Encode a domain name into DNS format (e.g. "www.google.com" -> \x03www\x06google\x03com\x00).
+// `cap` bounds every write into buf: a hostname too long for the buffer returns -1 instead of
+// overflowing it. dns_resolve's buffer is a fixed 512-byte stack array and some callers pass an
+// unbounded hostname (a shell command's argv[1] is NOT capped like Selene's parse_url host[128]),
+// so an over-long name would otherwise smash the kernel stack.
+static int encode_dns_name(uint8_t* buf, uint32_t cap, const char* name) {
+    uint32_t pos = 0;
     while (*name) {
         const char* dot = name;
         while (*dot && *dot != '.') dot++;
         int len = (int)(dot - name);
         if (len > 63) return -1;
+        if (pos + 1 + (uint32_t)len + 1 > cap) return -1;   // label-length byte + label + room for the terminating 0
         buf[pos++] = (uint8_t)len;
         for (int i = 0; i < len; i++)
-            buf[pos++] = name[i];
+            buf[pos++] = (uint8_t)name[i];
         name = dot;
         if (*dot == '.') name++;
     }
+    if (pos + 1 > cap) return -1;
     buf[pos++] = 0;
-    return pos;
+    return (int)pos;
 }
 
 uint32_t dns_resolve(const char* hostname, int iface_idx) {
@@ -135,7 +141,7 @@ uint32_t dns_resolve(const char* hostname, int iface_idx) {
     hdr->qdcount = htons(1);      // was stored LE -> 256 questions on the wire
 
     int off = sizeof(dns_header_t);
-    int nlen = encode_dns_name(pkt + off, hostname);
+    int nlen = encode_dns_name(pkt + off, (uint32_t)sizeof(pkt) - (uint32_t)off, hostname);
     if (nlen < 0) return 0;
     off += nlen;
 
