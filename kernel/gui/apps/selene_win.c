@@ -679,14 +679,21 @@ static int sel_cell_bordered_div(selene_ctx_t* sx, const uint8_t* body, uint32_t
 // touch darker on a light one (so a bordered card reads as a filled panel like a real repo page, without
 // hurting text contrast). Interned into the page palette; the 24 low bits of a palette entry are RGB
 // regardless of framebuffer bpp (fb_rgb packs r<<16|g<<8|b), so the page bg's channels read back directly.
-static uint8_t sel_panel_tint(selene_ctx_t* sx) {
-    uint32_t bgpx = (sx->page_bg && sx->page_bg <= sx->npalette) ? sx->palette[sx->page_bg - 1] : fb_rgb(248, 248, 250);
+// The panel-tint PIXEL for a given page-background pixel: a touch lighter on a dark page, a touch darker on
+// a light one (luminance test). Pure (no palette mutation), so the draw loop can call it directly on the
+// resolved page background to fill a top-level box, matching the interned index render_table uses for the
+// in-cell band (both start from the same page-bg pixel).
+static uint32_t sel_tint_px(uint32_t bgpx) {
     int r = (bgpx >> 16) & 0xFF, g = (bgpx >> 8) & 0xFF, b = bgpx & 0xFF;
     int lum = (r * 30 + g * 59 + b * 11) / 100;
     int d = lum < 128 ? 12 : -10;   // dark page -> panel a touch lighter; light page -> a touch darker
     r += d; g += d; b += d;
     if (r < 0) r = 0; if (r > 255) r = 255; if (g < 0) g = 0; if (g > 255) g = 255; if (b < 0) b = 0; if (b > 255) b = 255;
-    return sel_intern_color(sx, ((uint32_t)r << 16) | ((uint32_t)g << 8) | (uint32_t)b);
+    return fb_rgb((uint8_t)r, (uint8_t)g, (uint8_t)b);
+}
+static uint8_t sel_panel_tint(selene_ctx_t* sx) {
+    uint32_t bgpx = (sx->page_bg && sx->page_bg <= sx->npalette) ? sx->palette[sx->page_bg - 1] : fb_rgb(248, 248, 250);
+    return sel_intern_color(sx, sel_tint_px(bgpx) & 0xFFFFFF);   // low 24 bits = 0xRRGGBB for sel_intern_color
 }
 
 // Parse the table in body[ts..te) and emit it, aligned, into the text stream at *pti. has_border=1
@@ -2737,6 +2744,7 @@ void selene_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
         if (lr == SEL_BOX_TOP) { if (box_depth < SEL_BOX_MAXDEPTH) boxcol[box_depth] = s->color_of[q][0]; box_depth++; }
         else if (lr == SEL_BOX_BOT && box_depth > 0) box_depth--;
     }
+    uint32_t tintpx = sel_tint_px(pg);                       // subtle panel fill for a TOP-LEVEL bordered box (matches the in-cell band tint; only used while box_depth>0)
     for (int r = 0; r < rows; r++) {
         int idx = s->scroll + r;
         if (idx >= s->num_lines) break;
@@ -2748,6 +2756,7 @@ void selene_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
             int inset = lvl * SEL_BOX_INSET;
             int bx0 = cx + SEL_PAD - 3 + inset, bx1 = cx + SELENE_W - SEL_PAD + 2 - inset;
             int vy = py - (SEL_LINE_H - FONT_HEIGHT) / 2;                 // row top; vertical spans SEL_LINE_H so rows join seamlessly
+            if (bx1 - bx0 > 1) fb_fill_rect(bx0 + 1, vy, (uint32_t)(bx1 - bx0 - 1), SEL_LINE_H, tintpx);   // panel fill on the marker (padding) row, behind the outline
             uint8_t bck = s->color_of[idx][0];                           // the marker carries its box's border colour in the colour slot (0 = grey default)
             uint32_t boxc = (bck && bck <= s->npalette) ? s->palette[bck - 1] : fb_rgb(120, 128, 150);
             fb_fill_rect(bx0, vy, 1, SEL_LINE_H, boxc); fb_fill_rect(bx1, vy, 1, SEL_LINE_H, boxc);
@@ -2757,10 +2766,11 @@ void selene_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
             else if (box_depth > 0) box_depth--;
             continue;
         }
-        if (box_depth > 0) {                                     // a normal line inside a bordered box: draw the side verticals (in the SEL_PAD gutter, clear of the text) in the box's colour
+        if (box_depth > 0) {                                     // a normal line inside a bordered box: fill the panel interior (behind the text) + draw the side verticals in the box's colour
             int inset = (box_depth - 1) * SEL_BOX_INSET;
             int bx0 = cx + SEL_PAD - 3 + inset, bx1 = cx + SELENE_W - SEL_PAD + 2 - inset;
             int vy = py - (SEL_LINE_H - FONT_HEIGHT) / 2;
+            if (bx1 - bx0 > 1) fb_fill_rect(bx0 + 1, vy, (uint32_t)(bx1 - bx0 - 1), SEL_LINE_H, tintpx);   // subtle panel fill; the text below draws with the same tint as its bg so it blends
             uint8_t bck = (box_depth - 1 < SEL_BOX_MAXDEPTH) ? boxcol[box_depth - 1] : 0;
             uint32_t boxc = (bck && bck <= s->npalette) ? s->palette[bck - 1] : fb_rgb(120, 128, 150);
             fb_fill_rect(bx0, vy, 1, SEL_LINE_H, boxc); fb_fill_rect(bx1, vy, 1, SEL_LINE_H, boxc);
@@ -2798,7 +2808,7 @@ void selene_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
                                               && s->bold_of[idx][b1] == bd) b1++;
                 uint32_t fg = (ck && ck <= s->npalette) ? s->palette[ck - 1]
                               : (s->page_fg && s->page_fg <= s->npalette) ? s->palette[s->page_fg - 1] : fb_rgb(28, 30, 40);   // <body text> default fg, else dark
-                uint32_t bg = (bk && bk <= s->npalette) ? s->palette[bk - 1] : pg;
+                uint32_t bg = (bk && bk <= s->npalette) ? s->palette[bk - 1] : (box_depth > 0 ? tintpx : pg);   // inside a top-level bordered box, un-styled text sits on the panel tint (matches the interior fill)
                 char sub[SEL_LINE_COLS]; int k = 0;
                 for (; k < b1 - b0 && k < SEL_LINE_COLS - 1; k++) sub[k] = s->lines[idx][b0 + k];
                 sub[k] = '\0';
@@ -2826,7 +2836,7 @@ void selene_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
                 int wpx = (c1 - c0) * FONT_WIDTH;
                 int seld = (lk == s->sel_link + 1);
                 uint32_t fg = seld ? fb_rgb(20, 20, 45) : fb_rgb(48, 96, 210);
-                uint32_t bg = seld ? fb_rgb(196, 208, 255) : pg;
+                uint32_t bg = seld ? fb_rgb(196, 208, 255) : (box_depth > 0 ? tintpx : pg);   // a link inside a top-level box sits on the panel tint too
                 if (seld) fb_fill_rect(px - 1, py - 1, wpx + 2, FONT_HEIGHT + 2, bg);
                 char sub[SEL_LINE_COLS];
                 int k = 0; for (; k < c1 - c0; k++) sub[k] = s->lines[idx][c0 + k];
