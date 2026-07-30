@@ -255,11 +255,11 @@ char* strcat(char* dest, const char* src) {
 }
 
 char* strchr(const char* s, int c) {
-    while (*s) {
-        if (*s == (char)c) return (char*)s;
-        s++;
+    char ch = (char)c;
+    for (;; s++) {
+        if (*s == ch) return (char*)s;   /* c == '\0' matches the terminating NUL */
+        if (!*s) return 0;
     }
-    return 0;
 }
 
 char* strstr(const char* haystack, const char* needle) {
