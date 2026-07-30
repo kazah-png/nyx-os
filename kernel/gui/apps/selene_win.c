@@ -919,6 +919,11 @@ static void render_table(selene_ctx_t* sx, const uint8_t* body, uint32_t ts, uin
             int spanw = (2 * pad + 1) * (cs - 1); for (int k = 0; k < cs; k++) spanw += colw[c + k];
             char* ct = pt + c * SEL_CELL_CAP; uint8_t* xc = pc + c * SEL_CELL_CAP, *xb = pb + c * SEL_CELL_CAP, *xd = pd + c * SEL_CELL_CAP, *xl = pl + c * SEL_CELL_CAP;
             int w = sel_cell_text_styled(sx, body, cells[found].s, cells[found].e, ct, xc, xb, xd, xl, SEL_CELL_CAP, cells[found].th);
+            /* A <th> header cell renders BOLD by default, like a browser (in addition to the
+               existing upper-casing) — xd is the per-char bold array (bit0). Only <th> cells set
+               it, so <td> cells and non-table text are unaffected. A cell whose own inline style
+               already bolds a span just keeps bit0 set (idempotent). */
+            if (cells[found].th) for (int b = 0; b < w; b++) xd[b] |= 1;
             int nl = 0, i = 0;
             while (i < w && nl < SEL_CELL_MAXLINES) {                    // word-wrap ct[0..w) to width spanw, breaking HARD at a 0x01 sentinel (<br>/block boundary)
                 int start = i, lastsp = -1, j = i;
