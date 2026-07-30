@@ -653,7 +653,21 @@ int vfs_close(int fd) {
 // 1 if `path` names a directory in the ramdisk tree (used by chdir to reject a
 // file). Mount points are directories too.
 int vfs_isdir(const char* path) {
-    if (vfs_find_mount(path)) return 1;
+    mount_entry_t* me = vfs_find_mount(path);
+    if (me) {
+        // The mount point itself is a directory; for a path INSIDE the mount, ask the
+        // backing FS whether it is really a directory rather than assuming so. readdir
+        // returns >=0 only for a directory (-1 for a regular file / missing), the same
+        // probe vfs_open uses. Without this, every mounted path (incl. plain files)
+        // reported as a directory — which made vfs_stat short-circuit to size 0 and
+        // let `cd` descend into a file.
+        const char* sub = path + strlen(me->mount_point);
+        if (!*sub || (sub[0] == '/' && !sub[1])) return 1;   // the mount root
+        dirent_t* d = (dirent_t*)kmalloc(sizeof(dirent_t) * VFS_MOUNT_DIRENTS);
+        int nd = (me->readdir && d) ? me->readdir(sub, d, VFS_MOUNT_DIRENTS) : -1;
+        if (d) kfree(d);
+        return (nd >= 0) ? 1 : 0;
+    }
     proc_sync();                       // so `cd /proc/<pid>` resolves a live pid
     vfs_node_t* n = resolve_path(path);
     return (n && n->type == 1) ? 1 : 0;
