@@ -63,6 +63,35 @@ char* strncat(char* dest, const char* src, size_t n);
 char* strdup(const char* s);
 void  qsort(void* base, size_t nmemb, size_t size, int (*cmp)(const void*, const void*));
 
+/* ===== stdio (FILE*) — buffered file I/O over the fd syscalls =====
+ * Core layer (v6.1.3): fopen/fclose/fread/fwrite/fgetc/fputc/fflush/feof/ferror.
+ * The fprintf family, stdin/stdout/stderr, fgets/fputs and fseek/ftell land in the
+ * next bricks. FILE is a complete type here; callers use it via FILE*. */
+#ifndef NULL
+#define NULL ((void*)0)
+#endif
+#define EOF (-1)
+
+typedef struct FILE {
+    int fd;
+    unsigned char buf[1024];
+    int pos;          /* next index into buf */
+    int len;          /* valid bytes currently in buf */
+    int mode;         /* 0 idle, 'r' read-buffered, 'w' write-buffered */
+    int can_read, can_write;
+    int eof, err;
+} FILE;
+
+FILE*  fopen(const char* path, const char* mode);
+int    fclose(FILE* f);
+size_t fread(void* ptr, size_t size, size_t nmemb, FILE* f);
+size_t fwrite(const void* ptr, size_t size, size_t nmemb, FILE* f);
+int    fgetc(FILE* f);
+int    fputc(int c, FILE* f);
+int    fflush(FILE* f);
+int    feof(FILE* f);
+int    ferror(FILE* f);
+
 /* Process environment (set by crt0 from execve's envp). getenv reads it. */
 extern char** environ;
 char* getenv(const char* name);

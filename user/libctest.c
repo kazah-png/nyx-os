@@ -122,6 +122,37 @@ int main(int argc, char** argv) {
         if (!se_ok) ok = 0;
     }
 
+    /* FILE* stdio core: write a file with fwrite+fputc, then read it back with
+     * fread+fgetc and confirm the bytes + feof at end (separate FILEs, no r+). */
+    {
+        const char* path = "/mnt/libctest_stdio.txt";
+        const char* body = "line one\nline two\n";   /* 18 bytes */
+        int st_ok = 1;
+        FILE* fw = fopen(path, "w");
+        if (!fw) st_ok = 0;
+        else {
+            size_t wl = strlen(body);
+            if (fwrite(body, 1, wl, fw) != wl) st_ok = 0;   /* bulk write */
+            if (fputc('!', fw) != '!') st_ok = 0;            /* one trailing byte */
+            if (fclose(fw) != 0) st_ok = 0;
+        }
+        FILE* fr = fopen(path, "r");
+        if (!fr) st_ok = 0;
+        else {
+            char rb[64];
+            size_t got = fread(rb, 1, sizeof(rb) - 1, fr);   /* reads through EOF */
+            rb[got] = '\0';
+            size_t expect = strlen(body) + 1;                /* body + '!' */
+            if (got != expect) st_ok = 0;
+            if (st_ok && (strncmp(rb, body, strlen(body)) != 0 || rb[strlen(body)] != '!')) st_ok = 0;
+            if (st_ok && !feof(fr)) st_ok = 0;               /* fread reached EOF */
+            if (fgetc(fr) != EOF) st_ok = 0;                 /* nothing left */
+            fclose(fr);
+        }
+        printf("LIBCTEST: stdio(fopen/fwrite/fputc/fread/fgetc/feof) %s\n", st_ok ? "PASS" : "FAIL");
+        if (!st_ok) ok = 0;
+    }
+
     printf("LIBCTEST: %s\n", ok ? "ALL PASS" : "SOME FAIL");
     return ok ? 0 : 1;
 }

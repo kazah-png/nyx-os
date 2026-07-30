@@ -635,3 +635,90 @@ void qsort(void* base, size_t nmemb, size_t size, int (*cmp)(const void*, const 
         if (gap == 1) break;   /* size_t: avoid 1/3 == 0 looping forever */
     }
 }
+
+/* =========== stdio (FILE*) — buffered file I/O over the fd syscalls ===========
+ * A minimal but correct FILE core: one 1 KB buffer holds either read-ahead OR
+ * pending writes at a time (tracked by `mode`), refilled/flushed as needed. On an
+ * r+/w+/a+ stream a read->write switch rewinds the fd to the logical read position
+ * and a write->read switch flushes first, so the file offset stays consistent.
+ * (fseek/ftell, the fprintf family, and stdin/out/err come in later bricks.) */
+
+FILE* fopen(const char* path, const char* mode) {
+    if (!path || !mode) return NULL;
+    int flags, cr = 0, cw = 0;
+    switch (mode[0]) {
+        case 'r': flags = O_RDONLY;           cr = 1; break;
+        case 'w': flags = O_CREAT | O_TRUNC;  cw = 1; break;
+        case 'a': flags = O_CREAT | O_APPEND; cw = 1; break;
+        default:  return NULL;
+    }
+    for (const char* p = mode + 1; *p; p++) if (*p == '+') { cr = 1; cw = 1; }
+    int fd = (int)open(path, flags, 0644);
+    if (fd < 0) return NULL;
+    FILE* f = (FILE*)malloc(sizeof(FILE));
+    if (!f) { close(fd); return NULL; }
+    f->fd = fd; f->pos = 0; f->len = 0; f->mode = 0;
+    f->can_read = cr; f->can_write = cw; f->eof = 0; f->err = 0;
+    return f;
+}
+
+int fflush(FILE* f) {
+    if (!f) return 0;
+    if (f->mode == 'w' && f->len > 0) {
+        long n = write(f->fd, f->buf, f->len);
+        if (n < f->len) { f->err = 1; f->len = 0; return EOF; }
+        f->len = 0;
+    }
+    return 0;
+}
+
+int fgetc(FILE* f) {
+    if (!f || !f->can_read) { if (f) f->err = 1; return EOF; }
+    if (f->mode == 'w') { if (fflush(f) == EOF) return EOF; f->mode = 0; }
+    if (f->mode != 'r' || f->pos >= f->len) {
+        long n = read(f->fd, f->buf, (long)sizeof(f->buf));
+        if (n <= 0) { if (n == 0) f->eof = 1; else f->err = 1; return EOF; }
+        f->len = (int)n; f->pos = 0; f->mode = 'r';
+    }
+    return f->buf[f->pos++];
+}
+
+int fputc(int c, FILE* f) {
+    if (!f || !f->can_write) { if (f) f->err = 1; return EOF; }
+    if (f->mode == 'r') {                       /* read->write: rewind the fd to the */
+        if (f->len > f->pos)                    /* logical position (prefetched but   */
+            lseek(f->fd, -(long)(f->len - f->pos), SEEK_CUR);  /* unconsumed bytes)   */
+        f->len = 0; f->pos = 0; f->mode = 0;
+    }
+    if (f->mode != 'w') { f->mode = 'w'; f->len = 0; }
+    f->buf[f->len++] = (unsigned char)c;
+    if (f->len == (int)sizeof(f->buf)) { if (fflush(f) == EOF) return EOF; }
+    return (unsigned char)c;
+}
+
+size_t fread(void* ptr, size_t size, size_t nmemb, FILE* f) {
+    if (size == 0 || nmemb == 0) return 0;
+    unsigned char* p = (unsigned char*)ptr;
+    size_t total = size * nmemb, i;
+    for (i = 0; i < total; i++) { int c = fgetc(f); if (c < 0) break; p[i] = (unsigned char)c; }
+    return i / size;
+}
+
+size_t fwrite(const void* ptr, size_t size, size_t nmemb, FILE* f) {
+    if (size == 0 || nmemb == 0) return 0;
+    const unsigned char* p = (const unsigned char*)ptr;
+    size_t total = size * nmemb, i;
+    for (i = 0; i < total; i++) { if (fputc(p[i], f) < 0) break; }
+    return i / size;
+}
+
+int fclose(FILE* f) {
+    if (!f) return EOF;
+    int rc = fflush(f);
+    long c = close(f->fd);
+    free(f);
+    return (rc == EOF || c < 0) ? EOF : 0;
+}
+
+int feof(FILE* f)   { return f ? f->eof : 0; }
+int ferror(FILE* f) { return f ? f->err : 0; }
