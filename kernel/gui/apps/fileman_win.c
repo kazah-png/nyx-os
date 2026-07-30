@@ -80,12 +80,29 @@ void fileman_refresh(fileman_win_t* fm) {
         strncpy(fm->entries[fm->entry_count], de->name, 63);
         fm->entries[fm->entry_count][63] = '\0';
         fm->entry_types[fm->entry_count] = de->type;
+        // Stat files for the Size column; directories carry no byte size (drawn "<DIR>").
+        fm->entry_sizes[fm->entry_count] = 0;
+        if (!de->type) {
+            char epath[320];
+            if (strcmp(fm->cwd, "/") == 0) snprintf(epath, sizeof(epath), "/%s", de->name);
+            else                            snprintf(epath, sizeof(epath), "%s/%s", fm->cwd, de->name);
+            uint32_t esz = 0; int eisd = 0;
+            if (vfs_stat(epath, &esz, &eisd) == 0) fm->entry_sizes[fm->entry_count] = esz;
+        }
         fm->entry_count++;
         de = vfs_readdir(fd);
     }
     vfs_close(fd);
     snprintf(fm->status, sizeof(fm->status), "%d entries", fm->entry_count);
     fileman_apply_search(fm);
+}
+
+// Format a byte count as a compact human-readable string (B / KB / MB) for the
+// Size column. Integer math only (the kernel printf has no %f).
+static void fileman_fmt_size(uint32_t b, char* out, int n) {
+    if (b < 1024u)               snprintf(out, n, "%u B",  b);
+    else if (b < 1024u * 1024u)  snprintf(out, n, "%u KB", (b + 512u) / 1024u);
+    else                         snprintf(out, n, "%u MB", (b + 512u * 1024u) / (1024u * 1024u));
 }
 
 static void fileman_cd(fileman_win_t* fm, const char* dir, window_t* win) {
@@ -327,6 +344,11 @@ void fileman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     int list_header_y = path_y + HEADER_H + search_bar_h;
     fb_fill_rect(cx, list_header_y, cw, char_h + 2, fb_rgb(50,55,65));
     font_draw_string(cx + 4, list_header_y + 1, "Name", fb_rgb(255,255,255), fb_rgb(50,55,65));
+    {
+        const char* size_hdr = "Size";
+        int shx = cx + ((int)cw - SCROLL_W) - 8 - (int)strlen(size_hdr) * FONT_WIDTH;
+        font_draw_string(shx, list_header_y + 1, size_hdr, fb_rgb(255,255,255), fb_rgb(50,55,65));
+    }
 
     // File listing
     int list_y = list_header_y + char_h + 4;
@@ -348,6 +370,12 @@ void fileman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
         snprintf(display, sizeof(display), "%c %s", prefix, fm->entries[ei]);
         uint32_t fg = fm->entry_types[ei] ? fb_rgb(100,200,255) : THEME_TEXT;
         font_draw_string(cx + 4, ey, display, fg, bg);
+        // Right-aligned Size column: byte count for files, "<DIR>" for folders.
+        char szbuf[16];
+        if (fm->entry_types[ei]) snprintf(szbuf, sizeof(szbuf), "<DIR>");
+        else                     fileman_fmt_size(fm->entry_sizes[ei], szbuf, sizeof(szbuf));
+        int szx = cx + list_w - 8 - (int)strlen(szbuf) * FONT_WIDTH;
+        font_draw_string(szx, ey, szbuf, fm->entry_types[ei] ? fb_rgb(120,150,180) : fb_rgb(170,170,180), bg);
     }
 
     // Scrollbar

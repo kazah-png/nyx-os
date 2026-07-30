@@ -10,6 +10,7 @@ typedef struct {
     char cwd[256];
     char entries[FILEMAN_MAX_ENTRIES][64];
     int entry_types[FILEMAN_MAX_ENTRIES];
+    uint32_t entry_sizes[FILEMAN_MAX_ENTRIES];   // byte size per file (0 for dirs), for the Size column
     int entry_count;
     int scroll_offset;
     char status[128];
