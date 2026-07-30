@@ -83,3 +83,6 @@ g1.png
 g2.png
 j*.png
 w*.png
+
+# === Scratchpad (session temp files: build logs, patches, screendumps) ===
+scratchpad/
