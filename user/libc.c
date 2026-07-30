@@ -529,3 +529,51 @@ int sprintf(char* buf, const char* fmt, ...) {
     va_end(args);
     return (int)pos;
 }
+
+/* =========== ctype — character classification/conversion (ASCII) ===========
+ * The primitives a compiler's lexer leans on. Pure, no allocation. */
+int isspace(int c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f'; }
+int isdigit(int c) { return c >= '0' && c <= '9'; }
+int isupper(int c) { return c >= 'A' && c <= 'Z'; }
+int islower(int c) { return c >= 'a' && c <= 'z'; }
+int isalpha(int c) { return isupper(c) || islower(c); }
+int isalnum(int c) { return isalpha(c) || isdigit(c); }
+int isxdigit(int c) { return isdigit(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'); }
+int iscntrl(int c) { return (c >= 0 && c < 32) || c == 127; }
+int isprint(int c) { return c >= 32 && c < 127; }
+int isgraph(int c) { return c > 32 && c < 127; }
+int ispunct(int c) { return isprint(c) && c != ' ' && !isalnum(c); }
+int toupper(int c) { return islower(c) ? c - 32 : c; }
+int tolower(int c) { return isupper(c) ? c + 32 : c; }
+
+/* =========== string -> integer =========== */
+/* Skips leading whitespace and an optional +/- sign; base 0 auto-detects a 0x/0X
+ * prefix (hex) or a leading 0 (octal), else decimal. On return *endptr (if non-NULL)
+ * points just past the last digit consumed, or at nptr if none were. Wraps on
+ * overflow (no errno). A leading '-' negates in the unsigned return type, per C. */
+unsigned long strtoul(const char* nptr, char** endptr, int base) {
+    const char* s = nptr;
+    while (isspace((unsigned char)*s)) s++;
+    int neg = 0;
+    if (*s == '+' || *s == '-') { neg = (*s == '-'); s++; }
+    if ((base == 0 || base == 16) && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) { s += 2; base = 16; }
+    else if (base == 0 && s[0] == '0') { base = 8; }
+    else if (base == 0) { base = 10; }
+    unsigned long acc = 0; int any = 0;
+    for (;;) {
+        int c = (unsigned char)*s, d;
+        if (c >= '0' && c <= '9') d = c - '0';
+        else if (c >= 'a' && c <= 'z') d = c - 'a' + 10;
+        else if (c >= 'A' && c <= 'Z') d = c - 'A' + 10;
+        else break;
+        if (d >= base) break;
+        acc = acc * (unsigned long)base + (unsigned long)d;
+        any = 1; s++;
+    }
+    if (endptr) *endptr = (char*)(any ? s : nptr);
+    return neg ? (unsigned long)(-(long)acc) : acc;
+}
+
+long strtol(const char* nptr, char** endptr, int base) {
+    return (long)strtoul(nptr, endptr, base);   /* strtoul already applied the sign */
+}

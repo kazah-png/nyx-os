@@ -37,6 +37,25 @@ int snprintf(char* buf, size_t size, const char* fmt, ...);
 int atoi(const char* s);
 int abs(int x);
 
+/* ctype — character classification/conversion (ASCII); a lexer's staples. */
+int isspace(int c);
+int isdigit(int c);
+int isalpha(int c);
+int isalnum(int c);
+int isupper(int c);
+int islower(int c);
+int isxdigit(int c);
+int iscntrl(int c);
+int isprint(int c);
+int isgraph(int c);
+int ispunct(int c);
+int toupper(int c);
+int tolower(int c);
+
+/* String -> integer. base 0 auto-detects a 0x (hex) or 0 (octal) prefix. */
+long strtol(const char* nptr, char** endptr, int base);
+unsigned long strtoul(const char* nptr, char** endptr, int base);
+
 /* Process environment (set by crt0 from execve's envp). getenv reads it. */
 extern char** environ;
 char* getenv(const char* name);

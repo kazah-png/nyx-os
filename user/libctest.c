@@ -37,6 +37,60 @@ int main(int argc, char** argv) {
     printf("LIBCTEST: memmove %s\n", m_ok ? "PASS" : "FAIL");
     if (!m_ok) ok = 0;
 
+    /* File I/O wrappers (open/write/stat/lseek/read) on the persistent /mnt mount:
+     * write a file, stat it (size + regular-file mode), then reopen, seek past the
+     * first 7 bytes and read the tail back, comparing it to the original. */
+    {
+        const char* path = "/mnt/libctest_io.txt";
+        const char* msg  = "NyxOS toolchain file I/O test\n";
+        long mlen = (long)strlen(msg);
+        int io_ok = 1;
+        int fd = (int)open(path, O_CREAT | O_TRUNC, 0644);   /* NyxOS: bit0=O_CREAT, no access mode */
+        if (fd < 0) io_ok = 0;
+        else { if (write(fd, msg, mlen) != mlen) io_ok = 0; close(fd); }
+
+        struct stat st;
+        if (io_ok && (stat(path, &st) != 0 || st.st_size != (unsigned)mlen || !S_ISREG(st.st_mode))) io_ok = 0;
+
+        fd = (int)open(path, O_RDONLY, 0);
+        if (fd < 0) io_ok = 0;
+        else {
+            char rb[64];
+            if (lseek(fd, 7, SEEK_SET) != 7) io_ok = 0;
+            long n = read(fd, rb, (long)sizeof(rb) - 1);
+            if (n < 0) { io_ok = 0; n = 0; }
+            rb[n] = '\0';
+            if (io_ok && (n != mlen - 7 || memcmp(rb, msg + 7, (unsigned long)n) != 0)) io_ok = 0;
+            close(fd);
+        }
+        printf("LIBCTEST: fileio(open/write/stat/lseek/read) %s\n", io_ok ? "PASS" : "FAIL");
+        if (!io_ok) ok = 0;
+    }
+
+    /* ctype (character classification/conversion) — a lexer's staples. */
+    {
+        int ct_ok = isalpha('A') && isalpha('z') && !isalpha('7') &&
+                    isdigit('0') && isdigit('9') && !isdigit('x') &&
+                    isspace(' ') && isspace('\n') && !isspace('a') &&
+                    isxdigit('f') && isxdigit('C') && !isxdigit('g') &&
+                    isalnum('q') && isalnum('5') && !isalnum('#') &&
+                    ispunct('#') && !ispunct('a') &&
+                    toupper('a') == 'A' && tolower('Z') == 'z' && toupper('7') == '7';
+        printf("LIBCTEST: ctype %s\n", ct_ok ? "PASS" : "FAIL");
+        if (!ct_ok) ok = 0;
+    }
+
+    /* strtol / strtoul — string to integer, with sign/base/prefix handling. */
+    {
+        char* end = 0;
+        long a = strtol("  -42xyz", &end, 10);           /* signed decimal, stops at 'x' */
+        int s_ok = (a == -42) && end && (*end == 'x');
+        s_ok = s_ok && (strtoul("0x1A", 0, 0) == 26);    /* base 0 auto-detects hex */
+        s_ok = s_ok && (strtol("777", 0, 8) == 511);     /* explicit octal */
+        printf("LIBCTEST: strtol/strtoul %s\n", s_ok ? "PASS" : "FAIL");
+        if (!s_ok) ok = 0;
+    }
+
     printf("LIBCTEST: %s\n", ok ? "ALL PASS" : "SOME FAIL");
     return ok ? 0 : 1;
 }
