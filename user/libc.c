@@ -325,209 +325,151 @@ static void pchar(char c) {
     write(1, &ch, 1);
 }
 
-// `left` (the '-' flag) right-pads with spaces instead of left-padding, so the
-// value is left-justified within the field width.
-static void print_u64(unsigned long long val, int base, int pad, char padchar, int left) {
+/* ---- printf-family shared formatting core (v6.1.4) ----
+ * One formatter drives printf, snprintf/sprintf/vsnprintf AND fprintf/vfprintf via
+ * an output "sink": each formatted character is handed to emit(c, ctx). This unifies
+ * three previously-separate switches. printf's rich behaviour is preserved exactly
+ * ('-'/'0' flags, field width, %d/%i/%u/%o/%x/%X, the %l* variants, %p/%s/%c/%%);
+ * snprintf/sprintf inherit it (a strict superset of their old basic switch), and
+ * `left` (the '-' flag) right-pads with spaces for left-justification. */
+typedef void (*emit_fn)(char c, void* ctx);
+
+static void emit_stdout(char c, void* ctx) { (void)ctx; pchar(c); }
+
+typedef struct { char* buf; size_t size; size_t count; } fmt_bufsink;
+static void emit_buf(char c, void* ctx) {
+    fmt_bufsink* s = (fmt_bufsink*)ctx;
+    if (s->size && s->count + 1 < s->size) s->buf[s->count] = c;  /* keep room for NUL */
+    s->count++;                                                   /* C99 would-be length */
+}
+
+typedef struct { FILE* f; int count; } fmt_filesink;
+static void emit_file(char c, void* ctx) {
+    fmt_filesink* s = (fmt_filesink*)ctx;
+    fputc((unsigned char)c, s->f);
+    s->count++;
+}
+
+static void fmt_u64(emit_fn emit, void* ctx, unsigned long long val, int base, int pad, char padchar, int left) {
     char buf[32];
     int n = 0;
     if (val == 0) { buf[n++] = '0'; }
     while (val > 0 && n < 31) {
-        int d = val % base;
+        int d = (int)(val % base);
         buf[n++] = (d < 10) ? ('0' + d) : ('a' + d - 10);
         val /= base;
     }
     int digits = n;
     if (left) {
-        while (n > 0) pchar(buf[--n]);
-        for (int i = digits; i < pad; i++) pchar(' ');
+        while (n > 0) emit(buf[--n], ctx);
+        for (int i = digits; i < pad; i++) emit(' ', ctx);
     } else {
-        for (int i = digits; i < pad; i++) pchar(padchar);
-        while (n > 0) pchar(buf[--n]);
+        for (int i = digits; i < pad; i++) emit(padchar, ctx);
+        while (n > 0) emit(buf[--n], ctx);
     }
 }
 
-static void print_int(long long val, int pad, char padchar, int left) {
-    if (val < 0) { pchar('-'); val = -val; }
-    print_u64((unsigned long long)val, 10, pad, padchar, left);
+static void fmt_int(emit_fn emit, void* ctx, long long val, int pad, char padchar, int left) {
+    if (val < 0) { emit('-', ctx); val = -val; }
+    fmt_u64(emit, ctx, (unsigned long long)val, 10, pad, padchar, left);
 }
 
-static void print_string(const char* s, int pad, char padchar, int left) {
+static void fmt_string(emit_fn emit, void* ctx, const char* s, int pad, char padchar, int left) {
     if (!s) s = "(null)";
     int len = (int)strlen(s);
     if (left) {
-        for (int i = 0; i < len; i++) pchar(s[i]);
-        for (int i = len; i < pad; i++) pchar(' ');
+        for (int i = 0; i < len; i++) emit(s[i], ctx);
+        for (int i = len; i < pad; i++) emit(' ', ctx);
     } else {
-        for (int i = 0; i < pad - len; i++) pchar(padchar);
-        for (int i = 0; i < len; i++) pchar(s[i]);
+        for (int i = 0; i < pad - len; i++) emit(padchar, ctx);
+        for (int i = 0; i < len; i++) emit(s[i], ctx);
     }
 }
 
-int printf(const char* fmt, ...) {
-    va_list args;
-    va_start(args, fmt);
+static void format_core(emit_fn emit, void* ctx, const char* fmt, va_list args) {
     while (*fmt) {
-        if (*fmt != '%') { pchar(*fmt); fmt++; continue; }
+        if (*fmt != '%') { emit(*fmt, ctx); fmt++; continue; }
         fmt++;
-        int pad = 0;
-        char padchar = ' ';
-        int left = 0;
-        // Flags: '-' (left-justify) and '0' (zero-pad), in any order.
+        int pad = 0; char padchar = ' '; int left = 0;
         for (;;) {
             if (*fmt == '-') { left = 1; fmt++; }
             else if (*fmt == '0') { padchar = '0'; fmt++; }
             else break;
         }
         while (*fmt >= '0' && *fmt <= '9') { pad = pad * 10 + (*fmt - '0'); fmt++; }
-        if (left) padchar = ' ';   // '-' overrides '0' zero-padding (C standard)
+        if (left) padchar = ' ';   /* '-' overrides '0' zero-padding (C standard) */
         switch (*fmt) {
             case 'd':
-            case 'i': { int v = va_arg(args, int); print_int(v, pad, padchar, left); break; }
-            case 'u': { unsigned int v = va_arg(args, unsigned int); print_u64(v, 10, pad, padchar, left); break; }
-            case 'o': { unsigned int v = va_arg(args, unsigned int); print_u64(v, 8, pad, padchar, left); break; }
+            case 'i': { int v = va_arg(args, int); fmt_int(emit, ctx, v, pad, padchar, left); break; }
+            case 'u': { unsigned int v = va_arg(args, unsigned int); fmt_u64(emit, ctx, v, 10, pad, padchar, left); break; }
+            case 'o': { unsigned int v = va_arg(args, unsigned int); fmt_u64(emit, ctx, v, 8, pad, padchar, left); break; }
             case 'x':
-            case 'X': { unsigned int v = va_arg(args, unsigned int); print_u64(v, 16, pad, padchar, left); break; }
+            case 'X': { unsigned int v = va_arg(args, unsigned int); fmt_u64(emit, ctx, v, 16, pad, padchar, left); break; }
             case 'l': {
                 fmt++;
-                if (*fmt == 'u') { unsigned long v = va_arg(args, unsigned long); print_u64(v, 10, pad, padchar, left); }
-                else if (*fmt == 'x' || *fmt == 'X') { unsigned long v = va_arg(args, unsigned long); print_u64(v, 16, pad, padchar, left); }
-                else if (*fmt == 'o') { unsigned long v = va_arg(args, unsigned long); print_u64(v, 8, pad, padchar, left); }
-                else if (*fmt == 'd' || *fmt == 'i') { long v = va_arg(args, long); print_int(v, pad, padchar, left); }
+                if (*fmt == 'u') { unsigned long v = va_arg(args, unsigned long); fmt_u64(emit, ctx, v, 10, pad, padchar, left); }
+                else if (*fmt == 'x' || *fmt == 'X') { unsigned long v = va_arg(args, unsigned long); fmt_u64(emit, ctx, v, 16, pad, padchar, left); }
+                else if (*fmt == 'o') { unsigned long v = va_arg(args, unsigned long); fmt_u64(emit, ctx, v, 8, pad, padchar, left); }
+                else if (*fmt == 'd' || *fmt == 'i') { long v = va_arg(args, long); fmt_int(emit, ctx, v, pad, padchar, left); }
                 break;
             }
-            case 'p': { unsigned long v = va_arg(args, unsigned long); pchar('0'); pchar('x'); print_u64(v, 16, pad - 2, padchar, left); break; }
-            case 's': { const char* s = va_arg(args, const char*); print_string(s, pad, padchar, left); break; }
+            case 'p': { unsigned long v = va_arg(args, unsigned long); emit('0', ctx); emit('x', ctx); fmt_u64(emit, ctx, v, 16, pad - 2, padchar, left); break; }
+            case 's': { const char* s = va_arg(args, const char*); fmt_string(emit, ctx, s, pad, padchar, left); break; }
             case 'c': { int c = va_arg(args, int);
-                if (left) { pchar((char)c); for (int i = 1; i < pad; i++) pchar(' '); }
-                else { for (int i = 1; i < pad; i++) pchar(padchar); pchar((char)c); }
+                if (left) { emit((char)c, ctx); for (int i = 1; i < pad; i++) emit(' ', ctx); }
+                else { for (int i = 1; i < pad; i++) emit(padchar, ctx); emit((char)c, ctx); }
                 break; }
-            case '%': pchar('%'); break;
-            default: pchar('%'); pchar(*fmt); break;
+            case '%': emit('%', ctx); break;
+            default: emit('%', ctx); emit(*fmt, ctx); break;
         }
         fmt++;
     }
+}
+
+int printf(const char* fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    format_core(emit_stdout, NULL, fmt, args);
     va_end(args);
     return 0;
 }
 
+int vsnprintf(char* buf, size_t size, const char* fmt, va_list ap) {
+    fmt_bufsink s = { buf, size, 0 };
+    format_core(emit_buf, &s, fmt, ap);
+    if (size) buf[(s.count < size) ? s.count : size - 1] = '\0';
+    return (int)s.count;   /* C99: the length that WOULD have been written */
+}
+
 int snprintf(char* buf, size_t size, const char* fmt, ...) {
-    va_list args;
-    va_start(args, fmt);
-    size_t pos = 0;
-    while (*fmt && pos + 1 < size) {
-        if (*fmt != '%') { buf[pos++] = *fmt; fmt++; continue; }
-        fmt++;
-        switch (*fmt) {
-            case 'd': {
-                int v = va_arg(args, int);
-                char tmp[32]; int ti = 0; int neg = 0;
-                if (v < 0) { neg = 1; v = -v; }
-                if (v == 0) tmp[ti++] = '0';
-                while (v > 0 && ti < 30) { tmp[ti++] = '0' + (v % 10); v /= 10; }
-                if (neg && pos + 1 < size) buf[pos++] = '-';
-                while (ti > 0 && pos + 1 < size) buf[pos++] = tmp[--ti];
-                break;
-            }
-            case 's': {
-                const char* s = va_arg(args, const char*);
-                if (!s) s = "(null)";
-                while (*s && pos + 1 < size) buf[pos++] = *s++;
-                break;
-            }
-            case 'x': case 'X': {
-                unsigned int v = va_arg(args, unsigned int);
-                char tmp[32]; int ti = 0;
-                if (v == 0) tmp[ti++] = '0';
-                while (v > 0 && ti < 30) { int d = v % 16; tmp[ti++] = (d < 10) ? ('0' + d) : ('a' + d - 10); v /= 16; }
-                while (ti > 0 && pos + 1 < size) buf[pos++] = tmp[--ti];
-                break;
-            }
-            case 'p': {
-                unsigned long v = va_arg(args, unsigned long);
-                if (pos + 1 < size) buf[pos++] = '0';
-                if (pos + 1 < size) buf[pos++] = 'x';
-                char tmp[32]; int ti = 0;
-                if (v == 0) tmp[ti++] = '0';
-                while (v > 0 && ti < 30) { int d = v % 16; tmp[ti++] = (d < 10) ? ('0' + d) : ('a' + d - 10); v /= 16; }
-                while (ti > 0 && pos + 1 < size) buf[pos++] = tmp[--ti];
-                break;
-            }
-            case 'u': {
-                unsigned int v = va_arg(args, unsigned int);
-                char tmp[32]; int ti = 0;
-                if (v == 0) tmp[ti++] = '0';
-                while (v > 0 && ti < 30) { tmp[ti++] = '0' + (v % 10); v /= 10; }
-                while (ti > 0 && pos + 1 < size) buf[pos++] = tmp[--ti];
-                break;
-            }
-            case 'c': { int c = va_arg(args, int); buf[pos++] = (char)c; break; }
-            default: if (pos + 1 < size) buf[pos++] = *fmt; break;
-        }
-        fmt++;
-    }
-    buf[pos] = '\0';
-    va_end(args);
-    return (int)pos;
+    va_list ap;
+    va_start(ap, fmt);
+    int r = vsnprintf(buf, size, fmt, ap);
+    va_end(ap);
+    return r;
 }
 
 int sprintf(char* buf, const char* fmt, ...) {
-    va_list args;
-    va_start(args, fmt);
-    size_t pos = 0;
-    while (*fmt) {
-        if (*fmt != '%') { buf[pos++] = *fmt; fmt++; continue; }
-        fmt++;
-        switch (*fmt) {
-            case 'd': {
-                int v = va_arg(args, int);
-                char tmp[32]; int ti = 0; int neg = 0;
-                if (v < 0) { neg = 1; v = -v; }
-                if (v == 0) tmp[ti++] = '0';
-                while (v > 0 && ti < 30) { tmp[ti++] = '0' + (v % 10); v /= 10; }
-                if (neg) buf[pos++] = '-';
-                while (ti > 0) buf[pos++] = tmp[--ti];
-                break;
-            }
-            case 's': {
-                const char* s = va_arg(args, const char*);
-                if (!s) s = "(null)";
-                while (*s) buf[pos++] = *s++;
-                break;
-            }
-            case 'x': case 'X': {
-                unsigned int v = va_arg(args, unsigned int);
-                char tmp[32]; int ti = 0;
-                if (v == 0) tmp[ti++] = '0';
-                while (v > 0 && ti < 30) { int d = v % 16; tmp[ti++] = (d < 10) ? ('0' + d) : ('a' + d - 10); v /= 16; }
-                while (ti > 0) buf[pos++] = tmp[--ti];
-                break;
-            }
-            case 'p': {
-                unsigned long v = va_arg(args, unsigned long);
-                buf[pos++] = '0';
-                buf[pos++] = 'x';
-                char tmp[32]; int ti = 0;
-                if (v == 0) tmp[ti++] = '0';
-                while (v > 0 && ti < 30) { int d = v % 16; tmp[ti++] = (d < 10) ? ('0' + d) : ('a' + d - 10); v /= 16; }
-                while (ti > 0) buf[pos++] = tmp[--ti];
-                break;
-            }
-            case 'u': {
-                unsigned int v = va_arg(args, unsigned int);
-                char tmp[32]; int ti = 0;
-                if (v == 0) tmp[ti++] = '0';
-                while (v > 0 && ti < 30) { tmp[ti++] = '0' + (v % 10); v /= 10; }
-                while (ti > 0) buf[pos++] = tmp[--ti];
-                break;
-            }
-            case 'c': { int c = va_arg(args, int); buf[pos++] = (char)c; break; }
-            default: buf[pos++] = *fmt; break;
-        }
-        fmt++;
-    }
-    buf[pos] = '\0';
-    va_end(args);
-    return (int)pos;
+    va_list ap;
+    va_start(ap, fmt);
+    int r = vsnprintf(buf, (size_t)-1, fmt, ap);   /* unbounded, like before */
+    va_end(ap);
+    return r;
+}
+
+/* fprintf family — format onto a FILE* (v6.1.4) via the shared core + fputc. */
+int vfprintf(FILE* f, const char* fmt, va_list ap) {
+    fmt_filesink s = { f, 0 };
+    format_core(emit_file, &s, fmt, ap);
+    return s.count;
+}
+
+int fprintf(FILE* f, const char* fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    int r = vfprintf(f, fmt, ap);
+    va_end(ap);
+    return r;
 }
 
 /* =========== ctype — character classification/conversion (ASCII) ===========

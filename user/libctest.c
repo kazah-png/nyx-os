@@ -153,6 +153,34 @@ int main(int argc, char** argv) {
         if (!st_ok) ok = 0;
     }
 
+    /* printf family: snprintf correctness + width/flags, bounded truncation with the
+     * C99 would-be return, and fprintf to a FILE round-tripped through the disk. */
+    {
+        int pf_ok = 1;
+        char b[32];
+        int n = snprintf(b, sizeof(b), "%d/%s/%x/%c/%05d", -7, "hi", 255, 'Z', 42);
+        if (strcmp(b, "-7/hi/ff/Z/00042") != 0 || n != 16) pf_ok = 0;
+        char t[5];
+        int n2 = snprintf(t, sizeof(t), "abcdefgh");     /* truncates to "abcd", returns 8 */
+        if (strcmp(t, "abcd") != 0 || n2 != 8) pf_ok = 0;
+
+        const char* fp = "/mnt/libctest_fprintf.txt";
+        FILE* f = fopen(fp, "w");
+        if (!f) pf_ok = 0;
+        else { fprintf(f, "x=%d y=%s\n", 100, "end"); fclose(f); }
+        FILE* fr = fopen(fp, "r");
+        if (!fr) pf_ok = 0;
+        else {
+            char rb[32];
+            size_t g = fread(rb, 1, sizeof(rb) - 1, fr);
+            rb[g] = '\0';
+            if (strcmp(rb, "x=100 y=end\n") != 0) pf_ok = 0;
+            fclose(fr);
+        }
+        printf("LIBCTEST: printf-family(snprintf/vsnprintf/fprintf) %s\n", pf_ok ? "PASS" : "FAIL");
+        if (!pf_ok) ok = 0;
+    }
+
     printf("LIBCTEST: %s\n", ok ? "ALL PASS" : "SOME FAIL");
     return ok ? 0 : 1;
 }

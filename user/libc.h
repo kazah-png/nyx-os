@@ -33,6 +33,7 @@ int puts(const char* s);
 int printf(const char* fmt, ...);
 int sprintf(char* buf, const char* fmt, ...);
 int snprintf(char* buf, size_t size, const char* fmt, ...);
+int vsnprintf(char* buf, size_t size, const char* fmt, va_list ap);
 
 int atoi(const char* s);
 int abs(int x);
@@ -91,6 +92,8 @@ int    fputc(int c, FILE* f);
 int    fflush(FILE* f);
 int    feof(FILE* f);
 int    ferror(FILE* f);
+int    fprintf(FILE* f, const char* fmt, ...);
+int    vfprintf(FILE* f, const char* fmt, va_list ap);
 
 /* Process environment (set by crt0 from execve's envp). getenv reads it. */
 extern char** environ;
