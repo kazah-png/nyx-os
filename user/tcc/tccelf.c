@@ -1081,7 +1081,18 @@ ST_FUNC void build_got_entries(TCCState *s1)
 #ifdef TCC_TARGET_X86_64
             if ((type == R_X86_64_PLT32 || type == R_X86_64_PC32) &&
                 (ELFW(ST_VISIBILITY)(sym->st_other) != STV_DEFAULT ||
-		 ELFW(ST_BIND)(sym->st_info) == STB_LOCAL)) {
+		 ELFW(ST_BIND)(sym->st_info) == STB_LOCAL ||
+		 /* NyxOS port patch: a STATIC EXECUTABLE never needs a PLT for a
+		    symbol already defined in the link — the address is final, so
+		    call it directly (PC32). Stock tcc 0.9.27 still routes calls to
+		    GLOBAL default-visibility functions through a PLT here, but for
+		    a -nostdlib -static link it never fills that PLT's GOT slot
+		    (put_got_entry leaves attr->got_offset 0, so fill_got_entry
+		    early-returns), leaving the slot 0 and every such call jumping
+		    through the GOT to NULL. Resolving defined symbols directly, as
+		    a real static linker does, avoids the PLT/GOT entirely. */
+		 (s1->output_type == TCC_OUTPUT_EXE && s1->static_link &&
+		  sym->st_shndx != SHN_UNDEF && sym->st_shndx < SHN_LORESERVE))) {
                 rel->r_info = ELFW(R_INFO)(sym_index, R_X86_64_PC32);
                 continue;
             }
