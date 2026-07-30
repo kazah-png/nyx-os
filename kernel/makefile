@@ -95,7 +95,7 @@ USER_ELFS = $(USER_DIR)/hello.elf $(USER_DIR)/init.elf $(USER_DIR)/spin.elf $(US
             $(USER_DIR)/nc.elf $(USER_DIR)/sigrec.elf $(USER_DIR)/alarmdemo.elf \
             $(USER_DIR)/polldemo.elf $(USER_DIR)/wget.elf $(USER_DIR)/netstorm.elf $(USER_DIR)/stat.elf \
             $(USER_DIR)/vfsfill.elf $(USER_DIR)/fsx.elf $(USER_DIR)/stacktest.elf $(USER_DIR)/threads.elf $(USER_DIR)/vmtest.elf $(USER_DIR)/munmaptest.elf $(USER_DIR)/mprotecttest.elf $(USER_DIR)/fbtest.elf $(USER_DIR)/keyevtest.elf $(USER_DIR)/libctest.elf \
-            $(USER_DIR)/doom.elf
+            $(USER_DIR)/doom.elf $(USER_DIR)/tcc.elf
 
 # Flags for Nyx C output (GCC: statement-exprs, __auto_type). -mno-red-zone is mandatory.
 NYXCFLAGS = -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR)
@@ -127,6 +127,22 @@ $(USER_DIR)/libctest.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/lib
 
 $(USER_DIR)/libctest.o: $(USER_DIR)/libctest.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
 	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+
+# ---- TinyCC port (Phase 2 in-OS C compiler) --------------------------------
+# Vendored TinyCC 0.9.27 (user/tcc/, LGPL) cross-compiled with host GCC against
+# the NyxOS libc via the shim headers in user/tcc/nyxshim. ONE_SOURCE: compiling
+# tcc.c pulls in the whole compiler + the x86_64/ELF backend; nyxshim.c supplies
+# the POSIX OS calls tcc expects. NOT in USER_ELFS yet (M0: it links; it gets
+# embedded once tcc runs in-OS). Build it directly: make ../user/tcc.elf
+TCC_DIR    = $(USER_DIR)/tcc
+TCC_CFLAGS = -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -w \
+             -I$(TCC_DIR)/nyxshim -I$(TCC_DIR) -I$(USER_DIR)
+$(TCC_DIR)/tcc_main.o: $(TCC_DIR)/tcc.c
+	$(CC) $(TCC_CFLAGS) -c $< -o $@
+$(TCC_DIR)/nyxshim.o: $(TCC_DIR)/nyxshim/nyxshim.c
+	$(CC) $(TCC_CFLAGS) -c $< -o $@
+$(USER_DIR)/tcc.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(TCC_DIR)/tcc_main.o $(TCC_DIR)/nyxshim.o
+	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(TCC_DIR)/tcc_main.o $(TCC_DIR)/nyxshim.o
 
 # A deliberately-crashing program (NULL deref) to test ring-3 fault -> SIGSEGV.
 $(USER_DIR)/fault.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/fault.o

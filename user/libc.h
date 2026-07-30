@@ -1,7 +1,13 @@
 #ifndef _NYXOS_LIBC_H
 #define _NYXOS_LIBC_H
 
+/* Normally libc.h pulls in the raw syscall wrappers. A consumer that provides its
+ * own OS layer with different (e.g. strict-POSIX) signatures — the vendored TinyCC
+ * port, whose open()/time() prototypes clash with syscall.h — can define
+ * NYX_LIBC_NO_SYSCALL to take just the C-library declarations below. */
+#ifndef NYX_LIBC_NO_SYSCALL
 #include "syscall.h"
+#endif
 
 typedef __builtin_va_list va_list;
 #define va_start(v, l) __builtin_va_start(v, l)
