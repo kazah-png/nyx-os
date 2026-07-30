@@ -1391,6 +1391,41 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                     continue;
                 }
             }
+            // <textarea ...>...</textarea>: render as a multi-line editable field box (like a text
+            // <input>, but `rows` tall) and DROP the element's default text content, which otherwise
+            // has no <textarea> arm and dumps straight into the page flow as plain text with no field
+            // affordance. Handled here, ahead of the inline-CSS emphasis stack, so a styled
+            // <textarea style=..> cannot leave an unbalanced push when we skip past its close tag.
+            if (!close && sel_streq(name, "textarea")) {
+                uint32_t te = j; while (te < len && body[te] != '>') te++;   // end of the open tag
+                char rowsv[8] = {0}, nm[64] = {0};
+                extract_attr(body, j, te, "rows", rowsv, sizeof(rowsv));
+                extract_attr(body, j, te, "name", nm,   sizeof(nm));
+                int trows = 2;                                     // box height in rows; default 2, clamp [1,5]
+                if (rowsv[0]) { int v = 0; for (const char* q = rowsv; *q >= '0' && *q <= '9'; q++) v = v * 10 + (*q - '0');
+                                trows = v < 1 ? 1 : (v > 5 ? 5 : v); }
+                int fid = 0;
+                if (s->num_fields < SEL_MAX_FIELDS) {              // register a text field: draws as a box, focusable
+                    sel_field_t* f = &s->fields[s->num_fields];
+                    f->form = cur_form; f->kind = SEL_FLD_TEXT;
+                    strncpy(f->name, nm, sizeof(f->name) - 1); f->name[sizeof(f->name) - 1] = '\0';
+                    f->value[0] = '\0';                            // starts empty (default content not editable-tracked)
+                    fid = s->num_fields + 1; s->num_fields++;
+                }
+                ti = sel_ensure_nl(txt, tlink, ti, len, 1);        // a block element: start on its own line
+                for (int r = 0; r < trows; r++) {                  // `trows` stacked box strips sharing one field id
+                    for (int d = 0; d < SEL_FIELD_W && ti < len; d++) { txt[ti] = '_'; tlink[ti] = 0; tfield[ti] = (uint8_t)fid; ti++; }
+                    if (ti < len) { txt[ti] = '\n'; tlink[ti] = 0; tfield[ti] = 0; ti++; }
+                }
+                uint32_t k = (te < len) ? te + 1 : len;            // skip the content up to and past </textarea>
+                while (k < len) {
+                    if (body[k] == '<') { int c5; uint32_t p5;
+                        if (sel_tag_match(body, k, len, "textarea", &c5, &p5)) { k = p5; if (c5) break; continue; } }
+                    k++;
+                }
+                last_space = 1;
+                i = k; continue;
+            }
             // Inline CSS: a styled open tag (style="color:..") — or <font color=..> — pushes its
             // foreground colour; the matching close pops it. Void elements never push (no close tag).
             // This runs for EVERY tag before the specific handlers below, so any element can be coloured.
