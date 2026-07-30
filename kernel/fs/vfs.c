@@ -449,8 +449,15 @@ void init_vfs(void) {
         proc_make(proc_node, procf[i].name, 0, procf[i].pt, 0);
 }
 
+// Canonicalize a path for the mount-aware VFS entry points (defined below, near
+// join_mount_relative). Forward-declared here so the earlier file operations can use
+// it: a relative path in a mount-backed CWD (the persistent home) is joined to an
+// absolute mount path so the op hits the disk; everything else is returned unchanged.
+static const char* vfs_abs(const char* path, char* buf, int n);
+
 int vfs_open(const char* path, int flags, mode_t mode) {
     (void)mode;
+    char _absbuf[256]; path = vfs_abs(path, _absbuf, sizeof(_absbuf));
 
     // Refresh /proc's per-pid dirs so an open/getdents under /proc sees the
     // current process table (cheap no-op when nothing changed).
@@ -726,6 +733,7 @@ uint8_t* vfs_fdata(int fd) {
 
 int vfs_mkdir(const char* path, mode_t mode) {
     (void)mode;
+    char _absbuf[256]; path = vfs_abs(path, _absbuf, sizeof(_absbuf));
     mount_entry_t* me = vfs_find_mount(path);
     if (me && me->mkdir) {
         const char* subpath = path + strlen(me->mount_point);
@@ -746,6 +754,7 @@ int vfs_mkdir(const char* path, mode_t mode) {
 }
 
 int vfs_unlink(const char* path) {
+    char _absbuf[256]; path = vfs_abs(path, _absbuf, sizeof(_absbuf));
     mount_entry_t* me = vfs_find_mount(path);
     if (me && me->unlink) {
         const char* subpath = path + strlen(me->mount_point);
@@ -787,6 +796,9 @@ void hide_file(const char* path) {
 }
 
 void vfs_rename(const char* old, const char* new) {
+    char _ao[256], _an[256];
+    old = vfs_abs(old, _ao, sizeof(_ao));   // so `mv a b` in the mounted home
+    new = vfs_abs(new, _an, sizeof(_an));   // resolves both endpoints onto the disk
     // If either endpoint is on a mounted FS, the ramdisk tree walk below can't
     // find or place it. Fall back to copy-then-delete, which works for files
     // across any mix of ramdisk and mounted FS (vfs_cp/vfs_unlink are both
@@ -1042,6 +1054,21 @@ static void join_mount_relative(const char* base, const char* rel, char* out, in
     out[o] = '\0';
 }
 
+// Canonicalize `path` for the mount-aware file operations. An absolute path is returned
+// unchanged. A RELATIVE path is joined onto the current directory ONLY when the CWD is on
+// a mounted FS -- so `touch foo`, `mkdir bar`, `rm baz`, `mv`/`cp`, and Editor saves issued
+// from the persistent home (/mnt/home/<user>) hit the ext2 disk instead of creating an
+// invisible, ephemeral ramdisk node under the mount stub. A relative path with a ramdisk
+// CWD is returned unchanged, so ramdisk-relative behaviour is preserved exactly. `buf` must
+// hold >= 2 bytes; callers pass a 256-byte scratch buffer.
+static const char* vfs_abs(const char* path, char* buf, int n) {
+    if (!path || path[0] == '/') return path;      // already absolute (or null)
+    const char* cwd = vfs_getcwd();
+    if (!vfs_find_mount(cwd)) return path;          // ramdisk CWD: leave relative as-is
+    join_mount_relative(cwd, path, buf, n);
+    return buf;
+}
+
 // Resolve `path` to its directory node (opaque handle, like vfs_root_node), or
 // NULL if it doesn't exist or isn't a directory. Lets a new Terminal start in the
 // logged-in user's home directory.
@@ -1163,6 +1190,7 @@ void vfs_cat_file(const char* path) {
 }
 
 int vfs_touch(const char* path) {
+    char _absbuf[256]; path = vfs_abs(path, _absbuf, sizeof(_absbuf));
     mount_entry_t* me = vfs_find_mount(path);
     if (me && me->write_file) {
         int mlen = strlen(me->mount_point);
@@ -1186,6 +1214,7 @@ int vfs_touch(const char* path) {
 }
 
 int vfs_write_file(const char* path, const void* buf, uint32_t len) {
+    char _absbuf[256]; path = vfs_abs(path, _absbuf, sizeof(_absbuf));
     mount_entry_t* me = vfs_find_mount(path);
     if (me && me->write_file) {
         int mlen = strlen(me->mount_point);
@@ -1216,6 +1245,9 @@ int vfs_write_file(const char* path, const void* buf, uint32_t len) {
 }
 
 int vfs_cp(const char* src, const char* dst) {
+    char _acs[256], _acd[256];
+    src = vfs_abs(src, _acs, sizeof(_acs));   // `cp a b` in the mounted home resolves
+    dst = vfs_abs(dst, _acd, sizeof(_acd));   // both endpoints onto the disk
     // --- Load the source bytes into a buffer, whether it lives in the ramdisk
     // tree or on a mounted FS (e.g. /mnt). Only regular files are copied. ---
     uint8_t* sbuf = NULL;
