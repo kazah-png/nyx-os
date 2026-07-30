@@ -12,8 +12,11 @@ typedef unsigned long size_t;
 
 void* malloc(size_t size);
 void free(void* ptr);
+void* realloc(void* ptr, size_t size);
+void* calloc(size_t nmemb, size_t size);
 void* memset(void* s, int c, size_t n);
 void* memcpy(void* dest, const void* src, size_t n);
+void* memmove(void* dest, const void* src, size_t n);
 int memcmp(const void* s1, const void* s2, size_t n);
 
 size_t strlen(const char* s);

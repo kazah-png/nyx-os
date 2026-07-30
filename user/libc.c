@@ -180,6 +180,43 @@ void free(void* ptr) {
     }
 }
 
+/* Resize an allocation, preserving its contents. The block header carries the
+ * current payload capacity, so a shrink or same-size request returns the same
+ * pointer; a grow allocates a new block, copies the old capacity's worth of
+ * bytes and frees the old one. realloc(NULL,n)=malloc; realloc(p,0)=free,NULL.
+ * A compiler (and most nontrivial programs) can't run without this. */
+void* realloc(void* ptr, size_t size) {
+    if (!ptr) return malloc(size);
+    if (size == 0) { free(ptr); return 0; }
+    heap_block_t* block = (heap_block_t*)((char*)ptr - HEAP_HEADER_SIZE);
+    size_t old = block->size;
+    if (old >= size) return ptr;              /* current block already fits */
+    void* np = malloc(size);
+    if (!np) return 0;                         /* old block left intact (per C standard) */
+    memcpy(np, ptr, old);                      /* copy the old payload capacity */
+    free(ptr);
+    return np;
+}
+
+/* Allocate nmemb*size zero-filled bytes, rejecting a multiply overflow. */
+void* calloc(size_t nmemb, size_t size) {
+    size_t total = nmemb * size;
+    if (size != 0 && total / size != nmemb) return 0;   /* overflow */
+    void* p = malloc(total ? total : 1);
+    if (p) memset(p, 0, total);
+    return p;
+}
+
+/* memcpy that tolerates overlapping regions (copies backward when dest > src). */
+void* memmove(void* dest, const void* src, size_t n) {
+    unsigned char* d = (unsigned char*)dest;
+    const unsigned char* s = (const unsigned char*)src;
+    if (d == s || n == 0) return dest;
+    if (d < s) { for (size_t i = 0; i < n; i++) d[i] = s[i]; }
+    else       { for (size_t i = n; i > 0; i--) d[i - 1] = s[i - 1]; }
+    return dest;
+}
+
 /* =========== String =========== */
 
 size_t strlen(const char* s) {
