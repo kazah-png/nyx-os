@@ -36,10 +36,21 @@ static void populate_home(const char* home) {
 // new Terminal and File Manager windows start there instead of at /. On the first
 // login that creates it, seed it with starter folders + a welcome file.
 static void setup_user_home(void) {
-    vfs_mkdir("/home", 0755);                 // idempotent (fails harmlessly if present)
+    // Prefer the PERSISTENT ext2 disk (mounted read-write at /mnt) so the user's home
+    // and its files survive a reboot; fall back to the RAM /home if no disk is mounted.
+    // On a first-ever login the home is created + seeded; on later boots the on-disk
+    // home already exists (mkdir fails), so `fresh` is 0 and the user's files are kept.
+    uint32_t msz = 0; int mdir = 0;
+    int have_disk = (vfs_stat("/mnt", &msz, &mdir) == 0 && mdir);
     char path[64];
-    snprintf(path, sizeof(path), "/home/%s", g_login_user);
-    int fresh = (vfs_mkdir(path, 0755) == 0);  // 0 => created now (first login this boot)
+    if (have_disk) {
+        vfs_mkdir("/mnt/home", 0755);          // idempotent (already there after first boot)
+        snprintf(path, sizeof(path), "/mnt/home/%s", g_login_user);
+    } else {
+        vfs_mkdir("/home", 0755);
+        snprintf(path, sizeof(path), "/home/%s", g_login_user);
+    }
+    int fresh = (vfs_mkdir(path, 0755) == 0);  // 0 => created now (first ever login for this user)
     strncpy(g_login_home, path, sizeof(g_login_home) - 1);
     g_login_home[sizeof(g_login_home) - 1] = '\0';
     if (fresh) populate_home(path);
