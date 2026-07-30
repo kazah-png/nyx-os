@@ -4,11 +4,22 @@
 #include "../../core/kernel.h"
 #include "compositor.h"
 
-// Desktop wallpaper picker: 11 base colors (index 0 = the NyxOS brand purple).
-// draw_background() builds a vertical gradient from the chosen base color.
+// Desktop wallpaper picker: 11 base colors (index 0 = the NyxOS brand purple) and
+// 3 render styles. draw_background() builds the desktop from the chosen base color
+// according to the chosen style.
 #define WALLPAPER_COUNT 11
 
+// Wallpaper render styles — how the compositor paints the desktop from the base
+// color. New in the v6 era: a clean minimal desktop is the default.
+enum {
+    WP_STYLE_CLEAN = 0,   // clean vertical gradient (v6 default)
+    WP_STYLE_NIGHTFALL,   // gradient + moon + stars (the classic scene)
+    WP_STYLE_FLAT,        // a single flat solid color
+    WP_STYLE_COUNT
+};
+
 uint32_t wallpaper_base_color(void);   // current base color, for the compositor background
+int      wallpaper_style(void);        // current render style (WP_STYLE_*)
 void wallpaper_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch);
 void wallpaper_win_click(window_t* win, int mx, int my, int btn);
 

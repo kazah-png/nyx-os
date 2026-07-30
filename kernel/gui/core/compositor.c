@@ -761,15 +761,25 @@ static void bg_fill_circle(int cx, int cy, int rad, uint32_t col) {
     }
 }
 
-// The desktop: a "Nightfall" sky — the user's wallpaper hue as a soft vertical
-// gradient, overlaid with a glowing moon and a deterministic field of stars.
-// Drawn first each frame, behind the icons and windows. The star layout is
-// seeded by a fixed constant so it is identical on every repaint (no flicker).
+// The desktop background, painted first each frame behind the icons and windows.
+// The wallpaper base color + style (see the Wallpaper app) decide the look:
+// CLEAN = a soft vertical gradient of the hue (the v6 default); NIGHTFALL = that
+// gradient overlaid with a glowing moon and a deterministic star field (the classic
+// scene); FLAT = a single solid fill. The star layout is seeded by a fixed constant
+// so it is identical on every repaint (no flicker).
 static void draw_background(void) {
     uint32_t fw = fb_get_width(), fh = fb_get_height();
     uint32_t base = wallpaper_base_color();
     int br = (int)((base >> 16) & 0xFF), bg = (int)((base >> 8) & 0xFF), bb = (int)(base & 0xFF);
+    int style = wallpaper_style();
 
+    // WP_STYLE_FLAT: a single solid fill — the cleanest possible desktop.
+    if (style == WP_STYLE_FLAT) {
+        fb_fill_rect(0, 0, fw, fh, base);
+        return;
+    }
+
+    // The vertical gradient is shared by the CLEAN and NIGHTFALL styles.
     uint32_t steps = 96;
     uint32_t band_h = fh / steps + 1;
     for (uint32_t i = 0; i < steps; i++) {
@@ -779,6 +789,9 @@ static void draw_background(void) {
         int b = bb * pct / 100; if (b > 255) b = 255;
         fb_fill_rect(0, i * band_h, fw, band_h, fb_rgb((uint8_t)r, (uint8_t)g, (uint8_t)b));
     }
+
+    // WP_STYLE_CLEAN stops here: just the gradient, no moon or stars.
+    if (style != WP_STYLE_NIGHTFALL) return;
 
     // Moon in the upper-right, with a soft halo (concentric rings fading inward).
     int mx = (int)fw - 130, my = 96, mr = 40;
