@@ -67,6 +67,40 @@ static void fileman_apply_search(fileman_win_t* fm) {
     }
 }
 
+// Order two entries for the listing: directories before files, then
+// case-insensitive alphabetical by name (a<b => "a should come first").
+static int fm_entry_less(fileman_win_t* fm, int a, int b) {
+    int da = fm->entry_types[a] ? 0 : 1;   // dirs sort before files
+    int db = fm->entry_types[b] ? 0 : 1;
+    if (da != db) return da < db;
+    const char* x = fm->entries[a];
+    const char* y = fm->entries[b];
+    for (; *x && *y; x++, y++) {
+        char cx = (*x >= 'A' && *x <= 'Z') ? (char)(*x + 32) : *x;
+        char cy = (*y >= 'A' && *y <= 'Z') ? (char)(*y + 32) : *y;
+        if (cx != cy) return cx < cy;
+    }
+    return (*x == 0) && (*y != 0);         // shorter name first on a common prefix
+}
+
+// Selection sort of the parallel entry arrays (name/type/size in lockstep).
+// n <= FILEMAN_MAX_ENTRIES and this runs only on refresh, so O(n^2) is fine.
+static void fileman_sort(fileman_win_t* fm) {
+    for (int i = 0; i < fm->entry_count - 1; i++) {
+        int m = i;
+        for (int j = i + 1; j < fm->entry_count; j++)
+            if (fm_entry_less(fm, j, m)) m = j;
+        if (m != i) {
+            char tn[64];
+            strncpy(tn, fm->entries[i], sizeof(tn)); tn[sizeof(tn)-1] = '\0';
+            strncpy(fm->entries[i], fm->entries[m], 64); fm->entries[i][63] = '\0';
+            strncpy(fm->entries[m], tn, 64); fm->entries[m][63] = '\0';
+            int tt = fm->entry_types[i]; fm->entry_types[i] = fm->entry_types[m]; fm->entry_types[m] = tt;
+            uint32_t ts = fm->entry_sizes[i]; fm->entry_sizes[i] = fm->entry_sizes[m]; fm->entry_sizes[m] = ts;
+        }
+    }
+}
+
 void fileman_refresh(fileman_win_t* fm) {
     fm->entry_count = 0;
     fm->scroll_offset = 0;
@@ -93,6 +127,8 @@ void fileman_refresh(fileman_win_t* fm) {
         de = vfs_readdir(fd);
     }
     vfs_close(fd);
+    fileman_sort(fm);        // directories first, then case-insensitive A-Z
+    fm->sel_index = -1;      // a fresh read invalidates any prior selection index
     snprintf(fm->status, sizeof(fm->status), "%d entries", fm->entry_count);
     fileman_apply_search(fm);
 }
