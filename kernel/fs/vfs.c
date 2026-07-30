@@ -971,36 +971,122 @@ void* vfs_getcwd_node(void)  { return current_dir; }
 void  vfs_setcwd_node(void* n) { if (n) current_dir = (vfs_node_t*)n; }
 void* vfs_root_node(void)    { return &nodes[0]; }
 
+// Materialize a mount-backed directory path (e.g. /mnt/home/<user>) as a chain of
+// ramdisk "stub" directory nodes and return the leaf. The node-based CWD model (each
+// Terminal owns a directory node) can't otherwise hold a path that lives on a mounted
+// FS, because such a path has no ramdisk node: vfs_getcwd() rebuilds the path string
+// by walking these stubs' parent pointers, while directory *contents* keep coming from
+// the backing FS by that path string (vfs_readdir / vfs_list_dir). Idempotent — an
+// existing node (a real one, or a stub from an earlier visit) is reused. Returns NULL
+// on a malformed path or if a non-directory node shadows a path component.
+static vfs_node_t* mount_dir_stub(const char* abspath) {
+    if (!abspath || abspath[0] != '/') return NULL;
+    vfs_node_t* cur = &nodes[0];                       // root
+    const char* p = abspath;
+    while (*p == '/') p++;
+    char comp[MAX_NAME];
+    while (*p) {
+        int i = 0;
+        while (*p && *p != '/' && i < MAX_NAME - 1) comp[i++] = *p++;
+        comp[i] = '\0';
+        while (*p == '/') p++;
+        if (!comp[0]) continue;
+        vfs_node_t* child = find_child(cur, comp);
+        if (!child) {
+            child = alloc_node();
+            if (!child) return NULL;
+            strncpy(child->name, comp, MAX_NAME - 1);
+            child->name[MAX_NAME - 1] = '\0';
+            child->type = 1;
+            child->parent = cur;
+            if (vfs_append_child(cur, child) != 0) { free_node(child); return NULL; }
+        } else if (child->type != 1) {
+            return NULL;                               // a file shadows this component
+        }
+        cur = child;
+    }
+    return (cur == &nodes[0]) ? NULL : cur;
+}
+
+// Join a relative chdir target `rel` onto the absolute base directory `base`,
+// resolving "." and ".." into `out` (a normalized absolute path). Lets `cd <subdir>`
+// and `cd ..` work while the CWD is a mount-backed directory. `base` is absolute;
+// `rel` has no leading '/'.
+static void join_mount_relative(const char* base, const char* rel, char* out, int outsz) {
+    char work[256];
+    int w = 0;
+    for (const char* s = base; *s && w < (int)sizeof(work) - 1; s++) work[w++] = *s;
+    if (w == 0) work[w++] = '/';
+    work[w] = '\0';
+    const char* p = rel;
+    while (*p) {
+        while (*p == '/') p++;
+        if (!*p) break;
+        const char* start = p;
+        while (*p && *p != '/') p++;
+        int len = (int)(p - start);
+        if (len == 1 && start[0] == '.') continue;                // "."
+        if (len == 2 && start[0] == '.' && start[1] == '.') {     // ".." -> pop a component
+            while (w > 0 && work[w - 1] != '/') w--;              // drop the trailing name
+            if (w > 1) w--;                                       // drop its '/', but keep root "/"
+            work[w] = '\0';
+            continue;
+        }
+        if (w == 0 || work[w - 1] != '/') { if (w < (int)sizeof(work) - 1) work[w++] = '/'; }
+        for (int j = 0; j < len && w < (int)sizeof(work) - 1; j++) work[w++] = start[j];
+        work[w] = '\0';
+    }
+    if (w == 0) { work[w++] = '/'; work[w] = '\0'; }
+    int o = 0;
+    for (int i = 0; i < w && o < outsz - 1; i++) out[o++] = work[i];
+    out[o] = '\0';
+}
+
 // Resolve `path` to its directory node (opaque handle, like vfs_root_node), or
 // NULL if it doesn't exist or isn't a directory. Lets a new Terminal start in the
 // logged-in user's home directory.
 void* vfs_path_node(const char* path) {
     vfs_node_t* n = resolve_path(path);
-    return (n && n->type == 1) ? n : NULL;
+    if (n) return (n->type == 1) ? n : NULL;
+    // Not in the ramdisk tree: the path may be a directory on a mounted FS (the user's
+    // home now lives at /mnt/home/<user>). Confirm via the mount, then represent it as
+    // a stub chain so the node-based CWD can start there.
+    if (vfs_find_mount(path) && vfs_isdir(path))
+        return mount_dir_stub(path);
+    return NULL;
 }
 
 int vfs_chdir(const char* path) {
-    mount_entry_t* me = vfs_find_mount(path);
-    if (me) {
-        // Find or create a stub directory for the mount point
-        vfs_node_t* dir = resolve_path(path);
-        if (!dir) {
-            // Auto-create the mount point directory in ramdisk VFS
-            char child_name[MAX_NAME];
-            vfs_node_t* parent = resolve_parent(path, child_name);
-            if (!parent || parent->type != 1) return -1;
-            dir = alloc_node();
-            if (!dir) return -1;
-            strncpy(dir->name, child_name, MAX_NAME - 1);
-            dir->type = 1;
-            dir->parent = parent;
-            if (vfs_append_child(parent, dir) != 0) { free_node(dir); return -1; }
+    if (!path || !*path) return -1;
+
+    // Resolve a relative target against the current directory when the CWD is on a
+    // mounted FS (the user's home is now /mnt/home/<user>), so `cd <subdir>` and
+    // `cd ..` work there. A ramdisk-rooted CWD is left untouched (its getcwd isn't
+    // under a mount), so ramdisk `cd` behaviour is exactly as before.
+    char abs[256];
+    const char* target = path;
+    if (path[0] != '/') {
+        const char* cwd = vfs_getcwd();
+        if (vfs_find_mount(cwd)) {
+            join_mount_relative(cwd, path, abs, sizeof(abs));
+            target = abs;
         }
+    }
+
+    mount_entry_t* me = vfs_find_mount(target);
+    if (me) {
+        // A directory on the mounted FS: reject files (vfs_isdir probes the backing
+        // FS), then represent the path as a ramdisk stub chain so getcwd() and `cd ..`
+        // track it. This also lets a deep `cd /mnt/a/b/c` succeed in one step (the old
+        // code only stubbed a single level and failed on missing intermediates).
+        if (!vfs_isdir(target)) return -1;
+        vfs_node_t* dir = mount_dir_stub(target);
+        if (!dir) return -1;
         current_dir = dir;
         return 0;
     }
 
-    vfs_node_t* dir = resolve_path(path);
+    vfs_node_t* dir = resolve_path(target);
     if (!dir || dir->type != 1) return -1;
     current_dir = dir;
     return 0;
