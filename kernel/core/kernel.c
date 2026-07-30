@@ -230,7 +230,7 @@ static const command_t commands[] = {
     {"play",      cmd_play,      "Play a demo melody", false},
     {"sb16play",  cmd_sb16play,  "Test SB16 playback: sb16play [freq] [ms]", false},
     {"exec",      cmd_exec,      "Run ELF in foreground (waits): exec <file>", false},
-    {"cc",        cmd_cc,        "Compile+link C in-OS: cc <src.c> [more.c ...] [-o out]", false},
+    {"cc",        cmd_cc,        "Compile/link C in-OS: cc [-c] <in.c/.o ...> [-o out]", false},
     {"spawn",     cmd_spawn,     "Run ELF in background: spawn <file>", false},
     {"doom",      cmd_doom,      "Play DOOM in a window (Ctrl-C to quit)", false},
     {"pong",      cmd_pong,      "Play Pong (mouse or arrows)", false},
@@ -989,42 +989,53 @@ static void cmd_exec(int argc, char** argv) {
     run_foreground_elf(argv[1], &argv[1], argc - 1);
 }
 
-// `cc <src.c> [more.c ...] [-o <out>] [tcc-flags...]` — compile AND link one or more
-// C sources into a runnable NyxOS executable, entirely in-OS, by driving the ported
-// tcc (/tcc.elf) with the NyxOS runtime defaults: a freestanding static link against
-// the initramfs crt0.o + libc.o, and NO -Ttext (tcc then bases the image at its
-// default 0x400000, which elf_load accepts — see the tccelf.c static-PLT fix at
-// v6.3.0). Any argument that is not `-o <out>` is forwarded to tcc verbatim, so extra
-// sources link together and flags like -D/-I pass through. Runs tcc in the foreground
-// (blocks until it exits, like `exec`, printing its exit code), so you can then
-// `exec <out>`. With no -o, <out> is the first source minus a trailing ".c". Use
-// absolute paths (e.g. cc /mnt/a.c /mnt/b.c -o /mnt/prog).
+// `cc [-c] <in.c/.o ...> [-o <out>] [tcc-flags...]` — compile and/or link C in-OS by
+// driving the ported tcc (/tcc.elf). Default (link) mode turns one or more sources
+// and/or objects into a runnable NyxOS executable with the NyxOS runtime defaults: a
+// freestanding static link against the initramfs crt0.o + libc.o, and NO -Ttext (tcc
+// then bases the image at its default 0x400000, which elf_load accepts — see the
+// tccelf.c static-PLT fix at v6.3.0). With -c, it compiles each source to a .o and
+// does NOT link (crt0.o/libc.o are omitted), enabling separate compilation
+// (`cc -c a.c -o a.o` then `cc a.o b.o -o prog`). Any argument that is not `-o <out>`
+// is forwarded to tcc verbatim, so extra inputs join the command and flags like -D/-I
+// pass through. Runs tcc in the foreground (blocks until it exits, like `exec`,
+// printing its exit code). With no -o, <out> is the first input minus ".c" (plus ".o"
+// in -c mode). Use absolute paths (e.g. cc /mnt/a.c /mnt/b.c -o /mnt/prog).
 static void cmd_cc(int argc, char** argv) {
-    if (argc < 2) { printf("Usage: cc <src.c> [more.c ...] [-o <out>]\n"); return; }
+    if (argc < 2) { printf("Usage: cc [-c] <in.c/.o ...> [-o <out>]\n"); return; }
+    int compile_only = 0;                        // -c: compile a .c to a .o, do NOT link
+    for (int i = 1; i < argc; i++)
+        if (strcmp(argv[i], "-c") == 0) { compile_only = 1; break; }
     char* av[64];
     int n = 0;
-    av[n++] = "tcc"; av[n++] = "-nostdlib"; av[n++] = "-static";
-    av[n++] = "/crt0.o"; av[n++] = "/libc.o";
+    av[n++] = "tcc";
+    if (!compile_only) {                         // link mode: freestanding static exe over our runtime
+        av[n++] = "-nostdlib"; av[n++] = "-static";
+        av[n++] = "/crt0.o";   av[n++] = "/libc.o";
+    }
     const char* out = 0;
     const char* first_src = 0;
     for (int i = 1; i < argc && n < 60; i++) {
         if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) { out = argv[++i]; continue; }
-        av[n++] = argv[i];                       // forward sources + any tcc flags
+        av[n++] = argv[i];                       // forward sources/objects + any tcc flags (incl -c)
         if (!first_src && argv[i][0] != '-') first_src = argv[i];
     }
-    if (!first_src) { printf("cc: no source files\n"); return; }
+    if (!first_src) { printf("cc: no input files\n"); return; }
     char outbuf[128];
-    if (!out) {                                  // default output name: strip a trailing ".c"
-        int ln = (int)strlen(first_src);
-        if (ln > 2 && first_src[ln - 2] == '.' && first_src[ln - 1] == 'c' && ln - 2 < (int)sizeof(outbuf)) {
+    if (!out) {                                  // default output: first input minus ".c"
+        int ln = (int)strlen(first_src);         // (+ ".o" in compile-only mode)
+        if (ln > 2 && first_src[ln - 2] == '.' && first_src[ln - 1] == 'c'
+            && ln + 1 < (int)sizeof(outbuf)) {
             memcpy(outbuf, first_src, (size_t)(ln - 2)); outbuf[ln - 2] = '\0';
+            if (compile_only) { outbuf[ln - 2] = '.'; outbuf[ln - 1] = 'o'; outbuf[ln] = '\0'; }
         } else {
-            strncpy(outbuf, "a.out", sizeof(outbuf) - 1); outbuf[sizeof(outbuf) - 1] = '\0';
+            strncpy(outbuf, compile_only ? "a.o" : "a.out", sizeof(outbuf) - 1);
+            outbuf[sizeof(outbuf) - 1] = '\0';
         }
         out = outbuf;
     }
     av[n++] = "-o"; av[n++] = (char*)out; av[n] = 0;
-    printf("cc: compiling -> %s\n", out);
+    printf("cc: %s -> %s\n", compile_only ? "compiling object" : "compiling", out);
     run_foreground_elf("/tcc.elf", av, n);       // blocks until tcc exits; prints its exit code
 }
 
