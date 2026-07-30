@@ -230,7 +230,7 @@ static const command_t commands[] = {
     {"play",      cmd_play,      "Play a demo melody", false},
     {"sb16play",  cmd_sb16play,  "Test SB16 playback: sb16play [freq] [ms]", false},
     {"exec",      cmd_exec,      "Run ELF in foreground (waits): exec <file>", false},
-    {"cc",        cmd_cc,        "Compile+link C in-OS: cc <src.c> [-o out]", false},
+    {"cc",        cmd_cc,        "Compile+link C in-OS: cc <src.c> [more.c ...] [-o out]", false},
     {"spawn",     cmd_spawn,     "Run ELF in background: spawn <file>", false},
     {"doom",      cmd_doom,      "Play DOOM in a window (Ctrl-C to quit)", false},
     {"pong",      cmd_pong,      "Play Pong (mouse or arrows)", false},
@@ -989,34 +989,43 @@ static void cmd_exec(int argc, char** argv) {
     run_foreground_elf(argv[1], &argv[1], argc - 1);
 }
 
-// `cc <src.c> [-o <out>]` — compile AND link a C source into a runnable NyxOS
-// executable, entirely in-OS, by driving the ported tcc (/tcc.elf) with the NyxOS
-// runtime defaults: a freestanding static link against the initramfs crt0.o + libc.o,
-// and NO -Ttext (tcc then bases the image at its default 0x400000, which elf_load
-// accepts — see the tccelf.c static-PLT fix at v6.3.0). Runs tcc in the foreground
+// `cc <src.c> [more.c ...] [-o <out>] [tcc-flags...]` — compile AND link one or more
+// C sources into a runnable NyxOS executable, entirely in-OS, by driving the ported
+// tcc (/tcc.elf) with the NyxOS runtime defaults: a freestanding static link against
+// the initramfs crt0.o + libc.o, and NO -Ttext (tcc then bases the image at its
+// default 0x400000, which elf_load accepts — see the tccelf.c static-PLT fix at
+// v6.3.0). Any argument that is not `-o <out>` is forwarded to tcc verbatim, so extra
+// sources link together and flags like -D/-I pass through. Runs tcc in the foreground
 // (blocks until it exits, like `exec`, printing its exit code), so you can then
-// `exec <out>`. With no -o, <out> is <src> minus a trailing ".c". Paths pass through
-// to tcc verbatim — use absolute paths (e.g. cc /mnt/hello.c -o /mnt/hello).
+// `exec <out>`. With no -o, <out> is the first source minus a trailing ".c". Use
+// absolute paths (e.g. cc /mnt/a.c /mnt/b.c -o /mnt/prog).
 static void cmd_cc(int argc, char** argv) {
-    if (argc < 2) { printf("Usage: cc <src.c> [-o <out>]\n"); return; }
-    const char* src = argv[1];
+    if (argc < 2) { printf("Usage: cc <src.c> [more.c ...] [-o <out>]\n"); return; }
+    char* av[64];
+    int n = 0;
+    av[n++] = "tcc"; av[n++] = "-nostdlib"; av[n++] = "-static";
+    av[n++] = "/crt0.o"; av[n++] = "/libc.o";
     const char* out = 0;
-    for (int i = 2; i + 1 < argc; i++)          // an -o <out> anywhere after the source
-        if (strcmp(argv[i], "-o") == 0) { out = argv[i + 1]; break; }
+    const char* first_src = 0;
+    for (int i = 1; i < argc && n < 60; i++) {
+        if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) { out = argv[++i]; continue; }
+        av[n++] = argv[i];                       // forward sources + any tcc flags
+        if (!first_src && argv[i][0] != '-') first_src = argv[i];
+    }
+    if (!first_src) { printf("cc: no source files\n"); return; }
     char outbuf[128];
     if (!out) {                                  // default output name: strip a trailing ".c"
-        int n = (int)strlen(src);
-        if (n > 2 && src[n - 2] == '.' && src[n - 1] == 'c' && n - 2 < (int)sizeof(outbuf)) {
-            memcpy(outbuf, src, (size_t)(n - 2)); outbuf[n - 2] = '\0';
+        int ln = (int)strlen(first_src);
+        if (ln > 2 && first_src[ln - 2] == '.' && first_src[ln - 1] == 'c' && ln - 2 < (int)sizeof(outbuf)) {
+            memcpy(outbuf, first_src, (size_t)(ln - 2)); outbuf[ln - 2] = '\0';
         } else {
             strncpy(outbuf, "a.out", sizeof(outbuf) - 1); outbuf[sizeof(outbuf) - 1] = '\0';
         }
         out = outbuf;
     }
-    char* av[] = { "tcc", "-nostdlib", "-static", "/crt0.o", "/libc.o",
-                   (char*)src, "-o", (char*)out, 0 };
-    printf("cc: compiling %s -> %s\n", src, out);
-    run_foreground_elf("/tcc.elf", av, 8);       // blocks until tcc exits; prints its exit code
+    av[n++] = "-o"; av[n++] = (char*)out; av[n] = 0;
+    printf("cc: compiling -> %s\n", out);
+    run_foreground_elf("/tcc.elf", av, n);       // blocks until tcc exits; prints its exit code
 }
 
 // Run an ELF as a BACKGROUND job: spawn it and return immediately. It runs
