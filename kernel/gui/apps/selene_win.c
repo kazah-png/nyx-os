@@ -1333,6 +1333,16 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                 uint32_t k = j; while (k < len && body[k] != '>') k++; if (k < len) k++;
                 int tl = 0;
                 while (k < len && body[k] != '<' && tl < 95) {
+                    if (body[k] == '&') {                          // decode HTML entities in the title, like the body flow
+                        char eb[8]; uint32_t el = 0, adv = 0;      // (was copied raw, so a title like "Q&amp;A" showed "&amp;" in the tab + status bar)
+                        if (decode_entity(body + k, len - k, eb, sizeof(eb), &el, &adv)) {
+                            for (uint32_t z = 0; z < el && tl < 95; z++) {
+                                char t = eb[z]; if (t=='\n'||t=='\r'||t=='\t') t = ' ';
+                                s->title[tl++] = t;
+                            }
+                            k += adv; continue;
+                        }
+                    }
                     char t = (char)body[k]; if (t=='\n'||t=='\r'||t=='\t') t = ' ';
                     s->title[tl++] = t; k++;
                 }
