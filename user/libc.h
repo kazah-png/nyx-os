@@ -56,6 +56,13 @@ int tolower(int c);
 long strtol(const char* nptr, char** endptr, int base);
 unsigned long strtoul(const char* nptr, char** endptr, int base);
 
+/* String / stdlib extras a compiler leans on. */
+void* memchr(const void* s, int c, size_t n);
+char* strrchr(const char* s, int c);
+char* strncat(char* dest, const char* src, size_t n);
+char* strdup(const char* s);
+void  qsort(void* base, size_t nmemb, size_t size, int (*cmp)(const void*, const void*));
+
 /* Process environment (set by crt0 from execve's envp). getenv reads it. */
 extern char** environ;
 char* getenv(const char* name);

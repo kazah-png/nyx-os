@@ -577,3 +577,61 @@ unsigned long strtoul(const char* nptr, char** endptr, int base) {
 long strtol(const char* nptr, char** endptr, int base) {
     return (long)strtoul(nptr, endptr, base);   /* strtoul already applied the sign */
 }
+
+/* =========== string / stdlib extras (compiler staples) =========== */
+
+/* Find the first byte equal to c in the first n bytes of s (NUL is not special). */
+void* memchr(const void* s, int c, size_t n) {
+    const unsigned char* p = (const unsigned char*)s;
+    unsigned char ch = (unsigned char)c;
+    for (size_t i = 0; i < n; i++) if (p[i] == ch) return (void*)(p + i);
+    return 0;
+}
+
+/* Find the LAST occurrence of c in s (c==0 matches the terminating NUL). */
+char* strrchr(const char* s, int c) {
+    const char* last = 0;
+    char ch = (char)c;
+    for (;;) { if (*s == ch) last = s; if (!*s) break; s++; }
+    return (char*)last;
+}
+
+/* Append up to n bytes of src onto dest, always NUL-terminating. */
+char* strncat(char* dest, const char* src, size_t n) {
+    char* d = dest;
+    while (*d) d++;
+    size_t i = 0;
+    while (i < n && src[i]) { d[i] = src[i]; i++; }
+    d[i] = '\0';
+    return dest;
+}
+
+/* Return a malloc'd copy of s (caller frees), or NULL if out of memory. */
+char* strdup(const char* s) {
+    size_t n = strlen(s) + 1;
+    char* p = (char*)malloc(n);
+    if (p) memcpy(p, s, n);
+    return p;
+}
+
+static void qsort_swap(char* a, char* b, size_t size) {
+    for (size_t i = 0; i < size; i++) { char t = a[i]; a[i] = b[i]; b[i] = t; }
+}
+
+/* Sort nmemb elements of `size` bytes in place using `cmp`. Shell sort (Knuth
+ * gaps): no recursion and no scratch memory, and far better than plain insertion
+ * sort on the larger arrays a compiler will hand it (symbol/reloc tables). */
+void qsort(void* base, size_t nmemb, size_t size, int (*cmp)(const void*, const void*)) {
+    char* arr = (char*)base;
+    if (nmemb < 2 || size == 0) return;
+    size_t gap = 1;
+    while (gap < nmemb / 3) gap = gap * 3 + 1;
+    for (; gap >= 1; gap /= 3) {
+        for (size_t i = gap; i < nmemb; i++) {
+            for (size_t j = i; j >= gap && cmp(arr + (j - gap) * size, arr + j * size) > 0; j -= gap) {
+                qsort_swap(arr + (j - gap) * size, arr + j * size, size);
+            }
+        }
+        if (gap == 1) break;   /* size_t: avoid 1/3 == 0 looping forever */
+    }
+}

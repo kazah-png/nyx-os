@@ -5,6 +5,11 @@
  * programs) need. Prints one PASS/FAIL line per function to stdout, which the
  * kernel routes to the serial console at boot. This file grows as the libc
  * grows toward hosting the compiler. */
+static int cmp_int(const void* a, const void* b) {
+    int x = *(const int*)a, y = *(const int*)b;
+    return (x > y) - (x < y);
+}
+
 int main(int argc, char** argv) {
     (void)argc; (void)argv;
     int ok = 1;
@@ -89,6 +94,32 @@ int main(int argc, char** argv) {
         s_ok = s_ok && (strtol("777", 0, 8) == 511);     /* explicit octal */
         printf("LIBCTEST: strtol/strtoul %s\n", s_ok ? "PASS" : "FAIL");
         if (!s_ok) ok = 0;
+    }
+
+    /* string/stdlib extras: memchr, strrchr, strncat, strdup, qsort. */
+    {
+        int se_ok = 1;
+        const char* hay = "abc/def/ghi";
+        if (strrchr(hay, '/') != hay + 7) se_ok = 0;        /* LAST '/' */
+        if (memchr(hay, 'd', 11) != hay + 4) se_ok = 0;     /* first 'd' */
+        if (memchr(hay, 'z', 11) != 0) se_ok = 0;           /* absent */
+
+        char nb[16]; nb[0] = '\0';
+        strncat(nb, "foo", 16);
+        strncat(nb, "bar", 2);                              /* bounded: only "ba" */
+        if (strcmp(nb, "fooba") != 0) se_ok = 0;
+
+        char* dup = strdup("duplicate me");
+        if (!dup || strcmp(dup, "duplicate me") != 0) se_ok = 0;
+        free(dup);
+
+        int arr[8] = { 5, 2, 9, 1, 7, 3, 8, 4 };
+        qsort(arr, 8, sizeof(int), cmp_int);
+        for (int i = 0; i < 7; i++) if (arr[i] > arr[i + 1]) se_ok = 0;
+        if (arr[0] != 1 || arr[7] != 9) se_ok = 0;
+
+        printf("LIBCTEST: str/stdlib(memchr/strrchr/strncat/strdup/qsort) %s\n", se_ok ? "PASS" : "FAIL");
+        if (!se_ok) ok = 0;
     }
 
     printf("LIBCTEST: %s\n", ok ? "ALL PASS" : "SOME FAIL");
