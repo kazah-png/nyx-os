@@ -101,7 +101,9 @@ terminal_win_t* terminal_create_ctx(void) {
     term->cwd = login_home_node();        // each terminal starts in the user's home dir
     term_set_prompt(term);
     term->visible_rows = 20;
-    term_add_line(term, "NyxOS Terminal v0.2.0", VGA_LIGHT_GREEN | (VGA_BLACK << 4));
+    char banner[48];
+    snprintf(banner, sizeof(banner), "NyxOS Terminal v%s", KERNEL_VERSION);
+    term_add_line(term, banner, VGA_LIGHT_GREEN | (VGA_BLACK << 4));
     term_add_line(term, "Type 'help' for available commands.", VGA_LIGHT_CYAN | (VGA_BLACK << 4));
     term_add_line(term, "", VGA_LIGHT_GREY | (VGA_BLACK << 4));
     return term;

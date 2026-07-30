@@ -1746,10 +1746,13 @@ static void demo_draw_fn(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch
 
 static void about_draw_fn(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     (void)win; (void)cw; (void)ch;
+    char vbuf[48];
     font_draw_string(cx + 10, cy + 10, "NyxOS Desktop", THEME_ACCENT, fb_rgb(35,35,40));
-    font_draw_string(cx + 10, cy + 30, "Version 0.2.0", fb_rgb(200,200,200), fb_rgb(35,35,40));
+    snprintf(vbuf, sizeof(vbuf), "Version %s", KERNEL_VERSION);
+    font_draw_string(cx + 10, cy + 30, vbuf, fb_rgb(200,200,200), fb_rgb(35,35,40));
     font_draw_string(cx + 10, cy + 60, "A lightweight desktop OS", fb_rgb(160,160,160), fb_rgb(35,35,40));
-    font_draw_string(cx + 10, cy + 80, "NyxOS Nightfall", fb_rgb(160,160,160), fb_rgb(35,35,40));
+    snprintf(vbuf, sizeof(vbuf), "%s %s", KERNEL_NAME, KERNEL_CODENAME);
+    font_draw_string(cx + 10, cy + 80, vbuf, fb_rgb(160,160,160), fb_rgb(35,35,40));
 }
 
 enum { SETTINGS_TAB_INFO, SETTINGS_TAB_DISPLAY, SETTINGS_TAB_KEYBOARD };
