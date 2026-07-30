@@ -7,7 +7,7 @@
 <p align="center">
   <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.9.0-LTS"><img src="https://img.shields.io/badge/release-v5.9.0--LTS-825AD2?style=flat" /></a>
   &nbsp;
-  <img src="https://img.shields.io/badge/status-v5.9.202-825AD2?style=flat" />
+  <img src="https://img.shields.io/badge/status-v5.9.203-825AD2?style=flat" />
   &nbsp;
   <img src="https://img.shields.io/badge/TCP-yes-825AD2?style=flat" />
 </p>
@@ -39,7 +39,7 @@ nyx:root$ nyxfetch
     .:oo.. :o.              -----------------
   :oo:.oo.o:                OS:         NyxOS x86_64
  .#o:.   :.                 Host:       QEMU Standard PC
- #:::....:                  Kernel:     NyxOS 5.9.202 (Full Suite)
+ #:::....:                  Kernel:     NyxOS 5.9.203 (Full Suite)
 o#::. . o.                  Uptime:     00:00:11
 o#.o:   :o                  Resolution: 1024 x 768
 o###o   o#                  CPU:        QEMU Virtual CPU version 2.5+ (1)
@@ -60,7 +60,7 @@ o###o   o#                  CPU:        QEMU Virtual CPU version 2.5+ (1)
 The project implements core kernel primitives, a custom network stack (RTL8139 NIC + ARP/IP/UDP/ICMP/DHCP + TCP with retransmission and passive open), userspace TCP/UDP sockets with `poll()` I/O multiplexing, a window compositor GUI, and a Sound Blaster 16 audio driver — all written in C and x86_64 Assembly with no external libraries.
 
 <div align="center">
-  <img src="gui.png?v=6" alt="NyxOS Desktop v5.9.202 with the Selene web browser" width="700" />
+  <img src="gui.png?v=6" alt="NyxOS Desktop v5.9.203 with the Selene web browser" width="700" />
   <p><em>NyxOS Desktop — the <strong>Selene</strong> web browser showing a live page, distinct app icons, the Nightfall wallpaper and taskbar</em></p>
 </div>
 
@@ -177,7 +177,7 @@ nyx:root$ ls /
 bin/   dev/   etc/   home/  mnt/   root/  tmp/   usr/   var/
 
 nyx:root$ uname
-NyxOS 5.9.202 (Full Suite) x86_64
+NyxOS 5.9.203 (Full Suite) x86_64
 
 nyx:root$ mem
 Physical memory: 256 MB total, 252 MB free

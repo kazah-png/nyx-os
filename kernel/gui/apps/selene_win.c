@@ -1673,9 +1673,16 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                 char lbl[64]; int b = 0;
                 lbl[b++]='['; lbl[b++]='i'; lbl[b++]='m'; lbl[b++]='g'; lbl[b++]=':'; lbl[b++]=' ';
                 int cl = 0;
-                for (int z = 0; capsrc[z] && cl < 29 && b < (int)sizeof(lbl)-2; z++, cl++) {
+                /* Cap the caption so the whole "[img: ...]" label fits within the placeholder
+                   box (SEL_IMG_BOX_W cols): "[img: " (6) + "]" (1) plus a 1-col inset each side.
+                   A longer alt/filename is cut with a trailing "..." so the label no longer
+                   overflows the box border, and its flow-text copy no longer leaks past the
+                   box's right edge (which used to show as a stray fragment above the box). */
+                int capmax = SEL_IMG_BOX_W - 9; if (capmax < 3) capmax = 3;
+                for (int z = 0; capsrc[z] && cl < capmax && b < (int)sizeof(lbl)-2; z++, cl++) {
                     char ch = capsrc[z]; if (ch=='\n'||ch=='\r'||ch=='\t') ch = ' '; lbl[b++] = ch;
                 }
+                if (capsrc[cl]) for (int e = 0; e < 3 && cl - e > 0; e++) lbl[b-1-e] = '.';   // source longer than the box: mark the cut
                 if (cl == 0) { lbl[b++]='i'; lbl[b++]='m'; lbl[b++]='g'; }   // truly empty: "[img:img]"
                 lbl[b++]=']'; lbl[b]='\0';
                 ti = sel_ensure_nl(txt, tlink, ti, len, 1);       // block-level: the image starts a fresh line at col 0
