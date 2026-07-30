@@ -121,6 +121,7 @@ static void cmd_beep(int argc, char** argv);
 static void cmd_play(int argc, char** argv);
 static void cmd_sb16play(int argc, char** argv);
 static void cmd_exec(int argc, char** argv);
+static void cmd_cc(int argc, char** argv);
 static void cmd_spawn(int argc, char** argv);
 static void cmd_doom(int argc, char** argv);
 static void cmd_pong(int argc, char** argv);
@@ -229,6 +230,7 @@ static const command_t commands[] = {
     {"play",      cmd_play,      "Play a demo melody", false},
     {"sb16play",  cmd_sb16play,  "Test SB16 playback: sb16play [freq] [ms]", false},
     {"exec",      cmd_exec,      "Run ELF in foreground (waits): exec <file>", false},
+    {"cc",        cmd_cc,        "Compile+link C in-OS: cc <src.c> [-o out]", false},
     {"spawn",     cmd_spawn,     "Run ELF in background: spawn <file>", false},
     {"doom",      cmd_doom,      "Play DOOM in a window (Ctrl-C to quit)", false},
     {"pong",      cmd_pong,      "Play Pong (mouse or arrows)", false},
@@ -985,6 +987,36 @@ static void cmd_exec(int argc, char** argv) {
     // the kernel shell. The foreground-wait machinery lives in run_foreground_elf(),
     // shared with the auto-exec fallback (a bare `wget …` line).
     run_foreground_elf(argv[1], &argv[1], argc - 1);
+}
+
+// `cc <src.c> [-o <out>]` — compile AND link a C source into a runnable NyxOS
+// executable, entirely in-OS, by driving the ported tcc (/tcc.elf) with the NyxOS
+// runtime defaults: a freestanding static link against the initramfs crt0.o + libc.o,
+// and NO -Ttext (tcc then bases the image at its default 0x400000, which elf_load
+// accepts — see the tccelf.c static-PLT fix at v6.3.0). Runs tcc in the foreground
+// (blocks until it exits, like `exec`, printing its exit code), so you can then
+// `exec <out>`. With no -o, <out> is <src> minus a trailing ".c". Paths pass through
+// to tcc verbatim — use absolute paths (e.g. cc /mnt/hello.c -o /mnt/hello).
+static void cmd_cc(int argc, char** argv) {
+    if (argc < 2) { printf("Usage: cc <src.c> [-o <out>]\n"); return; }
+    const char* src = argv[1];
+    const char* out = 0;
+    for (int i = 2; i + 1 < argc; i++)          // an -o <out> anywhere after the source
+        if (strcmp(argv[i], "-o") == 0) { out = argv[i + 1]; break; }
+    char outbuf[128];
+    if (!out) {                                  // default output name: strip a trailing ".c"
+        int n = (int)strlen(src);
+        if (n > 2 && src[n - 2] == '.' && src[n - 1] == 'c' && n - 2 < (int)sizeof(outbuf)) {
+            memcpy(outbuf, src, (size_t)(n - 2)); outbuf[n - 2] = '\0';
+        } else {
+            strncpy(outbuf, "a.out", sizeof(outbuf) - 1); outbuf[sizeof(outbuf) - 1] = '\0';
+        }
+        out = outbuf;
+    }
+    char* av[] = { "tcc", "-nostdlib", "-static", "/crt0.o", "/libc.o",
+                   (char*)src, "-o", (char*)out, 0 };
+    printf("cc: compiling %s -> %s\n", src, out);
+    run_foreground_elf("/tcc.elf", av, 8);       // blocks until tcc exits; prints its exit code
 }
 
 // Run an ELF as a BACKGROUND job: spawn it and return immediately. It runs
