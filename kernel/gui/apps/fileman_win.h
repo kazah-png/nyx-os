@@ -41,6 +41,12 @@ typedef struct {
     // Double-click detection (open a file in the Text Editor)
     uint32_t last_click_tick;
     int last_click_idx;
+    // Properties modal (shown by the context-menu "Properties" item; any click closes it)
+    int props_open;
+    char props_name[64];
+    char props_path[320];
+    uint32_t props_size;
+    int props_is_dir;
 } fileman_win_t;
 
 fileman_win_t* fileman_create_ctx(void);

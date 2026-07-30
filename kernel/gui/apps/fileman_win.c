@@ -302,7 +302,23 @@ static void ctx_paste(fileman_win_t* fm) {
     fileman_refresh(fm);
 }
 
-static const char* ctx_items[] = {"Rename", "Copy", "Cut", "Paste", "---", "Delete", "New File", "New Folder"};
+// Snapshot the selected entry's details into the props_* fields and open the
+// Properties modal. Read from the snapshot (not sel_index) so the panel is stable.
+static void fileman_show_properties(fileman_win_t* fm) {
+    if (fm->sel_index < 0 || fm->sel_index >= fm->entry_count) {
+        snprintf(fm->status, sizeof(fm->status), "No file selected");
+        return;
+    }
+    int i = fm->sel_index;
+    strncpy(fm->props_name, fm->entries[i], sizeof(fm->props_name) - 1);
+    fm->props_name[sizeof(fm->props_name) - 1] = '\0';
+    fm->props_is_dir = fm->entry_types[i];
+    fm->props_size = fm->entry_sizes[i];
+    fileman_get_path(fm, fm->entries[i], fm->props_path, sizeof(fm->props_path));
+    fm->props_open = 1;
+}
+
+static const char* ctx_items[] = {"Rename", "Copy", "Cut", "Paste", "---", "Delete", "New File", "New Folder", "---", "Properties"};
 #define CTX_ITEMS_COUNT (sizeof(ctx_items) / sizeof(ctx_items[0]))
 
 static void ctx_do_action(fileman_win_t* fm, int idx) {
@@ -315,6 +331,7 @@ static void ctx_do_action(fileman_win_t* fm, int idx) {
         case 5: fileman_delete(fm); break;
         case 6: fileman_new_file(fm); break;
         case 7: fileman_new_folder(fm); break;
+        case 9: fileman_show_properties(fm); break;
     }
 }
 
@@ -489,11 +506,44 @@ void fileman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
                 font_draw_string(cmx + 10, iy + 2, ctx_items[i], THEME_TEXT, bg);
         }
     }
+
+    // Properties modal — drawn last so it overlays everything; any click closes it (fileman_win_click).
+    if (fm->props_open) {
+        int pw = 320, ph = 130;
+        int px = cx + ((int)cw - pw) / 2;
+        int py = cy + ((int)ch - ph) / 2;
+        if (px < cx + 4) px = cx + 4;
+        if (py < cy + 4) py = cy + 4;
+        fb_fill_rect(px, py, pw, ph, fb_rgb(45, 45, 55));
+        fb_fill_rect(px, py, pw, 1, fb_rgb(120, 120, 140));
+        fb_fill_rect(px, py + ph - 1, pw, 1, fb_rgb(120, 120, 140));
+        fb_fill_rect(px, py, 1, ph, fb_rgb(120, 120, 140));
+        fb_fill_rect(px + pw - 1, py, 1, ph, fb_rgb(120, 120, 140));
+        fb_fill_rect(px, py, pw, char_h + 6, THEME_PANEL_HEADER);
+        font_draw_string(px + 8, py + 3, "Properties", fb_rgb(255, 255, 255), THEME_PANEL_HEADER);
+        int ly = py + char_h + 12;
+        char line[400];
+        snprintf(line, sizeof(line), "Name: %s", fm->props_name);
+        font_draw_string(px + 10, ly, line, fb_rgb(220, 220, 230), fb_rgb(45, 45, 55)); ly += char_h + 4;
+        snprintf(line, sizeof(line), "Type: %s", fm->props_is_dir ? "Directory" : "File");
+        font_draw_string(px + 10, ly, line, fb_rgb(220, 220, 230), fb_rgb(45, 45, 55)); ly += char_h + 4;
+        if (fm->props_is_dir) {
+            snprintf(line, sizeof(line), "Size: --");
+        } else {
+            char sb[16]; fileman_fmt_size(fm->props_size, sb, sizeof(sb));
+            snprintf(line, sizeof(line), "Size: %s (%u bytes)", sb, fm->props_size);
+        }
+        font_draw_string(px + 10, ly, line, fb_rgb(220, 220, 230), fb_rgb(45, 45, 55)); ly += char_h + 4;
+        snprintf(line, sizeof(line), "Path: %s", fm->props_path);
+        font_draw_string(px + 10, ly, line, fb_rgb(220, 220, 230), fb_rgb(45, 45, 55));
+        font_draw_string(px + 10, py + ph - char_h - 6, "(click to close)", fb_rgb(150, 150, 160), fb_rgb(45, 45, 55));
+    }
 }
 
 void fileman_win_click(window_t* win, int mx, int my, int btn) {
     fileman_win_t* fm = (fileman_win_t*)win->reserved;
     if (!fm) return;
+    if (fm->props_open) { fm->props_open = 0; return; }   // any click dismisses the Properties panel
     int cx = WIN_CLIENT_X(win), cy = WIN_CLIENT_Y(win);
     uint32_t cw = win->w, ch = win->h;
     uint32_t char_h = FONT_HEIGHT;
