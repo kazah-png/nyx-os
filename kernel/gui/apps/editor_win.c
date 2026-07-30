@@ -3,6 +3,7 @@
 #include "../core/compositor.h"
 #include "editor_win.h"
 #include "../../drivers/video/font.h"
+#include "../../auth/login.h"   // g_login_home: default new saves into the persistent home
 
 #define TOOLBAR_H 26
 #define STATUS_H 18
@@ -20,7 +21,12 @@ editor_win_t* editor_create_ctx(void) {
 }
 
 static void editor_save(editor_win_t* ed) {
-    char* filename = ed->filename[0] ? ed->filename : "/home/user/untitled.txt";
+    // A never-named buffer saves into the logged-in user's persistent home
+    // (/mnt/home/<user> on the ext2 disk when a disk is mounted) so a new note
+    // survives a reboot -- the old default was the ephemeral RAM path /home/user/.
+    char defbuf[128];
+    snprintf(defbuf, sizeof(defbuf), "%s/untitled.txt", g_login_home[0] ? g_login_home : "/home");
+    char* filename = ed->filename[0] ? ed->filename : defbuf;
     // 512 * 256 = 128 KB. This used to be a STACK array, and kernel task stacks
     // are kmalloc(4096) — 4 KB. Every single Save overflowed the kernel stack by
     // a factor of thirty-two, straight through whatever happened to live below
@@ -37,7 +43,10 @@ static void editor_save(editor_win_t* ed) {
         buf[pos++] = '\n';
     }
     buf[pos] = '\0';
-    if (vfs_write_file(filename, buf, pos) == 0) {
+    // vfs_write_file returns the number of bytes written on success (== pos here) and
+    // a negative value on failure; it does NOT return 0 on success, so the old `== 0`
+    // check reported every non-empty save as "Save failed" even though it was written.
+    if (vfs_write_file(filename, buf, pos) == pos) {
         ed->modified = 0;
         if (!ed->filename[0]) strncpy(ed->filename, filename, sizeof(ed->filename) - 1);
         snprintf(ed->status, sizeof(ed->status), "Saved: %s (%d bytes)", filename, pos);
