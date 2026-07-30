@@ -65,9 +65,9 @@ char* strdup(const char* s);
 void  qsort(void* base, size_t nmemb, size_t size, int (*cmp)(const void*, const void*));
 
 /* ===== stdio (FILE*) — buffered file I/O over the fd syscalls =====
- * Core layer (v6.1.3): fopen/fclose/fread/fwrite/fgetc/fputc/fflush/feof/ferror.
- * The fprintf family, stdin/stdout/stderr, fgets/fputs and fseek/ftell land in the
- * next bricks. FILE is a complete type here; callers use it via FILE*. */
+ * Core layer (v6.1.3): fopen/fclose/fread/fwrite/fgetc/fputc/fflush/feof/ferror;
+ * fprintf family (v6.1.4); stdin/stdout/stderr + fgets/fputs/fseek/ftell (v6.1.5).
+ * FILE is a complete type here; callers use it via FILE*. */
 #ifndef NULL
 #define NULL ((void*)0)
 #endif
@@ -81,6 +81,7 @@ typedef struct FILE {
     int mode;         /* 0 idle, 'r' read-buffered, 'w' write-buffered */
     int can_read, can_write;
     int eof, err;
+    int flush_each;   /* 1 = unbuffered: flush after each fputc (stdout/stderr) */
 } FILE;
 
 FILE*  fopen(const char* path, const char* mode);
@@ -94,6 +95,17 @@ int    feof(FILE* f);
 int    ferror(FILE* f);
 int    fprintf(FILE* f, const char* fmt, ...);
 int    vfprintf(FILE* f, const char* fmt, va_list ap);
+
+/* Standard streams (v6.1.5): predefined FILE* over fds 0/1/2. stdout/stderr are
+ * unbuffered so their bytes reach the terminal immediately, matching printf. */
+extern FILE* stdin;
+extern FILE* stdout;
+extern FILE* stderr;
+
+char*  fgets(char* s, int size, FILE* f);
+int    fputs(const char* s, FILE* f);
+int    fseek(FILE* f, long offset, int whence);
+long   ftell(FILE* f);
 
 /* Process environment (set by crt0 from execve's envp). getenv reads it. */
 extern char** environ;

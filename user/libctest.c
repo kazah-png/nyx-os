@@ -181,6 +181,53 @@ int main(int argc, char** argv) {
         if (!pf_ok) ok = 0;
     }
 
+    /* stdio standard streams + fgets/fputs/fseek/ftell (v6.1.5). Round-trip a
+     * two-line file: fputs to write, fgets to read it back line-by-line, fseek to
+     * rewind + seek absolute, ftell to confirm the logical offset at each step.
+     * Then verify the predefined stdin/stdout/stderr globals wrap fds 0/1/2 with
+     * the right direction, and show fputs/fprintf reach the (unbuffered) stdout. */
+    {
+        const char* path = "/mnt/libctest_streams.txt";
+        const char* l1 = "alpha line\n";
+        const char* l2 = "beta line\n";
+        int ss_ok = 1;
+
+        FILE* fw = fopen(path, "w");
+        if (!fw) ss_ok = 0;
+        else {
+            if (fputs(l1, fw) < 0 || fputs(l2, fw) < 0) ss_ok = 0;
+            if (ftell(fw) != (long)(strlen(l1) + strlen(l2))) ss_ok = 0;   /* write-side offset */
+            if (fclose(fw) != 0) ss_ok = 0;
+        }
+
+        FILE* fr = fopen(path, "r");
+        if (!fr) ss_ok = 0;
+        else {
+            char line[32];
+            if (!fgets(line, sizeof(line), fr) || strcmp(line, l1) != 0) ss_ok = 0;   /* line 1 */
+            if (ftell(fr) != (long)strlen(l1)) ss_ok = 0;                             /* offset past line 1 */
+            if (!fgets(line, sizeof(line), fr) || strcmp(line, l2) != 0) ss_ok = 0;   /* line 2 */
+            if (fgets(line, sizeof(line), fr) != NULL) ss_ok = 0;                     /* EOF -> NULL */
+
+            if (fseek(fr, 0, SEEK_SET) != 0 || ftell(fr) != 0) ss_ok = 0;            /* rewind */
+            if (!fgets(line, sizeof(line), fr) || strcmp(line, l1) != 0) ss_ok = 0;   /* re-read line 1 */
+            if (fseek(fr, 5, SEEK_SET) != 0 || ftell(fr) != 5) ss_ok = 0;            /* absolute seek */
+            fclose(fr);
+        }
+
+        /* Predefined standard streams wrap fds 0/1/2 with the correct direction. */
+        if (stdin->fd  != 0 || !stdin->can_read  || stdin->can_write)  ss_ok = 0;
+        if (stdout->fd != 1 || !stdout->can_write || stdout->can_read) ss_ok = 0;
+        if (stderr->fd != 2 || !stderr->can_write)                     ss_ok = 0;
+
+        /* Unbuffered stdout: these reach the serial console immediately (visible proof). */
+        fputs("LIBCTEST: fputs->stdout OK\n", stdout);
+        fprintf(stdout, "LIBCTEST: fprintf->stdout n=%d OK\n", 42);
+
+        printf("LIBCTEST: streams(std*/fgets/fputs/fseek/ftell) %s\n", ss_ok ? "PASS" : "FAIL");
+        if (!ss_ok) ok = 0;
+    }
+
     printf("LIBCTEST: %s\n", ok ? "ALL PASS" : "SOME FAIL");
     return ok ? 0 : 1;
 }

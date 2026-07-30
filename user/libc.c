@@ -583,7 +583,7 @@ void qsort(void* base, size_t nmemb, size_t size, int (*cmp)(const void*, const 
  * pending writes at a time (tracked by `mode`), refilled/flushed as needed. On an
  * r+/w+/a+ stream a read->write switch rewinds the fd to the logical read position
  * and a write->read switch flushes first, so the file offset stays consistent.
- * (fseek/ftell, the fprintf family, and stdin/out/err come in later bricks.) */
+ * (fprintf family: v6.1.4; stdin/out/err + fgets/fputs/fseek/ftell: v6.1.5.) */
 
 FILE* fopen(const char* path, const char* mode) {
     if (!path || !mode) return NULL;
@@ -601,6 +601,7 @@ FILE* fopen(const char* path, const char* mode) {
     if (!f) { close(fd); return NULL; }
     f->fd = fd; f->pos = 0; f->len = 0; f->mode = 0;
     f->can_read = cr; f->can_write = cw; f->eof = 0; f->err = 0;
+    f->flush_each = 0;   /* fopen'd streams are fully buffered (malloc: not zeroed) */
     return f;
 }
 
@@ -634,7 +635,7 @@ int fputc(int c, FILE* f) {
     }
     if (f->mode != 'w') { f->mode = 'w'; f->len = 0; }
     f->buf[f->len++] = (unsigned char)c;
-    if (f->len == (int)sizeof(f->buf)) { if (fflush(f) == EOF) return EOF; }
+    if (f->flush_each || f->len == (int)sizeof(f->buf)) { if (fflush(f) == EOF) return EOF; }
     return (unsigned char)c;
 }
 
@@ -664,3 +665,63 @@ int fclose(FILE* f) {
 
 int feof(FILE* f)   { return f ? f->eof : 0; }
 int ferror(FILE* f) { return f ? f->err : 0; }
+
+/* ---- Standard streams + fgets/fputs/fseek/ftell (v6.1.5) ----
+ * The three predefined streams wrap fds 0/1/2 (opened by the kernel for every
+ * process). stdout/stderr are unbuffered (flush_each), so fprintf(stdout,...) and
+ * fputc(c,stdout) reach the terminal immediately and interleave with printf's
+ * direct write(1,...). Static storage zero-inits every unnamed field (pos/len/
+ * mode/eof/err = 0, and stdin's can_write / stdout's can_read = 0). */
+static FILE _stdin  = { .fd = 0, .can_read = 1 };
+static FILE _stdout = { .fd = 1, .can_write = 1, .flush_each = 1 };
+static FILE _stderr = { .fd = 2, .can_write = 1, .flush_each = 1 };
+FILE* stdin  = &_stdin;
+FILE* stdout = &_stdout;
+FILE* stderr = &_stderr;
+
+/* Read at most size-1 bytes into s, stopping after a newline (kept) or at EOF, and
+ * NUL-terminate. Returns s, or NULL if EOF/error hits before any byte is read. */
+char* fgets(char* s, int size, FILE* f) {
+    if (!s || size <= 0 || !f) return NULL;
+    int i = 0;
+    while (i < size - 1) {
+        int c = fgetc(f);
+        if (c == EOF) { if (i == 0) return NULL; break; }
+        s[i++] = (char)c;
+        if (c == '\n') break;
+    }
+    s[i] = '\0';
+    return s;
+}
+
+/* Write the string (no NUL, no trailing newline). Non-negative on success, EOF on error. */
+int fputs(const char* s, FILE* f) {
+    if (!s || !f) return EOF;
+    for (const char* p = s; *p; p++)
+        if (fputc((unsigned char)*p, f) == EOF) return EOF;
+    return 0;
+}
+
+/* Reposition the stream. Sync the fd to the logical position first (flush a pending
+ * write buffer; rewind the fd past any unconsumed read-ahead so SEEK_CUR is exact),
+ * then discard the buffer and lseek. Clears EOF. Returns 0, or -1 on error. */
+int fseek(FILE* f, long offset, int whence) {
+    if (!f) return -1;
+    if (f->mode == 'w') { if (fflush(f) == EOF) return -1; }
+    else if (f->mode == 'r' && f->len > f->pos)
+        lseek(f->fd, -(long)(f->len - f->pos), SEEK_CUR);
+    f->mode = 0; f->pos = 0; f->len = 0; f->eof = 0;
+    if (lseek(f->fd, offset, whence) < 0) { f->err = 1; return -1; }
+    return 0;
+}
+
+/* Current logical position: the fd offset adjusted for buffered bytes — pending
+ * writes sit past it (+len), unconsumed read-ahead before it (-(len-pos)). */
+long ftell(FILE* f) {
+    if (!f) return -1;
+    long off = lseek(f->fd, 0, SEEK_CUR);
+    if (off < 0) { f->err = 1; return -1; }
+    if (f->mode == 'w') off += f->len;
+    else if (f->mode == 'r') off -= (f->len - f->pos);
+    return off;
+}
