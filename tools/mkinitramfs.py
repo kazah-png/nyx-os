@@ -116,6 +116,18 @@ def main():
         data += cpio_add_file('usr/src/nyx/sh.c', shdata)
         print(f"Added usr/src/nyx/sh.c ({len(shdata)} bytes)")
 
+    # Ship a couple of real coreutil sources too, so the in-OS tcc can rebuild them from
+    # source and the results run byte-identical to the shipped GCC builds (v6.4.7): grep
+    # (substring match: strstr, multi-file "file:" prefixing) and sort (a static-.bss line
+    # buffer + insertion sort over strcmp). Both `#include "libc.h"` from this same dir.
+    for cu in ('grep.c', 'sort.c'):
+        cup = os.path.join(usrdir, cu)
+        if os.path.isfile(cup):
+            with open(cup, 'rb') as fp:
+                cudata = fp.read()
+            data += cpio_add_file('usr/src/nyx/' + cu, cudata)
+            print(f"Added usr/src/nyx/{cu} ({len(cudata)} bytes)")
+
     # Add trailer
     data += cpio_trailer()
     
