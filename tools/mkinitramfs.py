@@ -49,7 +49,7 @@ def main():
     usrdir = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'user')
     if os.path.isdir(usrdir):
         for f in sorted(os.listdir(usrdir)):
-            if f.endswith('.elf') or f.endswith('.so') or f in ('crt0.o', 'libc.o'):   # .so = shared libs (v5.8.28+); crt0.o+libc.o = in-OS tcc link inputs (v6.2.3+)
+            if f.endswith('.elf') or f.endswith('.so') or f in ('crt0.o', 'libc.o', 'va_list.o'):   # .so = shared libs (v5.8.28+); crt0.o+libc.o = in-OS tcc link inputs (v6.2.3+); va_list.o = tcc va_arg runtime (v6.3.5)
                 fpath = os.path.join(usrdir, f)
                 with open(fpath, 'rb') as fp:
                     elfdata = fp.read()

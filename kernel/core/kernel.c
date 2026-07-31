@@ -1013,6 +1013,7 @@ static void cmd_cc(int argc, char** argv) {
     if (!compile_only) {                         // link mode: freestanding static exe over our runtime
         av[n++] = "-nostdlib"; av[n++] = "-static";
         av[n++] = "/crt0.o";   av[n++] = "/libc.o";
+        av[n++] = "/va_list.o";                  // tcc's __va_start/__va_arg (varargs-defining code)
     }
     const char* out = 0;
     const char* first_src = 0;

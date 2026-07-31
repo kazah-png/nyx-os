@@ -483,6 +483,13 @@ $(USER_DIR)/libc.o: $(USER_DIR)/libc.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
 $(USER_DIR)/libc.so: $(USER_DIR)/libc.o
 	$(LD) -nostdlib -m elf_x86_64 -e 0 -Ttext 0x30000000 -o $@ $(USER_DIR)/libc.o
 
+# TinyCC's va_list runtime (__va_start/__va_arg), compiled from the vendored
+# user/tcc/lib/va_list.c into a small object shipped in the initramfs. `cc` links it so
+# tcc-compiled code that DEFINES a varargs function (tcc's <stdarg.h> lowers va_start/
+# va_arg to these) can link. It references only memset + abort, both in our libc.o. (v6.3.5)
+$(USER_DIR)/va_list.o: $(TCC_DIR)/lib/va_list.c
+	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -c $< -o $@
+
 $(USER_DIR)/init.o: $(USER_DIR)/init.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
 	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
@@ -496,7 +503,7 @@ $(USER_DIR)/init.o: $(USER_DIR)/init.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
 # just-built .elf — ship silently despite the .h being newer on disk. Companion to
 # the -MMD/-MP auto-deps that track the hand-written headers.
 MKINITRAMFS = ../tools/mkinitramfs.py
-fs/initramfs_data.h: FORCE $(MKINITRAMFS) $(USER_ELFS) $(USER_DIR)/libc.so $(USER_DIR)/libdemo.so
+fs/initramfs_data.h: FORCE $(MKINITRAMFS) $(USER_ELFS) $(USER_DIR)/libc.so $(USER_DIR)/libdemo.so $(USER_DIR)/va_list.o
 	@python3 $(MKINITRAMFS) $@.tmp c >/dev/null
 	@if cmp -s $@.tmp $@ 2>/dev/null; then rm -f $@.tmp; else mv $@.tmp $@; echo "  [initramfs] regenerated $@"; fi
 

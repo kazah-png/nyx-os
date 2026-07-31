@@ -725,3 +725,12 @@ long ftell(FILE* f) {
     else if (f->mode == 'r') off -= (f->len - f->pos);
     return off;
 }
+
+/* abort: abnormal termination. NyxOS does not deliver SIGABRT to self here, so this
+ * just exits non-zero. It also supplies the `abort` symbol that TinyCC's va_list
+ * runtime (user/tcc/lib/va_list.c, shipped as va_list.o) references in its unreachable
+ * default case, so tcc-compiled varargs code links against our libc. */
+void abort(void) {
+    exit(1);
+    for (;;) { }   /* exit() never returns; keep abort provably non-returning */
+}
