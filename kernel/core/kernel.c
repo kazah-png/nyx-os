@@ -1069,6 +1069,8 @@ static void cmd_cc(int argc, char** argv) {
     int n = 0;
     av[n++] = "tcc";
     av[n++] = "-I/usr/lib/tcc/include";          // tcc's freestanding headers (shipped in the initramfs)
+    av[n++] = "-I/usr/src/nyx";                  // the OS's own libc.h/syscall.h, so real NyxOS
+                                                 // sources that `#include "libc.h"` compile as-is
     if (!compile_only) {                         // link mode: freestanding static exe over our runtime
         av[n++] = "-nostdlib"; av[n++] = "-static";
         av[n++] = "/crt0.o";
