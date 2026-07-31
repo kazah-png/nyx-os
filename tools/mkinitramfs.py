@@ -91,6 +91,19 @@ def main():
         data += cpio_add_file('usr/src/nyx/va_list.c', vldata)
         print(f"Added usr/src/nyx/va_list.c ({len(vldata)} bytes)")
 
+    # And ship tcc's main runtime library source (its libtcc1.c) into the same dir, so the
+    # in-OS tcc can compile the REST of tcc's own runtime -- `cc --self-libc` self-compiles it
+    # too, alongside libc.c + va_list.c, so a program's whole C runtime including the float
+    # <-> 64-bit-int helpers (__floatundidf/__floatundisf/__fix*di, which tcc's own codegen
+    # lowers unsigned-64<->float conversions to) is tcc-produced (v6.4.5). libtcc1.c is
+    # header-free, so it needs no include path.
+    ltp = os.path.join(usrdir, 'tcc', 'lib', 'libtcc1.c')
+    if os.path.isfile(ltp):
+        with open(ltp, 'rb') as fp:
+            ltdata = fp.read()
+        data += cpio_add_file('usr/src/nyx/libtcc1.c', ltdata)
+        print(f"Added usr/src/nyx/libtcc1.c ({len(ltdata)} bytes)")
+
     # Ship the OS's own shell source too (its 1042-line userspace shell), so the in-OS
     # tcc can rebuild the shell from source -- `cc /usr/src/nyx/sh.c -o sh` compiles the
     # OS's biggest real program (fork/execve/pipe/dup2/waitpid, quoting, $(...), jobs) and

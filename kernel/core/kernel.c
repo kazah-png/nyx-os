@@ -1043,15 +1043,18 @@ static void cmd_cc(int argc, char** argv) {
     // program's whole C runtime is tcc-built (only tiny crt0.o remains GCC-built). The self-
     // built objects are written next to the output (<out>.slo / <out>.vlo) so they land in
     // the same writable directory the user chose.
-    char libcobj[160], vlistobj[160];
+    char libcobj[160], vlistobj[160], ltccobj[160];
     if (self_libc) {
         int ol = (int)strlen(out);
         if (ol + 5 >= (int)sizeof(libcobj)) { printf("cc: output path too long for --self-libc\n"); return; }
         memcpy(libcobj,  out, (size_t)ol); memcpy(libcobj  + ol, ".slo", 5);  // "<out>.slo"
         memcpy(vlistobj, out, (size_t)ol); memcpy(vlistobj + ol, ".vlo", 5);  // "<out>.vlo"
-        const char* srcs[2] = { "/usr/src/nyx/libc.c", "/usr/src/nyx/va_list.c" };
-        char* objs[2] = { libcobj, vlistobj };
-        for (int p = 0; p < 2; p++) {
+        memcpy(ltccobj,  out, (size_t)ol); memcpy(ltccobj  + ol, ".tlo", 5);  // "<out>.tlo"
+        // The whole tcc runtime, self-compiled: the OS libc, tcc's va-runtime, and tcc's
+        // main runtime library libtcc1.c (float <-> 64-bit-int helpers the codegen emits).
+        const char* srcs[3] = { "/usr/src/nyx/libc.c", "/usr/src/nyx/va_list.c", "/usr/src/nyx/libtcc1.c" };
+        char* objs[3] = { libcobj, vlistobj, ltccobj };
+        for (int p = 0; p < 3; p++) {
             char* cav[8]; int cn = 0;
             cav[cn++] = "tcc";
             cav[cn++] = "-I/usr/lib/tcc/include";
@@ -1076,6 +1079,7 @@ static void cmd_cc(int argc, char** argv) {
         av[n++] = "/crt0.o";
         av[n++] = self_libc ? libcobj  : (char*)"/libc.o";     // tcc-built libc vs prebuilt libc
         av[n++] = self_libc ? vlistobj : (char*)"/va_list.o";  // tcc-built va-runtime vs prebuilt
+        if (self_libc) av[n++] = ltccobj;                      // tcc-built libtcc1 float/int64 runtime
     }
     for (int i = 1; i < argc && n < 60; i++) {
         if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) { i++; continue; }  // -o <out> consumed above
