@@ -81,6 +81,16 @@ def main():
             data += cpio_add_file('usr/src/nyx/' + f, srcdata)
             print(f"Added usr/src/nyx/{f} ({len(srcdata)} bytes)")
 
+    # Also ship tcc's own va-runtime source (its libtcc1 va_list.c) into the same dir, so
+    # the in-OS tcc can compile a piece of tcc itself -- `cc --self-libc` self-compiles it
+    # alongside libc.c to build a program whose whole C runtime is tcc-produced (v6.4.2).
+    vlp = os.path.join(usrdir, 'tcc', 'lib', 'va_list.c')
+    if os.path.isfile(vlp):
+        with open(vlp, 'rb') as fp:
+            vldata = fp.read()
+        data += cpio_add_file('usr/src/nyx/va_list.c', vldata)
+        print(f"Added usr/src/nyx/va_list.c ({len(vldata)} bytes)")
+
     # Add trailer
     data += cpio_trailer()
     

@@ -1035,26 +1035,34 @@ static void cmd_cc(int argc, char** argv) {
         }
         out = outbuf;
     }
-    // --self-libc: FIRST build the C library from its own source with tcc, then link the
-    // program against THAT object instead of the prebuilt (GCC-built) /libc.o. This proves
-    // the tcc-compiled libc actually runs — printf/malloc/strlen in the program are served
-    // by code NyxOS's own compiler produced. The self-built object is written next to the
-    // output (<out>.slo) so it lands in the same writable directory the user chose.
-    char libcobj[160];
+    // --self-libc: FIRST build the runtime from source with tcc, then link the program
+    // against THOSE objects instead of the prebuilt (GCC-built) /libc.o + /va_list.o. This
+    // proves the tcc-compiled runtime actually runs — the program's printf/malloc/strlen and
+    // its varargs support are served by code NyxOS's own compiler produced. We self-compile
+    // BOTH the OS's own libc AND tcc's own va-runtime (libtcc1's va_list.c), so the linked
+    // program's whole C runtime is tcc-built (only tiny crt0.o remains GCC-built). The self-
+    // built objects are written next to the output (<out>.slo / <out>.vlo) so they land in
+    // the same writable directory the user chose.
+    char libcobj[160], vlistobj[160];
     if (self_libc) {
         int ol = (int)strlen(out);
         if (ol + 5 >= (int)sizeof(libcobj)) { printf("cc: output path too long for --self-libc\n"); return; }
-        memcpy(libcobj, out, (size_t)ol); memcpy(libcobj + ol, ".slo", 5);   // "<out>.slo"
-        char* cav[8]; int cn = 0;
-        cav[cn++] = "tcc";
-        cav[cn++] = "-I/usr/lib/tcc/include";
-        cav[cn++] = "-c";
-        cav[cn++] = "/usr/src/nyx/libc.c";       // the OS's own libc, shipped in the initramfs
-        cav[cn++] = "-o"; cav[cn++] = libcobj;
-        cav[cn] = 0;
-        printf("cc: self-libc: tcc -c /usr/src/nyx/libc.c -> %s\n", libcobj);
-        int rc = run_foreground_elf("/tcc.elf", cav, cn);
-        if (rc != 0) { printf("cc: self-libc build failed (code %d)\n", rc); return; }
+        memcpy(libcobj,  out, (size_t)ol); memcpy(libcobj  + ol, ".slo", 5);  // "<out>.slo"
+        memcpy(vlistobj, out, (size_t)ol); memcpy(vlistobj + ol, ".vlo", 5);  // "<out>.vlo"
+        const char* srcs[2] = { "/usr/src/nyx/libc.c", "/usr/src/nyx/va_list.c" };
+        char* objs[2] = { libcobj, vlistobj };
+        for (int p = 0; p < 2; p++) {
+            char* cav[8]; int cn = 0;
+            cav[cn++] = "tcc";
+            cav[cn++] = "-I/usr/lib/tcc/include";
+            cav[cn++] = "-c";
+            cav[cn++] = (char*)srcs[p];          // OS libc / tcc's own va-runtime, from the initramfs
+            cav[cn++] = "-o"; cav[cn++] = objs[p];
+            cav[cn] = 0;
+            printf("cc: self-libc: tcc -c %s -> %s\n", srcs[p], objs[p]);
+            int rc = run_foreground_elf("/tcc.elf", cav, cn);
+            if (rc != 0) { printf("cc: self-libc build of %s failed (code %d)\n", srcs[p], rc); return; }
+        }
     }
     // Build the compile/link argv.
     char* av[64];
@@ -1064,8 +1072,8 @@ static void cmd_cc(int argc, char** argv) {
     if (!compile_only) {                         // link mode: freestanding static exe over our runtime
         av[n++] = "-nostdlib"; av[n++] = "-static";
         av[n++] = "/crt0.o";
-        av[n++] = self_libc ? libcobj : (char*)"/libc.o";  // tcc-built libc vs prebuilt libc
-        av[n++] = "/va_list.o";                  // tcc's __va_start/__va_arg (varargs-defining code)
+        av[n++] = self_libc ? libcobj  : (char*)"/libc.o";     // tcc-built libc vs prebuilt libc
+        av[n++] = self_libc ? vlistobj : (char*)"/va_list.o";  // tcc-built va-runtime vs prebuilt
     }
     for (int i = 1; i < argc && n < 60; i++) {
         if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) { i++; continue; }  // -o <out> consumed above
