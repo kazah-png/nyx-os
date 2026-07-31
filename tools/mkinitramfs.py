@@ -128,6 +128,37 @@ def main():
             data += cpio_add_file('usr/src/nyx/' + cu, cudata)
             print(f"Added usr/src/nyx/{cu} ({len(cudata)} bytes)")
 
+    # Ship tcc's OWN source tree so the in-OS tcc can compile tcc itself -- the
+    # tcc-compiles-tcc self-host arc (v6.4.9). Only the files tcc.c actually pulls in
+    # the x86_64/ELF ONE_SOURCE build (found via `tcc -E`), placed under
+    # /usr/src/nyx/tcc/ mirroring user/tcc/. <stdarg.h> etc. resolve from the already-
+    # shipped /usr/lib/tcc/include, and "libc.h" from /usr/src/nyx, so neither
+    # user/tcc/include/ nor user/libc.h is re-shipped here.
+    tccdir = os.path.join(usrdir, 'tcc')
+    tcc_top = ['tcc.c', 'tcc.h', 'libtcc.c', 'libtcc.h', 'tccpp.c', 'tccgen.c',
+               'tccelf.c', 'tccasm.c', 'tccrun.c', 'tcctools.c', 'x86_64-gen.c',
+               'x86_64-link.c', 'i386-asm.c', 'elf.h', 'stab.h', 'stab.def',
+               'tcctok.h', 'i386-tok.h', 'x86_64-asm.h']
+    for f in tcc_top:
+        p = os.path.join(tccdir, f)
+        if os.path.isfile(p):
+            with open(p, 'rb') as fp:
+                d = fp.read()
+            data += cpio_add_file('usr/src/nyx/tcc/' + f, d)
+            print(f"Added usr/src/nyx/tcc/{f} ({len(d)} bytes)")
+    # The nyxshim standard-header shims (+ config.h + sys/) live under tcc/nyxshim/.
+    shimdir = os.path.join(tccdir, 'nyxshim')
+    if os.path.isdir(shimdir):
+        for root, _dirs, files in os.walk(shimdir):
+            for f in sorted(files):
+                if f.endswith('.h'):
+                    full = os.path.join(root, f)
+                    rel = os.path.relpath(full, tccdir).replace('\\', '/')
+                    with open(full, 'rb') as fp:
+                        d = fp.read()
+                    data += cpio_add_file('usr/src/nyx/tcc/' + rel, d)
+                    print(f"Added usr/src/nyx/tcc/{rel} ({len(d)} bytes)")
+
     # Add trailer
     data += cpio_trailer()
     
