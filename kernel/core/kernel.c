@@ -230,7 +230,7 @@ static const command_t commands[] = {
     {"play",      cmd_play,      "Play a demo melody", false},
     {"sb16play",  cmd_sb16play,  "Test SB16 playback: sb16play [freq] [ms]", false},
     {"exec",      cmd_exec,      "Run ELF in foreground (waits): exec <file>", false},
-    {"cc",        cmd_cc,        "Compile/link C in-OS: cc [-c] <in.c/.o ...> [-o out]", false},
+    {"cc",        cmd_cc,        "Compile/link C in-OS: cc [-c] [--self-libc] <in.c/.o ...> [-o out]", false},
     {"spawn",     cmd_spawn,     "Run ELF in background: spawn <file>", false},
     {"doom",      cmd_doom,      "Play DOOM in a window (Ctrl-C to quit)", false},
     {"pong",      cmd_pong,      "Play Pong (mouse or arrows)", false},
@@ -355,11 +355,11 @@ void command_complete(const char* partial, char* out, int out_size, int* match_c
 // Run a userspace ELF as a foreground job: spawn it (forwarding argv), block —
 // repainting the desktop so it stays live — until it exits, then reap it and print
 // the exit code. Shared by `exec` and the shell's auto-exec fallback.
-static void run_foreground_elf(const char* path, char* const* argv, int argc) {
+static int run_foreground_elf(const char* path, char* const* argv, int argc) {
     int pid = spawn_user_path_args(path, argv, argc);
     if (pid < 0) {
         printf("exec: could not load %s (err %d)\n", path, pid);
-        return;
+        return pid;
     }
     extern uint32_t g_foreground_pid;
     g_foreground_pid = (uint32_t)pid;         // Ctrl-C posts SIGINT here while it runs
@@ -375,6 +375,7 @@ static void run_foreground_elf(const char* path, char* const* argv, int argc) {
     g_foreground_pid = 0;
     compositor_redraw_now();
     printf("[exec] PID %d exited (code %d)\n", pid, code);
+    return code;
 }
 
 // GUI entry point: launch a userspace ELF from a desktop icon EXACTLY the way the shell
@@ -1002,25 +1003,23 @@ static void cmd_exec(int argc, char** argv) {
 // printing its exit code). With no -o, <out> is the first input minus ".c" (plus ".o"
 // in -c mode). Use absolute paths (e.g. cc /mnt/a.c /mnt/b.c -o /mnt/prog).
 static void cmd_cc(int argc, char** argv) {
-    if (argc < 2) { printf("Usage: cc [-c] <in.c/.o ...> [-o <out>]\n"); return; }
+    if (argc < 2) { printf("Usage: cc [-c] [--self-libc] <in.c/.o ...> [-o <out>]\n"); return; }
     int compile_only = 0;                        // -c: compile a .c to a .o, do NOT link
-    for (int i = 1; i < argc; i++)
-        if (strcmp(argv[i], "-c") == 0) { compile_only = 1; break; }
-    char* av[64];
-    int n = 0;
-    av[n++] = "tcc";
-    av[n++] = "-I/usr/lib/tcc/include";          // tcc's freestanding headers (shipped in the initramfs)
-    if (!compile_only) {                         // link mode: freestanding static exe over our runtime
-        av[n++] = "-nostdlib"; av[n++] = "-static";
-        av[n++] = "/crt0.o";   av[n++] = "/libc.o";
-        av[n++] = "/va_list.o";                  // tcc's __va_start/__va_arg (varargs-defining code)
+    int self_libc = 0;                           // --self-libc: link against a tcc-built libc
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-c") == 0)          compile_only = 1;
+        else if (strcmp(argv[i], "--self-libc") == 0) self_libc = 1;
     }
+    if (self_libc && compile_only) {
+        printf("cc: --self-libc has no effect with -c (compile-only does not link)\n"); return;
+    }
+    // Resolve the output path and the first source first (both drive later steps).
     const char* out = 0;
     const char* first_src = 0;
-    for (int i = 1; i < argc && n < 60; i++) {
+    for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) { out = argv[++i]; continue; }
-        av[n++] = argv[i];                       // forward sources/objects + any tcc flags (incl -c)
-        if (!first_src && argv[i][0] != '-') first_src = argv[i];
+        if (strcmp(argv[i], "--self-libc") == 0) continue;
+        if (argv[i][0] != '-' && !first_src) first_src = argv[i];
     }
     if (!first_src) { printf("cc: no input files\n"); return; }
     char outbuf[128];
@@ -1035,6 +1034,43 @@ static void cmd_cc(int argc, char** argv) {
             outbuf[sizeof(outbuf) - 1] = '\0';
         }
         out = outbuf;
+    }
+    // --self-libc: FIRST build the C library from its own source with tcc, then link the
+    // program against THAT object instead of the prebuilt (GCC-built) /libc.o. This proves
+    // the tcc-compiled libc actually runs — printf/malloc/strlen in the program are served
+    // by code NyxOS's own compiler produced. The self-built object is written next to the
+    // output (<out>.slo) so it lands in the same writable directory the user chose.
+    char libcobj[160];
+    if (self_libc) {
+        int ol = (int)strlen(out);
+        if (ol + 5 >= (int)sizeof(libcobj)) { printf("cc: output path too long for --self-libc\n"); return; }
+        memcpy(libcobj, out, (size_t)ol); memcpy(libcobj + ol, ".slo", 5);   // "<out>.slo"
+        char* cav[8]; int cn = 0;
+        cav[cn++] = "tcc";
+        cav[cn++] = "-I/usr/lib/tcc/include";
+        cav[cn++] = "-c";
+        cav[cn++] = "/usr/src/nyx/libc.c";       // the OS's own libc, shipped in the initramfs
+        cav[cn++] = "-o"; cav[cn++] = libcobj;
+        cav[cn] = 0;
+        printf("cc: self-libc: tcc -c /usr/src/nyx/libc.c -> %s\n", libcobj);
+        int rc = run_foreground_elf("/tcc.elf", cav, cn);
+        if (rc != 0) { printf("cc: self-libc build failed (code %d)\n", rc); return; }
+    }
+    // Build the compile/link argv.
+    char* av[64];
+    int n = 0;
+    av[n++] = "tcc";
+    av[n++] = "-I/usr/lib/tcc/include";          // tcc's freestanding headers (shipped in the initramfs)
+    if (!compile_only) {                         // link mode: freestanding static exe over our runtime
+        av[n++] = "-nostdlib"; av[n++] = "-static";
+        av[n++] = "/crt0.o";
+        av[n++] = self_libc ? libcobj : (char*)"/libc.o";  // tcc-built libc vs prebuilt libc
+        av[n++] = "/va_list.o";                  // tcc's __va_start/__va_arg (varargs-defining code)
+    }
+    for (int i = 1; i < argc && n < 60; i++) {
+        if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) { i++; continue; }  // -o <out> consumed above
+        if (strcmp(argv[i], "--self-libc") == 0) continue;                  // consumed above
+        av[n++] = argv[i];                       // forward sources/objects + any tcc flags (incl -c)
     }
     av[n++] = "-o"; av[n++] = (char*)out; av[n] = 0;
     printf("cc: %s -> %s\n", compile_only ? "compiling object" : "compiling", out);

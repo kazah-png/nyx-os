@@ -2223,12 +2223,22 @@ static int elf_output_file(TCCState *s1, const char *filename)
         ret = final_sections_reloc(s1);
         if (ret)
             goto the_end;
+
+        /* NyxOS port patch: fill the static GOT BEFORE tidy_section_headers drops the
+           relocation sections. Stock tcc 0.9.27 calls fill_got() AFTER tidy, but tidy
+           moves the SHT_RELX sections past nb_sections, so fill_got iterates nothing and
+           every static GOT slot stays 0 — e.g. a -nostdlib -static libc that reaches its
+           own globals through GOTPCREL (heap_base, environ) then dereferences a NULL GOT
+           entry and faults. Symbol values are already final here (final_sections_reloc ran
+           relocate_syms), so writing sym->st_value into the GOT now is correct. */
+        int static_exe = (file_type == TCC_OUTPUT_EXE && s1->static_link);
+        if (static_exe)
+            fill_got(s1);
+
 	tidy_section_headers(s1, sec_order);
 
-        /* Perform relocation to GOT or PLT entries */
-        if (file_type == TCC_OUTPUT_EXE && s1->static_link)
-            fill_got(s1);
-        else if (s1->got)
+        /* Perform relocation to GOT or PLT entries (dynamic case fills after tidy). */
+        if (!static_exe && s1->got)
             fill_local_got_entries(s1);
     }
 

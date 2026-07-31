@@ -604,13 +604,34 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
                 return n;                                    /* 0 = peer closed the connection */
             }
             uint32_t* off = ufd_offset_of((int)a1);
-            char* kbuf = (char*)kmalloc(count);
+            /* Regular files return the FULL requested count, not the 4096 streaming cap:
+             * loop vfs_pread in page-sized chunks through a bounce buffer so a large read
+             * needs no large kernel allocation. `want` is the original a3 (already range-
+             * checked above); `count` stays capped for the streaming paths. A single
+             * read() thus pulls a whole multi-KB file, as programs that don't loop on
+             * short reads expect (e.g. tcc's object loader, which read() a section in one
+             * call) — matching regular-file read() semantics on Linux. */
+            int want = (int)a3;
+            uint32_t base = off ? *off : 0;
+            char* kbuf = (char*)kmalloc(4096);
             if (!kbuf) return -1;
-            int n = vfs_pread(internal, kbuf, count, off ? *off : 0);
-            if (n > 0 && copy_to_user(a2, kbuf, n) != 0) n = -1;
-            if (n > 0 && off) *off += n;      /* advance for streaming reads */
+            int total = 0;
+            while (total < want) {
+                uint32_t chunk = (uint32_t)(want - total);
+                if (chunk > 4096) chunk = 4096;
+                int n = vfs_pread(internal, kbuf, chunk, base + (uint32_t)total);
+                if (n < 0)  { if (total == 0) total = -1; break; }
+                if (n == 0) break;                                /* EOF */
+                if (copy_to_user(a2 + (uint64_t)total, kbuf, (uint32_t)n) != 0) {
+                    if (total == 0) total = -1;
+                    break;
+                }
+                total += n;
+                if ((uint32_t)n < chunk) break;                   /* short vfs read = EOF */
+            }
+            if (total > 0 && off) *off += (uint32_t)total;        /* advance for streaming reads */
             kfree(kbuf);
-            return n;
+            return total;
         }
         case SYS_CLOSE: {
             int internal;
