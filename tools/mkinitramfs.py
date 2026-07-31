@@ -91,6 +91,18 @@ def main():
         data += cpio_add_file('usr/src/nyx/va_list.c', vldata)
         print(f"Added usr/src/nyx/va_list.c ({len(vldata)} bytes)")
 
+    # Ship the OS's own shell source too (its 1042-line userspace shell), so the in-OS
+    # tcc can rebuild the shell from source -- `cc /usr/src/nyx/sh.c -o sh` compiles the
+    # OS's biggest real program (fork/execve/pipe/dup2/waitpid, quoting, $(...), jobs) and
+    # the result runs byte-identical to the shipped GCC-built /sh.elf (v6.4.4). sh.c's
+    # `#include "libc.h"` resolves against this same dir (quote-include search).
+    shp = os.path.join(usrdir, 'sh.c')
+    if os.path.isfile(shp):
+        with open(shp, 'rb') as fp:
+            shdata = fp.read()
+        data += cpio_add_file('usr/src/nyx/sh.c', shdata)
+        print(f"Added usr/src/nyx/sh.c ({len(shdata)} bytes)")
+
     # Add trailer
     data += cpio_trailer()
     
