@@ -23,6 +23,24 @@ static uint32_t align4(uint32_t x) {
     return (x + 3) & ~3;
 }
 
+// Ensure the parent directories of an initramfs entry exist (mkdir -p), so a nested
+// path like /usr/lib/tcc/include/stdarg.h can be created. vfs_mkdir is one level and
+// returns <0 if the directory already exists, which is fine to ignore here. (v6.3.4 —
+// used to provision tcc's system headers under /usr/lib/tcc/include for the in-OS cc.)
+static void initramfs_mkparents(const char* path) {
+    char buf[MAX_PATH];
+    int n = 0;
+    for (const char* p = path; *p && n < (int)sizeof(buf) - 1; p++) {
+        char c = *p;
+        buf[n++] = c;
+        if (c == '/' && n > 1) {           // mkdir the prefix accumulated so far
+            buf[n - 1] = '\0';
+            vfs_mkdir(buf, 0755);          // ignore "already exists"
+            buf[n - 1] = '/';
+        }
+    }
+}
+
 int initramfs_load(void) {
     if (!initramfs_data_ptr || initramfs_size < sizeof(cpio_header_t)) {
         printf("[INITRAMFS] No initramfs data (size=%u)\n", initramfs_size);
@@ -57,6 +75,7 @@ void initramfs_boot(void) {
         if (filesize > 0) {
             char path[MAX_PATH];
             snprintf(path, sizeof(path), "/%s", name);
+            initramfs_mkparents(path);     // create parent dirs for a nested entry
             // Surface a full VFS instead of silently dropping the file: file_count
             // now reflects what actually loaded, and an overflow is loud.
             if (vfs_create_from_mem(path, initramfs_data_ptr + data_offset, filesize) < 0)

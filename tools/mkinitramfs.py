@@ -55,7 +55,20 @@ def main():
                     elfdata = fp.read()
                 data += cpio_add_file(f, elfdata)
                 print(f"Added {f} ({len(elfdata)} bytes)")
-    
+
+    # Ship tcc's freestanding system headers under /usr/lib/tcc/include so the in-OS
+    # tcc (CONFIG_TCCDIR=/usr/lib/tcc) + `cc -I/usr/lib/tcc/include` can find <stddef.h>,
+    # <stdbool.h>, <stdarg.h>, ... (v6.3.4). These are small text headers; the initramfs
+    # loader creates the nested parent dirs (initramfs_mkparents).
+    incdir = os.path.join(usrdir, 'tcc', 'include')
+    if os.path.isdir(incdir):
+        for f in sorted(os.listdir(incdir)):
+            if f.endswith('.h'):
+                with open(os.path.join(incdir, f), 'rb') as fp:
+                    hdrdata = fp.read()
+                data += cpio_add_file('usr/lib/tcc/include/' + f, hdrdata)
+                print(f"Added usr/lib/tcc/include/{f} ({len(hdrdata)} bytes)")
+
     # Add trailer
     data += cpio_trailer()
     
