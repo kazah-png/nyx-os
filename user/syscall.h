@@ -153,6 +153,25 @@ typedef struct {
  *   Clobbers: RCX (return RIP), R11 (saved RFLAGS)
  *   Return: RAX
  */
+#ifdef __TINYC__
+/* TinyCC has no `register long r10 asm("r10")` binding and can't satisfy the "r"
+ * constraints GCC uses below, so the tcc path (used only when this libc is compiled
+ * IN-OS by tcc for self-hosting) puts a4/a5/a6 in any register and moves them into the
+ * ABI-mandated r10/r8/r9 explicitly inside the asm. Same effect; GCC path unchanged. */
+static inline long syscall6(long no, long a1, long a2, long a3, long a4, long a5, long a6) {
+    long ret;
+    __asm__ volatile (
+        "movq %5, %%r10\n\t"
+        "movq %6, %%r8\n\t"
+        "movq %7, %%r9\n\t"
+        "syscall"
+        : "=a"(ret)
+        : "a"(no), "D"(a1), "S"(a2), "d"(a3), "m"(a4), "m"(a5), "m"(a6)
+        : "rcx", "r11", "r10", "r8", "r9", "memory"
+    );
+    return ret;
+}
+#else
 static inline long syscall6(long no, long a1, long a2, long a3, long a4, long a5, long a6) {
     long ret;
     register long r10 asm("r10") = a4;
@@ -166,6 +185,7 @@ static inline long syscall6(long no, long a1, long a2, long a3, long a4, long a5
     );
     return ret;
 }
+#endif
 
 static inline long syscall5(long no, long a1, long a2, long a3, long a4, long a5) {
     return syscall6(no, a1, a2, a3, a4, a5, 0);

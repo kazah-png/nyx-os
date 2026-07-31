@@ -9,10 +9,18 @@
 #include "syscall.h"
 #endif
 
+/* va_list: GCC provides __builtin_va_list; TinyCC (which defines __TINYC__ and has no
+ * such builtin) supplies it via its own <stdarg.h> — shipped in the initramfs at
+ * /usr/lib/tcc/include so tcc can compile this libc IN-OS (self-hosting). The GCC path
+ * below is unchanged, so the normal build is byte-identical. */
+#ifdef __TINYC__
+#include <stdarg.h>
+#else
 typedef __builtin_va_list va_list;
 #define va_start(v, l) __builtin_va_start(v, l)
 #define va_end(v)      __builtin_va_end(v)
 #define va_arg(v, t)   __builtin_va_arg(v, t)
+#endif
 
 typedef unsigned long size_t;
 

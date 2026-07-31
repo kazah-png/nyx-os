@@ -69,6 +69,18 @@ def main():
                 data += cpio_add_file('usr/lib/tcc/include/' + f, hdrdata)
                 print(f"Added usr/lib/tcc/include/{f} ({len(hdrdata)} bytes)")
 
+    # Ship the NyxOS libc sources under /usr/src/nyx so the in-OS tcc can compile the
+    # OS's own libc -- the self-hosting milestone (v6.4.0). All three sit in one dir so
+    # libc.c's `#include "libc.h"` and libc.h's `#include "syscall.h"` (quote-includes,
+    # which search the including file's directory) resolve without extra -I.
+    for f in ('libc.c', 'libc.h', 'syscall.h'):
+        p = os.path.join(usrdir, f)
+        if os.path.isfile(p):
+            with open(p, 'rb') as fp:
+                srcdata = fp.read()
+            data += cpio_add_file('usr/src/nyx/' + f, srcdata)
+            print(f"Added usr/src/nyx/{f} ({len(srcdata)} bytes)")
+
     # Add trailer
     data += cpio_trailer()
     

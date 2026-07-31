@@ -61,7 +61,9 @@ __attribute__((naked, noreturn)) void longjmp(jmp_buf buf, int val) {
         "jnz 1f\n\t"
         "movl $1, %eax\n\t"           /* ... but never 0 (longjmp(buf,0) -> 1) */
         "1:\n\t"
-        "jmpq *56(%rdi)\n\t"          /* resume at the saved setjmp return point */
+        "jmp *56(%rdi)\n\t"           /* resume at the saved setjmp return point (plain
+                                         `jmp` — no `q` suffix — so TinyCC's assembler
+                                         accepts it too; same machine code under GCC) */
     );
 }
 
