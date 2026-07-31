@@ -94,11 +94,75 @@ long time(long* t) {
 struct nyx_tm_ { int tm_sec, tm_min, tm_hour, tm_mday, tm_mon, tm_year, tm_wday, tm_yday, tm_isdst; };
 void* localtime(const long* t) { (void)t; static struct nyx_tm_ z; return &z; }  /* M0 stub */
 
-/* --- stdlib float parsing + math: M0 stubs (return 0), to be implemented later --- */
-double      strtod(const char* n, char** e)  { if (e) *e = (char*)n; return 0.0; }
-float       strtof(const char* n, char** e)  { if (e) *e = (char*)n; return 0.0f; }
-long double strtold(const char* n, char** e) { if (e) *e = (char*)n; return 0.0L; }
-double      ldexp(double x, int e)           { (void)e; return x; }
+/* --- stdlib float parsing + math (v6.4.6) ------------------------------------
+ * tcc's lexer (tccpp.c parse_number) turns EVERY floating-point literal into a
+ * value by calling strtof/strtod/strtold; the M0 stubs returned 0.0, so the in-OS
+ * tcc compiled every float/double constant to ZERO -- both in user code and, worse,
+ * inside libtcc1.c (its `18446744073709551616.0` = 2^64 unsigned<->float bias), so
+ * float-using programs built in-OS computed garbage. Real strtod fixes that. */
+static int nyx_isspace_(char c) { return c==' '||c=='\t'||c=='\n'||c=='\r'||c=='\f'||c=='\v'; }
+static int nyx_hexval_(char c) {
+    if (c>='0'&&c<='9') return c-'0';
+    if (c>='a'&&c<='f') return c-'a'+10;
+    if (c>='A'&&c<='F') return c-'A'+10;
+    return -1;
+}
+double strtod(const char* s, char** end) {
+    const char* p = s;
+    while (nyx_isspace_(*p)) p++;
+    int neg = 0;
+    if (*p == '+' || *p == '-') { neg = (*p == '-'); p++; }
+
+    /* Hexadecimal float: 0x<hex>[.<hex>][p<dec exp>], mantissa * 2^exp. */
+    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X') &&
+        (nyx_hexval_(p[2]) >= 0 || p[2] == '.')) {
+        p += 2;
+        double m = 0.0;
+        while (nyx_hexval_(*p) >= 0) { m = m * 16.0 + nyx_hexval_(*p); p++; }
+        if (*p == '.') { p++; double f = 1.0 / 16.0;
+            while (nyx_hexval_(*p) >= 0) { m += nyx_hexval_(*p) * f; f /= 16.0; p++; } }
+        int e = 0, es = 1;
+        if (*p == 'p' || *p == 'P') { p++;
+            if (*p == '+' || *p == '-') { es = (*p == '-') ? -1 : 1; p++; }
+            while (*p >= '0' && *p <= '9') { e = e * 10 + (*p - '0'); p++; } e *= es; }
+        double r = m;
+        while (e > 0) { r *= 2.0; e--; }
+        while (e < 0) { r *= 0.5; e++; }
+        if (end) *end = (char*)p;
+        return neg ? -r : r;
+    }
+
+    /* Decimal: accumulate up to 19 significant digits EXACTLY into a u64 (keeps big
+     * powers of ten like 2^64 accurate), track the base-10 exponent, then scale. */
+    unsigned long long mant = 0;
+    int nd = 0, exp10 = 0, seen = 0;
+    while (*p >= '0' && *p <= '9') { seen = 1;
+        if (nd < 19) { mant = mant * 10ULL + (unsigned)(*p - '0'); nd++; } else exp10++; p++; }
+    if (*p == '.') { p++;
+        while (*p >= '0' && *p <= '9') { seen = 1;
+            if (nd < 19) { mant = mant * 10ULL + (unsigned)(*p - '0'); nd++; exp10--; } p++; } }
+    if (!seen) { if (end) *end = (char*)s; return 0.0; }
+    int e = 0, es = 1;
+    if (*p == 'e' || *p == 'E') { p++;
+        if (*p == '+' || *p == '-') { es = (*p == '-') ? -1 : 1; p++; }
+        while (*p >= '0' && *p <= '9') { e = e * 10 + (*p - '0'); p++; } e *= es; }
+    exp10 += e;
+
+    double r = (double)mant;
+    int ax = exp10 < 0 ? -exp10 : exp10;
+    double base = 10.0, sc = 1.0;
+    while (ax) { if (ax & 1) sc *= base; base *= base; ax >>= 1; }   /* sc = 10^|exp10| */
+    r = (exp10 < 0) ? r / sc : r * sc;
+    if (end) *end = (char*)p;
+    return neg ? -r : r;
+}
+float       strtof(const char* n, char** e)  { return (float)strtod(n, e); }
+long double strtold(const char* n, char** e) { return (long double)strtod(n, e); }
+double      ldexp(double x, int e) {            /* x * 2^e */
+    while (e > 0) { x *= 2.0; e--; }
+    while (e < 0) { x *= 0.5; e++; }
+    return x;
+}
 
 /* sscanf: M0 stub (tcc uses it once). Returns 0 = "no fields matched". */
 int sscanf(const char* s, const char* fmt, ...) { (void)s; (void)fmt; return 0; }
