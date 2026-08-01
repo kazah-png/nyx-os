@@ -7,7 +7,7 @@
 <p align="center">
   <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.9.0-LTS"><img src="https://img.shields.io/badge/release-v5.9.0--LTS-825AD2?style=flat" /></a>
   &nbsp;
-  <img src="https://img.shields.io/badge/version-v6.4.19-825AD2?style=flat" />
+  <img src="https://img.shields.io/badge/version-v6.4.20-825AD2?style=flat" />
   &nbsp;
   <img src="https://img.shields.io/badge/arch-x86__64-825AD2?style=flat" />
   &nbsp;
@@ -56,7 +56,7 @@ nyx:root$ nyxfetch
        .:::o:o#:.           nyx@nyxos
     .:oo.. :o.              -----------------
   :oo:.oo.o:                OS:         NyxOS x86_64
- .#o:.   :.                 Kernel:     NyxOS 6.4.19
+ .#o:.   :.                 Kernel:     NyxOS 6.4.20
  #:::....:                  Uptime:     00:00:11
 o#::. . o.                  Resolution: 1024 x 768
 o#.o:   :o                  CPU:        QEMU Virtual CPU (1)
@@ -91,7 +91,7 @@ o###o   o#                  Memory:     255 MiB
 - A ported TinyCC compiles C to native ELF entirely inside NyxOS, via the `cc` builtin
 - Self-hosting — the in-OS compiler compiles its own source, and `cc --self` then builds programs with that self-built compiler
 - Rebuilds real coreutils and the shell byte-identically to their cross-compiled originals
-- `pkg install <name>` — a minimal package manager that compiles a package from its recipe with `cc` and installs it
+- `xbm` — the NyxOS package manager: `xbm install <name>` compiles a package from its recipe with `cc`, installs it to `/mnt/bin`, and it then runs by bare name
 
 **Network stack**
 - RTL8139 driver; ARP, IPv4, ICMP (ping), DHCP client, UDP, and a full TCP state machine (retransmission, passive open, 8 concurrent connections)
