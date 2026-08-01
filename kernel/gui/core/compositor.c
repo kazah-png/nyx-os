@@ -4,6 +4,7 @@
 #include "../../drivers/video/font.h"
 #include "../apps/terminal_win.h"
 #include "../games/pong_win.h"
+#include "../games/voxel_win.h"
 #include "../apps/fileman_win.h"
 #include "../apps/paint_win.h"
 #include "../apps/taskman_win.h"
@@ -1058,6 +1059,14 @@ void launch_pong(void) {
     w->on_key       = pong_win_key;
     w->on_mousemove = pong_win_mousemove;
     w->on_tick      = pong_win_tick;
+}
+
+// Open the Nyx Voxels window — a static isometric voxel scene (first step toward
+// the voxel-sandbox north star). No ctx/tick/input yet: it just draws each frame.
+void launch_voxel(void) {
+    int px = ((int)fb_get_width()  - VOXEL_W) / 2;              if (px < 0) px = 0;
+    int py = ((int)fb_get_height() - VOXEL_H - TITLE_H) / 2;    if (py < 0) py = 0;
+    window_create(px, py, VOXEL_W, VOXEL_H, "Nyx Voxels", voxel_win_draw);
 }
 
 // Open a Snake window. In-kernel game like Pong: the compositor's game-tick steps it via

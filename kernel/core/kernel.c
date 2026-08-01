@@ -125,6 +125,7 @@ static void cmd_xbm(int argc, char** argv);
 static void cmd_spawn(int argc, char** argv);
 static void cmd_doom(int argc, char** argv);
 static void cmd_pong(int argc, char** argv);
+static void cmd_voxel(int argc, char** argv);
 static void cmd_snake(int argc, char** argv);
 static void cmd_tetris(int argc, char** argv);
 static void cmd_selene(int argc, char** argv);
@@ -235,6 +236,7 @@ static const command_t commands[] = {
     {"spawn",     cmd_spawn,     "Run ELF in background: spawn <file>", false},
     {"doom",      cmd_doom,      "Play DOOM in a window (Ctrl-C to quit)", false},
     {"pong",      cmd_pong,      "Play Pong (mouse or arrows)", false},
+    {"voxel",     cmd_voxel,     "Open Nyx Voxels (a voxel scene)", false},
     {"snake",     cmd_snake,     "Play Snake (arrows/WASD)", false},
     {"tetris",    cmd_tetris,    "Play Tetris (arrows, Space=drop)", false},
     {"selene",    cmd_selene,    "Open Selene, the web browser", false},
@@ -1321,6 +1323,13 @@ static void cmd_doom(int argc, char** argv) {
 static void cmd_pong(int argc, char** argv) {
     (void)argc; (void)argv;
     launch_pong();
+}
+
+// `voxel` — open the Nyx Voxels window (a static isometric voxel scene; in-kernel,
+// compositor.c). First step toward the voxel-sandbox north star.
+static void cmd_voxel(int argc, char** argv) {
+    (void)argc; (void)argv;
+    launch_voxel();
 }
 
 // `snake` — open a Snake game window (in-kernel, compositor.c).
