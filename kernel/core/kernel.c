@@ -111,7 +111,6 @@ static void cmd_write(int argc, char** argv);
 extern void cmd_dhcp(int argc, char** argv);
 static void cmd_dns(int argc, char** argv);
 static void cmd_history(int argc, char** argv);
-static void cmd_diff(int argc, char** argv);
 static void cmd_mode(int argc, char** argv);
 static void cmd_gui(int argc, char** argv);
 static void cmd_fonttest(int argc, char** argv);
@@ -222,7 +221,6 @@ static const command_t commands[] = {
     {"write",     cmd_write,     "Write text to file: write <file> <text>", false},
     {"dhcp",      cmd_dhcp,      "Request IP via DHCP", false},
     {"history",   cmd_history,   "Show command history", false},
-    {"diff",      cmd_diff,      "Compare two files: diff <file1> <file2>", false},
     {"mode",      cmd_mode,      "Set VBE video mode: mode <width> <height> <bpp>", false},
     {"gui",       cmd_gui,       "Launch GUI demo with mouse", false},
     {"fonttest",  cmd_fonttest,  "Test font rendering on framebuffer", false},
@@ -816,39 +814,6 @@ static void cmd_history(int argc, char** argv) {
     for (int i = start; i < hist_count; i++) {
         printf("  %d  %s\n", i - start + 1, history[i % HIST_MAX]);
     }
-}
-
-static void cmd_diff(int argc, char** argv) {
-    if (argc < 3) { printf("Usage: diff <file1> <file2>\n"); return; }
-    int fd1 = vfs_open(argv[1], 0, 0);
-    if (fd1 < 0) { printf("diff: cannot open '%s'\n", argv[1]); return; }
-    int fd2 = vfs_open(argv[2], 0, 0);
-    if (fd2 < 0) { vfs_close(fd1); printf("diff: cannot open '%s'\n", argv[2]); return; }
-    char buf1[4096], buf2[4096];
-    int len1 = vfs_read(fd1, buf1, sizeof(buf1) - 1);
-    int len2 = vfs_read(fd2, buf2, sizeof(buf2) - 1);
-    vfs_close(fd1); vfs_close(fd2);
-    if (len1 < 0) len1 = 0;
-    if (len2 < 0) len2 = 0;
-    buf1[len1] = '\0'; buf2[len2] = '\0';
-    char *lines1[256], *lines2[256];
-    int n1 = 0, n2 = 0;
-    lines1[n1++] = buf1; lines2[n2++] = buf2;
-    for (int i = 0; buf1[i] && n1 < 256; i++)
-        if (buf1[i] == '\n') { buf1[i] = '\0'; if (buf1[i+1]) lines1[n1++] = &buf1[i+1]; }
-    for (int i = 0; buf2[i] && n2 < 256; i++)
-        if (buf2[i] == '\n') { buf2[i] = '\0'; if (buf2[i+1]) lines2[n2++] = &buf2[i+1]; }
-    int max = n1 > n2 ? n1 : n2;
-    int diffs = 0;
-    for (int i = 0; i < max; i++) {
-        int have1 = i < n1, have2 = i < n2;
-        if (!have1 || !have2 || strcmp(lines1[i], lines2[i]) != 0) {
-            if (have1) printf("< %s\n", lines1[i]);
-            if (have2) printf("> %s\n", lines2[i]);
-            diffs++;
-        }
-    }
-    printf("---\n%d line(s) differ\n", diffs);
 }
 
 static void cmd_mode(int argc, char** argv) {

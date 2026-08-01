@@ -85,7 +85,7 @@ USER_DIR = ../user
 USER_ELFS = $(USER_DIR)/hello.elf $(USER_DIR)/init.elf $(USER_DIR)/spin.elf $(USER_DIR)/fdleak.elf $(USER_DIR)/hello_nyx.elf $(USER_DIR)/args.elf \
             $(USER_DIR)/sh.elf $(USER_DIR)/echo.elf $(USER_DIR)/upper.elf $(USER_DIR)/cat.elf $(USER_DIR)/wc.elf $(USER_DIR)/ls.elf \
             $(USER_DIR)/grep.elf $(USER_DIR)/head.elf $(USER_DIR)/tail.elf \
-            $(USER_DIR)/mkdir.elf $(USER_DIR)/rm.elf $(USER_DIR)/touch.elf $(USER_DIR)/sort.elf $(USER_DIR)/uniq.elf $(USER_DIR)/cut.elf $(USER_DIR)/nl.elf $(USER_DIR)/tac.elf $(USER_DIR)/seq.elf $(USER_DIR)/find.elf \
+            $(USER_DIR)/mkdir.elf $(USER_DIR)/rm.elf $(USER_DIR)/touch.elf $(USER_DIR)/sort.elf $(USER_DIR)/uniq.elf $(USER_DIR)/cut.elf $(USER_DIR)/nl.elf $(USER_DIR)/tac.elf $(USER_DIR)/seq.elf $(USER_DIR)/diff.elf $(USER_DIR)/find.elf \
             $(USER_DIR)/ps.elf $(USER_DIR)/kill.elf $(USER_DIR)/top.elf $(USER_DIR)/edit.elf $(USER_DIR)/dltest.elf \
             $(USER_DIR)/pmap.elf $(USER_DIR)/free.elf $(USER_DIR)/env.elf $(USER_DIR)/date.elf $(USER_DIR)/sleep.elf \
             $(USER_DIR)/cp.elf $(USER_DIR)/mv.elf $(USER_DIR)/uname.elf $(USER_DIR)/whoami.elf $(USER_DIR)/which.elf $(USER_DIR)/clear.elf \
@@ -417,6 +417,11 @@ $(USER_DIR)/tac.o: $(USER_DIR)/tac.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
 $(USER_DIR)/seq.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/seq.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/seq.o
 $(USER_DIR)/seq.o: $(USER_DIR)/seq.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
+	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+
+$(USER_DIR)/diff.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/diff.o
+	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/diff.o
+$(USER_DIR)/diff.o: $(USER_DIR)/diff.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
 	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
 $(USER_DIR)/tail.o: $(USER_DIR)/tail.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
