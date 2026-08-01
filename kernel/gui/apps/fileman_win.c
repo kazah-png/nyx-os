@@ -345,6 +345,34 @@ void fileman_new_file(fileman_win_t* fm) {
 
 
 
+// Per-row entry icons for the file list: a folder glyph for directories and a
+// document glyph for files, so the two read apart at a glance (a modern file-
+// manager touch replacing the old "/" / " " text prefix). Sized to sit inside a
+// FONT_HEIGHT (16px) row and drawn opaque, so they show over a selected row's
+// highlight too. The folder blue matches the directory name colour for cohesion.
+static void fm_draw_folder_icon(int x, int y, int rowh) {
+    const int iw = 13, ih = 10;
+    int iy = y + (rowh - ih) / 2;
+    uint32_t body = fb_rgb(95,165,235), lite = fb_rgb(150,200,248), dark = fb_rgb(60,110,180);
+    fb_fill_rect(x, iy, 6, 2, dark);                  // back tab
+    fb_fill_rect(x, iy + 2, iw, ih - 2, body);        // body
+    fb_fill_rect(x, iy + 2, iw, 1, lite);             // top highlight
+    fb_fill_rect(x, iy + ih - 1, iw, 1, dark);        // bottom shade
+}
+
+static void fm_draw_file_icon(int x, int y, int rowh) {
+    const int iw = 10, ih = 12;
+    int ix = x + 2, iy = y + (rowh - ih) / 2;
+    uint32_t page = fb_rgb(208,213,223), edge = fb_rgb(150,156,168), fold = fb_rgb(120,128,142);
+    fb_fill_rect(ix, iy, iw, ih, page);               // page body
+    fb_fill_rect(ix, iy, iw, 1, fb_rgb(238,241,248)); // top highlight
+    fb_fill_rect(ix + iw - 3, iy, 3, 3, fold);        // folded top-right corner
+    fb_fill_rect(ix + 2, iy + 4, iw - 4, 1, edge);    // faint text lines
+    fb_fill_rect(ix + 2, iy + 6, iw - 4, 1, edge);
+    fb_fill_rect(ix + 2, iy + 8, iw - 5, 1, edge);
+    fb_fill_rect(ix, iy + ih - 1, iw, 1, edge);       // bottom edge
+}
+
 void fileman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     fileman_win_t* fm = (fileman_win_t*)win->reserved;
     if (!fm) return;
@@ -418,11 +446,10 @@ void fileman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
         uint32_t bg = (ei == fm->sel_index) ? THEME_SELECTION : fb_rgb(30,30,35);
         fb_fill_rect(cx + 2, ey, (uint32_t)(list_w - 4), char_h, bg);
 
-        char prefix = fm->entry_types[ei] ? '/' : ' ';
-        char display[68];
-        snprintf(display, sizeof(display), "%c %s", prefix, fm->entries[ei]);
+        if (fm->entry_types[ei]) fm_draw_folder_icon(cx + 4, ey, (int)char_h);
+        else                     fm_draw_file_icon(cx + 4, ey, (int)char_h);
         uint32_t fg = fm->entry_types[ei] ? fb_rgb(100,200,255) : THEME_TEXT;
-        font_draw_string(cx + 4, ey, display, fg, bg);
+        font_draw_string(cx + 4 + 16, ey, fm->entries[ei], fg, bg);
         // Right-aligned Size column: byte count for files, "<DIR>" for folders.
         char szbuf[16];
         if (fm->entry_types[ei]) snprintf(szbuf, sizeof(szbuf), "<DIR>");
