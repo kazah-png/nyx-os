@@ -496,9 +496,9 @@ static void draw_start_menu(void) {
     // constants this loop lays the entries out with.
     static const char* items[START_ITEM_N] = {
         "File Manager", "Text Editor", "Image Viewer", "Terminal",
-        "Settings", "Task Manager", "Desktop Demo",
+        "Settings", "Task Manager", "Selene",
         "Paint", "Sound Test", "About", "Shutdown", "Calculator",
-        "Minesweeper",
+        "Games",
     };
     // The entry under the pointer is highlighted with the accent, like a hovered
     // menu item (the event loop recomposites on pointer move while the menu is
@@ -1181,8 +1181,8 @@ static void do_start_menu_action(int idx) {
                 }
             }
             break;
-        case 6: // Desktop Demo
-            window_create(100, 100, 300, 200, "Desktop Demo", NULL);
+        case 6: // Selene — the NyxOS web browser (also on a desktop icon, case 15)
+            launch_selene();
             break;
         case 7: // Paint
             {
@@ -1230,8 +1230,8 @@ static void do_start_menu_action(int idx) {
                 }
             }
             break;
-        case 12: // Minesweeper
-            launch_minesweeper();
+        case 12: // Games — folder of the built-in games (DOOM, Pong, Snake, Tetris, Minesweeper)
+            launch_games_folder();
             break;
         case 13: // DOOM — launch the userspace game from its desktop icon.
                  // Every other action opens an in-kernel window; DOOM is a real ring-3
