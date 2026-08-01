@@ -457,8 +457,8 @@ static void draw_taskbar(void) {
 
     rtc_time_t rt;
     rtc_read_time(&rt);
-    char timebuf[16];
-    snprintf(timebuf, sizeof(timebuf), "%02u:%02u", rt.hour, rt.minute);
+    char timebuf[24];
+    snprintf(timebuf, sizeof(timebuf), "%02u:%02u  %02u/%02u", rt.hour, rt.minute, rt.day, rt.month);
     fb_fill_rect(fw - CLOCK_W - 4, tb_y + 4, CLOCK_W, TASKBAR_H - 8, fb_rgb(30,30,35));
     font_draw_string(fw - CLOCK_W - 2 + (CLOCK_W - strlen(timebuf) * FONT_WIDTH) / 2,
                      tb_y + (TASKBAR_H - FONT_HEIGHT) / 2, timebuf, fb_rgb(180,180,200), fb_rgb(30,30,35));
