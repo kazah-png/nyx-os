@@ -384,12 +384,23 @@ static uint64_t user_v2p_faultin(uint64_t va) {
     return 0;
 }
 
+/* Page-granular copies: translate ONCE per page (not per byte) and bulk-memcpy
+ * the contiguous run up to the next page boundary. A 4 KB user page is one
+ * physically-contiguous, identity-mapped frame, so a memcpy that stays within
+ * the page is safe; only crossing into the next page needs a fresh translation.
+ * This turns the old O(len) page-table walk into O(len / PAGE_SIZE) — e.g. a
+ * 4096-byte SYS_READ chunk now costs 1–2 walks instead of 4096. user_v2p_faultin
+ * still runs once per page, so lazy/demand pages (fresh sbrk/mmap/stack) are
+ * materialised exactly as before; a genuinely-unmapped page still returns -1. */
 static int copy_from_user(void* dst, uint64_t usrc, uint64_t len) {
     uint8_t* d = (uint8_t*)dst;
-    for (uint64_t i = 0; i < len; i++) {
-        uint64_t p = user_v2p_faultin(usrc + i);
+    while (len) {
+        uint64_t p = user_v2p_faultin(usrc);
         if (!p) return -1;
-        d[i] = *(volatile uint8_t*)p;
+        uint64_t n = PAGE_SIZE - (usrc & (PAGE_SIZE - 1));   /* bytes to page boundary */
+        if (n > len) n = len;
+        memcpy(d, (const void*)p, n);
+        usrc += n; d += n; len -= n;
     }
     return 0;
 }
@@ -399,10 +410,13 @@ static int copy_from_user(void* dst, uint64_t usrc, uint64_t len) {
  * fresh address space's stack page via the identity map. */
 int copy_to_user(uint64_t udst, const void* src, uint64_t len) {
     const uint8_t* s = (const uint8_t*)src;
-    for (uint64_t i = 0; i < len; i++) {
-        uint64_t p = user_v2p_faultin(udst + i);
+    while (len) {
+        uint64_t p = user_v2p_faultin(udst);
         if (!p) return -1;
-        *(volatile uint8_t*)p = s[i];
+        uint64_t n = PAGE_SIZE - (udst & (PAGE_SIZE - 1));   /* bytes to page boundary */
+        if (n > len) n = len;
+        memcpy((void*)p, s, n);
+        udst += n; s += n; len -= n;
     }
     return 0;
 }
