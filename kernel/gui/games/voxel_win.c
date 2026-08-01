@@ -53,6 +53,7 @@ typedef struct {
     unsigned char height[VX_N][VX_N];        // number of stacked blocks (>= 1)
     int sel;                                 // selected palette type
     int dirty;                               // set on edit; on_tick returns 1 once to repaint
+    unsigned seed;                           // worldgen seed (advanced by the 'g' key)
 } voxel_ctx_t;
 
 void* voxel_create_ctx(void) {
@@ -77,7 +78,47 @@ void* voxel_create_ctx(void) {
         }
     c->sel = 0;
     c->dirty = 0;
+    c->seed = 0x2f6e6479u;
     return c;
+}
+
+// A tiny integer hash (xorshift-ish) — the kernel is built -mno-sse, so worldgen
+// stays entirely in integer math (no float terrain noise).
+static unsigned vx_hash(unsigned a) {
+    a ^= a << 13; a ^= a >> 17; a ^= a << 5;
+    return a ? a : 0x9e3779b9u;
+}
+
+// Fill the world procedurally: per-cell random heights, box-blurred into rolling
+// hills, then a surface material by elevation band — water in the low pools, sand
+// on the shores, grass on the plains, stone on the peaks, dirt underneath.
+static void voxel_worldgen(voxel_ctx_t* c, unsigned seed) {
+    int raw[VX_N][VX_N];
+    for (int y = 0; y < VX_N; y++)
+        for (int x = 0; x < VX_N; x++)
+            raw[y][x] = 1 + (int)(vx_hash(seed ^ (y * 73856093u) ^ (x * 19349663u)) % VX_MAXH);
+    for (int y = 0; y < VX_N; y++)
+        for (int x = 0; x < VX_N; x++) {
+            int s = raw[y][x] * 2, n = 2;      // weight the centre so hills stay varied
+            for (int dy = -1; dy <= 1; dy++)
+                for (int dx = -1; dx <= 1; dx++) {
+                    int yy = y + dy, xx = x + dx;
+                    if (yy >= 0 && yy < VX_N && xx >= 0 && xx < VX_N) { s += raw[yy][xx]; n++; }
+                }
+            int H = s / n;
+            if (H < 1) H = 1;
+            if (H > VX_MAXH) H = VX_MAXH;
+            c->height[y][x] = (unsigned char)H;
+            for (int z = 0; z < H; z++) {
+                int ty;
+                if (z < H - 1)      ty = 1;    // dirt underground
+                else if (H <= 1)    ty = 5;    // water pool
+                else if (H == 2)    ty = 4;    // sandy shore
+                else if (H >= 5)    ty = 2;    // stone peak
+                else                ty = 0;    // grass plain
+                c->col[y][x][z] = (signed char)ty;
+            }
+        }
 }
 
 // One isometric cube. (ox,oy) = apex (top vertex of the top diamond); three face
@@ -156,7 +197,7 @@ void voxel_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
         }
     }
     font_draw_string_trans(cx + 10, cy + VOXEL_H - 22,
-                           "1-6 pick  -  left place  -  right break", fb_rgb(182, 176, 208));
+                           "1-6 pick   L place   R break   G new world", fb_rgb(182, 176, 208));
 }
 
 // Map a client click to the grid cell whose TOP face is under it (front-to-back,
@@ -209,6 +250,11 @@ void voxel_win_key(window_t* win, int key) {
     voxel_ctx_t* c = (voxel_ctx_t*)win->reserved;
     if (!c) return;
     if (key >= '1' && key <= '0' + NTYPES) { c->sel = key - '1'; c->dirty = 1; }
+    else if (key == 'g' || key == 'G') {           // regenerate a fresh procedural world
+        c->seed = vx_hash(c->seed + 0x6d2b79f5u);
+        voxel_worldgen(c, c->seed);
+        c->dirty = 1;
+    }
 }
 
 // Repaint once after an edit (the right-click path does not force a redraw, and
