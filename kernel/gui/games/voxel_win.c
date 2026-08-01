@@ -54,7 +54,21 @@ typedef struct {
     int sel;                                 // selected palette type
     int dirty;                               // set on edit; on_tick returns 1 once to repaint
     unsigned seed;                           // worldgen seed (advanced by the 'g' key)
+    int view;                                // isometric camera orientation, 0..3 (R rotates)
 } voxel_ctx_t;
+
+// Map a SCREEN grid position (the iso layout is fixed) to the DATA cell it shows,
+// applying the current camera orientation — so `R` orbits the island 90 degrees
+// by rotating which cell fills each screen slot (the painter order is unchanged).
+static void rot_cell(int view, int gx, int gy, int* sx, int* sy) {
+    switch (view & 3) {
+        default:
+        case 0: *sx = gx;              *sy = gy;              break;
+        case 1: *sx = gy;              *sy = VX_N - 1 - gx;   break;
+        case 2: *sx = VX_N - 1 - gx;   *sy = VX_N - 1 - gy;   break;
+        case 3: *sx = VX_N - 1 - gy;   *sy = gx;              break;
+    }
+}
 
 void* voxel_create_ctx(void) {
     voxel_ctx_t* c = (voxel_ctx_t*)kmalloc(sizeof(voxel_ctx_t));
@@ -79,6 +93,7 @@ void* voxel_create_ctx(void) {
     c->sel = 0;
     c->dirty = 0;
     c->seed = 0x2f6e6479u;
+    c->view = 0;
     return c;
 }
 
@@ -167,9 +182,10 @@ void voxel_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     const int origin_y = cy + VX_OY;
     for (int gy = 0; gy < VX_N; gy++) {
         for (int gx = 0; gx < VX_N; gx++) {
-            int H = c->height[gy][gx];
+            int sx, sy; rot_cell(c->view, gx, gy, &sx, &sy);   // orientation-mapped data cell
+            int H = c->height[sy][sx];
             for (int gz = 0; gz < H; gz++) {
-                int ty = c->col[gy][gx][gz];
+                int ty = c->col[sy][sx][gz];
                 if (ty < 0 || ty >= NTYPES) ty = 1;
                 int ox = origin_x + (gx - gy) * VX_W;
                 int oy = origin_y + (gx + gy) * VX_T - gz * VX_HH;
@@ -197,7 +213,7 @@ void voxel_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
         }
     }
     font_draw_string_trans(cx + 10, cy + VOXEL_H - 22,
-                           "1-6 pick   L place   R break   G new world", fb_rgb(182, 176, 208));
+                           "mouse L place  R break   keys 1-6 G gen R rot", fb_rgb(182, 176, 208));
 }
 
 // Map a client click to the grid cell whose TOP face is under it (front-to-back,
@@ -205,14 +221,15 @@ void voxel_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
 static int voxel_pick(voxel_ctx_t* c, int ox0, int oy0, int mx, int my, int* pgx, int* pgy) {
     for (int gy = VX_N - 1; gy >= 0; gy--)
         for (int gx = VX_N - 1; gx >= 0; gx--) {
-            int top = c->height[gy][gx] - 1;                   // top block level
+            int sx, sy; rot_cell(c->view, gx, gy, &sx, &sy);   // screen slot -> data cell
+            int top = c->height[sy][sx] - 1;                   // top block level
             int ox = ox0 + (gx - gy) * VX_W;
             int oy = oy0 + (gx + gy) * VX_T - top * VX_HH;
             int dcx = mx - ox, dcy = my - (oy + VX_T);
             if (dcx < 0) dcx = -dcx;
             if (dcy < 0) dcy = -dcy;
             if (dcx * VX_T + dcy * VX_W <= VX_W * VX_T) {
-                *pgx = gx; *pgy = gy; return 1;
+                *pgx = sx; *pgy = sy; return 1;                 // return the data cell to edit
             }
         }
     return 0;
@@ -253,6 +270,10 @@ void voxel_win_key(window_t* win, int key) {
     else if (key == 'g' || key == 'G') {           // regenerate a fresh procedural world
         c->seed = vx_hash(c->seed + 0x6d2b79f5u);
         voxel_worldgen(c, c->seed);
+        c->dirty = 1;
+    }
+    else if (key == 'r' || key == 'R') {           // orbit the isometric camera 90 degrees
+        c->view = (c->view + 1) & 3;
         c->dirty = 1;
     }
 }
