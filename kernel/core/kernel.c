@@ -216,7 +216,7 @@ static const command_t commands[] = {
     {"find",      cmd_find,      "Find files by name: find <name> [path]", false},
     {"grep",      cmd_grep,      "Search file contents: grep [-inv] <pattern> <file>", false},
     {"tail",      cmd_tail,      "Show last lines of a file: tail <file> [lines]", false},
-    {"sort",      cmd_sort,      "Sort lines of a file: sort <file>", false},
+    {"sort",      cmd_sort,      "Sort lines of a file: sort [-rn] <file>", false},
     {"wc",        cmd_wc,        "Count lines/words/chars: wc <file>", false},
     {"write",     cmd_write,     "Write text to file: write <file> <text>", false},
     {"dhcp",      cmd_dhcp,      "Request IP via DHCP", false},
@@ -768,26 +768,50 @@ static void cmd_tail(int argc, char** argv) {
     if (printed > 0 && buf[bytes-1] != '\n') putchar('\n');
 }
 
+// Leading-integer key for `sort -n` (sign-aware); a non-numeric line keys as 0,
+// so "10" orders after "9" instead of lexically before it.
+static long sort_numkey(const char* s) {
+    while (*s == ' ' || *s == '\t') s++;
+    int neg = 0;
+    if (*s == '-') { neg = 1; s++; } else if (*s == '+') s++;
+    long v = 0;
+    while (*s >= '0' && *s <= '9') v = v * 10 + (*s++ - '0');
+    return neg ? -v : v;
+}
+
 static void cmd_sort(int argc, char** argv) {
-    if (argc < 2) { printf("Usage: sort <file>\n"); return; }
-    int fd = vfs_open(argv[1], 0, 0);
-    if (fd < 0) { printf("sort: cannot open '%s'\n", argv[1]); return; }
-    char buf[2048];
+    int reverse = 0, numeric = 0, ai = 1;
+    for (; ai < argc && argv[ai][0] == '-' && argv[ai][1]; ai++)
+        for (char* f = argv[ai] + 1; *f; f++) {
+            if (*f == 'r') reverse = 1;
+            else if (*f == 'n') numeric = 1;
+            else { printf("sort: invalid option -%c\n", *f); return; }
+        }
+    if (ai >= argc) { printf("Usage: sort [-r] [-n] <file>\n"); return; }
+    int fd = vfs_open(argv[ai], 0, 0);
+    if (fd < 0) { printf("sort: cannot open '%s'\n", argv[ai]); return; }
+    static char buf[8192];
     int bytes = vfs_read(fd, buf, sizeof(buf) - 1);
     vfs_close(fd);
     if (bytes <= 0) return;
     buf[bytes] = '\0';
-    char *lines[128];
+    char* lines[256];
     int lc = 0;
     lines[lc++] = buf;
-    for (int i = 0; buf[i] && lc < 128; i++) {
+    for (int i = 0; buf[i] && lc < 256; i++) {
         if (buf[i] == '\n') { buf[i] = '\0'; if (buf[i+1]) lines[lc++] = &buf[i+1]; }
     }
     for (int i = 0; i < lc - 1; i++) {
         for (int j = 0; j < lc - i - 1; j++) {
-            if (strcmp(lines[j], lines[j+1]) > 0) {
-                char *tmp = lines[j]; lines[j] = lines[j+1]; lines[j+1] = tmp;
+            int cmp;
+            if (numeric) {
+                long a = sort_numkey(lines[j]), b = sort_numkey(lines[j+1]);
+                cmp = (a > b) - (a < b);
+            } else {
+                cmp = strcmp(lines[j], lines[j+1]);
             }
+            if (reverse) cmp = -cmp;
+            if (cmp > 0) { char* tmp = lines[j]; lines[j] = lines[j+1]; lines[j+1] = tmp; }
         }
     }
     for (int i = 0; i < lc; i++) printf("%s\n", lines[i]);
