@@ -135,7 +135,7 @@ def main():
     # source and the results run byte-identical to the shipped GCC builds (v6.4.7): grep
     # (substring match: strstr, multi-file "file:" prefixing) and sort (a static-.bss line
     # buffer + insertion sort over strcmp). Both `#include "libc.h"` from this same dir.
-    for cu in ('grep.c', 'sort.c'):
+    for cu in ('grep.c', 'sort.c', 'hello_cc.c'):
         cup = os.path.join(usrdir, cu)
         if os.path.isfile(cup):
             with open(cup, 'rb') as fp:
