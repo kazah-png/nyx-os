@@ -257,36 +257,44 @@ int ext2_read_block(uint32_t block, void* buf) {
     return 0;
 }
 
+// Read logical block `iblock` of `inode` into `buf`. A block POINTER of 0 at any
+// level is a SPARSE HOLE (ext2 allows files with unallocated ranges — e.g. a tool
+// like debugfs stores a binary's zero-filled segments as holes rather than blocks):
+// a hole reads back as a zero-filled block, so materialise zeros and return success
+// (0). Returning -1 here would truncate the file at its first hole, which broke
+// exec of any sparse ELF persisted on /mnt (its size came back short, so the ELF
+// loader rejected a segment past the truncation). -1 is reserved for a genuine
+// read failure (ext2_read_block on an out-of-range/corrupt pointer).
 int ext2_read_inode_block(ext2_inode_t* inode, uint32_t iblock, void* buf) {
     uint32_t ptrs_per_block = ext2_fs.block_size / 4;
 
     if (iblock < 12) {
-        if (inode->block[iblock] == 0) return -1;
+        if (inode->block[iblock] == 0) { memset_asm(buf, 0, ext2_fs.block_size); return 0; }  /* hole */
         return ext2_read_block(inode->block[iblock], buf);
     }
 
     iblock -= 12;
     if (iblock < ptrs_per_block) {
-        if (inode->block[12] == 0) return -1;
+        if (inode->block[12] == 0) { memset_asm(buf, 0, ext2_fs.block_size); return 0; }  /* hole: no indirect block */
         uint32_t* indirect = (uint32_t*)get_aux_buf();   /* buf may BE buffer 0 */
         // Propagate the indirect-block read: ext2_read_block now rejects an out-of-range
         // pointer, and using indirect[] after a failed read would parse a stale buffer.
         if (ext2_read_block(inode->block[12], indirect) < 0) return -1;
-        if (indirect[iblock] == 0) return -1;
+        if (indirect[iblock] == 0) { memset_asm(buf, 0, ext2_fs.block_size); return 0; }  /* hole */
         return ext2_read_block(indirect[iblock], buf);
     }
 
     iblock -= ptrs_per_block;
     if (iblock < ptrs_per_block * ptrs_per_block) {
-        if (inode->block[13] == 0) return -1;
+        if (inode->block[13] == 0) { memset_asm(buf, 0, ext2_fs.block_size); return 0; }  /* hole: no double-indirect block */
         uint32_t* dindirect = (uint32_t*)get_aux_buf();
         if (ext2_read_block(inode->block[13], dindirect) < 0) return -1;
         uint32_t block_idx = dindirect[iblock / ptrs_per_block];
-        if (block_idx == 0) return -1;
+        if (block_idx == 0) { memset_asm(buf, 0, ext2_fs.block_size); return 0; }  /* hole: absent L2 table */
         uint32_t* indirect = (uint32_t*)get_aux2_buf(); /* dindirect[] still live */
         if (ext2_read_block(block_idx, indirect) < 0) return -1;
         uint32_t target = indirect[iblock % ptrs_per_block];
-        if (target == 0) return -1;
+        if (target == 0) { memset_asm(buf, 0, ext2_fs.block_size); return 0; }  /* hole */
         return ext2_read_block(target, buf);
     }
 
