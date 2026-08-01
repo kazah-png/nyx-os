@@ -214,7 +214,7 @@ static const command_t commands[] = {
     {"env",       cmd_env,       "Show environment variables", false},
     {"export",    cmd_export,    "Set env variable: export <name>=<value>", false},
     {"find",      cmd_find,      "Find files by name: find <name> [path]", false},
-    {"grep",      cmd_grep,      "Search file contents: grep <pattern> <file>", false},
+    {"grep",      cmd_grep,      "Search file contents: grep [-inv] <pattern> <file>", false},
     {"tail",      cmd_tail,      "Show last lines of a file: tail <file> [lines]", false},
     {"sort",      cmd_sort,      "Sort lines of a file: sort <file>", false},
     {"wc",        cmd_wc,        "Count lines/words/chars: wc <file>", false},
@@ -684,24 +684,56 @@ static void cmd_find(int argc, char** argv) {
     vfs_close(fd);
 }
 
+// Substring test for grep: plain strstr, or a case-folding scan when -i is set
+// (the kernel libc has no strcasestr). ASCII-only lowercasing.
+static int grep_line_match(const char* hay, const char* needle, int ignore_case) {
+    if (!ignore_case) return strstr(hay, needle) != NULL;
+    if (!needle[0]) return 1;
+    for (const char* h = hay; *h; h++) {
+        const char* a = h; const char* b = needle;
+        while (*a && *b) {
+            char ca = *a, cb = *b;
+            if (ca >= 'A' && ca <= 'Z') ca += 32;
+            if (cb >= 'A' && cb <= 'Z') cb += 32;
+            if (ca != cb) break;
+            a++; b++;
+        }
+        if (!*b) return 1;
+    }
+    return 0;
+}
+
 static void cmd_grep(int argc, char** argv) {
-    if (argc < 3) { printf("Usage: grep <pattern> <file>\n"); return; }
-    int fd = vfs_open(argv[2], 0, 0);
-    if (fd < 0) { printf("grep: cannot open '%s'\n", argv[2]); return; }
-    char buf[2048];
+    int ignore_case = 0, show_lineno = 0, invert = 0, ai = 1;
+    for (; ai < argc && argv[ai][0] == '-' && argv[ai][1]; ai++)
+        for (char* f = argv[ai] + 1; *f; f++) {
+            if (*f == 'i') ignore_case = 1;
+            else if (*f == 'n') show_lineno = 1;
+            else if (*f == 'v') invert = 1;
+            else { printf("grep: invalid option -%c\n", *f); return; }
+        }
+    if (ai + 1 >= argc) { printf("Usage: grep [-inv] <pattern> <file>\n"); return; }
+    const char* pat = argv[ai];
+    const char* path = argv[ai + 1];
+    int fd = vfs_open(path, 0, 0);
+    if (fd < 0) { printf("grep: cannot open '%s'\n", path); return; }
+    static char buf[8192];
     int bytes = vfs_read(fd, buf, sizeof(buf) - 1);
     vfs_close(fd);
     if (bytes <= 0) return;
     buf[bytes] = '\0';
     int line = 1;
-    char *p = buf;
+    char* p = buf;
     while (*p) {
-        char *nl = p;
+        char* nl = p;
         while (*nl && *nl != '\n') nl++;
         char saved = *nl;
         *nl = '\0';
-        if (strstr(p, argv[1])) {
-            printf("%s:%d:%s\n", argv[2], line, p);
+        int hit = grep_line_match(p, pat, ignore_case);
+        if (invert) hit = !hit;
+        if (hit) {
+            if (show_lineno) printf("%d:%s\n", line, p);
+            else            printf("%s\n", p);
         }
         *nl = saved;
         if (*nl == '\n') { p = nl + 1; line++; }

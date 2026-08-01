@@ -1,30 +1,62 @@
 #include "libc.h"
 
 /* grep — print input lines that contain PATTERN (a literal substring match).
- * Usage: grep PATTERN [file...].  With no file it reads stdin, so it slots into a
- * pipeline (`ls / | grep elf`). Exit status 0 if any line matched, 1 if none. When
- * more than one file is given, matches are prefixed with "file:". */
+ * Usage: grep [-i] [-n] [-v] PATTERN [file...].  With no file it reads stdin, so
+ * it slots into a pipeline (`ls / | grep elf`). Flags (combinable, e.g. -in):
+ *   -i  ignore case      -n  prefix each line with its 1-based number
+ *   -v  invert: print the lines that do NOT match
+ * Exit status 0 if any line was printed, 1 if none. When more than one file is
+ * given, output is prefixed with "file:". */
 
 static int matched_any;
+static int opt_i, opt_n, opt_v;
 
-static void emit(const char* name, int show_name, const char* line) {
+/* Write a non-negative int to stdout (no snprintf dependency for the -n prefix). */
+static void put_uint(int v) {
+    char t[16]; int n = 0;
+    if (v == 0) t[n++] = '0';
+    while (v) { t[n++] = (char)('0' + v % 10); v /= 10; }
+    while (n) write(1, &t[--n], 1);
+}
+
+/* Substring test: plain strstr, or a case-folding scan when -i is set. ASCII. */
+static int ci_match(const char* hay, const char* needle) {
+    if (!opt_i) return strstr(hay, needle) != 0;
+    if (!needle[0]) return 1;
+    for (const char* h = hay; *h; h++) {
+        const char* a = h; const char* b = needle;
+        while (*a && *b) {
+            char ca = *a, cb = *b;
+            if (ca >= 'A' && ca <= 'Z') ca += 32;
+            if (cb >= 'A' && cb <= 'Z') cb += 32;
+            if (ca != cb) break;
+            a++; b++;
+        }
+        if (!*b) return 1;
+    }
+    return 0;
+}
+
+static void emit(const char* name, int show_name, int lineno, const char* line) {
     if (show_name) { write(1, name, strlen(name)); write(1, ":", 1); }
+    if (opt_n) { put_uint(lineno); write(1, ":", 1); }
     write(1, line, strlen(line));
     write(1, "\n", 1);
     matched_any = 1;
 }
 
-/* Scan a stream line by line, printing lines that contain `pat`. */
+/* Scan a stream line by line, printing the lines selected by the flags. */
 static void grep_fd(int fd, const char* pat, const char* name, int show_name) {
     char buf[512], line[512];
-    int li = 0;
+    int li = 0, lineno = 0;
     long n;
     while ((n = read(fd, buf, sizeof(buf))) > 0) {
         for (long i = 0; i < n; i++) {
             char c = buf[i];
             if (c == '\n' || li >= (int)sizeof(line) - 1) {
                 line[li] = '\0';
-                if (strstr(line, pat)) emit(name, show_name, line);
+                lineno++;
+                if (ci_match(line, pat) != opt_v) emit(name, show_name, lineno, line);
                 li = 0;
                 if (c != '\n') line[li++] = c;   /* start of a too-long line's tail */
             } else {
@@ -34,19 +66,28 @@ static void grep_fd(int fd, const char* pat, const char* name, int show_name) {
     }
     if (li > 0) {                                /* last line without a trailing newline */
         line[li] = '\0';
-        if (strstr(line, pat)) emit(name, show_name, line);
+        lineno++;
+        if (ci_match(line, pat) != opt_v) emit(name, show_name, lineno, line);
     }
 }
 
 int main(int argc, char** argv) {
-    if (argc < 2) { printf("usage: grep PATTERN [file...]\n"); return 2; }
-    const char* pat = argv[1];
+    int ai = 1;
+    for (; ai < argc && argv[ai][0] == '-' && argv[ai][1]; ai++)
+        for (char* f = argv[ai] + 1; *f; f++) {
+            if (*f == 'i') opt_i = 1;
+            else if (*f == 'n') opt_n = 1;
+            else if (*f == 'v') opt_v = 1;
+            else { printf("grep: invalid option -%c\n", *f); return 2; }
+        }
+    if (ai >= argc) { printf("usage: grep [-inv] PATTERN [file...]\n"); return 2; }
+    const char* pat = argv[ai++];
 
-    if (argc == 2) {                             /* no files: filter stdin */
+    if (ai >= argc) {                            /* no files: filter stdin */
         grep_fd(0, pat, "", 0);
     } else {
-        int show_name = (argc > 3);
-        for (int i = 2; i < argc; i++) {
+        int show_name = (argc - ai > 1);
+        for (int i = ai; i < argc; i++) {
             long fd = open(argv[i], O_RDONLY, 0);
             if (fd < 0) { printf("grep: %s: not found\n", argv[i]); continue; }
             grep_fd((int)fd, pat, argv[i], show_name);
