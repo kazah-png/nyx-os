@@ -762,22 +762,40 @@ static void cmd_sort(int argc, char** argv) {
 }
 
 static void cmd_wc(int argc, char** argv) {
-    if (argc < 2) { printf("Usage: wc <file>\n"); return; }
-    int fd = vfs_open(argv[1], 0, 0);
-    if (fd < 0) { printf("wc: cannot open '%s'\n", argv[1]); return; }
-    char buf[2048];
+    // -l/-w/-c (or -m) select which of the line/word/byte counts to print, in
+    // that fixed order; with no flag all three are shown (the classic default).
+    int want_l = 0, want_w = 0, want_c = 0, ai = 1;
+    for (; ai < argc && argv[ai][0] == '-' && argv[ai][1]; ai++) {
+        for (char* f = argv[ai] + 1; *f; f++) {
+            if (*f == 'l') want_l = 1;
+            else if (*f == 'w') want_w = 1;
+            else if (*f == 'c' || *f == 'm') want_c = 1;
+            else { printf("wc: invalid option -%c\n", *f); return; }
+        }
+    }
+    if (!want_l && !want_w && !want_c) { want_l = want_w = want_c = 1; }
+    if (ai >= argc) { printf("Usage: wc [-l] [-w] [-c] <file>\n"); return; }
+
+    const char* path = argv[ai];
+    int fd = vfs_open(path, 0, 0);
+    if (fd < 0) { printf("wc: cannot open '%s'\n", path); return; }
+    static char buf[8192];                       // static: kept off the kernel stack
     int bytes = vfs_read(fd, buf, sizeof(buf) - 1);
     vfs_close(fd);
-    if (bytes <= 0) { printf("0 0 0 %s\n", argv[1]); return; }
-    buf[bytes] = '\0';
-    int lines = 0, words = 0, chars = bytes;
-    int in_word = 0;
-    for (int i = 0; buf[i]; i++) {
-        if (buf[i] == '\n') lines++;
-        if (buf[i] == ' ' || buf[i] == '\n' || buf[i] == '\t') { in_word = 0; }
+    if (bytes < 0) bytes = 0;
+    int lines = 0, words = 0, chars = bytes, in_word = 0;
+    for (int i = 0; i < bytes; i++) {
+        char c = buf[i];
+        if (c == '\n') lines++;
+        if (c == ' ' || c == '\n' || c == '\t' || c == '\r') in_word = 0;
         else if (!in_word) { in_word = 1; words++; }
     }
-    printf("%d %d %d %s\n", lines, words, chars, argv[1]);
+
+    int first = 1;
+    if (want_l) { printf(first ? "%d" : " %d", lines); first = 0; }
+    if (want_w) { printf(first ? "%d" : " %d", words); first = 0; }
+    if (want_c) { printf(first ? "%d" : " %d", chars); first = 0; }
+    printf(" %s\n", path);
 }
 
 static void cmd_write(int argc, char** argv) {
