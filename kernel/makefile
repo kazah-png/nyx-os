@@ -141,6 +141,12 @@ $(TCC_DIR)/tcc_main.o: $(TCC_DIR)/tcc.c
 	$(CC) $(TCC_CFLAGS) -c $< -o $@
 $(TCC_DIR)/nyxshim.o: $(TCC_DIR)/nyxshim/nyxshim.c
 	$(CC) $(TCC_CFLAGS) -c $< -o $@
+# libtcc1: tcc's own runtime library (float<->64-bit-int + long-double helpers its
+# codegen emits, e.g. __floatundixf/__fixunsxfdi). Header-free; built as a NyxOS-target
+# object and shipped in the initramfs as /libtcc1.o, so the in-OS `cc` can LINK the
+# tcc-built tcc_self.o into a runnable tcc_self.elf (v6.4.11).
+$(TCC_DIR)/libtcc1.o: $(TCC_DIR)/lib/libtcc1.c
+	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(TCC_DIR)/include -c $< -o $@
 $(USER_DIR)/tcc.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(TCC_DIR)/tcc_main.o $(TCC_DIR)/nyxshim.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(TCC_DIR)/tcc_main.o $(TCC_DIR)/nyxshim.o
 
@@ -503,7 +509,7 @@ $(USER_DIR)/init.o: $(USER_DIR)/init.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
 # just-built .elf — ship silently despite the .h being newer on disk. Companion to
 # the -MMD/-MP auto-deps that track the hand-written headers.
 MKINITRAMFS = ../tools/mkinitramfs.py
-fs/initramfs_data.h: FORCE $(MKINITRAMFS) $(USER_ELFS) $(USER_DIR)/libc.so $(USER_DIR)/libdemo.so $(USER_DIR)/va_list.o
+fs/initramfs_data.h: FORCE $(MKINITRAMFS) $(USER_ELFS) $(USER_DIR)/libc.so $(USER_DIR)/libdemo.so $(USER_DIR)/va_list.o $(TCC_DIR)/nyxshim.o $(TCC_DIR)/libtcc1.o
 	@python3 $(MKINITRAMFS) $@.tmp c >/dev/null
 	@if cmp -s $@.tmp $@ 2>/dev/null; then rm -f $@.tmp; else mv $@.tmp $@; echo "  [initramfs] regenerated $@"; fi
 

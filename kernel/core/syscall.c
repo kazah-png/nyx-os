@@ -368,10 +368,26 @@ uint64_t user_v2p(uint64_t vaddr) {
     return (e & PT_ADDR_4K) + (vaddr & 0xFFFULL);
 }
 
+/* Like user_v2p, but if the page isn't mapped yet, materialise it exactly the way
+ * a real user access would — the demand/lazy paths in vm_handle_fault (fresh sbrk
+ * heap, anonymous/file mmap, stack growth) — then retry the translation. Without
+ * this, copy_to_user / copy_from_user fail on a page the process reserved (malloc/
+ * sbrk) but never touched, which SILENTLY TRUNCATED a large read() into a fresh
+ * buffer (e.g. the in-OS tcc loading a ~500 KB object to link — the tail sections,
+ * incl. the symbol string table, came back zeroed → "undefined symbol"). Passing
+ * err 0x6 (user + write, not-present) drives the same materialisation the CPU's
+ * #PF would; a genuinely-invalid address still returns 0 (vm_handle_fault → 0). */
+static uint64_t user_v2p_faultin(uint64_t va) {
+    uint64_t p = user_v2p(va);
+    if (p) return p;
+    if (vm_handle_fault(va, 0x6) == 1) return user_v2p(va);
+    return 0;
+}
+
 static int copy_from_user(void* dst, uint64_t usrc, uint64_t len) {
     uint8_t* d = (uint8_t*)dst;
     for (uint64_t i = 0; i < len; i++) {
-        uint64_t p = user_v2p(usrc + i);
+        uint64_t p = user_v2p_faultin(usrc + i);
         if (!p) return -1;
         d[i] = *(volatile uint8_t*)p;
     }
@@ -384,7 +400,7 @@ static int copy_from_user(void* dst, uint64_t usrc, uint64_t len) {
 int copy_to_user(uint64_t udst, const void* src, uint64_t len) {
     const uint8_t* s = (const uint8_t*)src;
     for (uint64_t i = 0; i < len; i++) {
-        uint64_t p = user_v2p(udst + i);
+        uint64_t p = user_v2p_faultin(udst + i);
         if (!p) return -1;
         *(volatile uint8_t*)p = s[i];
     }

@@ -45,7 +45,11 @@ int errno;
 /* --- process --- */
 void exit(int status)  { nyx_sc(SYS_EXIT, status, 0, 0); for (;;) {} }
 void _exit(int status) { nyx_sc(SYS_EXIT, status, 0, 0); for (;;) {} }
-void abort(void)       { nyx_sc(SYS_EXIT, 134, 0, 0);    for (;;) {} }  /* 128+SIGABRT */
+/* abort() is intentionally NOT defined here: the NyxOS libc (libc.o / libc.so)
+ * already provides it, and a second body would collide when tcc_self.o is linked
+ * STATICALLY against both libc.o and this shim (the in-OS `cc` model). The host
+ * tcc.elf build resolves abort from libc.so via --just-symbols, so both paths
+ * get the one libc definition. (v6.4.11: unblocks linking a self-built tcc_self.elf.) */
 
 /* --- file I/O (POSIX signatures over the raw syscalls) --- */
 long read(int fd, void* buf, unsigned long n)        { return nyx_sc(SYS_READ,  fd, (long)buf, (long)n); }

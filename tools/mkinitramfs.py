@@ -56,6 +56,21 @@ def main():
                 data += cpio_add_file(f, elfdata)
                 print(f"Added {f} ({len(elfdata)} bytes)")
 
+    # Ship the tcc OS-adapter + libtcc1 runtime OBJECTS (GCC-built, NyxOS target) at the
+    # initramfs root, so the in-OS `cc` can LINK the tcc-built tcc_self.o into a runnable
+    # tcc_self.elf:  cc /mnt/tcc_self.o /nyxshim.o /libtcc1.o -o /mnt/tcc_self.elf  (v6.4.11).
+    # nyxshim.o supplies tcc's POSIX glue (read/write/open/exit/strtod/sscanf/...); libtcc1.o
+    # supplies the long-double float<->int helpers tcc's codegen emits (__floatundixf/
+    # __fixunsxfdi). They live in user/tcc/ (a subdir the scan above does not walk), so ship
+    # them explicitly. abort() was dropped from nyxshim so it no longer collides with libc.o.
+    for objrel, objname in (('tcc/nyxshim.o', 'nyxshim.o'), ('tcc/libtcc1.o', 'libtcc1.o')):
+        op = os.path.join(usrdir, objrel)
+        if os.path.isfile(op):
+            with open(op, 'rb') as fp:
+                od = fp.read()
+            data += cpio_add_file(objname, od)
+            print(f"Added {objname} ({len(od)} bytes)")
+
     # Ship tcc's freestanding system headers under /usr/lib/tcc/include so the in-OS
     # tcc (CONFIG_TCCDIR=/usr/lib/tcc) + `cc -I/usr/lib/tcc/include` can find <stddef.h>,
     # <stdbool.h>, <stdarg.h>, ... (v6.3.4). These are small text headers; the initramfs
