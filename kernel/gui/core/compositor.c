@@ -1061,12 +1061,19 @@ void launch_pong(void) {
     w->on_tick      = pong_win_tick;
 }
 
-// Open the Nyx Voxels window — a static isometric voxel scene (first step toward
-// the voxel-sandbox north star). No ctx/tick/input yet: it just draws each frame.
+// Open the Nyx Voxels window — an interactive isometric voxel scene (a step toward
+// the voxel-sandbox north star). A per-window ctx holds the mutable heightmap;
+// left-click places a cube, right-click breaks the top one (voxel_win_click), and
+// a dirty-gated tick repaints after an edit.
 void launch_voxel(void) {
     int px = ((int)fb_get_width()  - VOXEL_W) / 2;              if (px < 0) px = 0;
     int py = ((int)fb_get_height() - VOXEL_H - TITLE_H) / 2;    if (py < 0) py = 0;
-    window_create(px, py, VOXEL_W, VOXEL_H, "Nyx Voxels", voxel_win_draw);
+    window_t* w = window_create(px, py, VOXEL_W, VOXEL_H, "Nyx Voxels", voxel_win_draw);
+    if (!w) return;
+    w->reserved = voxel_create_ctx();
+    if (!w->reserved) { window_destroy(w->id); return; }
+    w->on_click = voxel_win_click;
+    w->on_tick  = voxel_win_tick;
 }
 
 // Open a Snake window. In-kernel game like Pong: the compositor's game-tick steps it via
