@@ -410,12 +410,16 @@ void execute_command(const char* cmd_line) {
     char cmd_copy[256];
     strncpy(cmd_copy, cmd_line, 255);
     cmd_copy[255] = '\0';
-    char* argv[10];
+    char* argv[MAX_CMD_ARGS];
     int argc = 0;
     char* token = strtok(cmd_copy, " ");
-    while (token != NULL && argc < 10) {
+    while (token != NULL && argc < MAX_CMD_ARGS) {
         argv[argc++] = token;
         token = strtok(NULL, " ");
+    }
+    if (token != NULL) {          /* more tokens than the cap: refuse rather than silently truncate */
+        printf("error: too many arguments (max %d)\n", MAX_CMD_ARGS);
+        return;
     }
     if (argc == 0) return;
     for (int i = 0; commands[i].name != NULL; i++) {
@@ -3193,11 +3197,11 @@ void launch_shell(void) {
                     }
                 }
             } else {
-                char* argv[10];
-                char expanded[10][256];
+                char* argv[MAX_CMD_ARGS];
+                static char expanded[MAX_CMD_ARGS][256];   /* static: the shell parse is serialised, keeps 8 KB off the stack */
                 int argc = 0;
                 char* token = strtok(cmd_line, " ");
-                while (token != NULL && argc < 10) {
+                while (token != NULL && argc < MAX_CMD_ARGS) {
                     if (token[0] == '$' && strlen(token) > 1) {
                         char varname[64];
                         strncpy(varname, token + 1, 63);
@@ -3220,7 +3224,10 @@ void launch_shell(void) {
                     argc++;
                     token = strtok(NULL, " ");
                 }
-                if (argc > 0) {
+                if (token != NULL) {          /* more tokens than the cap: report, don't silently drop */
+                    set_terminal_color(vga_entry_color(VGA_LIGHT_RED, VGA_BLACK));
+                    printf("Too many arguments (max %d)\n", MAX_CMD_ARGS);
+                } else if (argc > 0) {
                     bool found = false;
                     for (int i = 0; commands[i].name != NULL; i++) {
                         if (strcmp(argv[0], commands[i].name) == 0) {

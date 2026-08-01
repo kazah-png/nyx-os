@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.4.15"
+#define KERNEL_VERSION "6.4.16"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -52,6 +52,11 @@ typedef __builtin_va_list va_list;
 
 #define PAGE_SIZE        4096
 #define PAGE_ALIGN(addr) (((addr) + PAGE_SIZE - 1) & ~(PAGE_SIZE - 1))
+/* Max whitespace-separated tokens the in-kernel command parser accepts (both
+ * execute_command and the interactive shell path in kernel.c). Matches the
+ * exec/spawn path's own 32-arg cap (process.c uargv[33], syscall.c kargv[32]),
+ * so a full-length command line is passed through without silent truncation. */
+#define MAX_CMD_ARGS     32
 #define KERNEL_BASE      0xFFFFFF8000000000
 #define KERNEL_HEAP_START 0xFFFFFFFF90000000
 #define __pa(vaddr)      ((uint64_t)(vaddr) - KERNEL_BASE)
