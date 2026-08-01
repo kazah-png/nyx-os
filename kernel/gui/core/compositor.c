@@ -506,17 +506,36 @@ static void draw_start_menu(void) {
     int hov = -1, hi;
     if (start_menu_item_hit(mouse_x, mouse_y, &hi)) hov = hi;
 
+    // A small colour "chip" carrying each entry's initial gives every item an
+    // icon-like glyph — the emblems in draw_icon_at are ~56 px, too big for a 26 px
+    // row — so the menu reads like a modern app launcher, not a plain text list.
+    const uint32_t chip_cols[START_ITEM_N] = {
+        fb_rgb(80,140,215),  fb_rgb(230,170,60),  fb_rgb(70,175,175), fb_rgb(60,150,90),
+        fb_rgb(130,135,150), fb_rgb(210,95,80),   fb_rgb(150,120,235),
+        fb_rgb(210,90,150),  fb_rgb(90,170,235),  fb_rgb(110,110,200), fb_rgb(200,70,70), fb_rgb(90,180,120),
+        fb_rgb(170,100,210),
+    };
+
     for (int i = 0; i < START_ITEM_N; i++) {
         int iy = sm_y + START_ITEM_Y + i * START_ITEM_H;
         if ((uint32_t)(iy + START_ITEM_H) > fh - TASKBAR_H) break;
-        if (i == hov) {
+        if (i == hov)
             fb_fill_vgrad(sm_x + 4, iy, START_W - 8, START_ITEM_H - 2,
                           col_lighten(THEME_ACCENT, 12), col_darken(THEME_ACCENT, 14));
-            font_draw_string_trans(sm_x + 12, iy + 5, items[i], THEME_ON_ACCENT);
-        } else {
+        else
             fb_fill_rect(sm_x + 4, iy, START_W - 8, START_ITEM_H - 2, THEME_WINDOW_BG);
-            font_draw_string(sm_x + 12, iy + 5, items[i], THEME_TEXT, THEME_WINDOW_BG);
-        }
+
+        // icon chip: the app's tint + its initial letter, vertically centred in the row
+        int cw = 18, cx = sm_x + 7, cy = iy + (START_ITEM_H - 2 - cw) / 2;
+        fb_fill_rect(cx, cy, cw, cw, chip_cols[i]);
+        fb_fill_rect(cx, cy, cw, 1, col_lighten(chip_cols[i], 40));   // top highlight
+        char ini[2] = { items[i][0], '\0' };
+        font_draw_string_trans(cx + (cw - FONT_WIDTH) / 2, cy + (cw - FONT_HEIGHT) / 2, ini, fb_rgb(255, 255, 255));
+
+        // label, to the right of the chip
+        if (i == hov) font_draw_string_trans(sm_x + 30, iy + 5, items[i], THEME_ON_ACCENT);
+        else          font_draw_string(sm_x + 30, iy + 5, items[i], THEME_TEXT, THEME_WINDOW_BG);
+
         fb_fill_rect(sm_x + 4, iy + START_ITEM_H - 1, START_W - 8, 1, THEME_ROW_DIV);
     }
 
