@@ -232,7 +232,7 @@ static const command_t commands[] = {
     {"sb16play",  cmd_sb16play,  "Test SB16 playback: sb16play [freq] [ms]", false},
     {"exec",      cmd_exec,      "Run ELF in foreground (waits): exec <file>", false},
     {"cc",        cmd_cc,        "Compile/link C in-OS: cc [-c] [--self-libc] <in.c/.o ...> [-o out]", false},
-    {"xbm",       cmd_xbm,       "Package manager: xbm install <name> | xbm list", false},
+    {"xbm",       cmd_xbm,       "Package manager: xbm install|remove <name> | xbm list", false},
     {"pkg",       cmd_xbm,       "Alias for xbm (package manager)", true},
     {"spawn",     cmd_spawn,     "Run ELF in background: spawn <file>", false},
     {"doom",      cmd_doom,      "Play DOOM in a window (Ctrl-C to quit)", false},
@@ -1157,11 +1157,12 @@ static int pkg_recipe_value(const char* buf, const char* key, char* out, int out
  * `xbm install <name>` reads the recipe, compiles the source with the in-OS `cc`, and
  * installs the binary to /mnt/bin on the persistent disk; since /mnt/bin is on the shell's
  * PATH-like search (resolve_user_elf), the installed program then runs by bare name.
- * `xbm list` enumerates the packages in the repository. `pkg` is a hidden back-compat alias.
+ * `xbm remove <name>` unlinks the installed binary (its name comes from the recipe's
+ * `bin:`); `xbm list` enumerates the packages in the repository. `pkg` is a hidden alias.
  * (No network fetch / deps / versions yet — see the package-manager roadmap.) */
 static void cmd_xbm(int argc, char** argv) {
     const char* prog = argv[0];   // "xbm" (or the "pkg" alias) — echo whatever was typed
-    if (argc < 2) { printf("Usage: %s install <name> | %s list\n", prog, prog); return; }
+    if (argc < 2) { printf("Usage: %s install <name> | %s remove <name> | %s list\n", prog, prog, prog); return; }
 
     if (strcmp(argv[1], "list") == 0) {
         int fd = vfs_open("/usr/pkg", 0, 0);
@@ -1209,7 +1210,36 @@ static void cmd_xbm(int argc, char** argv) {
         return;
     }
 
-    printf("%s: unknown subcommand '%s' (expected install|list)\n", prog, argv[1]);
+    if (strcmp(argv[1], "remove") == 0 || strcmp(argv[1], "uninstall") == 0) {
+        if (argc < 3) { printf("Usage: %s remove <name>\n", prog); return; }
+        const char* name = argv[2];
+
+        // The installed binary's name comes from the recipe's `bin:` field; if the recipe
+        // is missing, fall back to assuming the binary is named after the package.
+        char bin[64];
+        char rpath[128];
+        snprintf(rpath, sizeof(rpath), "/usr/pkg/%s/recipe", name);
+        int fd = vfs_open(rpath, 0, 0);
+        bin[0] = '\0';
+        if (fd >= 0) {
+            char rbuf[512];
+            int n = vfs_read(fd, rbuf, sizeof(rbuf) - 1);
+            vfs_close(fd);
+            if (n > 0) { rbuf[n] = '\0'; pkg_recipe_value(rbuf, "bin", bin, sizeof(bin)); }
+        }
+        if (bin[0] == '\0') { strncpy(bin, name, sizeof(bin) - 1); bin[sizeof(bin) - 1] = '\0'; }
+
+        char outp[128];
+        snprintf(outp, sizeof(outp), "/mnt/bin/%s", bin);
+        int ofd = vfs_open(outp, 0, 0);            // is it actually installed?
+        if (ofd < 0) { printf("%s: '%s' is not installed\n", prog, name); return; }
+        vfs_close(ofd);
+        if (vfs_unlink(outp) == 0) printf("%s: removed %s (%s)\n", prog, name, outp);
+        else                       printf("%s: failed to remove %s (%s)\n", prog, name, outp);
+        return;
+    }
+
+    printf("%s: unknown subcommand '%s' (expected install|remove|list)\n", prog, argv[1]);
 }
 
 // Run an ELF as a BACKGROUND job: spawn it and return immediately. It runs
