@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.4.9"
+#define KERNEL_VERSION "6.4.10"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -877,6 +877,7 @@ void* kmalloc(size_t size);
 void* kmalloc_aligned(size_t size, uint32_t align);
 void kfree(void* ptr);
 void* krealloc(void* ptr, size_t size);
+uint32_t ksize(void* ptr);   // usable bytes of a kmalloc'd block (from its header)
 void* alloc_page(void);
 void free_page(void* addr);
 void page_incref(void* addr);           // COW: share an allocated page (fork)

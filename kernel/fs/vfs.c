@@ -46,6 +46,10 @@ typedef struct vfs_node {
     uint32_t open_refs;
     uint8_t  orphaned;     // unlinked from the tree while still open; free at last close
     uint8_t  on_free_list; // already queued in free_nodes[] — double-free guard
+    uint8_t  dirty;        // mount file has unflushed writes; flushed on last close (v6.4.10).
+                           // Was flush-on-every-write, which re-wrote the WHOLE file to ext2
+                           // per 4 KB write() — O(n^2) I/O that made a ~496 KB write (the in-OS
+                           // tcc self-host object) take minutes. Now writes just mark dirty.
     char     mpath[MAX_NAME]; // path within the mount (e.g. "/foo.txt")
     void*    mount_ent;    // mount_entry_t* to flush writes through
     uint32_t dev_type;    // 0 = regular file; else a /dev special (DEV_* below)
@@ -547,11 +551,12 @@ int vfs_read(int fd, void* buf, size_t count) {
     return count;
 }
 
-// Flush a mount-backed node's full contents back to its filesystem.
+// Flush a mount-backed node's full contents back to its filesystem, then mark it clean.
 static void flush_mount_node(vfs_node_t* ino) {
     if (!ino->mount_backed || !ino->mount_ent) return;
     mount_entry_t* me = (mount_entry_t*)ino->mount_ent;
     if (me->write_file) me->write_file(ino->mpath, ino->data ? ino->data : (uint8_t*)"", ino->size);
+    ino->dirty = 0;
 }
 
 int vfs_write(int fd, const void* buf, size_t count) {
@@ -610,16 +615,28 @@ int vfs_pwrite(int fd, const void* buf, uint32_t count, uint32_t offset) {
     if (ino->dev_type) return (int)count;      // /dev/null etc: accept + discard
     uint32_t end = offset + count;
     if (end < offset) return -1;                 // overflow
-    if (!ino->data || end > ino->size) {
-        uint8_t* nd = (uint8_t*)kmalloc(end + BLOCK_SIZE);
+    // Grow ino->data only when the write runs past the CURRENT allocation, and then grow
+    // GEOMETRICALLY (>= double). The old code reallocated the whole buffer on EVERY write
+    // that extended the file, so a large file written in small chunks (a tcc object built
+    // in-OS: ~4 KB per write() call) reallocated O(n) times and fragmented the kernel heap
+    // until kmalloc failed and the write truncated (seen at ~274 KB). ksize() reads the
+    // block's real capacity from its allocation header, so no separate capacity field is
+    // needed and the reallocs drop to O(log n).
+    if (!ino->data || end > ksize(ino->data)) {
+        uint32_t oldcap = ksize(ino->data);      // 0 when ino->data is NULL
+        uint32_t newcap = end + BLOCK_SIZE;
+        if (newcap < oldcap * 2) newcap = oldcap * 2;
+        uint8_t* nd = (uint8_t*)kmalloc(newcap);
         if (!nd) return -1;
-        memset_asm(nd, 0, end + BLOCK_SIZE);     // zero-fill gaps beyond old data
+        memset_asm(nd, 0, newcap);               // zero-fill gaps beyond old data
         if (ino->data) { memcpy(nd, ino->data, ino->size); kfree(ino->data); }
         ino->data = nd;
+    } else if (offset > ino->size) {
+        memset_asm(ino->data + ino->size, 0, offset - ino->size);  // zero a sparse gap in place
     }
     if (count) memcpy(ino->data + offset, buf, count);
     if (end > ino->size) ino->size = end;
-    flush_mount_node(ino);            // persist to disk if this is a mount file
+    ino->dirty = 1;                   // defer persistence to close (see the dirty field)
     return (int)count;
 }
 
@@ -644,6 +661,12 @@ int vfs_close(int fd) {
     vfs_node_t* ino = (vfs_node_t*)(uintptr_t)(uint32_t)fd;
     if (ino->open_refs > 0) ino->open_refs--;
     if (ino->open_refs > 0) return 0;              // another fd still holds it
+
+    // Persist a mount file's deferred writes at the last close (v6.4.10 write-back).
+    // Skip an orphaned (unlinked-while-open) file: POSIX drops its data at last close,
+    // so flushing it back to its path would wrongly resurrect it. flush_mount_node is a
+    // no-op for non-mount nodes and clears the dirty flag.
+    if (ino->dirty && !ino->orphaned) flush_mount_node(ino);
 
     /* At zero refs, two kinds of node go back to the pool: a transient
      * mount mirror (which only ever existed for this fd), and one that was

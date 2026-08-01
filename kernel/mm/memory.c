@@ -274,3 +274,12 @@ void* krealloc(void* ptr, size_t size) {
     kfree(ptr);
     return newp;
 }
+
+// Usable size of a kmalloc'd block: the request size stored in its header. Lets a
+// grow-in-place buffer (vfs_pwrite) know how many bytes its current allocation holds
+// without tracking a separate capacity field. NULL -> 0. Only valid for pointers
+// returned by kmalloc (which always writes the header).
+uint32_t ksize(void* ptr) {
+    if (!ptr) return 0;
+    return (((alloc_hdr_t*)ptr) - 1)->size;
+}

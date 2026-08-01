@@ -597,15 +597,19 @@ int ext2_write_file(const char* path, const void* buf, uint32_t len) {
     // Calculate how many blocks needed
     uint32_t blocks_needed = (len + ext2_fs.block_size - 1) / ext2_fs.block_size;
 
-    // The writer only maps up to single-indirect (12 direct + one indirect block of
-    // pointers); it has no double-indirect path (the else-branch in the loop returns -1).
-    // Reject a too-large file HERE, before allocating anything, so a doomed write fails
-    // cleanly instead of allocating ~268 blocks, hitting the double-indirect wall mid-loop,
-    // and LEAKING them: the loop's early `return -1` never writes the inode back, so those
-    // blocks stay marked used in the bitmap while owned by no inode — e2fsck then reports
-    // block-bitmap differences (a `cp` of a >single-indirect file did exactly this).
-    // (block_size/4 is the pointers-per-block; kept inline so it doesn't shadow the loop's.)
-    if (blocks_needed > 12 + ext2_fs.block_size / 4) return -1;
+    // The writer maps 12 direct + one single-indirect block + one double-indirect block
+    // (v6.4.10 added the double-indirect path to the loop; the read path already had it).
+    // Reject a file too large even for THAT here, before allocating anything, so a doomed
+    // write fails cleanly instead of allocating blocks, hitting the wall mid-loop, and
+    // LEAKING them (the loop's early `return -1` never writes the inode back). With the
+    // image's 1 KB blocks, single-indirect alone capped files at 12+256=268 blocks (274432
+    // bytes) — which is exactly what truncated the ~496 KB in-OS tcc self-host object; the
+    // double-indirect region adds ppb*ppb more (with 1 KB blocks, 256*256=65536 blocks =
+    // 64 MB). (block_size/4 is the pointers-per-block; kept inline so it doesn't shadow the loop's.)
+    {
+        uint32_t ppb = ext2_fs.block_size / 4;
+        if (blocks_needed > 12 + ppb + ppb * ppb) return -1;
+    }
 
     // Reject up front if the filesystem can't hold the blocks this write must NEWLY
     // allocate. Otherwise a mid-write ext2_alloc_block() failure (disk full) returns -1
@@ -685,7 +689,36 @@ int ext2_write_file(const char* path, const void* buf, uint32_t len) {
                 }
                 block_num = indirect[sind_iblock];
             } else {
-                return -1;
+                // Double-indirect (v6.4.10): block[13] -> a table of single-indirect
+                // blocks -> data blocks. Mirrors the read path (ext2_read_block_at). Uses
+                // scratch buffer 2 for the L1 table and 3 for the L2 indirect (the two
+                // levels must stay live together); ext2_alloc_block uses buffers 1 and 4,
+                // and block_buf is buffer 0, so nothing here clobbers the staged data.
+                uint32_t dind = sind_iblock - ptrs_per_block;
+                if (dind >= ptrs_per_block * ptrs_per_block) return -1;  // beyond 2x-indirect
+                if (inode.block[13] == 0) {
+                    inode.block[13] = ext2_alloc_block();                // alloc zeroes it
+                    if (inode.block[13] == 0) return -1;
+                }
+                uint8_t* dbuf = get_aux_buf();                           // L1 table
+                ext2_read_block(inode.block[13], dbuf);
+                uint32_t* dtab = (uint32_t*)dbuf;
+                uint32_t outer = dind / ptrs_per_block;
+                uint32_t inner = dind % ptrs_per_block;
+                if (dtab[outer] == 0) {
+                    dtab[outer] = ext2_alloc_block();
+                    if (dtab[outer] == 0) return -1;
+                    ext2_write_block(inode.block[13], dbuf);
+                }
+                uint8_t* ibuf2 = get_aux2_buf();                         // L2 indirect
+                ext2_read_block(dtab[outer], ibuf2);
+                uint32_t* indirect2 = (uint32_t*)ibuf2;
+                if (indirect2[inner] == 0) {
+                    indirect2[inner] = ext2_alloc_block();
+                    if (indirect2[inner] == 0) return -1;
+                    ext2_write_block(dtab[outer], ibuf2);
+                }
+                block_num = indirect2[inner];
             }
         }
 
@@ -702,11 +735,18 @@ int ext2_write_file(const char* path, const void* buf, uint32_t len) {
     // Update inode size and block count
     inode.size = len;
     /* i_blocks charges the inode for EVERY block it owns, metadata included, so
-     * a file with an indirect block owed one more than its data blocks. e2fsck
+     * a file with an indirect block owes one more than its data blocks. e2fsck
      * reported "i_blocks is 46, should be 48" on the first file large enough to
-     * need one. (The writer never goes past singly-indirect, so that is the only
-     * metadata block it can own.) */
+     * need one. Now that the writer maps double-indirect too (v6.4.10), count that
+     * metadata as well: the L1 table (block[13]) plus one L2 indirect block per
+     * ppb data blocks in the double-indirect region — else e2fsck flags i_blocks. */
+    uint32_t ppb2 = ext2_fs.block_size / 4;
     uint32_t meta_blocks = inode.block[12] ? 1 : 0;
+    if (inode.block[13]) {
+        meta_blocks += 1;                                              // the L1 double-indirect table
+        uint32_t dind_data = blocks_needed > 12 + ppb2 ? blocks_needed - 12 - ppb2 : 0;
+        meta_blocks += (dind_data + ppb2 - 1) / ppb2;                 // the L2 indirect blocks
+    }
     inode.blocks_512 = (blocks_needed + meta_blocks) * (ext2_fs.block_size / 512);
     inode.mtime = inode.ctime = ext2_now();
 
