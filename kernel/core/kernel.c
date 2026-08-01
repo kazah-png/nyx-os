@@ -192,7 +192,7 @@ static const command_t commands[] = {
 
     {"crash",     cmd_crash,     "Trigger a kernel panic", false},
     {"layout",    cmd_layout,    "Change keyboard layout: layout <us|es>", false},
-    {"ls",        cmd_ls,        "List directory contents: ls [path]", false},
+    {"ls",        cmd_ls,        "List directory contents: ls [-la] [path]", false},
     {"cd",        cmd_cd,        "Change directory: cd <path>", false},
     {"pwd",       cmd_pwd,       "Print working directory", false},
     {"cat",       cmd_cat,       "Display file contents: cat <file>", false},
@@ -2471,7 +2471,41 @@ static void cmd_layout(int argc, char** argv) {
 }
 
 static void cmd_ls(int argc, char** argv) {
-    vfs_list_dir(argc > 1 ? argv[1] : NULL);
+    int show_all = 0, long_fmt = 0, ai = 1;
+    for (; ai < argc && argv[ai][0] == '-' && argv[ai][1]; ai++)
+        for (char* f = argv[ai] + 1; *f; f++) {
+            if (*f == 'a') show_all = 1;
+            else if (*f == 'l') long_fmt = 1;
+            else { printf("ls: invalid option -%c\n", *f); return; }
+        }
+    const char* path = (ai < argc) ? argv[ai] : NULL;
+    // No flags: keep the classic colored lister (output byte-identical to before).
+    if (!show_all && !long_fmt) { vfs_list_dir(path); return; }
+    // -a / -l: iterate the directory ourselves via the backend-agnostic readdir.
+    // -a shows dot-entries (hidden by default); -l prints a type char + byte size.
+    const char* dpath = path ? path : vfs_getcwd();
+    int fd = vfs_open(dpath, 0, 0);
+    if (fd < 0) { printf("ls: %s: No such directory\n", dpath); return; }
+    for (dirent_t* de = vfs_readdir(fd); de; de = vfs_readdir(fd)) {
+        const char* nm = de->name;
+        if (!show_all && nm[0] == '.') continue;
+        int isd = (de->type == 1);
+        if (long_fmt) {
+            uint32_t sz = 0;
+            if (!isd) {
+                char ep[320];
+                if (strcmp(dpath, "/") == 0) snprintf(ep, sizeof(ep), "/%s", nm);
+                else                          snprintf(ep, sizeof(ep), "%s/%s", dpath, nm);
+                int d2; vfs_stat(ep, &sz, &d2);
+            }
+            printf("%c %8u  %s\n", isd ? 'd' : '-', sz, nm);
+        } else if (isd) {
+            printf("%s/\n", nm);
+        } else {
+            printf("%s\n", nm);
+        }
+    }
+    vfs_close(fd);
 }
 
 static void cmd_cd(int argc, char** argv) {
