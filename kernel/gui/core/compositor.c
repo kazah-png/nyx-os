@@ -107,8 +107,23 @@ static void draw_cursor(int mx, int my) {
     }
 }
 
+// Title-bar window controls. Square by design — but the corners are softened
+// (WINBTN_R) so they sit with the rounded title bar, and the fills carry the
+// brand identity instead of the old flat primary colours: MAXIMISE takes the
+// NyxOS purple accent, CLOSE the universal red, MINIMISE a neutral slate. The
+// cut corners let the title-bar gradient show through, so the buttons read as
+// soft chips rather than hard blocks. Glyphs are unchanged (see the note below
+// draw_x_button on the shared inner box).
+#define WINBTN_R      3
+#define WINBTN_CLOSE  fb_rgb(214,  72,  72)   /* red — destructive           */
+#define WINBTN_MIN    fb_rgb( 92,  98, 116)   /* neutral slate               */
+#define WINBTN_MAX    fb_rgb(180, 150, 240)   /* light lavender — brand purple,
+                                                 kept lighter than the focused
+                                                 (accent) title bar so it stays
+                                                 visible instead of blending in */
+
 static void draw_x_button(int x, int y, int size, uint32_t color) {
-    fb_fill_rect(x, y, size, size, fb_rgb(200,40,40));
+    fb_fill_round_rect(x, y, size, size, WINBTN_R, WINBTN_CLOSE);
     int pad = 4;
     for (int i = 0; i < size - pad * 2; i++) {
         compositor_draw_pixel(x + pad + i, y + pad + i, color);
@@ -124,14 +139,14 @@ static void draw_x_button(int x, int y, int size, uint32_t color) {
 // x+size-4, so the square had two stubs poking out the right — a few px off on every
 // window. The dash was also 2px wider than the X. Fixed by centring all three the same.)
 static void draw_min_button(int x, int y, int size, uint32_t color) {
-    fb_fill_rect(x, y, size, size, fb_rgb(60,60,60));
+    fb_fill_round_rect(x, y, size, size, WINBTN_R, WINBTN_MIN);
     int p = 4;
     for (int i = 0; i < size - 2 * p; i++)
         compositor_draw_pixel(x + p + i, y + size / 2, color);      // centred dash
 }
 
 static void draw_max_button(int x, int y, int size, uint32_t color) {
-    fb_fill_rect(x, y, size, size, fb_rgb(60,120,60));
+    fb_fill_round_rect(x, y, size, size, WINBTN_R, WINBTN_MAX);     // brand purple (light) = identity
     int p = 4, e = size - 1 - p;                                     // inner square [p, e]
     for (int i = 0; i <= e - p; i++) {
         compositor_draw_pixel(x + p + i, y + p,     color);         // top edge
