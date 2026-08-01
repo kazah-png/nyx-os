@@ -174,6 +174,21 @@ def main():
                     data += cpio_add_file('usr/src/nyx/tcc/' + rel, d)
                     print(f"Added usr/src/nyx/tcc/{rel} ({len(d)} bytes)")
 
+    # Ship the package repository (pkg manager, v6.4.19): each user/pkg/<name>/ directory
+    # becomes /usr/pkg/<name>/ in the initramfs (a `recipe` manifest + the package's
+    # source), so `pkg install <name>` can read the recipe and compile the source in-OS
+    # with `cc`. The loader creates the nested parent dirs.
+    pkgdir = os.path.join(usrdir, 'pkg')
+    if os.path.isdir(pkgdir):
+        for root, _dirs, files in os.walk(pkgdir):
+            for f in sorted(files):
+                full = os.path.join(root, f)
+                rel = os.path.relpath(full, usrdir).replace('\\', '/')   # e.g. pkg/hello/recipe
+                with open(full, 'rb') as fp:
+                    d = fp.read()
+                data += cpio_add_file('usr/' + rel, d)                    # -> usr/pkg/hello/recipe
+                print(f"Added usr/{rel} ({len(d)} bytes)")
+
     # Add trailer
     data += cpio_trailer()
     

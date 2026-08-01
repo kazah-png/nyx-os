@@ -122,6 +122,7 @@ static void cmd_play(int argc, char** argv);
 static void cmd_sb16play(int argc, char** argv);
 static void cmd_exec(int argc, char** argv);
 static void cmd_cc(int argc, char** argv);
+static void cmd_pkg(int argc, char** argv);
 static void cmd_spawn(int argc, char** argv);
 static void cmd_doom(int argc, char** argv);
 static void cmd_pong(int argc, char** argv);
@@ -231,6 +232,7 @@ static const command_t commands[] = {
     {"sb16play",  cmd_sb16play,  "Test SB16 playback: sb16play [freq] [ms]", false},
     {"exec",      cmd_exec,      "Run ELF in foreground (waits): exec <file>", false},
     {"cc",        cmd_cc,        "Compile/link C in-OS: cc [-c] [--self-libc] <in.c/.o ...> [-o out]", false},
+    {"pkg",       cmd_pkg,       "Package manager: pkg install <name> | pkg list", false},
     {"spawn",     cmd_spawn,     "Run ELF in background: spawn <file>", false},
     {"doom",      cmd_doom,      "Play DOOM in a window (Ctrl-C to quit)", false},
     {"pong",      cmd_pong,      "Play Pong (mouse or arrows)", false},
@@ -1121,6 +1123,86 @@ static void cmd_cc(int argc, char** argv) {
     printf("cc: %s (%s) -> %s\n", compile_only ? "compiling object" : "compiling",
            self_host ? "self-hosted tcc" : "tcc", out);
     run_foreground_elf(ccpath, av, n);           // blocks until the compiler exits; prints its exit code
+}
+
+/* Read a `key:` line's value from a recipe buffer into `out` (leading/trailing spaces
+ * trimmed; first match wins). Returns 1 if the key was found with a non-empty value. */
+static int pkg_recipe_value(const char* buf, const char* key, char* out, int outsz) {
+    int klen = (int)strlen(key);
+    for (const char* p = buf; *p; ) {
+        const char* s = p;
+        while (*s == ' ' || *s == '\t') s++;
+        if (strncmp(s, key, klen) == 0 && s[klen] == ':') {
+            const char* v = s + klen + 1;
+            while (*v == ' ' || *v == '\t') v++;
+            int i = 0;
+            while (*v && *v != '\n' && *v != '\r' && i < outsz - 1) out[i++] = *v++;
+            while (i > 0 && (out[i-1] == ' ' || out[i-1] == '\t')) i--;   // trim trailing
+            out[i] = '\0';
+            return out[0] != '\0';
+        }
+        while (*p && *p != '\n') p++;                // advance to the next line
+        if (*p == '\n') p++;
+    }
+    return 0;
+}
+
+/* pkg — a minimal in-OS package manager built on the `cc` toolchain. A package lives at
+ * /usr/pkg/<name>/ with a `recipe` manifest (dead-simple `key: value` lines: `source:` =
+ * the .c to build, `bin:` = the installed program name) plus its source. `pkg install
+ * <name>` reads the recipe, compiles the source with the in-OS `cc`, and installs the
+ * binary to /mnt/bin on the persistent disk (run it as /mnt/bin/<name>). `pkg list`
+ * enumerates the packages in the repository. (No network fetch / deps / versions yet.) */
+static void cmd_pkg(int argc, char** argv) {
+    if (argc < 2) { printf("Usage: pkg install <name> | pkg list\n"); return; }
+
+    if (strcmp(argv[1], "list") == 0) {
+        int fd = vfs_open("/usr/pkg", 0, 0);
+        if (fd < 0) { printf("pkg: no package repository at /usr/pkg\n"); return; }
+        printf("Available packages:\n");
+        dirent_t* de = vfs_readdir(fd);
+        while (de) {
+            if (strcmp(de->name, ".") != 0 && strcmp(de->name, "..") != 0)
+                printf("  %s\n", de->name);
+            de = vfs_readdir(fd);
+        }
+        vfs_close(fd);
+        return;
+    }
+
+    if (strcmp(argv[1], "install") == 0) {
+        if (argc < 3) { printf("Usage: pkg install <name>\n"); return; }
+        const char* name = argv[2];
+
+        char rpath[128];
+        snprintf(rpath, sizeof(rpath), "/usr/pkg/%s/recipe", name);
+        int fd = vfs_open(rpath, 0, 0);
+        if (fd < 0) { printf("pkg: package '%s' not found\n", name); return; }
+        char rbuf[512];
+        int n = vfs_read(fd, rbuf, sizeof(rbuf) - 1);
+        vfs_close(fd);
+        if (n <= 0) { printf("pkg: empty recipe for '%s'\n", name); return; }
+        rbuf[n] = '\0';
+
+        char source[64], bin[64];
+        if (!pkg_recipe_value(rbuf, "source", source, sizeof(source))) { printf("pkg: recipe for '%s' is missing 'source'\n", name); return; }
+        if (!pkg_recipe_value(rbuf, "bin", bin, sizeof(bin)))          { printf("pkg: recipe for '%s' is missing 'bin'\n", name); return; }
+
+        vfs_mkdir("/mnt/bin", 0755);   // ensure the install dir exists (harmless if it already does)
+
+        char cmd[256], outp[128];
+        snprintf(outp, sizeof(outp), "/mnt/bin/%s", bin);
+        snprintf(cmd, sizeof(cmd), "cc /usr/pkg/%s/%s -o %s", name, source, outp);
+        printf("pkg: building %s (%s) ...\n", name, source);
+        execute_command(cmd);
+
+        int ofd = vfs_open(outp, 0, 0);            // did the binary land?
+        if (ofd >= 0) { vfs_close(ofd); printf("pkg: installed %s -> %s\n", name, outp); }
+        else            printf("pkg: build of '%s' failed\n", name);
+        return;
+    }
+
+    printf("pkg: unknown subcommand '%s' (expected install|list)\n", argv[1]);
 }
 
 // Run an ELF as a BACKGROUND job: spawn it and return immediately. It runs
