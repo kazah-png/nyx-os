@@ -1073,6 +1073,7 @@ void launch_voxel(void) {
     w->reserved = voxel_create_ctx();
     if (!w->reserved) { window_destroy(w->id); return; }
     w->on_click = voxel_win_click;
+    w->on_key   = voxel_win_key;
     w->on_tick  = voxel_win_tick;
 }
 

@@ -1,36 +1,64 @@
 // ============================================================
-// voxel_win.c - an interactive isometric voxel scene (v6.4.39)
+// voxel_win.c - an interactive isometric voxel sandbox (v6.4.40)
 // ============================================================
 // A step toward the Minecraft-class voxel-sandbox NORTH STAR. v6.4.38 rendered a
-// STATIC scene; this makes it INTERACTIVE: a mutable heightmap in a per-window
-// ctx, with left-click = place a cube on the picked cell and right-click = break
-// the top one. Cubes are drawn with three shaded faces via per-column vertical
-// spans, so no triangle/polygon primitive is needed (the framebuffer only offers
-// fb_fill_rect / fb_fill_vgrad). A later increment adds a first-person camera.
+// static scene; v6.4.39 made it interactive (place/break); v6.4.40 adds BLOCK
+// TYPES + a palette: the world is a per-column stack of typed blocks, you pick a
+// type from a palette bar (number keys 1-6 or a click), left-click places the
+// selected type on a column and right-click breaks the top block. Cubes are drawn
+// with three shaded faces via per-column vertical spans, so no triangle primitive
+// is needed (the framebuffer only offers fb_fill_rect / fb_fill_vgrad).
 #include "../../core/kernel.h"
 #include "../core/compositor.h"
 #include "voxel_win.h"
+#include "../../drivers/video/font.h"
 
-// Iso projection constants (2:1 isometric): cube half-width VX_W, so the top
-// diamond's vertical half-height is VX_T = VX_W/2; VX_HH is the cube side height.
-// The scene origin (apex of cell (0,0,0)'s top diamond) sits at client-relative
-// (VX_OX, VX_OY).
-#define VX_W   18
-#define VX_T   9
-#define VX_HH  18
-#define VX_OX  (VOXEL_W / 2)
-#define VX_OY  92
-#define VX_MAXH 6        // max stack height (keeps tall stacks inside the window)
+// Iso projection constants (2:1 isometric): cube half-width VX_W, top-diamond
+// vertical half-height VX_T = VX_W/2, cube side height VX_HH. Scene origin (apex
+// of cell (0,0,0)'s top diamond) is client-relative (VX_OX, VX_OY).
+#define VX_W    18
+#define VX_T    9
+#define VX_HH   18
+#define VX_OX   (VOXEL_W / 2)
+#define VX_OY   96
+#define VX_MAXH 7        // max blocks per column (keeps tall stacks in the window)
+
+// Palette bar geometry (client-relative), one swatch per block type.
+#define PAL_X   10
+#define PAL_Y   30
+#define PAL_SW  22       // swatch size
+#define PAL_GAP 4
+
+typedef struct { uint32_t top, left, right; } block_t;
+#define NTYPES 6
+static block_t g_types[NTYPES];
+static int g_types_ready = 0;
+static const char* TYPE_INITIAL = "GDSWSC";   // Grass Dirt Stone Wood Sand Cyan(water)
+
+// Build the block palette once (fb_rgb is a runtime function, so this can't be a
+// static const initialiser). top = lit face, left/right = shaded sides.
+static void voxel_init_types(void) {
+    if (g_types_ready) return;
+    g_types[0] = (block_t){ fb_rgb(96,172,74),   fb_rgb(120,92,58),   fb_rgb(94,70,44) };    // grass
+    g_types[1] = (block_t){ fb_rgb(134,101,62),  fb_rgb(112,84,52),   fb_rgb(88,66,40) };    // dirt
+    g_types[2] = (block_t){ fb_rgb(152,152,162), fb_rgb(112,112,122), fb_rgb(86,86,96) };    // stone
+    g_types[3] = (block_t){ fb_rgb(150,110,60),  fb_rgb(120,85,48),   fb_rgb(95,66,38) };    // wood
+    g_types[4] = (block_t){ fb_rgb(225,215,150), fb_rgb(205,195,130), fb_rgb(175,165,105) }; // sand
+    g_types[5] = (block_t){ fb_rgb(120,200,225), fb_rgb(95,170,200),  fb_rgb(70,140,170) };  // water
+    g_types_ready = 1;
+}
 
 typedef struct {
-    int hmap[VX_N][VX_N];
-    int dirty;           // set on edit; voxel_win_tick returns 1 once to repaint
+    signed char col[VX_N][VX_N][VX_MAXH];   // block type at each level (valid for z < height)
+    unsigned char height[VX_N][VX_N];        // number of stacked blocks (>= 1)
+    int sel;                                 // selected palette type
+    int dirty;                               // set on edit; on_tick returns 1 once to repaint
 } voxel_ctx_t;
 
 void* voxel_create_ctx(void) {
     voxel_ctx_t* c = (voxel_ctx_t*)kmalloc(sizeof(voxel_ctx_t));
     if (!c) return NULL;
-    // A gentle starting hill.
+    // A gentle starting hill (top index -> height = index + 1 blocks).
     static const int seed[VX_N][VX_N] = {
         {0,0,0,0,0,0,0},
         {0,0,1,1,1,0,0},
@@ -41,8 +69,13 @@ void* voxel_create_ctx(void) {
         {0,0,0,0,0,0,0},
     };
     for (int y = 0; y < VX_N; y++)
-        for (int x = 0; x < VX_N; x++)
-            c->hmap[y][x] = seed[y][x];
+        for (int x = 0; x < VX_N; x++) {
+            int H = seed[y][x] + 1;
+            c->height[y][x] = (unsigned char)H;
+            for (int z = 0; z < H; z++)
+                c->col[y][x][z] = (z == H - 1) ? 0 : 1;   // surface grass, below dirt
+        }
+    c->sel = 0;
     c->dirty = 0;
     return c;
 }
@@ -76,59 +109,68 @@ void voxel_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     (void)cw; (void)ch;
     voxel_ctx_t* c = (voxel_ctx_t*)win->reserved;
     if (!c) return;
+    voxel_init_types();
 
     // Nyx night sky: a deep-purple gradient with stars and the moon.
     fb_fill_vgrad(cx, cy, VOXEL_W, VOXEL_H, fb_rgb(24, 18, 44), fb_rgb(52, 40, 84));
     static const int stars[][2] = {
-        {40,30},{90,60},{150,24},{210,50},{300,28},{360,66},{420,36},
-        {70,110},{260,90},{400,120},{130,80},{330,140},{20,70},{190,120},
+        {60,150},{150,140},{300,150},{360,120},{420,150},
+        {260,150},{400,140},{330,150},{200,140},{440,120},
     };
     for (unsigned i = 0; i < sizeof(stars) / sizeof(stars[0]); i++)
         fb_fill_rect(cx + stars[i][0], cy + stars[i][1], 2, 2, fb_rgb(220, 220, 245));
-    disc(cx + 412, cy + 54, 18, fb_rgb(212, 202, 240));
+    disc(cx + 430, cy + 40, 16, fb_rgb(212, 202, 240));
 
-    // Terrain from the (mutable) heightmap, drawn back-to-front (row by row, each
-    // stack bottom-up) so nearer cubes correctly overdraw farther ones.
+    // Terrain, back-to-front (row by row, each column bottom-up).
     const int origin_x = cx + VX_OX;
     const int origin_y = cy + VX_OY;
     for (int gy = 0; gy < VX_N; gy++) {
         for (int gx = 0; gx < VX_N; gx++) {
-            int top_h = c->hmap[gy][gx];
-            for (int gz = 0; gz <= top_h; gz++) {
+            int H = c->height[gy][gx];
+            for (int gz = 0; gz < H; gz++) {
+                int ty = c->col[gy][gx][gz];
+                if (ty < 0 || ty >= NTYPES) ty = 1;
                 int ox = origin_x + (gx - gy) * VX_W;
                 int oy = origin_y + (gx + gy) * VX_T - gz * VX_HH;
-                int is_top = (gz == top_h);
-                uint32_t tcol, lcol, rcol;
-                if (is_top && top_h >= 3) {           // high ground -> stone
-                    tcol = fb_rgb(152,152,162); lcol = fb_rgb(112,112,122); rcol = fb_rgb(86,86,96);
-                } else if (is_top) {                  // surface -> grass
-                    tcol = fb_rgb(96,172,74);   lcol = fb_rgb(120,92,58);   rcol = fb_rgb(94,70,44);
-                } else {                              // below the surface -> dirt
-                    tcol = fb_rgb(134,101,62);  lcol = fb_rgb(112,84,52);   rcol = fb_rgb(88,66,40);
-                }
-                iso_cube(ox, oy, tcol, lcol, rcol);
+                iso_cube(ox, oy, g_types[ty].top, g_types[ty].left, g_types[ty].right);
             }
         }
     }
 
+    // Title + palette bar (drawn last, over the sky).
     font_draw_string_trans(cx + 10, cy + 10, "Nyx Voxels", fb_rgb(236, 230, 250));
+    for (int i = 0; i < NTYPES; i++) {
+        int sx = cx + PAL_X + i * (PAL_SW + PAL_GAP);
+        int sy = cy + PAL_Y;
+        fb_fill_rect(sx, sy, PAL_SW, PAL_SW, g_types[i].top);
+        fb_fill_rect(sx, sy, PAL_SW, 1, g_types[i].left);        // slight top edge
+        char ini[2] = { TYPE_INITIAL[i], '\0' };
+        font_draw_string_trans(sx + (PAL_SW - FONT_WIDTH) / 2, sy + (PAL_SW - FONT_HEIGHT) / 2,
+                               ini, fb_rgb(20, 20, 24));
+        if (i == c->sel) {                                       // selected: bright frame
+            uint32_t hl = fb_rgb(255, 240, 180);
+            fb_fill_rect(sx - 2, sy - 2, PAL_SW + 4, 2, hl);
+            fb_fill_rect(sx - 2, sy + PAL_SW, PAL_SW + 4, 2, hl);
+            fb_fill_rect(sx - 2, sy - 2, 2, PAL_SW + 4, hl);
+            fb_fill_rect(sx + PAL_SW, sy - 2, 2, PAL_SW + 4, hl);
+        }
+    }
     font_draw_string_trans(cx + 10, cy + VOXEL_H - 22,
-                           "left-click place  -  right-click break", fb_rgb(182, 176, 208));
+                           "1-6 pick  -  left place  -  right break", fb_rgb(182, 176, 208));
 }
 
-// Map a client click to the grid cell whose TOP face is under it, testing cells
-// front-to-back (nearest first) so a click on a tall stack picks the stack, not a
-// cell behind it. Returns 1 and sets *pgx/*pgy on a hit.
+// Map a client click to the grid cell whose TOP face is under it (front-to-back,
+// hit-testing each cell's top diamond at its current stacked height).
 static int voxel_pick(voxel_ctx_t* c, int ox0, int oy0, int mx, int my, int* pgx, int* pgy) {
     for (int gy = VX_N - 1; gy >= 0; gy--)
         for (int gx = VX_N - 1; gx >= 0; gx--) {
-            int gz = c->hmap[gy][gx];
+            int top = c->height[gy][gx] - 1;                   // top block level
             int ox = ox0 + (gx - gy) * VX_W;
-            int oy = oy0 + (gx + gy) * VX_T - gz * VX_HH;      // apex of the top cube
-            int dcx = mx - ox, dcy = my - (oy + VX_T);         // vs top-diamond centre
+            int oy = oy0 + (gx + gy) * VX_T - top * VX_HH;
+            int dcx = mx - ox, dcy = my - (oy + VX_T);
             if (dcx < 0) dcx = -dcx;
             if (dcy < 0) dcy = -dcy;
-            if (dcx * VX_T + dcy * VX_W <= VX_W * VX_T) {       // inside the diamond
+            if (dcx * VX_T + dcy * VX_W <= VX_W * VX_T) {
                 *pgx = gx; *pgy = gy; return 1;
             }
         }
@@ -138,20 +180,39 @@ static int voxel_pick(voxel_ctx_t* c, int ox0, int oy0, int mx, int my, int* pgx
 void voxel_win_click(window_t* win, int mx, int my, int btn) {
     voxel_ctx_t* c = (voxel_ctx_t*)win->reserved;
     if (!c) return;
-    int ox0 = WIN_CLIENT_X(win) + VX_OX;
-    int oy0 = WIN_CLIENT_Y(win) + VX_OY;
+    int cx = WIN_CLIENT_X(win), cy = WIN_CLIENT_Y(win);
+
+    // Palette bar first: a click on a swatch selects that block type.
+    if (my >= cy + PAL_Y && my < cy + PAL_Y + PAL_SW) {
+        int rel = mx - (cx + PAL_X);
+        if (rel >= 0) {
+            int i = rel / (PAL_SW + PAL_GAP);
+            if (i >= 0 && i < NTYPES && rel - i * (PAL_SW + PAL_GAP) < PAL_SW) {
+                c->sel = i; c->dirty = 1; return;
+            }
+        }
+    }
+
+    // Otherwise edit the terrain.
     int gx, gy;
-    if (!voxel_pick(c, ox0, oy0, mx, my, &gx, &gy)) return;
-    if (btn == 2) {                                  // right-click -> break
-        if (c->hmap[gy][gx] > 0) c->hmap[gy][gx]--;
-    } else {                                         // left-click -> place
-        if (c->hmap[gy][gx] < VX_MAXH) c->hmap[gy][gx]++;
+    if (!voxel_pick(c, cx + VX_OX, cy + VX_OY, mx, my, &gx, &gy)) return;
+    if (btn == 2) {                                  // right-click -> break the top block
+        if (c->height[gy][gx] > 1) c->height[gy][gx]--;
+    } else {                                         // left-click -> place the selected type
+        int H = c->height[gy][gx];
+        if (H < VX_MAXH) { c->col[gy][gx][H] = (signed char)c->sel; c->height[gy][gx] = (unsigned char)(H + 1); }
     }
     c->dirty = 1;
 }
 
+void voxel_win_key(window_t* win, int key) {
+    voxel_ctx_t* c = (voxel_ctx_t*)win->reserved;
+    if (!c) return;
+    if (key >= '1' && key <= '0' + NTYPES) { c->sel = key - '1'; c->dirty = 1; }
+}
+
 // Repaint once after an edit (the right-click path does not force a redraw, and
-// the scene is otherwise static, so a tiny dirty-gated tick covers both buttons).
+// the scene is otherwise static, so a dirty-gated tick covers clicks and keys).
 int voxel_win_tick(window_t* win) {
     voxel_ctx_t* c = (voxel_ctx_t*)win->reserved;
     if (!c || !c->dirty) return 0;
