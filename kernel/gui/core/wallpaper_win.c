@@ -21,12 +21,13 @@ static const struct { uint8_t r, g, b; const char* name; } palette[WALLPAPER_COU
 };
 
 // The wallpaper render styles (the "scene" the compositor paints from the base
-// color). New in the v6 era: a clean minimal desktop is the default, with the
-// classic moon-and-stars "Nightfall" scene kept one click away, plus a flat solid.
+// color). "Nightfall" — the moon-and-stars scene — is the default: NyxOS is named
+// for Nyx, the goddess of night, so the night sky IS the brand identity. The clean
+// gradient and a flat solid stay one click away in the Wallpaper app.
 static const char* style_names[WP_STYLE_COUNT] = { "Limpio", "Nightfall", "Plano" };
 
-static int g_wallpaper = 0;                 // selected base color; default = morado
-static int g_style     = WP_STYLE_CLEAN;    // selected render style; default = clean gradient
+static int g_wallpaper = 0;                    // selected base color; default = morado
+static int g_style     = WP_STYLE_NIGHTFALL;   // selected render style; default = moon + stars
 
 uint32_t wallpaper_base_color(void) {
     return fb_rgb(palette[g_wallpaper].r, palette[g_wallpaper].g, palette[g_wallpaper].b);
