@@ -1006,13 +1006,32 @@ static void cmd_exec(int argc, char** argv) {
 // pass through. Runs tcc in the foreground (blocks until it exits, like `exec`,
 // printing its exit code). With no -o, <out> is the first input minus ".c" (plus ".o"
 // in -c mode). Use absolute paths (e.g. cc /mnt/a.c /mnt/b.c -o /mnt/prog).
+/* Ensure /mnt/tcc_self.elf exists — the tcc built by the in-OS tcc. If it is not there
+ * yet, build it on demand from the shipped tcc source tree and cache it on the persistent
+ * mount: the in-OS tcc compiles tcc's own ONE_SOURCE (tcc.c) to an object, then links it
+ * with tcc's OS adapter (nyxshim.o) + runtime (libtcc1.o) into a runnable tcc. The FIRST
+ * `cc --self` therefore takes a while (~minutes); later ones reuse the cached executable.
+ * Returns 1 if /mnt/tcc_self.elf is available afterwards, 0 if the build failed. */
+static int tcc_self_ready(void) {
+    int fd = vfs_open("/mnt/tcc_self.elf", 0, 0);
+    if (fd >= 0) { vfs_close(fd); return 1; }             // already built — use the cache
+    printf("cc: --self: building the self-hosted tcc (first use; this takes a while)...\n");
+    execute_command("cc -c /usr/src/nyx/tcc/tcc.c -I/usr/src/nyx/tcc -I/usr/src/nyx/tcc/nyxshim -o /mnt/tcc_self.o");
+    execute_command("cc /mnt/tcc_self.o /nyxshim.o /libtcc1.o -o /mnt/tcc_self.elf");
+    fd = vfs_open("/mnt/tcc_self.elf", 0, 0);
+    if (fd >= 0) { vfs_close(fd); return 1; }
+    return 0;                                              // build failed — caller reports it
+}
+
 static void cmd_cc(int argc, char** argv) {
-    if (argc < 2) { printf("Usage: cc [-c] [--self-libc] <in.c/.o ...> [-o <out>]\n"); return; }
+    if (argc < 2) { printf("Usage: cc [-c] [--self] [--self-libc] <in.c/.o ...> [-o <out>]\n"); return; }
     int compile_only = 0;                        // -c: compile a .c to a .o, do NOT link
     int self_libc = 0;                           // --self-libc: link against a tcc-built libc
+    int self_host = 0;                           // --self: compile with the self-built tcc, not /tcc.elf
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "-c") == 0)          compile_only = 1;
         else if (strcmp(argv[i], "--self-libc") == 0) self_libc = 1;
+        else if (strcmp(argv[i], "--self") == 0) self_host = 1;
     }
     if (self_libc && compile_only) {
         printf("cc: --self-libc has no effect with -c (compile-only does not link)\n"); return;
@@ -1038,6 +1057,13 @@ static void cmd_cc(int argc, char** argv) {
             outbuf[sizeof(outbuf) - 1] = '\0';
         }
         out = outbuf;
+    }
+    // --self routes every tcc invocation below through the self-built compiler
+    // (/mnt/tcc_self.elf, built + cached on demand) instead of the GCC-cross-built /tcc.elf.
+    const char* ccpath = "/tcc.elf";
+    if (self_host) {
+        if (!tcc_self_ready()) { printf("cc: --self: the self-hosted tcc is unavailable\n"); return; }
+        ccpath = "/mnt/tcc_self.elf";
     }
     // --self-libc: FIRST build the runtime from source with tcc, then link the program
     // against THOSE objects instead of the prebuilt (GCC-built) /libc.o + /va_list.o. This
@@ -1067,7 +1093,7 @@ static void cmd_cc(int argc, char** argv) {
             cav[cn++] = "-o"; cav[cn++] = objs[p];
             cav[cn] = 0;
             printf("cc: self-libc: tcc -c %s -> %s\n", srcs[p], objs[p]);
-            int rc = run_foreground_elf("/tcc.elf", cav, cn);
+            int rc = run_foreground_elf(ccpath, cav, cn);
             if (rc != 0) { printf("cc: self-libc build of %s failed (code %d)\n", srcs[p], rc); return; }
         }
     }
@@ -1088,11 +1114,13 @@ static void cmd_cc(int argc, char** argv) {
     for (int i = 1; i < argc && n < 60; i++) {
         if (strcmp(argv[i], "-o") == 0 && i + 1 < argc) { i++; continue; }  // -o <out> consumed above
         if (strcmp(argv[i], "--self-libc") == 0) continue;                  // consumed above
+        if (strcmp(argv[i], "--self") == 0) continue;                       // consumed above (compiler-select flag)
         av[n++] = argv[i];                       // forward sources/objects + any tcc flags (incl -c)
     }
     av[n++] = "-o"; av[n++] = (char*)out; av[n] = 0;
-    printf("cc: %s -> %s\n", compile_only ? "compiling object" : "compiling", out);
-    run_foreground_elf("/tcc.elf", av, n);       // blocks until tcc exits; prints its exit code
+    printf("cc: %s (%s) -> %s\n", compile_only ? "compiling object" : "compiling",
+           self_host ? "self-hosted tcc" : "tcc", out);
+    run_foreground_elf(ccpath, av, n);           // blocks until the compiler exits; prints its exit code
 }
 
 // Run an ELF as a BACKGROUND job: spawn it and return immediately. It runs
