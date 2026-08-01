@@ -902,6 +902,28 @@ static void draw_window_shadow(window_t* win) {
     }
 }
 
+// Cast a soft shadow under the open Start menu so it floats above the desktop and
+// any windows behind it — the same shadow language as windows (SHADOW_* macros),
+// for a consistent modern-launcher look. Called from redraw_all right after the
+// taskbar and just before the menu body paints, so only the feathered halo past
+// the menu's top/left/right edges shows and the body then covers the interior.
+// The bottom edge is omitted on purpose: the menu sits flush on the taskbar
+// (already drawn), reading as growing out of it, so a shadow there would just
+// smudge the bar — the side bands stop at the taskbar top for the same reason.
+static void draw_start_menu_shadow(void) {
+    if (!start_menu_open) return;
+    int fh = (int)fb_get_height();
+    int sm_x = 2, sm_y = fh - TASKBAR_H - START_H;
+    int bar_top = fh - TASKBAR_H;                 // side bands stop here, off the taskbar
+    for (int r = SHADOW_RADIUS; r >= 1; r--) {
+        uint8_t shade = (uint8_t)(SHADOW_CORE * (SHADOW_RADIUS - r + 1) / SHADOW_RADIUS);
+        int y = sm_y - r;
+        fb_darken_rect(sm_x - r, y, START_W + 2 * r, 1, shade);                   // top edge
+        fb_darken_rect(sm_x - r,               y + 1, 1, bar_top - (y + 1), shade); // left edge
+        fb_darken_rect(sm_x + START_W + r - 1, y + 1, 1, bar_top - (y + 1), shade); // right edge
+    }
+}
+
 static void redraw_all(void) {
     draw_background();
     draw_desktop_icons();
@@ -939,6 +961,7 @@ static void redraw_all(void) {
 
     draw_workspace_indicator();
     draw_taskbar();
+    draw_start_menu_shadow();     // soft halo cast under the menu, before its body paints
     draw_start_menu();
     draw_user_menu();
     draw_ctx_menu();
