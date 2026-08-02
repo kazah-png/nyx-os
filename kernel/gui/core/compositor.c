@@ -1802,31 +1802,47 @@ int window_get_ids(int* ids, int max) {
     return n;
 }
 
-static void demo_draw_fn(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
-    (void)cw; (void)ch;
-    font_draw_string(cx + 5, cy + 5, win->title, fb_rgb(200,200,200), fb_rgb(35,35,40));
-    font_draw_string(cx + 5, cy + 25, "Drag title bar to move", fb_rgb(160,160,160), fb_rgb(35,35,40));
-    font_draw_string(cx + 5, cy + 45, "Resize from edges", fb_rgb(160,160,160), fb_rgb(35,35,40));
-    font_draw_string(cx + 5, cy + 65, "Minimize/Maximize/Close", fb_rgb(160,160,160), fb_rgb(35,35,40));
-    font_draw_string(cx + 5, cy + 85, "Alt+Tab switch  Alt+F4 close", fb_rgb(160,160,160), fb_rgb(35,35,40));
-    font_draw_string(cx + 5, cy + 105, "Alt+Up/Down maximize/min", fb_rgb(160,160,160), fb_rgb(35,35,40));
-    font_draw_string(cx + 5, cy + 125, "Alt+Arrows tile/snap window", fb_rgb(160,160,160), fb_rgb(35,35,40));
-    char buf[32];
-    snprintf(buf, sizeof(buf), "ID: %d", win->id);
-    font_draw_string(cx + 5, cy + 145, buf, fb_rgb(255,255,0), fb_rgb(35,35,40));
-    snprintf(buf, sizeof(buf), "WS: %d", win->workspace);
-    font_draw_string(cx + 5, cy + 165, buf, fb_rgb(255,255,0), fb_rgb(35,35,40));
-}
+static void icon_disc(int ccx, int ccy, int r, uint32_t col);  // defined below (moon emblems)
 
-static void about_draw_fn(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
-    (void)win; (void)cw; (void)ch;
+// A single, subtle first-run greeting card — replaces the old three stacked boot
+// windows (a keyboard-shortcut list, an About box, and a Terminal). The minimal
+// desktop (v6.4.48+) opens to a clean wallpaper; this one centered card just says
+// hello, shows the version, and points at the Start menu. The user can close it
+// for a pristine desktop. Nyx identity: a night sky with the crescent moon.
+static void welcome_draw_fn(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
+    (void)win;
+    // cy already sits below the title bar (draw is called with y + TITLE_H), so
+    // the usable client height is ch - TITLE_H. A SOLID night fill (not a gradient)
+    // keeps the crescent carve and the scaled wordmark seam-free.
+    int H = (int)ch - TITLE_H;
+    if (H < 1) H = 1;
+    uint32_t sky = fb_rgb(24, 20, 44);   // Nyx night — deep purple
+    fb_fill_rect(cx, cy, cw, (uint32_t)H, sky);
+
+    // A fixed scatter of stars (constant positions so they don't shimmer on each
+    // redraw), guarded so a design-scaled small card never draws past the client.
+    static const int star[][2] = {
+        {40,26},{300,40},{92,150},{330,120},{20,90},{355,70},{250,22},{132,30},{206,158}
+    };
+    for (unsigned i = 0; i < sizeof(star)/sizeof(star[0]); i++)
+        if (star[i][0] < (int)cw - 2 && star[i][1] < H - 2)
+            fb_fill_rect(cx + star[i][0], cy + star[i][1], 2, 2, fb_rgb(200,200,230));
+
+    // The crescent moon (left): a pale disc with a sky-coloured disc carved out of
+    // its upper-right — the same trick as the Selene emblem, seam-free since the
+    // carve colour is exactly the solid background.
+    int mcx = cx + 74, mcy = cy + H / 2, R = 44;
+    icon_disc(mcx, mcy, R, fb_rgb(232, 230, 248));
+    icon_disc(mcx + 19, mcy - 11, R - 3, sky);
+
+    // Text column (right).
+    int tx = cx + 150;
+    font_draw_string_scaled(tx, cy + 26, "NyxOS", fb_rgb(206, 186, 255), sky, 2);
     char vbuf[48];
-    font_draw_string(cx + 10, cy + 10, "NyxOS Desktop", THEME_ACCENT, fb_rgb(35,35,40));
     snprintf(vbuf, sizeof(vbuf), "Version %s", KERNEL_VERSION);
-    font_draw_string(cx + 10, cy + 30, vbuf, fb_rgb(200,200,200), fb_rgb(35,35,40));
-    font_draw_string(cx + 10, cy + 60, "A lightweight desktop OS", fb_rgb(160,160,160), fb_rgb(35,35,40));
-    snprintf(vbuf, sizeof(vbuf), "%s %s", KERNEL_NAME, KERNEL_CODENAME);
-    font_draw_string(cx + 10, cy + 80, vbuf, fb_rgb(160,160,160), fb_rgb(35,35,40));
+    font_draw_string_trans(tx + 2, cy + 66,  vbuf,                        fb_rgb(176, 176, 200));
+    font_draw_string_trans(tx + 2, cy + 92,  "Goddess of the night",     fb_rgb(150, 150, 178));
+    font_draw_string_trans(tx + 2, cy + 128, "Open Start to launch apps", fb_rgb(150, 194, 255));
 }
 
 enum { SETTINGS_TAB_INFO, SETTINGS_TAB_DISPLAY, SETTINGS_TAB_KEYBOARD };
@@ -2193,18 +2209,17 @@ static void draw_desktop_icons(void) {
 }
 
 static void draw_welcome_windows(void) {
-    // 360 tall so all the keyboard-shortcut hint lines (the last is WS: at cy+165,
-    // ~181 px) still clear the bottom edge at 640x480, where design-grid scaling
-    // shrinks this to 0.625 (=> 203 px of client height, comfortably above 181).
-    window_create(80, 40, 400, 360, "Welcome to NyxOS", demo_draw_fn);
-    window_create(200, 120, 450, 200, "About NyxOS", about_draw_fn);
-    {
-        window_t* twin = window_create(300, 200, 640, 400, "Terminal", terminal_win_draw);
-        if (twin) {
-            twin->reserved = terminal_create_ctx();
-            twin->on_key = terminal_win_key;
-        }
-    }
+    // Minimal desktop (v6.4.48+): open to a clean wallpaper with ONE subtle,
+    // centered greeting card instead of the old three stacked boot windows (a
+    // keyboard-shortcut list, an About box, and a full Terminal). Every app —
+    // including the Terminal — launches from the Start menu, so nothing is lost;
+    // the user can close this card for a pristine desktop.
+    const int ww = 380, wh = 210;
+    int x = ((int)fb_get_width()  - ww) / 2;
+    int y = ((int)fb_get_height() - wh) / 2;
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+    window_create(x, y, ww, wh, "Welcome to NyxOS", welcome_draw_fn);
 }
 
 void compositor_run(void) {
@@ -2618,10 +2633,10 @@ void compositor_run(void) {
                      * still contains the pointer, in its CONTENT area (below the
                      * title bar). Never re-pick — re-picking is what leaked the
                      * click to lower windows once the top one closed/moved. */
-                    window_t* fw = find_window(focused_id);
-                    if (fw && fw->on_pressed && window_hit(fw, mx, my)
-                        && my >= fw->y + TITLE_H) {
-                        fw->on_pressed(fw, mx, my, 1);
+                    window_t* fwin = find_window(focused_id);
+                    if (fwin && fwin->on_pressed && window_hit(fwin, mx, my)
+                        && my >= fwin->y + TITLE_H) {
+                        fwin->on_pressed(fwin, mx, my, 1);
                         redraw = 1;
                     }
                 }
