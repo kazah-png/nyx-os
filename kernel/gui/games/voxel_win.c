@@ -1,13 +1,16 @@
 // ============================================================
-// voxel_win.c - an interactive isometric voxel sandbox (v6.4.40)
+// voxel_win.c - an isometric voxel 3D-render perf-testing sandbox (v6.4.52)
 // ============================================================
-// A step toward the Minecraft-class voxel-sandbox NORTH STAR. v6.4.38 rendered a
-// static scene; v6.4.39 made it interactive (place/break); v6.4.40 adds BLOCK
-// TYPES + a palette: the world is a per-column stack of typed blocks, you pick a
-// type from a palette bar (number keys 1-6 or a click), left-click places the
-// selected type on a column and right-click breaks the top block. Cubes are drawn
-// with three shaded faces via per-column vertical spans, so no triangle primitive
-// is needed (the framebuffer only offers fb_fill_rect / fb_fill_vgrad).
+// The concrete driver of the P4 performance-testing north star (reframed by the
+// user 2026-08-02: this is NOT a game, it is a study/testbed for the software 3D
+// renderer). v6.4.38 rendered a static scene; v6.4.39 made it interactive
+// (place/break); v6.4.40 added BLOCK TYPES + a palette; v6.4.41 procedural
+// worldgen (G); v6.4.42 a rotatable iso camera (R); v6.4.52 adds a BENCHMARK HUD
+// (key B): it times the software renderer's raw throughput (per-frame render time,
+// derived FPS, cube fill count) so the sandbox measures fill rate / voxel
+// throughput, not just draws a scene. Cubes are drawn with three shaded faces via
+// per-column vertical spans, so no triangle primitive is needed (the framebuffer
+// only offers fb_fill_rect / fb_fill_vgrad).
 #include "../../core/kernel.h"
 #include "../core/compositor.h"
 #include "voxel_win.h"
@@ -22,6 +25,14 @@
 #define VX_OX   (VOXEL_W / 2)
 #define VX_OY   96
 #define VX_MAXH 7        // max blocks per column (keeps tall stacks in the window)
+
+// Benchmark mode (the 3D-render PERFORMANCE-TESTING purpose, P4): when on, each
+// visible frame re-renders the whole terrain VOXEL_BENCH_REPS times and times it
+// with get_ticks() (the PIT runs at 1 kHz, so a tick == 1 ms). Repeating the pass
+// lifts the measurement above the 1 ms clock resolution and above the compositor's
+// ~30 fps redraw cap, so the HUD reports the software renderer's raw throughput
+// (per-frame render time + derived FPS + the cube fill count).
+#define VOXEL_BENCH_REPS 40
 
 // Palette bar geometry (client-relative), one swatch per block type.
 #define PAL_X   10
@@ -55,6 +66,10 @@ typedef struct {
     int dirty;                               // set on edit; on_tick returns 1 once to repaint
     unsigned seed;                           // worldgen seed (advanced by the 'g' key)
     int view;                                // isometric camera orientation, 0..3 (R rotates)
+    int bench;                               // benchmark mode (perf HUD) toggle — key B
+    uint32_t last_fps;                       // last measured render throughput (frames/s)
+    uint32_t last_ft_us;                     // last measured per-frame render time (microseconds)
+    int last_cubes;                          // cubes rendered per frame (fill load)
 } voxel_ctx_t;
 
 // Map a SCREEN grid position (the iso layout is fixed) to the DATA cell it shows,
@@ -94,6 +109,10 @@ void* voxel_create_ctx(void) {
     c->dirty = 0;
     c->seed = 0x2f6e6479u;
     c->view = 0;
+    c->bench = 0;
+    c->last_fps = 0;
+    c->last_ft_us = 0;
+    c->last_cubes = 0;
     return c;
 }
 
@@ -175,23 +194,39 @@ void voxel_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     };
     for (unsigned i = 0; i < sizeof(stars) / sizeof(stars[0]); i++)
         fb_fill_rect(cx + stars[i][0], cy + stars[i][1], 2, 2, fb_rgb(220, 220, 245));
-    disc(cx + 430, cy + 40, 16, fb_rgb(212, 202, 240));
+    disc(cx + 250, cy + 40, 14, fb_rgb(212, 202, 240));   // moon (clear of the top-right perf HUD)
 
-    // Terrain, back-to-front (row by row, each column bottom-up).
+    // Terrain, back-to-front (row by row, each column bottom-up). In benchmark mode
+    // the whole terrain pass is rendered VOXEL_BENCH_REPS times and timed so the HUD
+    // can report the renderer's raw throughput; otherwise it renders exactly once.
     const int origin_x = cx + VX_OX;
     const int origin_y = cy + VX_OY;
-    for (int gy = 0; gy < VX_N; gy++) {
-        for (int gx = 0; gx < VX_N; gx++) {
-            int sx, sy; rot_cell(c->view, gx, gy, &sx, &sy);   // orientation-mapped data cell
-            int H = c->height[sy][sx];
-            for (int gz = 0; gz < H; gz++) {
-                int ty = c->col[sy][sx][gz];
-                if (ty < 0 || ty >= NTYPES) ty = 1;
-                int ox = origin_x + (gx - gy) * VX_W;
-                int oy = origin_y + (gx + gy) * VX_T - gz * VX_HH;
-                iso_cube(ox, oy, g_types[ty].top, g_types[ty].left, g_types[ty].right);
+    int cubes = 0;
+    int reps = c->bench ? VOXEL_BENCH_REPS : 1;
+    uint32_t t0 = get_ticks();
+    for (int rep = 0; rep < reps; rep++) {
+        cubes = 0;
+        for (int gy = 0; gy < VX_N; gy++) {
+            for (int gx = 0; gx < VX_N; gx++) {
+                int sx, sy; rot_cell(c->view, gx, gy, &sx, &sy);   // orientation-mapped data cell
+                int H = c->height[sy][sx];
+                for (int gz = 0; gz < H; gz++) {
+                    int ty = c->col[sy][sx][gz];
+                    if (ty < 0 || ty >= NTYPES) ty = 1;
+                    int ox = origin_x + (gx - gy) * VX_W;
+                    int oy = origin_y + (gx + gy) * VX_T - gz * VX_HH;
+                    iso_cube(ox, oy, g_types[ty].top, g_types[ty].left, g_types[ty].right);
+                    cubes++;
+                }
             }
         }
+    }
+    uint32_t elapsed = get_ticks() - t0;
+    c->last_cubes = cubes;
+    if (c->bench) {
+        if (elapsed == 0) elapsed = 1;                          // 1 ms clock-resolution floor
+        c->last_fps   = (uint32_t)reps * 1000u / elapsed;       // frames the renderer can push
+        c->last_ft_us = elapsed * 1000u / (uint32_t)reps;       // per-frame render time (us)
     }
 
     // Title + palette bar (drawn last, over the sky).
@@ -212,8 +247,29 @@ void voxel_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
             fb_fill_rect(sx + PAL_SW, sy - 2, 2, PAL_SW + 4, hl);
         }
     }
+    // Perf HUD (top-right) — the 3D-render performance-testing readout (P4).
+    {
+        int hx = cx + VOXEL_W - 152, hy = cy + 8;
+        int hh = c->bench ? 84 : 52;
+        char line[40];
+        fb_fill_rect(hx - 8, hy - 4, 152, hh, fb_rgb(18, 14, 32));   // panel backdrop
+        fb_fill_rect(hx - 8, hy - 4, 152, 1,  fb_rgb(70, 58, 104));  // top edge
+        font_draw_string_trans(hx, hy, c->bench ? "BENCH  ON" : "BENCH  off",
+                               c->bench ? fb_rgb(150, 240, 160) : fb_rgb(184, 178, 210));
+        snprintf(line, sizeof(line), "cubes %d", c->last_cubes);
+        font_draw_string_trans(hx, hy + 16, line, fb_rgb(222, 216, 242));
+        snprintf(line, sizeof(line), "world %dx%d  v%d", VX_N, VX_N, c->view);
+        font_draw_string_trans(hx, hy + 32, line, fb_rgb(222, 216, 242));
+        if (c->bench) {
+            snprintf(line, sizeof(line), "frame %u.%02u ms",
+                     c->last_ft_us / 1000u, (c->last_ft_us % 1000u) / 10u);
+            font_draw_string_trans(hx, hy + 52, line, fb_rgb(255, 232, 150));
+            snprintf(line, sizeof(line), "render FPS %u", c->last_fps);
+            font_draw_string_trans(hx, hy + 68, line, fb_rgb(255, 232, 150));
+        }
+    }
     font_draw_string_trans(cx + 10, cy + VOXEL_H - 22,
-                           "mouse L place  R break   keys 1-6 G gen R rot", fb_rgb(182, 176, 208));
+                           "L place  R break   1-6 pick  G gen  R rot  B bench", fb_rgb(182, 176, 208));
 }
 
 // Map a client click to the grid cell whose TOP face is under it (front-to-back,
@@ -276,13 +332,19 @@ void voxel_win_key(window_t* win, int key) {
         c->view = (c->view + 1) & 3;
         c->dirty = 1;
     }
+    else if (key == 'b' || key == 'B') {           // toggle the benchmark HUD (perf testbed)
+        c->bench = !c->bench;
+        c->dirty = 1;
+    }
 }
 
 // Repaint once after an edit (the right-click path does not force a redraw, and
 // the scene is otherwise static, so a dirty-gated tick covers clicks and keys).
 int voxel_win_tick(window_t* win) {
     voxel_ctx_t* c = (voxel_ctx_t*)win->reserved;
-    if (!c || !c->dirty) return 0;
+    if (!c) return 0;
+    if (c->bench) return 1;        // benchmark: repaint every tick for a live throughput read
+    if (!c->dirty) return 0;
     c->dirty = 0;
     return 1;
 }
