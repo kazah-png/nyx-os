@@ -105,14 +105,21 @@ void mouse_irq_handler(void* unused) {
         packet_idx = 0;
 
         mouse_buttons = packet[0] & 0x07;
-        int dx = (int)(int8_t)packet[1];
-        int dy = -(int)(int8_t)packet[2];
-        mouse_x += dx;
-        mouse_y += dy;
-        if (mouse_x < 0) mouse_x = 0;
-        if (mouse_y < 0) mouse_y = 0;
-        if (mouse_x > 4095) mouse_x = 4095;
-        if (mouse_y > 4095) mouse_y = 4095;
+
+        // Bits 6/7 of byte 0 are the X/Y overflow flags: when either is set the
+        // movement counters wrapped and dx/dy are meaningless (QEMU raises them on
+        // a large/fast jump), so keep the button state but DROP the movement this
+        // packet rather than teleport the cursor. Buttons (bits 0-2) stay valid.
+        if (!(packet[0] & 0xC0)) {
+            int dx = (int)(int8_t)packet[1];
+            int dy = -(int)(int8_t)packet[2];
+            mouse_x += dx;
+            mouse_y += dy;
+            if (mouse_x < 0) mouse_x = 0;
+            if (mouse_y < 0) mouse_y = 0;
+            if (mouse_x > 4095) mouse_x = 4095;
+            if (mouse_y > 4095) mouse_y = 4095;
+        }
 
         if (mouse_has_wheel) {
             // 4th byte: signed Z in the low nibble (buttons 4/5 in bits 4-5 ignored).
