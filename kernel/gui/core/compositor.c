@@ -1831,6 +1831,14 @@ static void about_draw_fn(window_t* win, int cx, int cy, uint32_t cw, uint32_t c
 
 enum { SETTINGS_TAB_INFO, SETTINGS_TAB_DISPLAY, SETTINGS_TAB_KEYBOARD };
 
+/* Settings layout — the button-row Y offsets (content-relative) are shared
+ * between the draw fn and the click hit-test so they can never drift again: the
+ * click handler used cy+48 while draw placed the buttons at cy+84 / cy+88, so
+ * every Resolution and Keyboard-layout button click missed and did nothing. */
+#define SETTINGS_RES_BTN_Y  84   /* Display tab: Resolution buttons row           */
+#define SETTINGS_KBD_BTN_Y  88   /* Keyboard tab: US / ES layout buttons row       */
+#define SETTINGS_BTN_H      26
+
 static void settings_draw_fn(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     (void)cw; (void)ch;
     int* tab = win->reserved ? (int*)win->reserved : NULL;
@@ -1875,7 +1883,8 @@ static void settings_draw_fn(window_t* win, int cx, int cy, uint32_t cw, uint32_
         font_draw_string(cx + 10, y, "Resolution:", fb_rgb(220,220,220), fb_rgb(30,30,35)); y += 20;
 
         const char* res_buttons[] = {"640x480", "800x600", "1024x768", "1280x720"};
-        int btn_w = 110, btn_h = 26;
+        int btn_w = 110, btn_h = SETTINGS_BTN_H;
+        y = cy + SETTINGS_RES_BTN_Y;   // authoritative row Y (shared with the hit-test)
         for (int i = 0; i < 4; i++) {
             int bx = cx + 10 + i * (btn_w + 8);
             uint32_t bg = fb_rgb(60,70,80);
@@ -1884,21 +1893,23 @@ static void settings_draw_fn(window_t* win, int cx, int cy, uint32_t cw, uint32_
                              y + (btn_h - char_h) / 2, res_buttons[i], fb_rgb(220,220,220), bg);
         }
         y += btn_h + 12;
-        font_draw_string(cx + 10, y, "Current: 1024x768@32bpp", fb_rgb(160,160,160), fb_rgb(30,30,35));
+        snprintf(buf, sizeof(buf), "Current: %u x %u @ 32bpp", fb_get_width(), fb_get_height());
+        font_draw_string(cx + 10, y, buf, fb_rgb(160,160,160), fb_rgb(30,30,35));
     } else if (cur_tab == SETTINGS_TAB_KEYBOARD) {
         font_draw_string(cx + 10, y, "Keyboard Layout", fb_rgb(100,200,100), fb_rgb(30,30,35));
         y += 24;
         const char* layout_name = keyboard_layout == 0 ? "US (QWERTY)" : "Spanish (ES)";
         snprintf(buf, sizeof(buf), "Current: %s", layout_name);
-        font_draw_string(cx + 10, y, buf, fb_rgb(220,220,220), fb_rgb(30,30,35)); y += 24;
+        font_draw_string(cx + 10, y, buf, fb_rgb(220,220,220), fb_rgb(30,30,35));
+        y = cy + SETTINGS_KBD_BTN_Y;   // authoritative row Y (shared with the hit-test)
         // US button
         uint32_t us_bg = (keyboard_layout == 0) ? fb_rgb(50,90,50) : fb_rgb(60,70,80);
-        fb_fill_rect(cx + 10, y, 120, 26, us_bg);
-        font_draw_string(cx + 10 + (120 - 2 * FONT_WIDTH) / 2, y + (26 - char_h) / 2, "US", fb_rgb(220,220,220), us_bg);
+        fb_fill_rect(cx + 10, y, 120, SETTINGS_BTN_H, us_bg);
+        font_draw_string(cx + 10 + (120 - 2 * FONT_WIDTH) / 2, y + (SETTINGS_BTN_H - char_h) / 2, "US", fb_rgb(220,220,220), us_bg);
         // ES button
         uint32_t es_bg = (keyboard_layout == 1) ? fb_rgb(50,90,50) : fb_rgb(60,70,80);
-        fb_fill_rect(cx + 140, y, 120, 26, es_bg);
-        font_draw_string(cx + 140 + (120 - 2 * FONT_WIDTH) / 2, y + (26 - char_h) / 2, "ES", fb_rgb(220,220,220), es_bg);
+        fb_fill_rect(cx + 140, y, 120, SETTINGS_BTN_H, es_bg);
+        font_draw_string(cx + 140 + (120 - 2 * FONT_WIDTH) / 2, y + (SETTINGS_BTN_H - char_h) / 2, "ES", fb_rgb(220,220,220), es_bg);
     }
 }
 
@@ -1920,9 +1931,9 @@ static void settings_win_click(window_t* win, int mx, int my, int btn) {
     }
 
     if (*tab == SETTINGS_TAB_DISPLAY) {
-        // Resolution buttons
-        int y = cy + 48;
-        int btn_w = 110, btn_h = 26;
+        // Resolution buttons — Y shared with the draw fn so they can't drift.
+        int y = cy + SETTINGS_RES_BTN_Y;
+        int btn_w = 110, btn_h = SETTINGS_BTN_H;
         struct { uint32_t w, h; } res_modes[] = {{640,480},{800,600},{1024,768},{1280,720}};
         for (int i = 0; i < 4; i++) {
             int bx = cx + 10 + i * (btn_w + 8);
@@ -1935,9 +1946,9 @@ static void settings_win_click(window_t* win, int mx, int my, int btn) {
             }
         }
     } else if (*tab == SETTINGS_TAB_KEYBOARD) {
-        int y = cy + 48;
+        int y = cy + SETTINGS_KBD_BTN_Y;
         // US button
-        if (mx >= cx + 10 && mx < cx + 130 && my >= y && my < y + 26) {
+        if (mx >= cx + 10 && mx < cx + 130 && my >= y && my < y + SETTINGS_BTN_H) {
             if (keyboard_layout != 0) {
                 set_keyboard_layout(0);
                 printf("[SETTINGS] Keyboard layout: US\n");
@@ -1945,7 +1956,7 @@ static void settings_win_click(window_t* win, int mx, int my, int btn) {
             return;
         }
         // ES button
-        if (mx >= cx + 140 && mx < cx + 260 && my >= y && my < y + 26) {
+        if (mx >= cx + 140 && mx < cx + 260 && my >= y && my < y + SETTINGS_BTN_H) {
             if (keyboard_layout != 1) {
                 set_keyboard_layout(1);
                 printf("[SETTINGS] Keyboard layout: ES\n");
