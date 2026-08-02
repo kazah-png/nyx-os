@@ -1839,6 +1839,22 @@ enum { SETTINGS_TAB_INFO, SETTINGS_TAB_DISPLAY, SETTINGS_TAB_KEYBOARD };
 #define SETTINGS_KBD_BTN_Y  88   /* Keyboard tab: US / ES layout buttons row       */
 #define SETTINGS_BTN_H      26
 
+// Resolution modes offered in Settings -> Display. ONE table, used by BOTH the
+// draw fn (a 4-column grid) and the click hit-test, so the button geometry can
+// never drift. Adding a mode here adds a button AND makes it clickable.
+typedef struct { const char* label; uint16_t w, h; } res_mode_t;
+static const res_mode_t g_res_modes[] = {
+    {"1024x768", 1024, 768},  {"1280x720", 1280, 720},
+    {"1280x1024", 1280, 1024},{"1366x768", 1366, 768},
+    {"1440x900", 1440, 900},  {"1600x900", 1600, 900},
+    {"1680x1050", 1680, 1050},{"1920x1080", 1920, 1080},
+};
+#define RES_MODE_N   (int)(sizeof(g_res_modes) / sizeof(g_res_modes[0]))
+#define RES_COLS     4
+#define RES_BTN_W    110
+#define RES_BTN_GAP  8
+#define RES_ROW_GAP  6
+
 static void settings_draw_fn(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     (void)cw; (void)ch;
     int* tab = win->reserved ? (int*)win->reserved : NULL;
@@ -1882,17 +1898,21 @@ static void settings_draw_fn(window_t* win, int cx, int cy, uint32_t cw, uint32_
         y += 24;
         font_draw_string(cx + 10, y, "Resolution:", fb_rgb(220,220,220), fb_rgb(30,30,35)); y += 20;
 
-        const char* res_buttons[] = {"640x480", "800x600", "1024x768", "1280x720"};
-        int btn_w = 110, btn_h = SETTINGS_BTN_H;
-        y = cy + SETTINGS_RES_BTN_Y;   // authoritative row Y (shared with the hit-test)
-        for (int i = 0; i < 4; i++) {
-            int bx = cx + 10 + i * (btn_w + 8);
-            uint32_t bg = fb_rgb(60,70,80);
-            fb_fill_rect(bx, y, btn_w, btn_h, bg);
-            font_draw_string(bx + (btn_w - strlen(res_buttons[i]) * FONT_WIDTH) / 2,
-                             y + (btn_h - char_h) / 2, res_buttons[i], fb_rgb(220,220,220), bg);
+        // Resolution grid (RES_COLS columns). Row Y + geometry are shared with the
+        // click hit-test (g_res_modes + the RES_*/SETTINGS_* constants); the active
+        // mode is highlighted green.
+        for (int i = 0; i < RES_MODE_N; i++) {
+            int col = i % RES_COLS, row = i / RES_COLS;
+            int bx = cx + 10 + col * (RES_BTN_W + RES_BTN_GAP);
+            int by = cy + SETTINGS_RES_BTN_Y + row * (SETTINGS_BTN_H + RES_ROW_GAP);
+            int cur = (fb_get_width() == g_res_modes[i].w && fb_get_height() == g_res_modes[i].h);
+            uint32_t bg = cur ? fb_rgb(50,90,50) : fb_rgb(60,70,80);
+            fb_fill_rect(bx, by, RES_BTN_W, SETTINGS_BTN_H, bg);
+            font_draw_string(bx + (RES_BTN_W - (int)strlen(g_res_modes[i].label) * FONT_WIDTH) / 2,
+                             by + (SETTINGS_BTN_H - (int)char_h) / 2, g_res_modes[i].label, fb_rgb(220,220,220), bg);
         }
-        y += btn_h + 12;
+        int rrows = (RES_MODE_N + RES_COLS - 1) / RES_COLS;
+        y = cy + SETTINGS_RES_BTN_Y + rrows * (SETTINGS_BTN_H + RES_ROW_GAP) + 6;
         snprintf(buf, sizeof(buf), "Current: %u x %u @ 32bpp", fb_get_width(), fb_get_height());
         font_draw_string(cx + 10, y, buf, fb_rgb(160,160,160), fb_rgb(30,30,35));
     } else if (cur_tab == SETTINGS_TAB_KEYBOARD) {
@@ -1931,17 +1951,15 @@ static void settings_win_click(window_t* win, int mx, int my, int btn) {
     }
 
     if (*tab == SETTINGS_TAB_DISPLAY) {
-        // Resolution buttons — Y shared with the draw fn so they can't drift.
-        int y = cy + SETTINGS_RES_BTN_Y;
-        int btn_w = 110, btn_h = SETTINGS_BTN_H;
-        struct { uint32_t w, h; } res_modes[] = {{640,480},{800,600},{1024,768},{1280,720}};
-        for (int i = 0; i < 4; i++) {
-            int bx = cx + 10 + i * (btn_w + 8);
-            if (mx >= bx && mx < bx + btn_w && my >= y && my < y + btn_h) {
-                // Set resolution
-                // Note this runs while Settings is the window handling the click,
-                // so the window doing the switching is itself re-flowed.
-                display_set_mode(res_modes[i].w, res_modes[i].h);
+        // Resolution grid — geometry shared with the draw fn (g_res_modes + RES_*).
+        // display_set_mode re-flows this very window; that is fine (it re-lays out on
+        // the next paint).
+        for (int i = 0; i < RES_MODE_N; i++) {
+            int col = i % RES_COLS, row = i / RES_COLS;
+            int bx = cx + 10 + col * (RES_BTN_W + RES_BTN_GAP);
+            int by = cy + SETTINGS_RES_BTN_Y + row * (SETTINGS_BTN_H + RES_ROW_GAP);
+            if (mx >= bx && mx < bx + RES_BTN_W && my >= by && my < by + SETTINGS_BTN_H) {
+                display_set_mode(g_res_modes[i].w, g_res_modes[i].h);
                 return;
             }
         }

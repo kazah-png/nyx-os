@@ -19,7 +19,7 @@
 #define VBE_DISPI_ID4  0xB0C4
 
 #define LFB_VIRT_BASE 0xE0000000UL
-#define MAX_FB_PAGES  1024
+#define MAX_FB_PAGES  2048   /* 8 MB LFB window — covers up to 1920x1080x32 */
 
 static int vbe_initialized = 0;
 uint32_t vbe_width = 0;
