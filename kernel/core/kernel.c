@@ -98,6 +98,8 @@ static void cmd_ifconfig(int argc, char** argv);
 static void cmd_ping(int argc, char** argv);
 static void cmd_kill(int argc, char** argv);
 static void cmd_which(int argc, char** argv);
+static void cmd_basename(int argc, char** argv);
+static void cmd_dirname(int argc, char** argv);
 static void cmd_head(int argc, char** argv);
 static void cmd_tree(int argc, char** argv);
 static void cmd_env(int argc, char** argv);
@@ -210,6 +212,8 @@ static const command_t commands[] = {
     {"ping",      cmd_ping,      "Ping a host: ping <ip|hostname>", false},
     {"kill",      cmd_kill,      "Kill a process: kill <pid>", false},
     {"which",     cmd_which,     "Show path of a command: which <name>", false},
+    {"basename",  cmd_basename,  "Strip directory (and suffix) from a path: basename <path> [suffix]", false},
+    {"dirname",   cmd_dirname,   "Strip the last component from a path: dirname <path>", false},
     {"head",      cmd_head,      "Show first lines of a file: head <file> [lines]", false},
     {"tree",      cmd_tree,      "Show filesystem tree: tree [path]", false},
     {"env",       cmd_env,       "Show environment variables", false},
@@ -534,6 +538,53 @@ static void cmd_echo(int argc, char** argv) {
         }
         printf("\n");
     }
+}
+
+// basename PATH [SUFFIX] — POSIX: strip the directory prefix (and an optional
+// trailing SUFFIX) from PATH. Matches GNU: "/usr/lib"->"lib", "/usr/"->"usr",
+// "/"->"/", ""->"" (empty line), "/a/b.txt" ".txt"->"b". The suffix is only
+// removed when it is a proper (shorter) suffix, so `basename .txt .txt` keeps
+// ".txt". Works on a bounded local copy — the argv strings come from the fixed
+// command-line buffer, but the copy makes the length cap explicit.
+static void cmd_basename(int argc, char** argv) {
+    if (argc < 2) { printf("usage: basename <path> [suffix]\n"); return; }
+    const char* src = argv[1];
+    if (src[0] == '\0') { printf("\n"); return; }        // GNU basename "" -> empty line
+    char buf[256];
+    size_t n = strlen(src);
+    if (n >= sizeof(buf)) n = sizeof(buf) - 1;
+    memcpy(buf, src, n); buf[n] = '\0';
+    int len = (int)n;
+    while (len > 0 && buf[len - 1] == '/') buf[--len] = '\0';   // drop trailing slashes
+    if (len == 0) { printf("/\n"); return; }             // input was all slashes
+    char* base = buf;
+    for (int i = 0; i < len; i++) if (buf[i] == '/') base = &buf[i + 1];
+    if (argc >= 3 && argv[2][0]) {                       // optional suffix removal
+        int bl = (int)strlen(base), sl = (int)strlen(argv[2]);
+        if (sl < bl && strcmp(base + bl - sl, argv[2]) == 0) base[bl - sl] = '\0';
+    }
+    printf("%s\n", base);
+}
+
+// dirname PATH — POSIX: strip the last component from PATH. Matches GNU:
+// "/usr/lib"->"/usr", "/usr/"->"/", "usr"->".", "/"->"/", ""->".", "a/b/c"->"a/b".
+static void cmd_dirname(int argc, char** argv) {
+    if (argc < 2) { printf("usage: dirname <path>\n"); return; }
+    const char* src = argv[1];
+    if (src[0] == '\0') { printf(".\n"); return; }
+    char buf[256];
+    size_t n = strlen(src);
+    if (n >= sizeof(buf)) n = sizeof(buf) - 1;
+    memcpy(buf, src, n); buf[n] = '\0';
+    int len = (int)n;
+    while (len > 1 && buf[len - 1] == '/') buf[--len] = '\0';   // trailing slashes (keep a lone '/')
+    int last = -1;
+    for (int i = 0; i < len; i++) if (buf[i] == '/') last = i;
+    if (last < 0)  { printf(".\n"); return; }            // no slash -> current dir
+    if (last == 0) { printf("/\n"); return; }            // slash only at root
+    buf[last] = '\0';
+    while (last > 1 && buf[last - 1] == '/') buf[--last] = '\0';  // collapse trailing slashes of the result
+    printf("%s\n", buf);
 }
 
 static void cmd_reboot(int argc, char** argv) {
