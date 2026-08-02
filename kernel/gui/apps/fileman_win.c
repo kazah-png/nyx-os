@@ -360,12 +360,47 @@ static void fm_draw_folder_icon(int x, int y, int rowh) {
     fb_fill_rect(x, iy + ih - 1, iw, 1, dark);        // bottom shade
 }
 
-static void fm_draw_file_icon(int x, int y, int rowh) {
+// Case-insensitive extension compare; returns 0 when equal.
+static int fm_extcmp(const char* a, const char* b) {
+    while (*a && *b) {
+        char ca = *a, cb = *b;
+        if (ca >= 'A' && ca <= 'Z') ca += 32;
+        if (cb >= 'A' && cb <= 'Z') cb += 32;
+        if (ca != cb) return ca - cb;
+        a++; b++;
+    }
+    return *a - *b;
+}
+
+// Tint the document icon by file type, so a listing reads like a modern file
+// manager: executables green, objects amber, source blue, images pink, text/data
+// their own greys — everything else a neutral page.
+static uint32_t fm_file_accent(const char* name) {
+    int n = 0; while (name[n]) n++;
+    const char* ext = 0;
+    for (int i = n - 1; i >= 0 && name[i] != '/'; i--)
+        if (name[i] == '.') { ext = name + i + 1; break; }
+    if (!ext || !ext[0]) return fb_rgb(208,213,223);
+    if (!fm_extcmp(ext, "elf")) return fb_rgb(150,205,140);                 // executable
+    if (!fm_extcmp(ext, "o"))   return fb_rgb(228,190,130);                 // object
+    if (!fm_extcmp(ext, "c")  || !fm_extcmp(ext, "h")   || !fm_extcmp(ext, "asm") ||
+        !fm_extcmp(ext, "nyx")|| !fm_extcmp(ext, "sh")  || !fm_extcmp(ext, "py"))
+        return fb_rgb(150,180,235);                                        // source
+    if (!fm_extcmp(ext, "png")|| !fm_extcmp(ext, "bmp") || !fm_extcmp(ext, "gif") ||
+        !fm_extcmp(ext, "jpg")|| !fm_extcmp(ext, "jpeg")|| !fm_extcmp(ext, "ppm"))
+        return fb_rgb(212,160,225);                                        // image
+    if (!fm_extcmp(ext, "gz") || !fm_extcmp(ext, "tar") || !fm_extcmp(ext, "img") ||
+        !fm_extcmp(ext, "iso")|| !fm_extcmp(ext, "wav"))
+        return fb_rgb(220,205,140);                                        // archive/data
+    return fb_rgb(208,213,223);                                            // text / other
+}
+
+static void fm_draw_file_icon(int x, int y, int rowh, uint32_t page) {
     const int iw = 10, ih = 12;
     int ix = x + 2, iy = y + (rowh - ih) / 2;
-    uint32_t page = fb_rgb(208,213,223), edge = fb_rgb(150,156,168), fold = fb_rgb(120,128,142);
-    fb_fill_rect(ix, iy, iw, ih, page);               // page body
-    fb_fill_rect(ix, iy, iw, 1, fb_rgb(238,241,248)); // top highlight
+    uint32_t edge = fb_rgb(108,114,128), fold = fb_rgb(86,92,106);   // dark, so lines read on any tint
+    fb_fill_rect(ix, iy, iw, ih, page);               // page body (type-tinted)
+    fb_fill_rect(ix, iy, iw, 1, fb_rgb(245,247,250)); // top highlight
     fb_fill_rect(ix + iw - 3, iy, 3, 3, fold);        // folded top-right corner
     fb_fill_rect(ix + 2, iy + 4, iw - 4, 1, edge);    // faint text lines
     fb_fill_rect(ix + 2, iy + 6, iw - 4, 1, edge);
@@ -447,7 +482,7 @@ void fileman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
         fb_fill_rect(cx + 2, ey, (uint32_t)(list_w - 4), char_h, bg);
 
         if (fm->entry_types[ei]) fm_draw_folder_icon(cx + 4, ey, (int)char_h);
-        else                     fm_draw_file_icon(cx + 4, ey, (int)char_h);
+        else                     fm_draw_file_icon(cx + 4, ey, (int)char_h, fm_file_accent(fm->entries[ei]));
         uint32_t fg = fm->entry_types[ei] ? fb_rgb(100,200,255) : THEME_TEXT;
         font_draw_string(cx + 4 + 16, ey, fm->entries[ei], fg, bg);
         // Right-aligned Size column: byte count for files, "<DIR>" for folders.
