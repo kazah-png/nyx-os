@@ -2526,7 +2526,19 @@ void compositor_run(void) {
                     }
                 }
 
-                if (hit) {
+                /* Window actions are EDGE-triggered: focus, close, min/max and
+                 * starting a drag/resize fire only on the PRESS, never on the held
+                 * frames that follow. Before this gate the block re-ran every
+                 * compositor frame while the button was down, so the instant a top
+                 * window was closed (or slid out from under the pointer mid-drag)
+                 * the next frame re-hit-tested, focused the window now underneath
+                 * and delivered the click to IT — the "close/move goes to the app
+                 * below" bug (issue #44). Drag/resize CONTINUATION is handled above
+                 * via the persistent drag_id/resize_id, so nothing here has to run
+                 * while held except feeding a held press to the window that already
+                 * OWNS it (paint-style drag) — and that goes to the focused window
+                 * under the pointer only, never a freshly re-picked one. */
+                if (hit && pressed) {
                     window_focus(hit->id);
                     redraw = 1;
 
@@ -2552,14 +2564,28 @@ void compositor_run(void) {
                             hit->resize_start_w = hit->w;
                             hit->resize_start_h = hit->h;
                             resize_id = hit->id;
-                        } else if (hit->on_click && prev_btns != btns) {
-                            hit->on_click(hit, mx, my, 1);
-                            redraw = 1;
+                        } else {
+                            if (hit->on_click) {
+                                hit->on_click(hit, mx, my, 1);
+                                redraw = 1;
+                            }
+                            if (hit->on_pressed) {
+                                hit->on_pressed(hit, mx, my, 1);
+                                redraw = 1;
+                            }
                         }
-                        if (hit->on_pressed) {
-                            hit->on_pressed(hit, mx, my, 1);
-                            redraw = 1;
-                        }
+                    }
+                } else if (!pressed && !drag_id && !resize_id) {
+                    /* Button HELD (not a fresh press) and no drag/resize active:
+                     * deliver the continuous press only to the focused window that
+                     * still contains the pointer, in its CONTENT area (below the
+                     * title bar). Never re-pick — re-picking is what leaked the
+                     * click to lower windows once the top one closed/moved. */
+                    window_t* fw = find_window(focused_id);
+                    if (fw && fw->on_pressed && window_hit(fw, mx, my)
+                        && my >= fw->y + TITLE_H) {
+                        fw->on_pressed(fw, mx, my, 1);
+                        redraw = 1;
                     }
                 }
             }
