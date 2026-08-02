@@ -2001,7 +2001,14 @@ static void init_desktop_icons(void) {
     }
 }
 
+// Minimal desktop (user, 2026-08-02): the app-launcher icons live on the Start
+// menu now (every app is reachable there), so the desktop stays CLEAN by default.
+// This flag gates BOTH the icon drawing and hit-testing; a future Settings toggle
+// ("Show desktop icons") can flip it back on without touching the icon machinery.
+static int g_desktop_icons_visible = 0;
+
 static int desktop_icon_hit(int mx, int my) {
+    if (!g_desktop_icons_visible) return -1;   // clean desktop: no icons to hit
     uint32_t fh = fb_get_height();
     if (my >= (int)(fh - 36)) return -1;  // taskbar area
     for (int i = 0; i < NUM_DESKTOP_ICONS; i++) {
@@ -2159,6 +2166,7 @@ static void draw_icon_at(int i) {
 }
 
 static void draw_desktop_icons(void) {
+    if (!g_desktop_icons_visible) return;  // minimal desktop — apps live in the Start menu
     for (int i = 0; i < NUM_DESKTOP_ICONS; i++) {
         if (i == drag_icon_idx) continue; // drawn last on top
         draw_icon_at(i);
