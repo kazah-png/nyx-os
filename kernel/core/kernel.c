@@ -1192,6 +1192,20 @@ static int pkg_recipe_value(const char* buf, const char* key, char* out, int out
     return 0;
 }
 
+// A package name / recipe filename token must be a PLAIN name: non-empty, not
+// "."/".." and containing no '/' or whitespace. Values interpolated into the paths
+// and the `cc` command line — the CLI `name` (/usr/pkg/<name>/recipe) and the
+// recipe's `source:`/`bin:` fields (compile input + /mnt/bin/<bin> output) — are
+// validated with this, so a crafted name or recipe can't traverse out of /usr/pkg
+// or /mnt/bin (arbitrary read/write) nor inject extra `cc` arguments via a space.
+static int pkg_valid_name(const char* s) {
+    if (!s || !s[0]) return 0;
+    if (strcmp(s, ".") == 0 || strcmp(s, "..") == 0) return 0;
+    for (const char* p = s; *p; p++)
+        if (*p == '/' || *p == ' ' || *p == '\t') return 0;
+    return 1;
+}
+
 /* xbm — the NyxOS package manager (our pacman/apt), built on the in-OS `cc` toolchain.
  * A package lives at /usr/pkg/<name>/ with a `recipe` manifest (dead-simple `key: value`
  * lines: `source:` = the .c to build, `bin:` = the installed program name) plus its source.
@@ -1249,6 +1263,7 @@ static void cmd_xbm(int argc, char** argv) {
     if (strcmp(argv[1], "install") == 0) {
         if (argc < 3) { printf("Usage: %s install <name>\n", prog); return; }
         const char* name = argv[2];
+        if (!pkg_valid_name(name)) { printf("%s: invalid package name '%s'\n", prog, name); return; }
 
         char rpath[128];
         snprintf(rpath, sizeof(rpath), "/usr/pkg/%s/recipe", name);
@@ -1263,6 +1278,9 @@ static void cmd_xbm(int argc, char** argv) {
         char source[64], bin[64];
         if (!pkg_recipe_value(rbuf, "source", source, sizeof(source))) { printf("%s: recipe for '%s' is missing 'source'\n", prog, name); return; }
         if (!pkg_recipe_value(rbuf, "bin", bin, sizeof(bin)))          { printf("%s: recipe for '%s' is missing 'bin'\n", prog, name); return; }
+        if (!pkg_valid_name(source) || !pkg_valid_name(bin)) {
+            printf("%s: recipe for '%s' has an unsafe 'source'/'bin' name\n", prog, name); return;
+        }
 
         vfs_mkdir("/mnt/bin", 0755);   // ensure the install dir exists (harmless if it already does)
 
@@ -1281,6 +1299,7 @@ static void cmd_xbm(int argc, char** argv) {
     if (strcmp(argv[1], "remove") == 0 || strcmp(argv[1], "uninstall") == 0) {
         if (argc < 3) { printf("Usage: %s remove <name>\n", prog); return; }
         const char* name = argv[2];
+        if (!pkg_valid_name(name)) { printf("%s: invalid package name '%s'\n", prog, name); return; }
 
         // The installed binary's name comes from the recipe's `bin:` field; if the recipe
         // is missing, fall back to assuming the binary is named after the package.
@@ -1296,6 +1315,7 @@ static void cmd_xbm(int argc, char** argv) {
             if (n > 0) { rbuf[n] = '\0'; pkg_recipe_value(rbuf, "bin", bin, sizeof(bin)); }
         }
         if (bin[0] == '\0') { strncpy(bin, name, sizeof(bin) - 1); bin[sizeof(bin) - 1] = '\0'; }
+        if (!pkg_valid_name(bin)) { printf("%s: recipe for '%s' has an unsafe 'bin' name\n", prog, name); return; }
 
         char outp[128];
         snprintf(outp, sizeof(outp), "/mnt/bin/%s", bin);
