@@ -231,13 +231,20 @@ void terminal_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) 
     if (rows < 1) rows = 1;
     term->visible_rows = rows;
 
-    // Screen mode (full-screen TUI): the lines[] grid IS the screen, drawn from
-    // row 0. Normal mode: show the tail of the scrollback with the input line last.
+    // Screen mode (full-screen TUI): the lines[] grid IS the screen, drawn across
+    // all `rows`. Normal mode RESERVES the last visible row for the live input line,
+    // so the scrollback fills the `rows - 1` rows above it — and start_line is
+    // derived from that same count so the NEWEST scrollback line lands just above
+    // the input. (Before, the loop drew all `rows` lines, so the input row painted
+    // over the newest output line — the "terminal overwrites itself" bug — and
+    // start_line's off-by-one hid a second line above it.)
+    int sb_rows = term->screen_mode ? rows : rows - 1;
+    if (sb_rows < 1) sb_rows = 1;
     int start_line = term->screen_mode ? 0
-                     : term->line_count - rows - 1 - term->scroll_offset;
+                     : term->line_count - sb_rows - term->scroll_offset;
     if (start_line < 0) start_line = 0;
 
-    for (int r = 0; r < rows && start_line + r < term->line_count; r++) {
+    for (int r = 0; r < sb_rows && start_line + r < term->line_count; r++) {
         int li = start_line + r;
         int y = cy + r * char_h;
         for (int c = 0; c < cols; c++) {
