@@ -15,6 +15,7 @@ jobs:
   build:
     name: Compile, link and package the ISO
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v7
 
@@ -86,6 +87,7 @@ jobs:
     name: QEMU smoke boot (reaches login, no panic)
     needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Install QEMU and e2fsprogs
         run: |

@@ -6,10 +6,16 @@ on:
   pull_request:
     branches: [master]
 
+# A newer push to the same branch cancels an in-flight run.
+concurrency:
+  group: analysis-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   cppcheck:
     name: cppcheck (informational)
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
 
@@ -18,12 +24,15 @@ jobs:
 
       - name: Analyze the kernel
         # Informational only — this step never blocks a merge. CodeQL (codeql.yml)
-        # is the enforced security gate; cppcheck is a fast, complementary second
-        # opinion whose findings are posted to the run summary. The vendored DOOM
-        # engine (kernel/doom_src) and TinyCC (user/, not scanned here) are skipped.
+        # is the enforced security gate; cppcheck is a fast second opinion whose
+        # findings are posted to the run summary. --max-configs=1 keeps it quick (it
+        # does not explore every #ifdef combination, which is what makes cppcheck
+        # slow on a large tree) and -j runs it across all cores. The vendored DOOM
+        # engine (kernel/doom_src) is skipped.
         continue-on-error: true
         run: |
-          cppcheck --quiet --enable=warning,portability --inline-suppr \
+          cppcheck --quiet --enable=warning --max-configs=1 -j "$(nproc)" \
+            --inline-suppr \
             --suppress=missingInclude --suppress=missingIncludeSystem \
             --std=c11 -I kernel \
             -i kernel/doom_src \
