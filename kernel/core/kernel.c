@@ -104,6 +104,7 @@ static void cmd_dirname(int argc, char** argv);
 static void cmd_head(int argc, char** argv);
 static void cmd_rev(int argc, char** argv);
 static void cmd_tr(int argc, char** argv);
+static void cmd_fold(int argc, char** argv);
 static void cmd_tree(int argc, char** argv);
 static void cmd_env(int argc, char** argv);
 static void cmd_export(int argc, char** argv);
@@ -232,6 +233,7 @@ static const command_t commands[] = {
     {"sort",      cmd_sort,      "Sort lines of a file: sort [-rn] <file>", false},
     {"rev",       cmd_rev,       "Reverse the characters of each line: rev <file>", false},
     {"tr",        cmd_tr,        "Translate/delete/squeeze chars: tr [-ds] SET1 [SET2] <file>", false},
+    {"fold",      cmd_fold,      "Wrap long lines to a width: fold [-w width] <file>", false},
     {"wc",        cmd_wc,        "Count lines/words/chars: wc <file>", false},
     {"write",     cmd_write,     "Write text to file: write <file> <text>", false},
     {"dhcp",      cmd_dhcp,      "Request IP via DHCP", false},
@@ -500,6 +502,7 @@ static const man_page_t man_pages[] = {
     {"sort",     "Sort the lines of <file>. -r reverses the result; -n sorts numerically by the integer at the start of each line instead of alphabetically."},
     {"rev",      "Print each line of <file> with the order of its characters reversed."},
     {"tr",       "Translate, delete or squeeze characters read from <file>. With two sets, each character of <file> that appears in SET1 is replaced by the character at the same position in SET2 (a shorter SET2 repeats its last character). -d deletes every SET1 character instead; -s collapses each run of a repeated result character into one. Sets may use ascending ranges such as a-z or 0-9."},
+    {"fold",     "Wrap the lines of <file> so no output line is longer than the given width (80 by default, or -w width). A line longer than the width is broken with a hard newline at exactly that many characters; shorter lines and existing line breaks are left alone."},
     {"wc",       "Count the lines, words and characters in <file>. -l, -w or -c limit the output to just one of those counts."},
     {"basename", "Strip the directory prefix (and, if given, a trailing suffix) from <path>, printing only the final component."},
     {"dirname",  "Strip the final component from <path>, printing the directory portion that remains."},
@@ -870,6 +873,37 @@ static void cmd_tr(int argc, char** argv) {
         }
         putchar(out);
         last = out;
+    }
+}
+
+// fold [-w WIDTH] <file> — wrap each input line so no output line exceeds WIDTH
+// columns (default 80). A line longer than WIDTH is broken at exactly WIDTH
+// characters (classic `fold`: a hard break, no word boundaries); shorter lines and
+// the input's own newlines pass through unchanged. File-arg like rev/tr/wc.
+static void cmd_fold(int argc, char** argv) {
+    int width = 80, ai = 1;
+    if (ai < argc && argv[ai][0] == '-' && argv[ai][1] == 'w') {
+        if (argv[ai][2] != '\0') { width = atoi(argv[ai] + 2); ai++; }        // -wN
+        else if (ai + 1 < argc)  { width = atoi(argv[ai + 1]); ai += 2; }     // -w N
+        else { printf("Usage: fold [-w width] <file>\n"); return; }
+    }
+    if (width < 1) width = 1;
+    if (ai >= argc) { printf("Usage: fold [-w width] <file>\n"); return; }
+
+    int fd = vfs_open(argv[ai], 0, 0);
+    if (fd < 0) { printf("fold: cannot open '%s'\n", argv[ai]); return; }
+    char buf[2048];
+    int bytes = vfs_read(fd, buf, sizeof(buf) - 1);
+    vfs_close(fd);
+    if (bytes <= 0) return;
+
+    int col = 0;
+    for (int i = 0; i < bytes; i++) {
+        char c = buf[i];
+        if (c == '\n') { putchar('\n'); col = 0; continue; }   // keep real line breaks
+        if (col >= width) { putchar('\n'); col = 0; }          // hard-wrap before this char
+        putchar(c);
+        col++;
     }
 }
 
