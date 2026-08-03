@@ -6,6 +6,7 @@
 #include "../games/pong_win.h"
 #include "../games/voxel_win.h"
 #include "../games/fire_win.h"
+#include "../games/matrix_win.h"
 #include "../apps/fileman_win.h"
 #include "../apps/paint_win.h"
 #include "../apps/taskman_win.h"
@@ -1089,6 +1090,18 @@ void launch_fire(void) {
     w->reserved = fire_create_ctx();
     if (!w->reserved) { window_destroy(w->id); return; }
     w->on_tick = fire_win_tick;
+}
+
+// Open the Nyx Matrix window — the animated green "code rain" effect (a P4 visual
+// perf demo, and one of the /fire //matrix //lava effects from the user backlog).
+void launch_matrix(void) {
+    int px = ((int)fb_get_width()  - MATRIX_WIN_W) / 2;              if (px < 0) px = 0;
+    int py = ((int)fb_get_height() - MATRIX_WIN_H - TITLE_H) / 2;    if (py < 0) py = 0;
+    window_t* w = window_create(px, py, MATRIX_WIN_W, MATRIX_WIN_H, "Nyx Matrix", matrix_win_draw);
+    if (!w) return;
+    w->reserved = matrix_create_ctx();
+    if (!w->reserved) { window_destroy(w->id); return; }
+    w->on_tick = matrix_win_tick;
 }
 
 // Open a Snake window. In-kernel game like Pong: the compositor's game-tick steps it via

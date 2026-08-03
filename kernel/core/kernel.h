@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.4.56"
+#define KERNEL_VERSION "6.4.57"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -1026,6 +1026,7 @@ void launch_games_folder(void);         // open the "Games" desktop folder (comp
 void launch_selene(void);               // open Selene, the web browser (compositor.c)
 void launch_voxel(void);                // open Nyx Voxels, the voxel-scene window (compositor.c)
 void launch_fire(void);                 // open Nyx Fire, the animated doom-fire window (compositor.c)
+void launch_matrix(void);               // open Nyx Matrix, the green code-rain window (compositor.c)
 void launch_imageview(const char* path);// open the Image Viewer, optionally on a file (compositor.c)
 void launch_fileman(const char* path);  // open the File Manager, optionally at a directory (compositor.c)
 void reap_zombies(void);

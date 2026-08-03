@@ -130,6 +130,7 @@ static void cmd_doom(int argc, char** argv);
 static void cmd_pong(int argc, char** argv);
 static void cmd_voxel(int argc, char** argv);
 static void cmd_fire(int argc, char** argv);
+static void cmd_matrix(int argc, char** argv);
 static void cmd_snake(int argc, char** argv);
 static void cmd_tetris(int argc, char** argv);
 static void cmd_selene(int argc, char** argv);
@@ -245,6 +246,7 @@ static const command_t commands[] = {
     {"pong",      cmd_pong,      "Play Pong (mouse or arrows)", false},
     {"voxel",     cmd_voxel,     "Open Nyx Voxels (a voxel scene)", false},
     {"fire",      cmd_fire,      "Open Nyx Fire (animated doom-fire effect)", false},
+    {"matrix",    cmd_matrix,    "Open Nyx Matrix (green code-rain effect)", false},
     {"snake",     cmd_snake,     "Play Snake (arrows/WASD)", false},
     {"tetris",    cmd_tetris,    "Play Tetris (arrows, Space=drop)", false},
     {"selene",    cmd_selene,    "Open Selene, the web browser", false},
@@ -1474,6 +1476,12 @@ static void cmd_voxel(int argc, char** argv) {
 static void cmd_fire(int argc, char** argv) {
     (void)argc; (void)argv;
     launch_fire();
+}
+
+// `matrix` — open the Nyx Matrix window (green code-rain effect, compositor.c).
+static void cmd_matrix(int argc, char** argv) {
+    (void)argc; (void)argv;
+    launch_matrix();
 }
 
 // `snake` — open a Snake game window (in-kernel, compositor.c).
