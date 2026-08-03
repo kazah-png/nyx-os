@@ -1,5 +1,6 @@
 #include "../core/kernel.h"
 #include "dns.h"
+#include "../crypto/csprng.h"   // csprng_bytes() — random DNS transaction IDs (anti-spoof)
 
 #define DNS_PORT 53
 
@@ -22,6 +23,7 @@ typedef struct {
 
 static volatile int dns_response_ready = 0;
 static uint32_t dns_response_ip = 0;
+static uint16_t dns_query_id = 0;        // transaction ID of the outstanding query (host order)
 
 static void dns_response_handler(uint8_t* data, uint32_t len, uint32_t src_ip, uint16_t src_port) {
     (void)src_ip;
@@ -29,6 +31,11 @@ static void dns_response_handler(uint8_t* data, uint32_t len, uint32_t src_ip, u
     if (len < sizeof(dns_header_t)) return;
     dns_header_t* hdr = (dns_header_t*)data;
     if (!(ntohs(hdr->flags) & DNS_FLAG_QR)) return;
+    // Reject any response whose transaction ID does not match the query we sent.
+    // Without this a blind off-path attacker (or any host that reaches the UDP
+    // source port) could forge a reply and poison the answer; matching the random
+    // 16-bit ID is the standard first line of defence against DNS spoofing.
+    if (ntohs(hdr->id) != dns_query_id) return;
     uint16_t ancount = ntohs(hdr->ancount);
     if (ancount == 0) return;
 
@@ -136,7 +143,13 @@ uint32_t dns_resolve(const char* hostname, int iface_idx) {
     __builtin_memset(pkt, 0, sizeof(pkt));
 
     dns_header_t* hdr = (dns_header_t*)pkt;
-    hdr->id = htons(0x1234);
+    // Random transaction ID (not a fixed constant): a predictable ID lets an
+    // off-path attacker forge a matching response, so draw it from the CSPRNG and
+    // remember it for the response handler to check.
+    uint16_t qid = 0;
+    csprng_bytes((uint8_t*)&qid, sizeof(qid));
+    dns_query_id = qid;
+    hdr->id = htons(qid);
     hdr->flags = htons(0x0100);   // standard query, recursion desired
     hdr->qdcount = htons(1);      // was stored LE -> 256 questions on the wire
 
