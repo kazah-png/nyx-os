@@ -47,6 +47,11 @@ typedef struct {
     char props_path[320];
     uint32_t props_size;
     int props_is_dir;
+    // Directory summary (computed on refresh) for the status-bar totals — dir/file
+    // counts and the summed byte size of the files in the current directory.
+    int summ_dirs;
+    int summ_files;
+    uint32_t summ_bytes;
 } fileman_win_t;
 
 fileman_win_t* fileman_create_ctx(void);

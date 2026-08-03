@@ -129,6 +129,16 @@ void fileman_refresh(fileman_win_t* fm) {
     vfs_close(fd);
     fileman_sort(fm);        // directories first, then case-insensitive A-Z
     fm->sel_index = -1;      // a fresh read invalidates any prior selection index
+    // Directory totals for the status bar: count dirs vs files and sum the file
+    // bytes, skipping the "." / ".." self/parent links so they don't inflate the count.
+    fm->summ_dirs = 0; fm->summ_files = 0; fm->summ_bytes = 0;
+    for (int i = 0; i < fm->entry_count; i++) {
+        const char* nm = fm->entries[i];
+        if (nm[0] == '.' && (nm[1] == '\0' || (nm[1] == '.' && nm[2] == '\0')))
+            continue;                                   // skip "." and ".."
+        if (fm->entry_types[i]) fm->summ_dirs++;
+        else { fm->summ_files++; fm->summ_bytes += fm->entry_sizes[i]; }
+    }
     snprintf(fm->status, sizeof(fm->status), "%d entries", fm->entry_count);
     fileman_apply_search(fm);
 }
@@ -520,6 +530,16 @@ void fileman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
         font_draw_string(cx + 4, status_y + (HEADER_H - char_h) / 2, prompt, fb_rgb(255,255,100), THEME_PANEL_HEADER);
     } else {
         font_draw_string(cx + 4, status_y + (HEADER_H - char_h) / 2, fm->status, fb_rgb(180,180,180), THEME_PANEL_HEADER);
+        // Right-aligned directory totals (a modern file-manager status bar): dir/file
+        // counts and the summed file size, drawn only when there is room so it never
+        // collides with a long left-hand status/preview message.
+        char summ[48], szbuf[16];
+        fileman_fmt_size(fm->summ_bytes, szbuf, sizeof(szbuf));
+        snprintf(summ, sizeof(summ), "%d dirs, %d files, %s", fm->summ_dirs, fm->summ_files, szbuf);
+        int sx = cx + (int)cw - 6 - (int)strlen(summ) * FONT_WIDTH;
+        int left_end = cx + 4 + (int)strlen(fm->status) * FONT_WIDTH + 10;
+        if (sx > left_end)
+            font_draw_string(sx, status_y + (HEADER_H - char_h) / 2, summ, fb_rgb(150,170,200), THEME_PANEL_HEADER);
     }
 
     // Drag ghost
