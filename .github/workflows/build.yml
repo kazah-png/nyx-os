@@ -51,18 +51,24 @@ jobs:
           } >> "$GITHUB_STEP_SUMMARY"
           printf '%s\n' "$warns"
 
-      - name: Build the bootable ISO
+      - name: Build the bootable ISOs
         run: |
-          mkdir -p iso/boot/grub
-          printf '%s\n' \
-            'set timeout=5' \
-            'set default=0' \
-            "menuentry 'NyxOS' {" \
-            '    multiboot2 /boot/nyx-kernel.bin' \
-            '    boot' \
-            '}' > iso/boot/grub/grub.cfg
-          cp kernel/nyx-kernel.bin iso/boot/
-          grub-mkrescue -o NyxOS.iso iso/
+          # Two images from the same kernel: the normal ISO (boots to the desktop)
+          # and a self-test ISO whose GRUB entry adds the `selftest` multiboot command
+          # line, which makes the kernel run its offline self-test battery and halt
+          # (consumed by the self-tests job below).
+          make_iso() {   # $1 = kernel cmdline, $2 = staging dir, $3 = output iso
+            mkdir -p "$2/boot/grub"
+            printf '%s\n' \
+              'set timeout=5' 'set default=0' \
+              "menuentry 'NyxOS' {" \
+              "    multiboot2 /boot/nyx-kernel.bin $1" \
+              '    boot' '}' > "$2/boot/grub/grub.cfg"
+            cp kernel/nyx-kernel.bin "$2/boot/"
+            grub-mkrescue -o "$3" "$2"
+          }
+          make_iso ""         iso    NyxOS.iso
+          make_iso "selftest" iso-st NyxOS-selftest.iso
 
       - name: Report sizes
         run: |
@@ -81,6 +87,7 @@ jobs:
           path: |
             kernel/nyx-kernel.bin
             NyxOS.iso
+            NyxOS-selftest.iso
           if-no-files-found: error
 
   smoke-boot:
@@ -138,3 +145,59 @@ jobs:
             exit 1
           fi
           echo "OK: NyxOS booted cleanly to the login screen."
+
+  selftests:
+    name: Self-test battery (crypto + image decoders)
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - name: Install QEMU and e2fsprogs
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-system-x86 e2fsprogs
+
+      - name: Download the ISO
+        uses: actions/download-artifact@v4
+        with:
+          name: nyxos-build
+
+      - name: Create a blank ext2 disk
+        run: |
+          dd if=/dev/zero of=ext2-test.img bs=1M count=16 status=none
+          mkfs.ext2 -q -b 1024 -I 128 -O ^resize_inode,^dir_index,^ext_attr ext2-test.img
+
+      - name: Run the in-kernel self-test battery
+        run: |
+          # Boots the self-test ISO (kernel cmdline `selftest`): the kernel runs its
+          # offline known-answer tests — SHA-512, CSPRNG, AES-GCM, X25519, TLS PRF /
+          # key-schedule / record, DER, P-256/384, RSA, X.509, inflate, PNG/BMP/GIF/
+          # JPEG — prints a summary, then halts. Fails on any FAIL, a missing summary,
+          # or a kernel fault.
+          timeout 240 qemu-system-x86_64 \
+            -cdrom NyxOS-selftest.iso \
+            -drive file=ext2-test.img,format=raw,index=0,media=disk \
+            -m 512M -cpu qemu64,+rdrand,+rdseed \
+            -serial file:serial.log -display none -no-reboot &
+          QPID=$!
+          done=0
+          for i in $(seq 1 100); do
+            sleep 2
+            [ -f serial.log ] || continue
+            if grep -q 'SELFTEST-END' serial.log; then done=1; break; fi
+            if grep -Eq 'PANIC|Kernel panic|#PF|#GP|General Protection|Triple fault' serial.log; then
+              echo "::error::a kernel fault occurred during the self-tests"; break
+            fi
+          done
+          kill "$QPID" 2>/dev/null || true
+          echo '----- self-test output -----'
+          sed -n '/SELFTEST-BEGIN/,/SELFTEST-END/p' serial.log 2>/dev/null || true
+          summary=$(grep -E 'SELFTEST-SUMMARY' serial.log || true)
+          echo "summary: $summary"
+          if [ "$done" != "1" ] || [ -z "$summary" ]; then
+            echo "::error::the self-test battery did not complete"; exit 1
+          fi
+          if ! echo "$summary" | grep -q 'failed=0'; then
+            echo "::error::one or more in-kernel self-tests failed"; exit 1
+          fi
+          echo "OK: all in-kernel self-tests passed."

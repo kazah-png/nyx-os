@@ -3018,9 +3018,61 @@ static void enable_sse_fpu(void) {
     __asm__ volatile ("fninit"); // bring the x87 unit to a known state
 }
 
+// The offline known-answer self-tests (crypto + image decoders), each returning 0
+// on success. Declared here for run_selftests(); the cmd_* wrappers use the same
+// functions, so these match their existing header declarations.
+extern int sha512_selftest(void);
+extern int csprng_selftest(void);
+extern int aes_gcm_selftest(void);
+extern int curve25519_selftest(void);
+extern int tls_prf_selftest(void);
+extern int tls_keyschedule_selftest(void);
+extern int tls_record_selftest(void);
+extern int tls_ske_p384_selftest(void);
+extern int der_selftest(void);
+extern int p256_selftest(void);
+extern int p384_selftest(void);
+extern int rsa_selftest(void);
+extern int x509_selftest(void);
+extern int inflate_selftest(void);
+extern int png_selftest(void);
+extern int bmp_selftest(void);
+extern int gif_selftest(void);
+extern int jpeg_selftest(void);
+
+// Run the whole offline self-test battery, print a machine-readable summary, and
+// halt. Triggered ONLY by the "selftest" multiboot command line (used by CI); a
+// normal boot never calls this, so ordinary startup is unaffected. Each test is a
+// known-answer check that needs no disk, network, or user — just a warm kernel.
+static void run_selftests(void) {
+    struct { const char* name; int (*fn)(void); } t[] = {
+        {"sha512",       sha512_selftest},        {"csprng",        csprng_selftest},
+        {"aes_gcm",      aes_gcm_selftest},       {"curve25519",    curve25519_selftest},
+        {"tls_prf",      tls_prf_selftest},       {"tls_keysched",  tls_keyschedule_selftest},
+        {"tls_record",   tls_record_selftest},    {"tls_ske_p384",  tls_ske_p384_selftest},
+        {"der",          der_selftest},           {"p256",          p256_selftest},
+        {"p384",         p384_selftest},          {"rsa",           rsa_selftest},
+        {"x509",         x509_selftest},
+        {"inflate",      inflate_selftest},       {"png",           png_selftest},
+        {"bmp",          bmp_selftest},           {"gif",           gif_selftest},
+        {"jpeg",         jpeg_selftest},
+    };
+    int n = (int)(sizeof(t) / sizeof(t[0])), passed = 0, failed = 0;
+    serial_puts("SELFTEST-BEGIN\n");
+    for (int i = 0; i < n; i++) {
+        int rc = t[i].fn();
+        if (rc == 0) { passed++; printf("[SELFTEST] %-12s PASS\n", t[i].name); }
+        else         { failed++; printf("[SELFTEST] %-12s FAIL (rc=%d)\n", t[i].name, rc); }
+    }
+    printf("SELFTEST-SUMMARY passed=%d failed=%d total=%d\n", passed, failed, n);
+    serial_puts("SELFTEST-END\n");
+    for (;;) __asm__ volatile ("cli; hlt");   // halt so CI can read the log and stop QEMU
+}
+
 void kernel_main(uint64_t magic, void* mboot_ptr) {
     (void)magic;
     saved_mboot_ptr = mboot_ptr;
+    int selftest_mode = 0;   // set from the "selftest" multiboot command line (CI)
     init_screen();
     clear_screen();
 
@@ -3046,7 +3098,12 @@ void kernel_main(uint64_t magic, void* mboot_ptr) {
                 uint32_t type = *(uint32_t*)tag;
                 uint32_t size = *(uint32_t*)(tag + 4);
                 if (type == 0) break;
-                if (type == 4) {
+                if (type == 1) {
+                    // Boot command line (multiboot2 type 1): a NUL-terminated string
+                    // after the 8-byte tag header. A "selftest" token runs the offline
+                    // self-test battery before login (CI); normal boots pass no cmdline.
+                    if (strstr((const char*)(tag + 8), "selftest")) selftest_mode = 1;
+                } else if (type == 4) {
                     uint32_t mem_lower = *(uint32_t*)(tag + 8);
                     uint32_t mem_upper = *(uint32_t*)(tag + 12);
                     mem_total = (uint64_t)(mem_lower + mem_upper) * 1024;
@@ -3296,6 +3353,10 @@ void kernel_main(uint64_t magic, void* mboot_ptr) {
         // compositor_run() return with compositor_logout_requested set, so we tear the
         // desktop down (compositor_init frees its windows) and re-show the login — no
         // reboot. Any other exit (Shutdown) leaves the loop and reboots.
+        // CI hook: with the "selftest" multiboot cmdline, run the self-test battery
+        // (crypto + image decoders) and halt, instead of showing the login screen.
+        if (selftest_mode) run_selftests();
+
         for (;;) {
             fb_use_lfb_direct();          // login draws straight to the LFB (no back buffer)
             printf("[LOGIN] Starting login screen...\n");
