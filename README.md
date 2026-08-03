@@ -18,8 +18,6 @@
   <a href="https://github.com/kazah-png/nyx-os/actions/workflows/build.yml"><img src="https://github.com/kazah-png/nyx-os/actions/workflows/build.yml/badge.svg?branch=master" alt="Build kernel" /></a>
   &nbsp;
   <a href="https://github.com/kazah-png/nyx-os/actions/workflows/codeql.yml"><img src="https://github.com/kazah-png/nyx-os/actions/workflows/codeql.yml/badge.svg?branch=master" alt="CodeQL" /></a>
-  &nbsp;
-  <a href="https://github.com/kazah-png/nyx-os/actions/workflows/static-analysis.yml"><img src="https://github.com/kazah-png/nyx-os/actions/workflows/static-analysis.yml/badge.svg?branch=master" alt="Static analysis" /></a>
 </p>
 
 <p align="center">
