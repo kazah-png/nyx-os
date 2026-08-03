@@ -105,6 +105,7 @@ static void cmd_head(int argc, char** argv);
 static void cmd_rev(int argc, char** argv);
 static void cmd_tr(int argc, char** argv);
 static void cmd_fold(int argc, char** argv);
+static void cmd_printf(int argc, char** argv);
 static void cmd_tree(int argc, char** argv);
 static void cmd_env(int argc, char** argv);
 static void cmd_export(int argc, char** argv);
@@ -235,6 +236,7 @@ static const command_t commands[] = {
     {"rev",       cmd_rev,       "Reverse the characters of each line: rev <file>", false},
     {"tr",        cmd_tr,        "Translate/delete/squeeze chars: tr [-ds] SET1 [SET2] <file>", false},
     {"fold",      cmd_fold,      "Wrap long lines to a width: fold [-w width] <file>", false},
+    {"printf",    cmd_printf,    "Format and print: printf FORMAT [ARG...]", false},
     {"wc",        cmd_wc,        "Count lines/words/chars: wc <file>", false},
     {"write",     cmd_write,     "Write text to file: write <file> <text>", false},
     {"dhcp",      cmd_dhcp,      "Request IP via DHCP", false},
@@ -505,6 +507,7 @@ static const man_page_t man_pages[] = {
     {"rev",      "Print each line of <file> with the order of its characters reversed."},
     {"tr",       "Translate, delete or squeeze characters read from <file>. With two sets, each character of <file> that appears in SET1 is replaced by the character at the same position in SET2 (a shorter SET2 repeats its last character). -d deletes every SET1 character instead; -s collapses each run of a repeated result character into one. Sets may use ascending ranges such as a-z or 0-9."},
     {"fold",     "Wrap the lines of <file> so no output line is longer than the given width (80 by default, or -w width). A line longer than the width is broken with a hard newline at exactly that many characters; shorter lines and existing line breaks are left alone."},
+    {"printf",   "Print ARGs under the control of FORMAT (like the C/coreutil printf). FORMAT is reused as needed to consume all ARGs. It interprets backslash escapes (\\n \\t \\r \\a \\b \\f \\v \\\\) and the conversions %s %d %i %u %x %X %c %% with optional flags and field width (e.g. %-10s, %05d). Numeric ARGs are read as decimal. Unlike echo, printf never appends a trailing newline unless FORMAT contains one."},
     {"wc",       "Count the lines, words and characters in <file>. -l, -w or -c limit the output to just one of those counts."},
     {"basename", "Strip the directory prefix (and, if given, a trailing suffix) from <path>, printing only the final component."},
     {"dirname",  "Strip the final component from <path>, printing the directory portion that remains."},
@@ -908,6 +911,63 @@ static void cmd_fold(int argc, char** argv) {
         putchar(c);
         col++;
     }
+}
+
+// printf FORMAT [ARG...] — a formatting builtin like the coreutil/shell printf.
+// Interprets C backslash escapes in FORMAT (\n \t \r \a \b \f \v \\) and the
+// conversions %s %d %i %u %x %X %c %% (with optional flags/width such as %-10s or
+// %05d, passed straight through to the kernel formatter). ARGs fill the
+// conversions in order; numeric ARGs are read with atoi (0 if not a number). If
+// FORMAT contains at least one conversion, the whole FORMAT is REUSED until the
+// ARGs are exhausted (POSIX). Length modifiers (l) are ignored so the vararg
+// stays int-width to match atoi. Unlike echo, no trailing newline is added.
+static void cmd_printf(int argc, char** argv) {
+    if (argc < 2) { printf("Usage: printf FORMAT [ARG...]\n"); return; }
+    const char* fmt = argv[1];
+    int ai = 2;
+    int consumed;
+    do {
+        consumed = 0;
+        for (const char* p = fmt; *p; p++) {
+            if (*p == '\\' && p[1]) {
+                p++;
+                switch (*p) {
+                    case 'n': putchar('\n'); break;
+                    case 't': putchar('\t'); break;
+                    case 'r': putchar('\r'); break;
+                    case 'a': putchar('\a'); break;
+                    case 'b': putchar('\b'); break;
+                    case 'f': putchar('\f'); break;
+                    case 'v': putchar('\v'); break;
+                    case '\\': putchar('\\'); break;
+                    default:  putchar('\\'); putchar(*p); break;   // unknown escape: keep literal
+                }
+            } else if (*p == '%' && p[1]) {
+                // Rebuild a single conversion spec: %[-0]*[0-9]*<conv>, dropping any
+                // 'l' length modifier (atoi is int-width, so %ld would misread).
+                char spec[16]; int si = 0;
+                spec[si++] = '%'; p++;
+                while ((*p == '-' || *p == '0') && si < 12) spec[si++] = *p++;
+                while (*p >= '0' && *p <= '9'   && si < 12) spec[si++] = *p++;
+                while (*p == 'l') p++;                              // ignore length modifiers
+                char conv = *p;
+                spec[si++] = conv; spec[si] = '\0';
+                const char* arg = (ai < argc) ? argv[ai] : "";
+                switch (conv) {
+                    case '%': putchar('%'); break;
+                    case 's': printf(spec, arg);                 if (ai < argc) { ai++; consumed = 1; } break;
+                    case 'c': putchar(arg[0]);                   if (ai < argc) { ai++; consumed = 1; } break;
+                    case 'd': case 'i': printf(spec, atoi(arg)); if (ai < argc) { ai++; consumed = 1; } break;
+                    case 'u': case 'x': case 'X':
+                        printf(spec, (unsigned int)atoi(arg));   if (ai < argc) { ai++; consumed = 1; } break;
+                    case '\0': putchar('%'); p--; break;           // trailing '%': literal, stop the walk
+                    default:  printf("%s", spec); break;           // unknown conversion: print it literally
+                }
+            } else {
+                putchar(*p);
+            }
+        }
+    } while (ai < argc && consumed);
 }
 
 static void cmd_tree(int argc, char** argv) {
