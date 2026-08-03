@@ -15,6 +15,7 @@ enum {
     WP_STYLE_CLEAN = 0,   // clean vertical gradient (v6 default)
     WP_STYLE_NIGHTFALL,   // gradient + moon + stars (the classic scene)
     WP_STYLE_FLAT,        // a single flat solid color
+    WP_STYLE_STARFIELD,   // Nightfall scene with an ANIMATED twinkling star field
     WP_STYLE_COUNT
 };
 

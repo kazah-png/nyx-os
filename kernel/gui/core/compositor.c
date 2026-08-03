@@ -828,8 +828,9 @@ static void draw_background(void) {
         fb_fill_rect(0, i * band_h, fw, band_h, fb_rgb((uint8_t)r, (uint8_t)g, (uint8_t)b));
     }
 
-    // WP_STYLE_CLEAN stops here: just the gradient, no moon or stars.
-    if (style != WP_STYLE_NIGHTFALL) return;
+    // WP_STYLE_CLEAN stops here: just the gradient. NIGHTFALL and STARFIELD both
+    // go on to paint the moon + star field (STARFIELD additionally twinkles).
+    if (style != WP_STYLE_NIGHTFALL && style != WP_STYLE_STARFIELD) return;
 
     // Moon in the upper-right, with a soft halo (concentric rings fading inward).
     int mx = (int)fw - 130, my = 96, mr = 40;
@@ -843,6 +844,13 @@ static void draw_background(void) {
     bg_fill_circle(mx + 4,  my - 16, 4, fb_rgb(200, 188, 232));
 
     // Stars — deterministic LCG, upper ~3/4 of the screen, kept clear of the moon.
+    // Positions are fixed (seeded by a constant) so they never jump; only the
+    // brightness moves. STARFIELD twinkles: each star's luminance rides a slow
+    // triangle wave phased by its own seed, sampled from get_ticks() (~2.5 s period),
+    // so the compositor's periodic repaint makes the sky shimmer. NIGHTFALL keeps
+    // the three fixed shades and never forces a repaint (a still, quiet night).
+    int animate = (style == WP_STYLE_STARFIELD);
+    uint32_t t = animate ? get_ticks() : 0;
     uint32_t seed = 0x9E3779B1u;
     uint32_t star_zone = fh * 3 / 4;
     for (int i = 0; i < 110; i++) {
@@ -852,11 +860,21 @@ static void draw_background(void) {
         int sy = (int)((seed >> 9) % star_zone);
         int ex = sx - mx, ey = sy - my;
         if (ex * ex + ey * ey < (mr + 18) * (mr + 18)) continue;   // don't scatter over the moon
-        int shade = (int)((seed >> 20) & 3);
-        uint32_t sc = (shade == 0) ? fb_rgb(120, 112, 156)
-                    : (shade == 1) ? fb_rgb(168, 158, 202)
-                                   : fb_rgb(214, 208, 240);
-        int sz = (shade >= 2) ? 2 : 1;
+        uint32_t sc; int sz;
+        if (animate) {
+            int off = (int)((seed >> 12) & 63);
+            int ph  = ((int)(t / 40) + off) & 63;                  // 0..63 cycle (~2.5 s)
+            int tri = (ph < 32) ? ph : (64 - ph);                  // 0..32 triangle
+            int lum = 70 + tri * 6; if (lum > 255) lum = 255;      // dim -> bright pulse
+            sc = fb_rgb((uint8_t)(lum * 88 / 100), (uint8_t)(lum * 84 / 100), (uint8_t)lum);
+            sz = (tri > 24) ? 2 : 1;                               // brightest moments swell to 2px
+        } else {
+            int shade = (int)((seed >> 20) & 3);
+            sc = (shade == 0) ? fb_rgb(120, 112, 156)
+               : (shade == 1) ? fb_rgb(168, 158, 202)
+                              : fb_rgb(214, 208, 240);
+            sz = (shade >= 2) ? 2 : 1;
+        }
         fb_fill_rect(sx, sy, sz, sz, sc);
     }
 }
@@ -2780,6 +2798,15 @@ done_click:
                 if (windows[gi] && windows[gi]->on_tick && windows[gi]->visible) {
                     if (windows[gi]->on_tick(windows[gi])) redraw = 1;
                 }
+        }
+
+        // Animated wallpaper: the Starfield style twinkles, so force a modest ~8 fps
+        // desktop repaint while it is selected. Gated on the style, so every other
+        // wallpaper still lets the desktop idle at rest (no needless recomposite).
+        static uint32_t wp_anim_ms = 0;
+        if (wallpaper_style() == WP_STYLE_STARFIELD && now - wp_anim_ms >= 120) {
+            wp_anim_ms = now;
+            redraw = 1;
         }
 
         if (redraw) {
