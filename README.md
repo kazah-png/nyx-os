@@ -15,6 +15,14 @@
 </p>
 
 <p align="center">
+  <a href="https://github.com/kazah-png/nyx-os/actions/workflows/build.yml"><img src="https://github.com/kazah-png/nyx-os/actions/workflows/build.yml/badge.svg?branch=master" alt="Build kernel" /></a>
+  &nbsp;
+  <a href="https://github.com/kazah-png/nyx-os/actions/workflows/codeql.yml"><img src="https://github.com/kazah-png/nyx-os/actions/workflows/codeql.yml/badge.svg?branch=master" alt="CodeQL" /></a>
+  &nbsp;
+  <a href="https://github.com/kazah-png/nyx-os/actions/workflows/static-analysis.yml"><img src="https://github.com/kazah-png/nyx-os/actions/workflows/static-analysis.yml/badge.svg?branch=master" alt="Static analysis" /></a>
+</p>
+
+<p align="center">
   <a href="https://dsc.gg/nyxos"><img src="https://img.shields.io/badge/Discord-NyxOS-5865F2?style=flat&logo=discord&logoColor=white" /></a>
   &nbsp;
   <a href="https://kazah-png.github.io/nyx-os/"><img src="https://img.shields.io/badge/website-up-825AD2?style=flat&logo=githubpages&logoColor=white" /></a>

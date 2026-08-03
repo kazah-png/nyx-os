@@ -1,0 +1,43 @@
+name: Static analysis
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  cppcheck:
+    name: cppcheck (informational)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install cppcheck
+        run: sudo apt-get update && sudo apt-get install -y cppcheck
+
+      - name: Analyze the kernel
+        # Informational only — this step never blocks a merge. CodeQL (codeql.yml)
+        # is the enforced security gate; cppcheck is a fast, complementary second
+        # opinion whose findings are posted to the run summary. The vendored DOOM
+        # engine (kernel/doom_src) and TinyCC (user/, not scanned here) are skipped.
+        continue-on-error: true
+        run: |
+          cppcheck --quiet --enable=warning,portability --inline-suppr \
+            --suppress=missingInclude --suppress=missingIncludeSystem \
+            --std=c11 -I kernel \
+            -i kernel/doom_src \
+            kernel 2> cppcheck.txt || true
+          {
+            echo '### cppcheck findings'
+            if [ -s cppcheck.txt ]; then
+              echo '```'
+              head -c 60000 cppcheck.txt
+              echo ''
+              echo '```'
+            else
+              echo 'No findings.'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+          echo '----- cppcheck output -----'
+          cat cppcheck.txt
