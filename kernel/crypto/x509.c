@@ -122,6 +122,23 @@ static const char* trusted_root_name(const der_pubkey_t* k) {
     return 0;
 }
 
+// Does this certificate assert basicConstraints cA = TRUE — i.e. is it permitted to sign other
+// certificates? An end-entity (leaf) certificate sets cA = FALSE or omits basicConstraints, so it
+// must NEVER be accepted as an issuer: otherwise a valid leaf could be turned into a signing CA to
+// forge certificates for arbitrary names (the classic basicConstraints bypass, CVE-2002-0862).
+static int cert_is_ca(const uint8_t* cert, uint32_t clen) {
+    static const uint8_t OID_BC[] = { 0x55, 0x1d, 0x13 };   // 2.5.29.19 basicConstraints
+    const uint8_t* ext; uint32_t extl;
+    if (der_x509_extension(cert, clen, OID_BC, sizeof(OID_BC), &ext, &extl) != 0)
+        return 0;                                           // no basicConstraints => not a CA
+    der_t wrap = { ext, ext + extl }, bc;
+    if (der_enter(&wrap, 0x30, &bc) != 0) return 0;         // BasicConstraints ::= SEQUENCE
+    uint8_t t; const uint8_t* v; uint32_t vl;
+    if (der_read(&bc, &t, &v, &vl) != 0) return 0;          // empty SEQUENCE => cA defaults FALSE
+    if (t != 0x01) return 0;                                // first element isn't the cA BOOLEAN => FALSE
+    return (vl >= 1 && v[0] != 0x00) ? 1 : 0;               // cA TRUE only if the BOOLEAN byte is non-zero
+}
+
 int x509_verify_chain(const uint8_t* const* certs, const uint32_t* lens, int n,
                       char* msg, int msgcap) {
     if (n < 1) { set_msg(msg, msgcap, "empty chain"); return X509_INCOMPLETE; }
@@ -132,6 +149,13 @@ int x509_verify_chain(const uint8_t* const* certs, const uint32_t* lens, int n,
         if (der_x509_pubkey(certs[i + 1], lens[i + 1], &issuer) != 0) {
             set_msg(msg, msgcap, "cannot parse an issuer public key");
             return X509_INCOMPLETE;
+        }
+        // The signing certificate must be a CA (basicConstraints cA = TRUE). Without this a valid
+        // end-entity certificate could sign forged certificates for other names and still chain to
+        // the pinned root — the classic basicConstraints bypass. Reject such a chain.
+        if (!cert_is_ca(certs[i + 1], lens[i + 1])) {
+            set_msg(msg, msgcap, "an issuer certificate is not a CA (basicConstraints)");
+            return X509_FORGED;
         }
         int r = verify_signed(certs[i], lens[i], &issuer);
         if (r == X509_FORGED) { set_msg(msg, msgcap, "a certificate signature is invalid"); return X509_FORGED; }
@@ -277,6 +301,20 @@ int x509_selftest(void) {
                                  (unsigned long long)nb, (unsigned long long)na); }
         else      printf("x509: validity dates parse FAIL (nb=%llu na=%llu)\n",
                          (unsigned long long)nb, (unsigned long long)na);
+    }
+
+    // 6) basicConstraints CA check: the intermediates and root ARE CAs, the leaf is NOT. This is
+    //    what stops a valid leaf from being used to sign forged certificates (issue #49).
+    total++;
+    {
+        int leaf = cert_is_ca(TESTCHAIN_0, TESTCHAIN_LEN[0]);
+        int mid  = cert_is_ca(TESTCHAIN_1, TESTCHAIN_LEN[1]);
+        int root = cert_is_ca(TESTCHAIN_3, TESTCHAIN_LEN[3]);
+        if (leaf == 0 && mid == 1 && root == 1) {
+            pass++; printf("x509: basicConstraints CA check PASS (leaf!=CA, issuers=CA)\n");
+        } else {
+            printf("x509: basicConstraints CA check FAIL (leaf=%d mid=%d root=%d)\n", leaf, mid, root);
+        }
     }
 
     printf("x509: self-test %d/%d passed\n", pass, total);
