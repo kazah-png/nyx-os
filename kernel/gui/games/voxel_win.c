@@ -33,6 +33,10 @@
 // ~30 fps redraw cap, so the HUD reports the software renderer's raw throughput
 // (per-frame render time + derived FPS + the cube fill count).
 #define VOXEL_BENCH_REPS 40
+// Frame-time graph: keep the last VOXEL_FT_HIST measured per-frame render times so
+// the bench HUD can plot them as a rolling bar chart — frame-time stability and
+// spikes are then visible at a glance (a profiling readout, not just a single number).
+#define VOXEL_FT_HIST 128
 
 // Palette bar geometry (client-relative), one swatch per block type.
 #define PAL_X   10
@@ -70,6 +74,9 @@ typedef struct {
     uint32_t last_fps;                       // last measured render throughput (frames/s)
     uint32_t last_ft_us;                     // last measured per-frame render time (microseconds)
     int last_cubes;                          // cubes rendered per frame (fill load)
+    uint32_t ft_hist[VOXEL_FT_HIST];         // rolling per-frame render times (us) for the graph
+    int      ft_head;                        // ring write cursor (next slot to fill)
+    int      ft_count;                       // valid samples recorded so far (<= VOXEL_FT_HIST)
 } voxel_ctx_t;
 
 // Map a SCREEN grid position (the iso layout is fixed) to the DATA cell it shows,
@@ -113,6 +120,9 @@ void* voxel_create_ctx(void) {
     c->last_fps = 0;
     c->last_ft_us = 0;
     c->last_cubes = 0;
+    c->ft_head = 0;
+    c->ft_count = 0;
+    for (int i = 0; i < VOXEL_FT_HIST; i++) c->ft_hist[i] = 0;
     return c;
 }
 
@@ -227,6 +237,9 @@ void voxel_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
         if (elapsed == 0) elapsed = 1;                          // 1 ms clock-resolution floor
         c->last_fps   = (uint32_t)reps * 1000u / elapsed;       // frames the renderer can push
         c->last_ft_us = elapsed * 1000u / (uint32_t)reps;       // per-frame render time (us)
+        c->ft_hist[c->ft_head] = c->last_ft_us;                 // push into the frame-time graph ring
+        c->ft_head = (c->ft_head + 1) % VOXEL_FT_HIST;
+        if (c->ft_count < VOXEL_FT_HIST) c->ft_count++;
     }
 
     // Title + palette bar (drawn last, over the sky).
@@ -250,7 +263,7 @@ void voxel_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     // Perf HUD (top-right) — the 3D-render performance-testing readout (P4).
     {
         int hx = cx + VOXEL_W - 152, hy = cy + 8;
-        int hh = c->bench ? 84 : 52;
+        int hh = c->bench ? 138 : 52;                                // taller in bench for the frame-time graph
         char line[40];
         fb_fill_rect(hx - 8, hy - 4, 152, hh, fb_rgb(18, 14, 32));   // panel backdrop
         fb_fill_rect(hx - 8, hy - 4, 152, 1,  fb_rgb(70, 58, 104));  // top edge
@@ -266,6 +279,35 @@ void voxel_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
             font_draw_string_trans(hx, hy + 52, line, fb_rgb(255, 232, 150));
             snprintf(line, sizeof(line), "render FPS %u", c->last_fps);
             font_draw_string_trans(hx, hy + 68, line, fb_rgb(255, 232, 150));
+            // Frame-time graph: a rolling bar chart of the last ft_count per-frame render
+            // times (oldest at the left, newest at the right), autoscaled to the window's
+            // peak sample. Green = fast, amber = mid, red = a spike — so frame-time
+            // stability and outliers show at a glance, not just the latest number (P4).
+            int gx0 = hx, gy0 = hy + 100, gw = 128, gh = 26;
+            font_draw_string_trans(hx, hy + 84, "frame-time (us)", fb_rgb(170, 164, 196));
+            fb_fill_rect(gx0, gy0, gw, gh, fb_rgb(30, 24, 46));             // graph backdrop
+            uint32_t peak = 1, base = 0xFFFFFFFFu;                          // peak scales the bars; base = typical (min)
+            for (int i = 0; i < c->ft_count; i++) {
+                uint32_t v = c->ft_hist[i];
+                if (v > peak) peak = v;
+                if (v < base) base = v;
+            }
+            if (base == 0xFFFFFFFFu || base == 0) base = 1;
+            int bars = c->ft_count; if (bars > gw) bars = gw;
+            for (int i = 0; i < bars; i++) {
+                int idx = c->ft_head - bars + i;                            // oldest .. newest
+                idx %= VOXEL_FT_HIST; if (idx < 0) idx += VOXEL_FT_HIST;
+                uint32_t s = c->ft_hist[idx];
+                int bh = (int)(s * (uint32_t)(gh - 1) / peak);
+                if (bh < 1 && s > 0) bh = 1;
+                // Colour by how far ABOVE the baseline (fastest frame) this sample is, so a
+                // steady trace stays green and only genuine outliers turn amber/red.
+                uint32_t col = (s >= base * 2u)     ? fb_rgb(240, 120,  90)   // >= 2x baseline -> spike
+                             : (s * 2u >= base * 3u) ? fb_rgb(240, 210, 120)   // >= 1.5x        -> warn
+                                                     : fb_rgb(130, 210, 150);  // near baseline  -> good
+                fb_fill_rect(gx0 + i, gy0 + gh - bh, 1, bh, col);
+            }
+            fb_fill_rect(gx0, gy0 + gh, gw, 1, fb_rgb(70, 58, 104));        // baseline
         }
     }
     font_draw_string_trans(cx + 10, cy + VOXEL_H - 22,
