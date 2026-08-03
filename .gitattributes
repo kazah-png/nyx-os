@@ -1,0 +1,34 @@
+# Normalize line endings. Git stores text as LF; Windows working copies may check
+# out CRLF. Scripts and CI files are pinned to LF so they always run on Linux.
+* text=auto
+
+*.sh    text eol=lf
+*.py    text eol=lf
+*.yml   text eol=lf
+*.yaml  text eol=lf
+*.cfg   text eol=lf
+Makefile text eol=lf
+makefile text eol=lf
+
+# Source and docs are text (LF in the repo).
+*.c   text
+*.h   text
+*.asm text
+*.md  text
+*.ld  text
+
+# Binaries: no line-ending translation, no textual diff.
+*.png  binary
+*.gif  binary
+*.jpg  binary
+*.jpeg binary
+*.bmp  binary
+*.ppm  binary
+*.ico  binary
+*.iso  binary
+*.img  binary
+*.wad  binary
+*.bin  binary
+*.o    binary
+*.so   binary
+*.elf  binary

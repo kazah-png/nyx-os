@@ -1,0 +1,19 @@
+cff-version: 1.2.0
+message: "If you use NyxOS in your work, please cite it as below."
+title: "NyxOS"
+abstract: >-
+  A from-scratch x86_64 operating system written in C and Assembly, featuring a
+  GUI desktop, a real network stack (TCP/IP with TLS 1.2), image decoders, and a
+  self-hosting in-OS C toolchain.
+type: software
+authors:
+  - name: "kazah-png"
+repository-code: "https://github.com/kazah-png/nyx-os"
+url: "https://kazah-png.github.io/nyx-os/"
+license: GPL-2.0-or-later
+keywords:
+  - operating-system
+  - kernel
+  - x86-64
+  - osdev
+  - c

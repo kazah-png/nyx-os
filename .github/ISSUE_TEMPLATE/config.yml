@@ -1,0 +1,11 @@
+blank_issues_enabled: true
+contact_links:
+  - name: NyxOS Discord
+    url: https://dsc.gg/nyxos
+    about: Questions, help, and general discussion — often faster than an issue.
+  - name: Documentation
+    url: https://kazah-png.github.io/nyx-os/
+    about: The NyxOS manual and guides.
+  - name: Security report
+    url: https://github.com/kazah-png/nyx-os/security/policy
+    about: Please report security vulnerabilities privately (see SECURITY.md).

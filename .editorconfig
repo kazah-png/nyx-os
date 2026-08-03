@@ -1,0 +1,28 @@
+# EditorConfig — consistent formatting across editors. https://editorconfig.org
+root = true
+
+[*]
+charset = utf-8
+end_of_line = lf
+insert_final_newline = true
+trim_trailing_whitespace = true
+indent_style = space
+indent_size = 4
+
+# C and Assembly sources use 4-space indentation.
+[*.{c,h,asm}]
+indent_style = space
+indent_size = 4
+
+# Makefiles require real tabs.
+[[Mm]akefile]
+indent_style = tab
+
+# YAML (CI, configs) uses 2 spaces.
+[*.{yml,yaml}]
+indent_style = space
+indent_size = 2
+
+# Markdown keeps trailing spaces (they encode hard line breaks).
+[*.md]
+trim_trailing_whitespace = false
