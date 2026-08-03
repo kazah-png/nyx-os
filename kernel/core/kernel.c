@@ -103,6 +103,7 @@ static void cmd_basename(int argc, char** argv);
 static void cmd_dirname(int argc, char** argv);
 static void cmd_head(int argc, char** argv);
 static void cmd_rev(int argc, char** argv);
+static void cmd_tr(int argc, char** argv);
 static void cmd_tree(int argc, char** argv);
 static void cmd_env(int argc, char** argv);
 static void cmd_export(int argc, char** argv);
@@ -229,6 +230,7 @@ static const command_t commands[] = {
     {"tail",      cmd_tail,      "Show last lines of a file: tail <file> [lines]", false},
     {"sort",      cmd_sort,      "Sort lines of a file: sort [-rn] <file>", false},
     {"rev",       cmd_rev,       "Reverse the characters of each line: rev <file>", false},
+    {"tr",        cmd_tr,        "Translate/delete/squeeze chars: tr [-ds] SET1 [SET2] <file>", false},
     {"wc",        cmd_wc,        "Count lines/words/chars: wc <file>", false},
     {"write",     cmd_write,     "Write text to file: write <file> <text>", false},
     {"dhcp",      cmd_dhcp,      "Request IP via DHCP", false},
@@ -495,6 +497,7 @@ static const man_page_t man_pages[] = {
     {"grep",     "Print the lines of <file> that match <pattern>. -i ignores letter case, -n prefixes each match with its line number, and -v inverts the search to print the lines that do NOT match."},
     {"sort",     "Sort the lines of <file>. -r reverses the result; -n sorts numerically by the integer at the start of each line instead of alphabetically."},
     {"rev",      "Print each line of <file> with the order of its characters reversed."},
+    {"tr",       "Translate, delete or squeeze characters read from <file>. With two sets, each character of <file> that appears in SET1 is replaced by the character at the same position in SET2 (a shorter SET2 repeats its last character). -d deletes every SET1 character instead; -s collapses each run of a repeated result character into one. Sets may use ascending ranges such as a-z or 0-9."},
     {"wc",       "Count the lines, words and characters in <file>. -l, -w or -c limit the output to just one of those counts."},
     {"basename", "Strip the directory prefix (and, if given, a trailing suffix) from <path>, printing only the final component."},
     {"dirname",  "Strip the final component from <path>, printing the directory portion that remains."},
@@ -749,6 +752,86 @@ static void cmd_rev(int argc, char** argv) {
             if (i < bytes) putchar('\n');            // keep the newline (not after a final unterminated line)
             start = i + 1;
         }
+    }
+}
+
+// Expand a tr SET string into a flat byte array, honouring GNU-style ascending
+// ranges like "a-z" or "0-9". A '-' that is not a valid range (first/last char,
+// or a descending pair) is treated literally. Returns the expanded length.
+static int tr_expand(const char* s, unsigned char* out, int max) {
+    int n = 0;
+    while (*s && n < max) {
+        if (s[1] == '-' && s[2] && (unsigned char)s[2] >= (unsigned char)s[0]) {
+            int a = (unsigned char)s[0], b = (unsigned char)s[2];
+            for (int c = a; c <= b && n < max; c++) out[n++] = (unsigned char)c;
+            s += 3;
+        } else {
+            out[n++] = (unsigned char)*s++;
+        }
+    }
+    return n;
+}
+
+// tr [-d] [-s] SET1 [SET2] <file> — translate, delete or squeeze characters read
+// from <file>. NyxOS shell builtins are file-oriented (there is no stdin into a
+// kernel builtin), so tr takes a file argument like rev/sort/wc rather than the
+// classic stdin filter. SET1/SET2 support ascending ranges (a-z, 0-9). In
+// translate mode a shorter SET2 has its last character repeated to SET1's length
+// (GNU behaviour). -d deletes SET1; -s squeezes runs of the result/SET1 chars.
+static void cmd_tr(int argc, char** argv) {
+    int del = 0, sqz = 0, ai = 1;
+    while (ai < argc && argv[ai][0] == '-' && argv[ai][1]) {
+        for (char* f = argv[ai] + 1; *f; f++) {
+            if (*f == 'd') del = 1;
+            else if (*f == 's') sqz = 1;
+            else { printf("tr: invalid option -- '%c'\n", *f); return; }
+        }
+        ai++;
+    }
+    const char *s1 = 0, *s2 = 0, *fname = 0;
+    int rem = argc - ai;
+    if (del) {                                   // -d SET1 file  (or -ds SET1 SET2 file)
+        if (sqz && rem >= 3) { s1 = argv[ai]; s2 = argv[ai + 1]; fname = argv[ai + 2]; }
+        else if (rem >= 2)   { s1 = argv[ai]; fname = argv[ai + 1]; }
+    } else if (sqz && rem == 2) {                // -s SET1 file  (squeeze only)
+        s1 = argv[ai]; fname = argv[ai + 1];
+    } else if (rem >= 3) {                        // [-s] SET1 SET2 file (translate)
+        s1 = argv[ai]; s2 = argv[ai + 1]; fname = argv[ai + 2];
+    }
+    if (!fname) { printf("Usage: tr [-s] SET1 SET2 <file>  |  tr -d[s] SET1 [SET2] <file>\n"); return; }
+
+    unsigned char set1[256], set2[256];
+    int n1 = tr_expand(s1, set1, 256);
+    int n2 = s2 ? tr_expand(s2, set2, 256) : 0;
+
+    int fd = vfs_open(fname, 0, 0);
+    if (fd < 0) { printf("tr: cannot open '%s'\n", fname); return; }
+    char buf[2048];
+    int bytes = vfs_read(fd, buf, sizeof(buf) - 1);
+    vfs_close(fd);
+    if (bytes <= 0) return;
+
+    int last = -1;                               // last emitted byte (for squeeze runs)
+    for (int i = 0; i < bytes; i++) {
+        unsigned char c = (unsigned char)buf[i];
+        int idx = -1;
+        for (int k = 0; k < n1; k++) if (set1[k] == c) { idx = k; break; }
+
+        if (del && idx >= 0) continue;           // -d: drop matched characters
+
+        unsigned char out = c;
+        if (!del && s2 && idx >= 0)              // translate SET1[idx] -> SET2 (last char repeats)
+            out = (n2 == 0) ? c : (idx < n2 ? set2[idx] : set2[n2 - 1]);
+
+        if (sqz) {                               // collapse adjacent repeats of squeeze-set chars
+            const unsigned char* ss = (s2 ? set2 : set1);
+            int sn = (s2 ? n2 : n1);
+            int in_set = 0;
+            for (int k = 0; k < sn; k++) if (ss[k] == out) { in_set = 1; break; }
+            if (in_set && (int)out == last) continue;
+        }
+        putchar(out);
+        last = out;
     }
 }
 
