@@ -63,6 +63,7 @@ typedef struct {
 } command_t;
 
 static void cmd_help(int argc, char** argv);
+static void cmd_man(int argc, char** argv);
 static void cmd_version(int argc, char** argv);
 static void cmd_clear(int argc, char** argv);
 static void cmd_nyxfetch(int argc, char** argv);
@@ -173,6 +174,7 @@ static void cmd_setres(int argc, char** argv);
 
 static const command_t commands[] = {
     {"help",      cmd_help,      "Show this help", false},
+    {"man",       cmd_man,       "Show a command's manual page: man <command>", false},
     {"version",   cmd_version,   "Show kernel version", false},
     {"clear",     cmd_clear,     "Clear the screen", false},
     {"setres",    cmd_setres,    "Set screen resolution (setres 800 600)", false},
@@ -467,6 +469,69 @@ static void cmd_help(int argc, char** argv) {
         buf[14] = '\0';
         printf("  %s - %s\n", buf, commands[i].help);
     }
+}
+
+// Longer manual-page bodies for the most-used commands. Any command NOT listed
+// here still gets a page from `man` (built from its one-line commands[] help), so
+// `man` works for everything; these entries just give the core tools a proper
+// DESCRIPTION paragraph, closer to a real Unix manual.
+typedef struct { const char* name; const char* body; } man_page_t;
+static const man_page_t man_pages[] = {
+    {"ls",       "List the contents of a directory. With no path the current directory is listed. -a also shows entries whose name begins with a dot; -l gives a long listing with each entry's type, size and name."},
+    {"cd",       "Change the shell's current working directory to <path>."},
+    {"pwd",      "Print the full path of the current working directory."},
+    {"cat",      "Write the contents of <file> to standard output. The usual way to view a text file."},
+    {"cp",       "Copy the file <src> to <dst>, replacing <dst> if it already exists."},
+    {"mv",       "Move or rename <src> to <dst>. Within one filesystem this only rewrites the directory entry."},
+    {"rm",       "Remove <path>. There is no recycle bin, so a removed file is gone for good."},
+    {"mkdir",    "Create a new, empty directory named <dir>."},
+    {"echo",     "Write the arguments to standard output separated by spaces and followed by a newline. `echo text > file` writes to a file instead of the screen."},
+    {"grep",     "Print the lines of <file> that match <pattern>. -i ignores letter case, -n prefixes each match with its line number, and -v inverts the search to print the lines that do NOT match."},
+    {"sort",     "Sort the lines of <file>. -r reverses the result; -n sorts numerically by the integer at the start of each line instead of alphabetically."},
+    {"wc",       "Count the lines, words and characters in <file>. -l, -w or -c limit the output to just one of those counts."},
+    {"basename", "Strip the directory prefix (and, if given, a trailing suffix) from <path>, printing only the final component."},
+    {"dirname",  "Strip the final component from <path>, printing the directory portion that remains."},
+    {"xbm",      "The NyxOS package manager. `xbm install <name>` compiles a package from its recipe with the in-OS C compiler and installs it; `xbm remove <name>` uninstalls it; `xbm search <str>` and `xbm list` browse the available and installed packages."},
+    {"cc",       "Compile and link C source into an ELF program with the in-OS TinyCC toolchain. -c stops after producing an object file."},
+    {"fire",     "Open Nyx Fire, an animated doom-fire effect window. It is also a visual performance demo, re-filling the whole framebuffer region each frame."},
+    {"voxel",    "Open Nyx Voxels, an isometric voxel sandbox used as a 3D-render performance testbed (press B for a benchmark HUD)."},
+    {"selene",   "Open Selene, the NyxOS web browser (HTTP and TLS, HTML and images)."},
+    {"man",      "Display the manual page for a command: its name, a synopsis, and a description of what it does."},
+};
+
+static void cmd_man(int argc, char** argv) {
+    if (argc < 2) { printf("What manual page do you want? Try 'man <command>'.\n"); return; }
+    const char* name = argv[1];
+
+    const command_t* cmd = NULL;
+    for (int i = 0; commands[i].name != NULL; i++)
+        if (strcmp(commands[i].name, name) == 0) { cmd = &commands[i]; break; }
+    if (!cmd) { printf("No manual entry for %s\n", name); return; }
+
+    // The one-line help reads "Short description: synopsis". Split on the first
+    // ':' so the description and the usage line land in the right man sections.
+    const char* help  = cmd->help;
+    const char* colon = strchr(help, ':');
+    char shortdesc[96], synopsis[96];
+    if (colon) {
+        int dl = (int)(colon - help); if (dl > 95) dl = 95;
+        memcpy(shortdesc, help, dl); shortdesc[dl] = '\0';
+        const char* s = colon + 1; while (*s == ' ') s++;
+        int sl = (int)strlen(s); if (sl > 95) sl = 95;
+        memcpy(synopsis, s, sl); synopsis[sl] = '\0';
+    } else {
+        int hl = (int)strlen(help); if (hl > 95) hl = 95;
+        memcpy(shortdesc, help, hl); shortdesc[hl] = '\0';
+        synopsis[0] = '\0';
+    }
+
+    const char* body = NULL;
+    for (int i = 0; i < (int)(sizeof(man_pages) / sizeof(man_pages[0])); i++)
+        if (strcmp(man_pages[i].name, name) == 0) { body = man_pages[i].body; break; }
+
+    printf("NAME\n       %s - %s\n\n", name, shortdesc);
+    printf("SYNOPSIS\n       %s\n\n", synopsis[0] ? synopsis : name);
+    printf("DESCRIPTION\n       %s\n", body ? body : shortdesc);
 }
 
 static void cmd_version(int argc, char** argv) {
