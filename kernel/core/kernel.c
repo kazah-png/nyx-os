@@ -102,6 +102,7 @@ static void cmd_which(int argc, char** argv);
 static void cmd_basename(int argc, char** argv);
 static void cmd_dirname(int argc, char** argv);
 static void cmd_head(int argc, char** argv);
+static void cmd_rev(int argc, char** argv);
 static void cmd_tree(int argc, char** argv);
 static void cmd_env(int argc, char** argv);
 static void cmd_export(int argc, char** argv);
@@ -226,6 +227,7 @@ static const command_t commands[] = {
     {"grep",      cmd_grep,      "Search file contents: grep [-inv] <pattern> <file>", false},
     {"tail",      cmd_tail,      "Show last lines of a file: tail <file> [lines]", false},
     {"sort",      cmd_sort,      "Sort lines of a file: sort [-rn] <file>", false},
+    {"rev",       cmd_rev,       "Reverse the characters of each line: rev <file>", false},
     {"wc",        cmd_wc,        "Count lines/words/chars: wc <file>", false},
     {"write",     cmd_write,     "Write text to file: write <file> <text>", false},
     {"dhcp",      cmd_dhcp,      "Request IP via DHCP", false},
@@ -490,6 +492,7 @@ static const man_page_t man_pages[] = {
     {"echo",     "Write the arguments to standard output separated by spaces and followed by a newline. `echo text > file` writes to a file instead of the screen."},
     {"grep",     "Print the lines of <file> that match <pattern>. -i ignores letter case, -n prefixes each match with its line number, and -v inverts the search to print the lines that do NOT match."},
     {"sort",     "Sort the lines of <file>. -r reverses the result; -n sorts numerically by the integer at the start of each line instead of alphabetically."},
+    {"rev",      "Print each line of <file> with the order of its characters reversed."},
     {"wc",       "Count the lines, words and characters in <file>. -l, -w or -c limit the output to just one of those counts."},
     {"basename", "Strip the directory prefix (and, if given, a trailing suffix) from <path>, printing only the final component."},
     {"dirname",  "Strip the final component from <path>, printing the directory portion that remains."},
@@ -723,6 +726,27 @@ static void cmd_head(int argc, char** argv) {
     for (int i = 0; buf[i] && lines < n; i++) {
         putchar(buf[i]);
         if (buf[i] == '\n') lines++;
+    }
+}
+
+// rev <file> — print each line with its characters in reverse order (the classic
+// coreutil). Reads a single bounded chunk of the file (like head/wc; a streaming
+// vfs_read loop never sees EOF in-kernel), then reverses each '\n'-delimited line.
+static void cmd_rev(int argc, char** argv) {
+    if (argc < 2) { printf("Usage: rev <file>\n"); return; }
+    int fd = vfs_open(argv[1], 0, 0);
+    if (fd < 0) { printf("rev: cannot open '%s'\n", argv[1]); return; }
+    char buf[2048];
+    int bytes = vfs_read(fd, buf, sizeof(buf) - 1);
+    vfs_close(fd);
+    if (bytes <= 0) return;
+    int start = 0;
+    for (int i = 0; i <= bytes; i++) {
+        if (i == bytes || buf[i] == '\n') {         // end of a line (or of the buffer)
+            for (int j = i - 1; j >= start; j--) putchar(buf[j]);
+            if (i < bytes) putchar('\n');            // keep the newline (not after a final unterminated line)
+            start = i + 1;
+        }
     }
 }
 
