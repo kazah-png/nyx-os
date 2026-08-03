@@ -7,6 +7,7 @@
 #include "../games/voxel_win.h"
 #include "../games/fire_win.h"
 #include "../games/matrix_win.h"
+#include "../games/lava_win.h"
 #include "../apps/fileman_win.h"
 #include "../apps/paint_win.h"
 #include "../apps/taskman_win.h"
@@ -1102,6 +1103,18 @@ void launch_matrix(void) {
     w->reserved = matrix_create_ctx();
     if (!w->reserved) { window_destroy(w->id); return; }
     w->on_tick = matrix_win_tick;
+}
+
+// Open the Nyx Lava window — the animated plasma / "lava" effect (a P4 visual perf
+// demo, and the third of the /fire //matrix //lava effects from the user backlog).
+void launch_lava(void) {
+    int px = ((int)fb_get_width()  - LAVA_WIN_W) / 2;              if (px < 0) px = 0;
+    int py = ((int)fb_get_height() - LAVA_WIN_H - TITLE_H) / 2;    if (py < 0) py = 0;
+    window_t* w = window_create(px, py, LAVA_WIN_W, LAVA_WIN_H, "Nyx Lava", lava_win_draw);
+    if (!w) return;
+    w->reserved = lava_create_ctx();
+    if (!w->reserved) { window_destroy(w->id); return; }
+    w->on_tick = lava_win_tick;
 }
 
 // Open a Snake window. In-kernel game like Pong: the compositor's game-tick steps it via
