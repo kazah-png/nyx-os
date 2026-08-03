@@ -1,5 +1,5 @@
-#ifndef FIRE_WIN_H
-#define FIRE_WIN_H
+#ifndef NYX_FIRE_WIN_H
+#define NYX_FIRE_WIN_H
 #include "../core/compositor.h"
 
 // Nyx Fire — the classic "doom fire" effect (Fabien Sanglard's algorithm) as an

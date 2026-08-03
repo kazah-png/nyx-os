@@ -1,5 +1,5 @@
-#ifndef MATRIX_WIN_H
-#define MATRIX_WIN_H
+#ifndef NYX_MATRIX_WIN_H
+#define NYX_MATRIX_WIN_H
 #include "../core/compositor.h"
 
 // Nyx Matrix — cmatrix-style green "code rain" as an animated in-kernel window.
