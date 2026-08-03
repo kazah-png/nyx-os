@@ -1,0 +1,47 @@
+name: Release
+
+# When a version tag (e.g. v6.5.0) is pushed, build the bootable ISO and publish
+# a GitHub Release with the ISO and kernel attached, so anyone can download and
+# boot NyxOS without building it.
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  contents: write   # create the release and upload assets
+
+jobs:
+  release:
+    name: Build ISO and publish the release
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install toolchain
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y make nasm gcc binutils python3 \
+            grub-common grub-pc-bin xorriso mtools
+
+      - name: Build kernel and ISO
+        run: |
+          make -C kernel
+          mkdir -p iso/boot/grub
+          printf '%s\n' \
+            'set timeout=5' 'set default=0' \
+            "menuentry 'NyxOS' {" \
+            '    multiboot2 /boot/nyx-kernel.bin' \
+            '    boot' '}' > iso/boot/grub/grub.cfg
+          cp kernel/nyx-kernel.bin iso/boot/
+          grub-mkrescue -o "NyxOS-${GITHUB_REF_NAME}.iso" iso/
+
+      - name: Publish the GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${GITHUB_REF_NAME}" \
+            "NyxOS-${GITHUB_REF_NAME}.iso" \
+            kernel/nyx-kernel.bin \
+            --title "NyxOS ${GITHUB_REF_NAME}" \
+            --generate-notes
