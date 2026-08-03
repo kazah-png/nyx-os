@@ -167,6 +167,7 @@ static void cmd_pngtest(int argc, char** argv);
 static void cmd_bmptest(int argc, char** argv);
 static void cmd_giftest(int argc, char** argv);
 static void cmd_jpegtest(int argc, char** argv);
+static void cmd_imgreject(int argc, char** argv);
 static void cmd_rsatest(int argc, char** argv);
 static void cmd_sha512test(int argc, char** argv);
 static void cmd_chaintest(int argc, char** argv);
@@ -286,6 +287,7 @@ static const command_t commands[] = {
     {"bmptest",   cmd_bmptest,   "BMP image decoder self-test (24/32/8-bit + top-down)", false},
     {"giftest",   cmd_giftest,   "GIF image decoder self-test (LZW + interlace + transparency)", false},
     {"jpegtest",  cmd_jpegtest,  "JPEG (baseline) decoder self-test (Huffman + IDCT + YCbCr)", false},
+    {"imgreject", cmd_imgreject, "Image-decoder reject self-test (png/bmp/gif/jpeg refuse hostile input)", false},
     {"rsatest",   cmd_rsatest,   "RSA PKCS#1 v1.5 SHA-256 signature-verify self-test", false},
     {"sha512test",cmd_sha512test,"SHA-512 / SHA-384 self-test (FIPS 180-4 vectors)", false},
     {"chaintest", cmd_chaintest, "X.509 certificate-chain verification self-test (pinned root)", false},
@@ -2314,6 +2316,12 @@ static void cmd_jpegtest(int argc, char** argv) {
     jpeg_selftest();
 }
 
+static void cmd_imgreject(int argc, char** argv) {
+    (void)argc; (void)argv;
+    printf("Running image-decoder REJECT self-test (png/bmp/gif/jpeg must refuse hostile input)...\n");
+    image_reject_selftest();
+}
+
 // `rsatest` — self-test RSA PKCS#1 v1.5 SHA-256 signature verification, needed to check the
 // RSA CA signatures in a real certificate chain. Pure computation; no network needed.
 static void cmd_rsatest(int argc, char** argv) {
@@ -3154,6 +3162,7 @@ extern int png_selftest(void);
 extern int bmp_selftest(void);
 extern int gif_selftest(void);
 extern int jpeg_selftest(void);
+extern int image_reject_selftest(void);
 
 // Run the whole offline self-test battery, print a machine-readable summary, and
 // halt. Triggered ONLY by the "selftest" multiboot command line (used by CI); a
@@ -3170,7 +3179,7 @@ static void run_selftests(void) {
         {"x509",         x509_selftest},
         {"inflate",      inflate_selftest},       {"png",           png_selftest},
         {"bmp",          bmp_selftest},           {"gif",           gif_selftest},
-        {"jpeg",         jpeg_selftest},
+        {"jpeg",         jpeg_selftest},          {"imgreject",     image_reject_selftest},
     };
     int n = (int)(sizeof(t) / sizeof(t[0])), passed = 0, failed = 0;
     serial_puts("SELFTEST-BEGIN\n");

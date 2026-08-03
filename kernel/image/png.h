@@ -13,4 +13,9 @@ void png_free(image_t* img);
 // Known-answer self-test (`pngtest`): decode embedded PNGs of each color type + all filter types.
 int  png_selftest(void);
 
+// Adversarial self-test (`imgreject`): every image decoder (png/bmp/gif/jpeg) must REFUSE
+// malformed/hostile input (empty, garbage, and PNGs with zero/oversized dimensions, a bad
+// colour type, a corrupt signature or a truncated stream) with a negative return, no crash.
+int  image_reject_selftest(void);
+
 #endif

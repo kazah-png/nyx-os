@@ -8,6 +8,9 @@
 #include "../core/kernel.h"
 #include "png.h"
 #include "inflate.h"
+#include "bmp.h"                                 // sibling decoders, for the cross-format reject self-test
+#include "gif.h"
+#include "jpeg.h"
 
 #define PNG_MAX_DIM    4096
 #define PNG_MAX_PIXELS (1u << 20)          // 1M pixels — bounds the kmalloc for a decoded image
@@ -270,4 +273,60 @@ int png_selftest(void) {
     total++; pass += png_case("all-filters", PNG_FILT, sizeof(PNG_FILT), PNG_FILT_W, PNG_FILT_H, PNG_FILT_RGBA);
     printf("png: self-test %d/%d passed\n", pass, total);
     return (pass == total) ? 0 : -1;
+}
+
+// ---- adversarial / hostile-input self-test (`imgreject`) ----
+// The known-answer tests above prove the decoders accept VALID images; this proves they
+// REJECT malformed or hostile ones gracefully — a negative return, no crash and no
+// out-of-bounds access. That is exactly the property that matters when Selene hands a
+// decoder bytes straight off the network. Every case below MUST be refused; a decode
+// that returns 0 (accepts) on junk is the failure. It feeds all four decoders empty and
+// garbage buffers, then mutates the valid 4x4 RGB PNG above into hostile variants.
+static int img_must_reject(const char* what, int (*dec)(const uint8_t*, uint32_t, image_t*),
+                           const uint8_t* buf, uint32_t len) {
+    image_t im; im.pixels = 0; im.width = 0; im.height = 0;
+    int rc = dec(buf, len, &im);
+    if (rc == 0) {                                  // accepted junk -> failure; don't leak the pixels
+        if (im.pixels) kfree(im.pixels);
+        printf("imgreject: %s NOT rejected (rc=0, %ux%u) FAIL\n", what, im.width, im.height);
+        return 0;
+    }
+    return 1;                                        // refused, as required
+}
+
+int image_reject_selftest(void) {
+    int ok = 1;
+    static const uint8_t empty[1] = { 0 };          // 1 real byte, passed with len 0 (no OOB even if peeked)
+    static uint8_t junk[64];
+    for (int i = 0; i < 64; i++) junk[i] = (uint8_t)(0xA5 ^ i);   // not a valid magic for any format
+
+    // Every decoder must refuse an empty buffer and 64 bytes of garbage (bad magic/signature).
+    ok &= img_must_reject("png/empty",  png_decode,  empty, 0);
+    ok &= img_must_reject("png/junk",   png_decode,  junk,  sizeof(junk));
+    ok &= img_must_reject("bmp/empty",  bmp_decode,  empty, 0);
+    ok &= img_must_reject("bmp/junk",   bmp_decode,  junk,  sizeof(junk));
+    ok &= img_must_reject("gif/empty",  gif_decode,  empty, 0);
+    ok &= img_must_reject("gif/junk",   gif_decode,  junk,  sizeof(junk));
+    ok &= img_must_reject("jpeg/empty", jpeg_decode, empty, 0);
+    ok &= img_must_reject("jpeg/junk",  jpeg_decode, junk,  sizeof(junk));
+
+    // Mutate the valid 4x4 RGB PNG into hostile variants. The decoder verifies no chunk
+    // CRCs, so a single corrupted field reaches that field's own validation. IHDR layout:
+    // [16..19]=width, [20..23]=height, [25]=colour type.
+    uint8_t m[sizeof(PNG_RGB)];
+    #define PNG_RESET() do { for (uint32_t _i = 0; _i < sizeof(PNG_RGB); _i++) m[_i] = PNG_RGB[_i]; } while (0)
+    PNG_RESET(); m[16] = m[17] = m[18] = m[19] = 0;                 // zero width
+    ok &= img_must_reject("png/zero-w", png_decode, m, sizeof(m));
+    PNG_RESET(); m[16] = 0; m[17] = 0; m[18] = 0x20; m[19] = 0x00;  // width 8192 > PNG_MAX_DIM
+    ok &= img_must_reject("png/huge-w", png_decode, m, sizeof(m));
+    PNG_RESET(); m[25] = 7;                                         // invalid colour type
+    ok &= img_must_reject("png/bad-ctype", png_decode, m, sizeof(m));
+    PNG_RESET(); m[1] = 0x00;                                       // corrupt signature
+    ok &= img_must_reject("png/bad-sig", png_decode, m, sizeof(m));
+    PNG_RESET();                                                    // truncated stream (IDAT cut off)
+    ok &= img_must_reject("png/truncated", png_decode, m, 40);
+    #undef PNG_RESET
+
+    if (ok) printf("imgreject: all hostile inputs rejected PASS\n");
+    return ok ? 0 : -1;
 }
