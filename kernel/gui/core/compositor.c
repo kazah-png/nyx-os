@@ -8,6 +8,7 @@
 #include "../games/fire_win.h"
 #include "../games/matrix_win.h"
 #include "../games/lava_win.h"
+#include "../games/mandel_win.h"
 #include "../apps/fileman_win.h"
 #include "../apps/paint_win.h"
 #include "../apps/taskman_win.h"
@@ -1133,6 +1134,19 @@ void launch_lava(void) {
     w->reserved = lava_create_ctx();
     if (!w->reserved) { window_destroy(w->id); return; }
     w->on_tick = lava_win_tick;
+}
+
+// Open the Nyx Fractal window — a fixed-point Mandelbrot renderer that auto-zooms,
+// a P4 rendering-performance-testing demo with a live benchmark HUD (frame-time /
+// render FPS / iteration cap / zoom), sibling to the /fire //matrix //lava effects.
+void launch_mandel(void) {
+    int px = ((int)fb_get_width()  - MANDEL_WIN_W) / 2;              if (px < 0) px = 0;
+    int py = ((int)fb_get_height() - MANDEL_WIN_H - TITLE_H) / 2;    if (py < 0) py = 0;
+    window_t* w = window_create(px, py, MANDEL_WIN_W, MANDEL_WIN_H, "Nyx Fractal", mandel_win_draw);
+    if (!w) return;
+    w->reserved = mandel_create_ctx();
+    if (!w->reserved) { window_destroy(w->id); return; }
+    w->on_tick = mandel_win_tick;
 }
 
 // Open a Snake window. In-kernel game like Pong: the compositor's game-tick steps it via

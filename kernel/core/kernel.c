@@ -135,6 +135,7 @@ static void cmd_voxel(int argc, char** argv);
 static void cmd_fire(int argc, char** argv);
 static void cmd_matrix(int argc, char** argv);
 static void cmd_lava(int argc, char** argv);
+static void cmd_fractal(int argc, char** argv);
 static void cmd_snake(int argc, char** argv);
 static void cmd_tetris(int argc, char** argv);
 static void cmd_selene(int argc, char** argv);
@@ -256,6 +257,7 @@ static const command_t commands[] = {
     {"fire",      cmd_fire,      "Open Nyx Fire (animated doom-fire effect)", false},
     {"matrix",    cmd_matrix,    "Open Nyx Matrix (green code-rain effect)", false},
     {"lava",      cmd_lava,      "Open Nyx Lava (animated plasma effect)", false},
+    {"fractal",   cmd_fractal,   "Open Nyx Fractal (Mandelbrot render-perf demo)", false},
     {"snake",     cmd_snake,     "Play Snake (arrows/WASD)", false},
     {"tetris",    cmd_tetris,    "Play Tetris (arrows, Space=drop)", false},
     {"selene",    cmd_selene,    "Open Selene, the web browser", false},
@@ -509,6 +511,7 @@ static const man_page_t man_pages[] = {
     {"xbm",      "The NyxOS package manager. `xbm install <name>` compiles a package from its recipe with the in-OS C compiler and installs it; `xbm remove <name>` uninstalls it; `xbm search <str>` and `xbm list` browse the available and installed packages."},
     {"cc",       "Compile and link C source into an ELF program with the in-OS TinyCC toolchain. -c stops after producing an object file."},
     {"fire",     "Open Nyx Fire, an animated doom-fire effect window. It is also a visual performance demo, re-filling the whole framebuffer region each frame."},
+    {"fractal",  "Open Nyx Fractal, a fixed-point Mandelbrot renderer that auto-zooms toward the seahorse valley. A P4 rendering-performance-testing demo: a benchmark HUD shows the measured per-frame render time, the derived render FPS, the current iteration cap, and the zoom factor, so you can watch the software renderer's cost rise and fall with the load. All-integer (Q8.24 fixed point)."},
     {"voxel",    "Open Nyx Voxels, an isometric voxel sandbox used as a 3D-render performance testbed (press B for a benchmark HUD)."},
     {"selene",   "Open Selene, the NyxOS web browser (HTTP and TLS, HTML and images)."},
     {"man",      "Display the manual page for a command: its name, a synopsis, and a description of what it does."},
@@ -1669,6 +1672,12 @@ static void cmd_matrix(int argc, char** argv) {
 static void cmd_lava(int argc, char** argv) {
     (void)argc; (void)argv;
     launch_lava();
+}
+
+// `fractal` — open the Nyx Fractal window (Mandelbrot render-perf demo, compositor.c).
+static void cmd_fractal(int argc, char** argv) {
+    (void)argc; (void)argv;
+    launch_mandel();
 }
 
 // `snake` — open a Snake game window (in-kernel, compositor.c).
