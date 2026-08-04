@@ -52,6 +52,12 @@ static void http_get_header(const char* buf, const char* hdr_end, const char* na
 // caller owns it. Returns 0 on success (body possibly NULL/0), -1 on a malformed response.
 int http_parse_response(uint8_t* buf, uint32_t total, http_response_t* resp)
 {
+    // Initialise the body up front so EVERY return path (including the error
+    // returns below) leaves resp->body well-defined — a caller that frees on a
+    // -1 return then never touches an uninitialised pointer.
+    resp->body = NULL;
+    resp->body_len = 0;
+
     // Parse status line: "HTTP/1.1 200 OK\r\n"
     char* line_end = strstr((char*)buf, "\r\n");
     if (!line_end) return -1;
@@ -254,4 +260,85 @@ void http_free(http_response_t* resp)
 {
     if (resp->body) { kfree(resp->body); resp->body = NULL; }
     resp->body_len = 0;
+}
+
+// Adversarial/robustness self-test for http_parse_response(). It now sits on the
+// xbm package-fetch path (v6.4.73), parsing UNTRUSTED server data, so this feeds
+// it crafted responses — well-formed, chunked, header-less, status-less, and
+// HOSTILE (oversized / hex-overflow chunk sizes, Content-Length far larger than
+// the actual body) — and asserts the parser extracts the right fields AND never
+// over-reads the input or overruns the heap body it allocates. Returns 0 if all
+// cases pass, else the number of failures. Mirrors image_reject_selftest().
+static int hp_case(const char* s, http_response_t* r) {
+    static uint8_t buf[512];
+    uint32_t n = (uint32_t)strlen(s);
+    if (n >= sizeof(buf)) return -999;
+    __builtin_memcpy(buf, s, n);
+    buf[n] = '\0';
+    return http_parse_response(buf, n, r);
+}
+
+int http_parse_selftest(void) {
+    int fails = 0;
+    http_response_t r;
+
+    // 1) Plain 200 + Content-Length body.
+    if (hp_case("HTTP/1.1 200 OK\r\nContent-Length: 5\r\n\r\nhello", &r) != 0) fails++;
+    else {
+        if (r.status_code != 200 || strcmp(r.status_text, "OK") != 0) fails++;
+        if (r.body_len != 5 || !r.body || strncmp((char*)r.body, "hello", 5) != 0) fails++;
+        http_free(&r);
+    }
+
+    // 2) Transfer-Encoding: chunked — must de-chunk to "hello world".
+    if (hp_case("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+                "5\r\nhello\r\n6\r\n world\r\n0\r\n\r\n", &r) != 0) fails++;
+    else {
+        if (r.body_len != 11 || !r.body || strncmp((char*)r.body, "hello world", 11) != 0) fails++;
+        http_free(&r);
+    }
+
+    // 3) HOSTILE: a chunk size of 0xFFFFFFFF must be clamped, not overrun.
+    if (hp_case("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+                "FFFFFFFF\r\nAB\r\n0\r\n\r\n", &r) != 0) fails++;
+    else {
+        if (r.body_len > 32) fails++;           // bounded by the tiny body region
+        http_free(&r);
+    }
+
+    // 4) HOSTILE: a hex chunk size that overflows uint32 must stay safe.
+    if (hp_case("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n"
+                "100000000000\r\nX\r\n0\r\n\r\n", &r) != 0) fails++;
+    else {
+        if (r.body_len > 32) fails++;
+        http_free(&r);
+    }
+
+    // 5) Header block with no terminating CRLFCRLF -> success, empty body.
+    if (hp_case("HTTP/1.1 200 OK\r\nContent-Length: 100\r\n", &r) != 0) fails++;
+    else {
+        if (r.body != NULL || r.body_len != 0) fails++;
+        http_free(&r);
+    }
+
+    // 6) No status line at all (no CRLF) -> rejected.
+    if (hp_case("garbage with no CRLF", &r) != -1) fails++;
+
+    // 7) 3xx: the Location header is extracted for the redirect follower.
+    if (hp_case("HTTP/1.1 302 Found\r\nLocation: http://a.b/c\r\nContent-Length: 0\r\n\r\n", &r) != 0) fails++;
+    else {
+        if (r.status_code != 302 || strcmp(r.location, "http://a.b/c") != 0) fails++;
+        http_free(&r);
+    }
+
+    // 8) Content-Length far larger than the real body -> body bounded to actual (no over-read).
+    if (hp_case("HTTP/1.1 200 OK\r\nContent-Length: 1000\r\n\r\nhi", &r) != 0) fails++;
+    else {
+        if (r.body_len != 2 || !r.body || strncmp((char*)r.body, "hi", 2) != 0) fails++;
+        http_free(&r);
+    }
+
+    printf("[HTTPPARSE] %s (%d failure%s across 8 cases)\n",
+           fails == 0 ? "all cases passed" : "FAILURES", fails, fails == 1 ? "" : "s");
+    return fails;
 }

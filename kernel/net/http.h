@@ -22,5 +22,9 @@ int http_request(const char* host, uint16_t port, const char* path, const char* 
 // allocating a de-chunked resp->body (free via http_free). Does not take ownership of buf.
 int http_parse_response(uint8_t* buf, uint32_t total, http_response_t* resp);
 void http_free(http_response_t* resp);
+// Adversarial robustness self-test for http_parse_response (it parses untrusted
+// server data on the xbm fetch path): returns 0 if all cases pass, else the
+// failure count. Wired into run_selftests() (CI) + the `httptest` command.
+int http_parse_selftest(void);
 
 #endif
