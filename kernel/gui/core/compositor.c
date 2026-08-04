@@ -10,6 +10,7 @@
 #include "../games/lava_win.h"
 #include "../games/mandel_win.h"
 #include "../games/julia_win.h"
+#include "../games/particles_win.h"
 #include "../apps/fileman_win.h"
 #include "../apps/paint_win.h"
 #include "../apps/taskman_win.h"
@@ -1194,6 +1195,17 @@ void launch_julia(void) {
     w->reserved = julia_create_ctx();
     if (!w->reserved) { window_destroy(w->id); return; }
     w->on_tick = julia_win_tick;
+}
+
+void launch_particles(void) {
+    int px = ((int)fb_get_width()  - PART_WIN_W) / 2;              if (px < 0) px = 0;
+    int py = ((int)fb_get_height() - PART_WIN_H - TITLE_H) / 2;    if (py < 0) py = 0;
+    window_t* w = window_create(px, py, PART_WIN_W, PART_WIN_H, "Nyx Particles", particles_win_draw);
+    if (!w) return;
+    w->reserved = particles_create_ctx();
+    if (!w->reserved) { window_destroy(w->id); return; }
+    w->on_tick = particles_win_tick;
+    w->on_key  = particles_win_key;
 }
 
 // Open a Snake window. In-kernel game like Pong: the compositor's game-tick steps it via
