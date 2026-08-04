@@ -570,7 +570,7 @@ static const man_page_t man_pages[] = {
     {"wc",       "Count the lines, words and characters in <file>. -l, -w or -c limit the output to just one of those counts."},
     {"basename", "Strip the directory prefix (and, if given, a trailing suffix) from <path>, printing only the final component."},
     {"dirname",  "Strip the final component from <path>, printing the directory portion that remains."},
-    {"xbm",      "The NyxOS package manager. `xbm install <name>` compiles a package from its recipe with the in-OS C compiler and installs it; `xbm remove <name>` uninstalls it; `xbm search <str>` and `xbm list` browse the available and installed packages."},
+    {"xbm",      "The NyxOS package manager. `xbm install <name>` compiles a package from its recipe with the in-OS C compiler and installs it; `xbm remove <name>` uninstalls it; `xbm search <str>` and `xbm list` browse the available and installed packages. A recipe may carry a `url:` line pointing at a remote http:// source; xbm then downloads that source into the package before building it, the pacman/apt \"fetch source, then compile in-OS\" model."},
     {"cc",       "Compile and link C source into an ELF program with the in-OS TinyCC toolchain. -c stops after producing an object file."},
     {"fire",     "Open Nyx Fire, an animated doom-fire effect window. It is also a visual performance demo, re-filling the whole framebuffer region each frame."},
     {"fractal",  "Open Nyx Fractal, a fixed-point Mandelbrot renderer that auto-zooms toward the seahorse valley. A P4 rendering-performance-testing demo: a benchmark HUD shows the measured per-frame render time, the derived render FPS, the current iteration cap, and the zoom factor, so you can watch the software renderer's cost rise and fall with the load. All-integer (Q8.24 fixed point)."},
@@ -1674,6 +1674,60 @@ static int pkg_valid_name(const char* s) {
  * `bin:`); `xbm search <substr>` greps the repo by name; `xbm list` shows available
  * packages and `xbm list --installed` shows what's in /mnt/bin. `pkg` is a hidden alias.
  * (No network fetch / deps / versions yet — see the package-manager roadmap.) */
+// Parse an `http://host[:port]/path` URL into host/port/path (bounded). Returns 0 on
+// success, -1 if it is not an http:// URL. (https is a later step — it needs the TLS
+// path; for now xbm fetches over plain HTTP.) Mirrors the parser in cmd_httpget.
+static int xbm_parse_url(const char* url, char* host, int hostsz, uint16_t* port, char* path, int pathsz) {
+    if (strncmp(url, "http://", 7) != 0) return -1;
+    const char* p = url + 7;
+    const char* hs = p;
+    while (*p && *p != ':' && *p != '/') p++;
+    int hl = (int)(p - hs);
+    if (hl <= 0 || hl >= hostsz) return -1;
+    memcpy(host, hs, (size_t)hl); host[hl] = '\0';
+    *port = 80;
+    if (*p == ':') {
+        p++; uint16_t pt = 0;
+        if (*p < '0' || *p > '9') return -1;
+        while (*p >= '0' && *p <= '9') { pt = (uint16_t)(pt * 10 + (*p - '0')); p++; }
+        *port = pt;
+    }
+    if (!*p) { path[0] = '/'; path[1] = '\0'; }
+    else if (*p == '/') { strncpy(path, p, (size_t)(pathsz - 1)); path[pathsz - 1] = '\0'; }
+    else return -1;
+    return 0;
+}
+
+// Given an ALREADY-PARSED HTTP response, save its body to `outpath` (truncating any
+// existing file). Requires a 200 with a body. This is the deterministic core of the
+// network fetch — it takes an http_response_t, not a socket, so it is unit-testable
+// by feeding a canned response through http_parse_response. Returns 0 on success.
+static int xbm_save_resp_body(const http_response_t* r, const char* outpath) {
+    if (!r || r->status_code != 200 || !r->body) return -1;
+    vfs_unlink(outpath);                          // start clean so no stale tail survives
+    int fd = vfs_open(outpath, 1, 0);             // O_CREAT
+    if (fd < 0) return -1;
+    int wrote = (r->body_len > 0) ? vfs_write(fd, r->body, r->body_len) : 0;
+    vfs_close(fd);
+    return (wrote == (int)r->body_len) ? 0 : -1;
+}
+
+// Fetch an http:// URL and save its body to `outpath`. Returns 0 on success. The
+// socket half (http_get) can't be exercised headless; the parse + save half is what
+// the self-test covers via xbm_save_resp_body on a canned response.
+static int xbm_fetch_url(const char* url, const char* outpath) {
+    char host[128], path[256]; uint16_t port;
+    if (xbm_parse_url(url, host, sizeof(host), &port, path, sizeof(path)) != 0) return -1;
+    int iface = -1;
+    for (int i = 0; i < 8; i++)
+        if (net_interfaces[i].name[0] && strcmp(net_interfaces[i].name, "lo") != 0) { iface = i; break; }
+    http_response_t resp;
+    if (http_get(host, port, path, &resp, iface) < 0) return -1;
+    int rc = xbm_save_resp_body(&resp, outpath);
+    http_free(&resp);
+    return rc;
+}
+
 static void cmd_xbm(int argc, char** argv) {
     const char* prog = argv[0];   // "xbm" (or the "pkg" alias) — echo whatever was typed
     if (argc < 2) { printf("Usage: %s install|remove <name> | %s search <str> | %s list [--installed]\n", prog, prog, prog); return; }
@@ -1738,6 +1792,19 @@ static void cmd_xbm(int argc, char** argv) {
         if (!pkg_recipe_value(rbuf, "bin", bin, sizeof(bin)))          { printf("%s: recipe for '%s' is missing 'bin'\n", prog, name); return; }
         if (!pkg_valid_name(source) || !pkg_valid_name(bin)) {
             printf("%s: recipe for '%s' has an unsafe 'source'/'bin' name\n", prog, name); return;
+        }
+
+        // Optional `url:` — fetch the source over HTTP into the package dir before building,
+        // so a recipe can point at a remote .c instead of shipping it locally (the pacman/apt
+        // "download source, then compile in-OS" model). name/source are pkg_valid_name-checked,
+        // so the destination path can't traverse out of /usr/pkg.
+        char url[256];
+        if (pkg_recipe_value(rbuf, "url", url, sizeof(url))) {
+            char srcpath[160];
+            snprintf(srcpath, sizeof(srcpath), "/usr/pkg/%s/%s", name, source);
+            printf("%s: fetching %s ...\n", prog, url);
+            if (xbm_fetch_url(url, srcpath) != 0) { printf("%s: fetch failed for '%s'\n", prog, name); return; }
+            printf("%s: fetched source -> %s\n", prog, srcpath);
         }
 
         vfs_mkdir("/mnt/bin", 0755);   // ensure the install dir exists (harmless if it already does)
