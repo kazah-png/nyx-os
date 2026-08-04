@@ -106,6 +106,7 @@ static void cmd_rev(int argc, char** argv);
 static void cmd_tr(int argc, char** argv);
 static void cmd_fold(int argc, char** argv);
 static void cmd_printf(int argc, char** argv);
+static void cmd_expand(int argc, char** argv);
 static void cmd_tree(int argc, char** argv);
 static void cmd_env(int argc, char** argv);
 static void cmd_export(int argc, char** argv);
@@ -237,6 +238,7 @@ static const command_t commands[] = {
     {"tr",        cmd_tr,        "Translate/delete/squeeze chars: tr [-ds] SET1 [SET2] <file>", false},
     {"fold",      cmd_fold,      "Wrap long lines to a width: fold [-w width] <file>", false},
     {"printf",    cmd_printf,    "Format and print: printf FORMAT [ARG...]", false},
+    {"expand",    cmd_expand,    "Convert tabs to spaces: expand [-t N] <file>", false},
     {"wc",        cmd_wc,        "Count lines/words/chars: wc <file>", false},
     {"write",     cmd_write,     "Write text to file: write <file> <text>", false},
     {"dhcp",      cmd_dhcp,      "Request IP via DHCP", false},
@@ -480,7 +482,7 @@ void execute_command(const char* cmd_line) {
 typedef struct { const char* title; const char* const* names; } help_cat_t;
 static const char* const HC_shell[] = {"help","man","version","clear","history","exec","spawn","jobs","wait","nice","renice",0};
 static const char* const HC_files[] = {"ls","cd","pwd","cat","open","touch","mkdir","rm","cp","mv","tree","find","which","basename","dirname","files","df","mount","ext2ls","ext2cat",0};
-static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tr","fold","printf","wc","write","hexdump",0};
+static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tr","fold","expand","printf","wc","write","hexdump",0};
 static const char* const HC_sys[]   = {"ps","kill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch",0};
 static const char* const HC_user[]  = {"useradd","users",0};
 static const char* const HC_net[]   = {"ifconfig","dhcp","dns","ping","setip","httpget","tls",0};
@@ -564,6 +566,7 @@ static const man_page_t man_pages[] = {
     {"tr",       "Translate, delete or squeeze characters read from <file>. With two sets, each character of <file> that appears in SET1 is replaced by the character at the same position in SET2 (a shorter SET2 repeats its last character). -d deletes every SET1 character instead; -s collapses each run of a repeated result character into one. Sets may use ascending ranges such as a-z or 0-9."},
     {"fold",     "Wrap the lines of <file> so no output line is longer than the given width (80 by default, or -w width). A line longer than the width is broken with a hard newline at exactly that many characters; shorter lines and existing line breaks are left alone."},
     {"printf",   "Print ARGs under the control of FORMAT (like the C/coreutil printf). FORMAT is reused as needed to consume all ARGs. It interprets backslash escapes (\\n \\t \\r \\a \\b \\f \\v \\\\) and the conversions %s %d %i %u %x %X %c %% with optional flags and field width (e.g. %-10s, %05d). Numeric ARGs are read as decimal. Unlike echo, printf never appends a trailing newline unless FORMAT contains one."},
+    {"expand",   "Convert the tabs in <file> to spaces. Each tab advances to the next tab stop, which are spaced N columns apart (8 by default, or -t N), so columns stay aligned instead of a fixed number of spaces per tab. Non-tab characters and newlines pass through unchanged (a newline resets the column count)."},
     {"wc",       "Count the lines, words and characters in <file>. -l, -w or -c limit the output to just one of those counts."},
     {"basename", "Strip the directory prefix (and, if given, a trailing suffix) from <path>, printing only the final component."},
     {"dirname",  "Strip the final component from <path>, printing the directory portion that remains."},
@@ -1024,6 +1027,41 @@ static void cmd_printf(int argc, char** argv) {
             }
         }
     } while (ai < argc && consumed);
+}
+
+// expand [-t N] <file> — replace tabs with spaces, aligning to tab stops that are N
+// columns apart (default 8): a tab advances to the NEXT multiple of N, so columns
+// line up (not a fixed N spaces per tab). File-arg like fold/rev (kernel builtins
+// have no stdin). Accepts both `-t N` and `-tN`.
+static void cmd_expand(int argc, char** argv) {
+    int tabw = 8, ai = 1;
+    if (ai < argc && argv[ai][0] == '-' && argv[ai][1] == 't') {
+        if (argv[ai][2] != '\0') { tabw = atoi(argv[ai] + 2); ai++; }        // -tN
+        else if (ai + 1 < argc)  { tabw = atoi(argv[ai + 1]); ai += 2; }     // -t N
+        else { printf("Usage: expand [-t N] <file>\n"); return; }
+    }
+    if (tabw < 1) tabw = 1;
+    if (ai >= argc) { printf("Usage: expand [-t N] <file>\n"); return; }
+
+    int fd = vfs_open(argv[ai], 0, 0);
+    if (fd < 0) { printf("expand: cannot open '%s'\n", argv[ai]); return; }
+    char buf[2048];
+    int bytes = vfs_read(fd, buf, sizeof(buf) - 1);
+    vfs_close(fd);
+    if (bytes <= 0) return;
+
+    int col = 0;
+    for (int i = 0; i < bytes; i++) {
+        char c = buf[i];
+        if (c == '\t') {
+            int next = (col / tabw + 1) * tabw;       // advance to the next tab stop
+            while (col < next) { putchar(' '); col++; }
+        } else if (c == '\n') {
+            putchar('\n'); col = 0;                   // newline resets the column
+        } else {
+            putchar(c); col++;
+        }
+    }
 }
 
 static void cmd_tree(int argc, char** argv) {
