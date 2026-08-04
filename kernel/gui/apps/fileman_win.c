@@ -67,20 +67,37 @@ static void fileman_apply_search(fileman_win_t* fm) {
     }
 }
 
-// Order two entries for the listing: directories before files, then
-// case-insensitive alphabetical by name (a<b => "a should come first").
+// Case-insensitive name compare: <0 if x<y, 0 if equal, >0 if x>y. Shorter name
+// first on a common prefix.
+static int fm_namecmp(const char* x, const char* y) {
+    for (; *x && *y; x++, y++) {
+        char cx = (*x >= 'A' && *x <= 'Z') ? (char)(*x + 32) : *x;
+        char cy = (*y >= 'A' && *y <= 'Z') ? (char)(*y + 32) : *y;
+        if (cx != cy) return (int)cx - (int)cy;
+    }
+    return (*x ? 1 : 0) - (*y ? 1 : 0);
+}
+
+// Order two entries for the listing. Directories always group before files (the
+// standard "folders first" behaviour). Within a group, order by the active sort
+// column: Name (case-insensitive) or Size, honouring the asc/desc direction;
+// Size ties break by name so the order stays stable.
 static int fm_entry_less(fileman_win_t* fm, int a, int b) {
     int da = fm->entry_types[a] ? 0 : 1;   // dirs sort before files
     int db = fm->entry_types[b] ? 0 : 1;
     if (da != db) return da < db;
-    const char* x = fm->entries[a];
-    const char* y = fm->entries[b];
-    for (; *x && *y; x++, y++) {
-        char cx = (*x >= 'A' && *x <= 'Z') ? (char)(*x + 32) : *x;
-        char cy = (*y >= 'A' && *y <= 'Z') ? (char)(*y + 32) : *y;
-        if (cx != cy) return cx < cy;
+    int cmp;
+    if (fm->sort_key == FM_SORT_SIZE && !fm->entry_types[a]) {
+        // Size is only meaningful for files (dirs carry 0); tie-break by name.
+        if (fm->entry_sizes[a] != fm->entry_sizes[b])
+            cmp = (fm->entry_sizes[a] < fm->entry_sizes[b]) ? -1 : 1;
+        else
+            cmp = fm_namecmp(fm->entries[a], fm->entries[b]);
+    } else {
+        cmp = fm_namecmp(fm->entries[a], fm->entries[b]);
     }
-    return (*x == 0) && (*y != 0);         // shorter name first on a common prefix
+    if (fm->sort_desc) cmp = -cmp;
+    return cmp < 0;
 }
 
 // Selection sort of the parallel entry arrays (name/type/size in lockstep).
@@ -418,6 +435,15 @@ static void fm_draw_file_icon(int x, int y, int rowh, uint32_t page) {
     fb_fill_rect(ix, iy + ih - 1, iw, 1, edge);       // bottom edge
 }
 
+// A small sort-direction triangle built from stacked bars (no glyph needed):
+// apex up = ascending, apex down = descending. Marks the active sort column.
+static void fm_draw_sort_arrow(int x, int y, int up, uint32_t col) {
+    for (int r = 0; r < 4; r++) {
+        int wr = up ? (2 * r + 1) : (7 - 2 * r);   // 1,3,5,7 (up) or 7,5,3,1 (down)
+        fb_fill_rect(x + (7 - wr) / 2, y + r, wr, 1, col);
+    }
+}
+
 void fileman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     fileman_win_t* fm = (fileman_win_t*)win->reserved;
     if (!fm) return;
@@ -466,14 +492,24 @@ void fileman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
             fb_rgb(255,255,150), fb_rgb(60,50,30));
     }
 
-    // Header row
+    // Header row — clickable column headers (click to sort by that column, click
+    // the active column again to flip direction). The active header is tinted the
+    // Nyx accent purple and carries a direction arrow; the inactive one is white.
     int list_header_y = path_y + HEADER_H + search_bar_h;
-    fb_fill_rect(cx, list_header_y, cw, char_h + 2, fb_rgb(50,55,65));
-    font_draw_string(cx + 4, list_header_y + 1, "Name", fb_rgb(255,255,255), fb_rgb(50,55,65));
+    uint32_t hdr_bg = fb_rgb(50,55,65);
+    uint32_t hdr_active = fb_rgb(200,180,255);   // Nyx purple accent
+    fb_fill_rect(cx, list_header_y, cw, char_h + 2, hdr_bg);
+    uint32_t name_col = (fm->sort_key == FM_SORT_NAME) ? hdr_active : fb_rgb(255,255,255);
+    uint32_t size_col = (fm->sort_key == FM_SORT_SIZE) ? hdr_active : fb_rgb(255,255,255);
+    font_draw_string(cx + 4, list_header_y + 1, "Name", name_col, hdr_bg);
+    if (fm->sort_key == FM_SORT_NAME)
+        fm_draw_sort_arrow(cx + 4 + (int)strlen("Name") * FONT_WIDTH + 4, list_header_y + 7, !fm->sort_desc, name_col);
     {
         const char* size_hdr = "Size";
         int shx = cx + ((int)cw - SCROLL_W) - 8 - (int)strlen(size_hdr) * FONT_WIDTH;
-        font_draw_string(shx, list_header_y + 1, size_hdr, fb_rgb(255,255,255), fb_rgb(50,55,65));
+        if (fm->sort_key == FM_SORT_SIZE)
+            fm_draw_sort_arrow(shx - 11, list_header_y + 7, !fm->sort_desc, size_col);
+        font_draw_string(shx, list_header_y + 1, size_hdr, size_col, hdr_bg);
     }
 
     // File listing
@@ -714,11 +750,28 @@ void fileman_win_click(window_t* win, int mx, int my, int btn) {
 
     // File list area
     int list_header_y = cy + TOOLBAR_H + HEADER_H + search_bar_h;
+    int list_w = (int)cw - SCROLL_W;
+
+    // Column-header click: sort by that column; clicking the active column flips
+    // ascending/descending. The right ~96px (over the Size values) is the Size
+    // zone, the rest of the header is the Name zone. Re-sort and drop the stale
+    // selection index (it points into the pre-sort order).
+    if (btn == 1 && my >= list_header_y && my < list_header_y + (int)char_h + 2) {
+        int want = (mx >= cx + list_w - 96) ? FM_SORT_SIZE : FM_SORT_NAME;
+        if (fm->sort_key == want) fm->sort_desc = !fm->sort_desc;
+        else { fm->sort_key = want; fm->sort_desc = 0; }
+        fileman_sort(fm);
+        fm->sel_index = -1;
+        fileman_apply_search(fm);
+        snprintf(fm->status, sizeof(fm->status), "Sorted by %s, %s",
+            want == FM_SORT_SIZE ? "size" : "name", fm->sort_desc ? "descending" : "ascending");
+        return;
+    }
+
     int list_y = list_header_y + char_h + 4;
     int avail_h = (int)(ch - TOOLBAR_H - HEADER_H - search_bar_h - char_h - 4 - HEADER_H - 4);
     int max_rows = avail_h / (int)char_h;
     if (max_rows < 1) max_rows = 1;
-    int list_w = (int)cw - SCROLL_W;
 
     // Scrollbar click
     int sb_x = cx + list_w;

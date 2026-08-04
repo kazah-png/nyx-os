@@ -6,6 +6,10 @@
 
 #define FILEMAN_MAX_ENTRIES 512
 
+// Sort columns for the clickable list headers.
+#define FM_SORT_NAME 0
+#define FM_SORT_SIZE 1
+
 typedef struct {
     char cwd[256];
     char entries[FILEMAN_MAX_ENTRIES][64];
@@ -52,6 +56,11 @@ typedef struct {
     int summ_dirs;
     int summ_files;
     uint32_t summ_bytes;
+    // Column sort: click a header to sort by it, click the active header again to
+    // flip direction. Directories always group first; the key/direction order the
+    // files within. sort_key: FM_SORT_NAME / FM_SORT_SIZE. sort_desc: 0=ascending.
+    int sort_key;
+    int sort_desc;
 } fileman_win_t;
 
 fileman_win_t* fileman_create_ctx(void);
