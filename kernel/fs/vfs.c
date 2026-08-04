@@ -219,6 +219,14 @@ static vfs_node_t* resolve_path(const char* path) {
     return result;
 }
 
+// Resolve `path` to the directory that should CONTAIN its final component, and copy
+// that final component into `child_name`. Every INTERMEDIATE component must already
+// exist and be a directory: if one is missing (or is a file), the requested parent
+// genuinely does not exist, so this fails with NULL. The old code returned early with
+// whatever directory it had reached the moment it hit a missing component, so a
+// create/unlink of "/a/b/c" whose "/a/b" was absent silently operated on "/a" instead
+// of failing (issue #56). The final component is handed back unresolved — it may or
+// may not exist yet, which is the caller's decision (create vs. remove vs. rename).
 static vfs_node_t* resolve_parent(const char* path, char* child_name) {
     if (!path || !*path) return NULL;
     char buf[256];
@@ -230,26 +238,26 @@ static vfs_node_t* resolve_parent(const char* path, char* child_name) {
     vfs_node_t* dir = (buf[0] == '/') ? &nodes[0] : current_dir;
 
     char token[MAX_NAME];
-    char prev[MAX_NAME] = "";
-    vfs_node_t* result = dir;
-    while ((p = path_token(p, token)) != NULL && *token) {
-        strncpy(prev, token, MAX_NAME-1);
-        vfs_node_t* next = find_child(dir, token);
-        if (!next) {
+    char* next = path_token(p, token);
+    if (!next || !*token) return NULL;              // no component at all (e.g. "/")
+    for (;;) {
+        // Peek at what follows `token`. If nothing real remains, `token` is the final
+        // component and `dir` is its parent — done.
+        char peek[MAX_NAME];
+        char* after = path_token(next, peek);
+        if (!after || !*peek) {
             if (child_name) strncpy(child_name, token, MAX_NAME-1);
             return dir;
         }
-        if (next->type != 1) {
-            if (child_name) strncpy(child_name, token, MAX_NAME-1);
-            return dir;
-        }
-        result = dir;   // true parent of the token just consumed — so a path that
-                        // ENDS in an existing directory returns its parent (not the
-                        // walk's start node), and unlink/rename of a nested dir works
-        dir = next;
+        // `token` is an intermediate: it MUST already resolve to a directory, else the
+        // parent the caller asked for does not exist.
+        vfs_node_t* child = find_child(dir, token);
+        if (!child || child->type != 1) return NULL;
+        dir = child;
+        next = after;
+        strncpy(token, peek, MAX_NAME-1);
+        token[MAX_NAME-1] = '\0';
     }
-    if (child_name) strncpy(child_name, prev, MAX_NAME-1);
-    return result;
 }
 
 // ==================== /proc (generated filesystem) ====================
