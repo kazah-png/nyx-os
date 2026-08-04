@@ -105,6 +105,7 @@ static void cmd_head(int argc, char** argv);
 static void cmd_rev(int argc, char** argv);
 static void cmd_tr(int argc, char** argv);
 static void cmd_fold(int argc, char** argv);
+static void cmd_nl(int argc, char** argv);
 static void cmd_printf(int argc, char** argv);
 static void cmd_expand(int argc, char** argv);
 static void cmd_unexpand(int argc, char** argv);
@@ -241,6 +242,7 @@ static const command_t commands[] = {
     {"rev",       cmd_rev,       "Reverse the characters of each line: rev <file>", false},
     {"tr",        cmd_tr,        "Translate/delete/squeeze chars: tr [-ds] SET1 [SET2] <file>", false},
     {"fold",      cmd_fold,      "Wrap long lines to a width: fold [-w width] <file>", false},
+    {"nl",        cmd_nl,        "Number lines: nl [-b a|t|n] [-w N] [-s SEP] <file>", false},
     {"printf",    cmd_printf,    "Format and print: printf FORMAT [ARG...]", false},
     {"expand",    cmd_expand,    "Convert tabs to spaces: expand [-t N] <file>", false},
     {"unexpand",  cmd_unexpand,  "Convert spaces to tabs: unexpand [-a] [-t N] <file>", false},
@@ -490,7 +492,7 @@ void execute_command(const char* cmd_line) {
 typedef struct { const char* title; const char* const* names; } help_cat_t;
 static const char* const HC_shell[] = {"help","man","version","clear","history","exec","spawn","jobs","wait","nice","renice",0};
 static const char* const HC_files[] = {"ls","cd","pwd","cat","open","touch","mkdir","rm","cp","mv","tree","find","which","basename","dirname","files","df","mount","ext2ls","ext2cat",0};
-static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tr","fold","expand","unexpand","printf","wc","write","hexdump",0};
+static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tr","fold","nl","expand","unexpand","printf","wc","write","hexdump",0};
 static const char* const HC_sys[]   = {"ps","kill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch",0};
 static const char* const HC_user[]  = {"useradd","users",0};
 static const char* const HC_net[]   = {"ifconfig","dhcp","dns","ping","setip","httpget","tls",0};
@@ -573,6 +575,7 @@ static const man_page_t man_pages[] = {
     {"rev",      "Print each line of <file> with the order of its characters reversed."},
     {"tr",       "Translate, delete or squeeze characters read from <file>. With two sets, each character of <file> that appears in SET1 is replaced by the character at the same position in SET2 (a shorter SET2 repeats its last character). -d deletes every SET1 character instead; -s collapses each run of a repeated result character into one. Sets may use ascending ranges such as a-z or 0-9."},
     {"fold",     "Wrap the lines of <file> so no output line is longer than the given width (80 by default, or -w width). A line longer than the width is broken with a hard newline at exactly that many characters; shorter lines and existing line breaks are left alone."},
+    {"nl",       "Number the lines of <file>. By default only non-empty lines are numbered (-b t); -b a numbers every line and -b n numbers none. Each line number is right-justified in a field N columns wide (6 by default, or -w N) and followed by a separator (a tab by default, or -s SEP), then the line text."},
     {"printf",   "Print ARGs under the control of FORMAT (like the C/coreutil printf). FORMAT is reused as needed to consume all ARGs. It interprets backslash escapes (\\n \\t \\r \\a \\b \\f \\v \\\\) and the conversions %s %d %i %u %x %X %c %% with optional flags and field width (e.g. %-10s, %05d). Numeric ARGs are read as decimal. Unlike echo, printf never appends a trailing newline unless FORMAT contains one."},
     {"expand",   "Convert the tabs in <file> to spaces. Each tab advances to the next tab stop, which are spaced N columns apart (8 by default, or -t N), so columns stay aligned instead of a fixed number of spaces per tab. Non-tab characters and newlines pass through unchanged (a newline resets the column count)."},
     {"unexpand", "The inverse of expand: convert runs of spaces in <file> back into tabs, collapsing each blank run to the fewest tabs+spaces at N-column tab stops (8 by default, or -t N). A single space is never turned into a tab. By default only the LEADING blanks of each line are converted (matching GNU unexpand); -a converts blank runs everywhere on the line, and -t N implies -a."},
@@ -1005,6 +1008,59 @@ static void cmd_fold(int argc, char** argv) {
         if (col >= width) { putchar('\n'); col = 0; }          // hard-wrap before this char
         putchar(c);
         col++;
+    }
+}
+
+// nl [-b a|t|n] [-w N] [-s SEP] <file> — number the lines of <file>. By default
+// (-b t) only non-empty lines are numbered; -b a numbers every line, -b n none.
+// The number is right-justified in N columns (default 6) and followed by SEP
+// (default a tab). Arg-based like fold/expand (no stdin into a kernel builtin).
+static void cmd_nl(int argc, char** argv) {
+    int width = 6, ai = 1;
+    char style = 't';                 // t = non-empty (default), a = all, n = none
+    const char* sep = "\t";
+    while (ai < argc && argv[ai][0] == '-' && argv[ai][1] != '\0') {
+        char f = argv[ai][1];
+        if (f == 'b') {
+            const char* v = (argv[ai][2] != '\0') ? argv[ai] + 2 : (ai + 1 < argc ? argv[++ai] : "");
+            if (v[0] == 'a' || v[0] == 't' || v[0] == 'n') style = v[0];
+            ai++;
+        } else if (f == 'w') {
+            if (argv[ai][2] != '\0') { width = atoi(argv[ai] + 2); ai++; }
+            else if (ai + 1 < argc) { width = atoi(argv[ai + 1]); ai += 2; }
+            else { printf("Usage: nl [-b a|t|n] [-w N] [-s SEP] <file>\n"); return; }
+        } else if (f == 's') {
+            if (argv[ai][2] != '\0') { sep = argv[ai] + 2; ai++; }
+            else if (ai + 1 < argc) { sep = argv[ai + 1]; ai += 2; }
+            else { printf("Usage: nl [-b a|t|n] [-w N] [-s SEP] <file>\n"); return; }
+        } else break;
+    }
+    if (width < 1)  width = 1;
+    if (width > 12) width = 12;
+    if (ai >= argc) { printf("Usage: nl [-b a|t|n] [-w N] [-s SEP] <file>\n"); return; }
+
+    int fd = vfs_open(argv[ai], 0, 0);
+    if (fd < 0) { printf("nl: cannot open '%s'\n", argv[ai]); return; }
+    char buf[2048];
+    int bytes = vfs_read(fd, buf, sizeof(buf) - 1);
+    vfs_close(fd);
+    if (bytes <= 0) return;
+
+    int num = 1, i = 0;
+    while (i < bytes) {
+        int j = i;
+        while (j < bytes && buf[j] != '\n') j++;         // j = end of this line
+        int len = j - i;
+        if (style == 'a' || (style == 't' && len > 0)) { // this line gets a number
+            char nb[16]; snprintf(nb, sizeof(nb), "%d", num++);
+            int nlen = (int)strlen(nb);
+            for (int k = 0; k < width - nlen; k++) putchar(' ');   // right-justify
+            for (int k = 0; nb[k]; k++)  putchar(nb[k]);
+            for (int k = 0; sep[k]; k++) putchar(sep[k]);
+        }
+        for (int k = i; k < j; k++) putchar(buf[k]);
+        if (j < bytes) putchar('\n');
+        i = (j < bytes) ? j + 1 : j;
     }
 }
 
