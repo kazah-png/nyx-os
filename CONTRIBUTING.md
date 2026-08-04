@@ -70,8 +70,7 @@ Include relevant bug numbers or context.
 
 ### Build expectations
 
-The build **must** finish with zero errors and zero warnings. The AGENTS.md
-tracks the warning count across releases — a regression is a blocker.
+The build **must** finish with zero errors and zero warnings — a regression is a blocker.
 
 ## Testing
 
@@ -111,8 +110,8 @@ write better NyxOS code.
 
 ## What needs help
 
-Check the "Next features to add" section at the end of `AGENTS.md` — it
-lists the highest-priority work along with context and constraints.
+Check the open [issues](https://github.com/kazah-png/nyx-os/issues) — they
+list the highest-priority work along with context and constraints.
 
 ## Questions
 

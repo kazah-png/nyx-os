@@ -86,3 +86,6 @@ w*.png
 
 # === Scratchpad (session temp files: build logs, patches, screendumps) ===
 scratchpad/
+
+# Local-only detailed changelog (kept out of the public repo)
+AGENTS.md

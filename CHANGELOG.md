@@ -1,8 +1,8 @@
 # Changelog
 
-NyxOS keeps a **detailed, per-version changelog in [`AGENTS.md`](AGENTS.md)** —
-every version, down to each patch release, has an entry describing exactly what
-changed, why, and how it was verified. That file is the authoritative history.
+NyxOS is versioned per patch release. For the full, version-by-version history —
+what changed, why, and how it was verified — see the
+[commit history](https://github.com/kazah-png/nyx-os/commits).
 
 For downloadable, tagged builds see the
 [GitHub Releases](https://github.com/kazah-png/nyx-os/releases) page (each release
@@ -18,4 +18,4 @@ attaches a bootable `NyxOS-<version>.iso`).
 - **v5.8.x and earlier.** Kernel foundations: fork/exec/pipes, the scheduler, the
   network and TLS stack, filesystem persistence, and the image decoders.
 
-See [`AGENTS.md`](AGENTS.md) for the full, version-by-version detail.
+See the [commit history](https://github.com/kazah-png/nyx-os/commits) for the full, version-by-version detail.
