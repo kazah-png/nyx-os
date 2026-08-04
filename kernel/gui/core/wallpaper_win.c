@@ -24,7 +24,7 @@ static const struct { uint8_t r, g, b; const char* name; } palette[WALLPAPER_COU
 // color). "Nightfall" — the moon-and-stars scene — is the default: NyxOS is named
 // for Nyx, the goddess of night, so the night sky IS the brand identity. The clean
 // gradient and a flat solid stay one click away in the Wallpaper app.
-static const char* style_names[WP_STYLE_COUNT] = { "Limpio", "Nightfall", "Plano", "Estrellas" };
+static const char* style_names[WP_STYLE_COUNT] = { "Limpio", "Nightfall", "Plano", "Estrellas", "Meteoros" };
 
 static int g_wallpaper = 0;                    // selected base color; default = morado
 static int g_style     = WP_STYLE_NIGHTFALL;   // selected render style; default = moon + stars

@@ -16,6 +16,7 @@ enum {
     WP_STYLE_NIGHTFALL,   // gradient + moon + stars (the classic scene)
     WP_STYLE_FLAT,        // a single flat solid color
     WP_STYLE_STARFIELD,   // Nightfall scene with an ANIMATED twinkling star field
+    WP_STYLE_SHOOTINGSTAR,// Nightfall scene with a periodic ANIMATED shooting star
     WP_STYLE_COUNT
 };
 

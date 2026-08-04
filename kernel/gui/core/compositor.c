@@ -763,7 +763,7 @@ static void do_ctx_menu_action(int idx) {
             break;
         case 4: // Wallpaper
             {
-                window_t* wwin = window_create(180, 110, 360, 380, "Wallpaper", wallpaper_win_draw);
+                window_t* wwin = window_create(180, 110, 450, 380, "Wallpaper", wallpaper_win_draw);
                 if (wwin) wwin->on_click = wallpaper_win_click;
             }
             break;
@@ -829,9 +829,11 @@ static void draw_background(void) {
         fb_fill_rect(0, i * band_h, fw, band_h, fb_rgb((uint8_t)r, (uint8_t)g, (uint8_t)b));
     }
 
-    // WP_STYLE_CLEAN stops here: just the gradient. NIGHTFALL and STARFIELD both
-    // go on to paint the moon + star field (STARFIELD additionally twinkles).
-    if (style != WP_STYLE_NIGHTFALL && style != WP_STYLE_STARFIELD) return;
+    // WP_STYLE_CLEAN stops here: just the gradient. NIGHTFALL, STARFIELD and
+    // SHOOTINGSTAR all go on to paint the moon + star field (STARFIELD additionally
+    // twinkles; SHOOTINGSTAR keeps the calm sky and adds a periodic meteor below).
+    if (style != WP_STYLE_NIGHTFALL && style != WP_STYLE_STARFIELD &&
+        style != WP_STYLE_SHOOTINGSTAR) return;
 
     // Moon in the upper-right, with a soft halo (concentric rings fading inward).
     int mx = (int)fw - 130, my = 96, mr = 40;
@@ -877,6 +879,37 @@ static void draw_background(void) {
             sz = (shade >= 2) ? 2 : 1;
         }
         fb_fill_rect(sx, sy, sz, sz, sc);
+    }
+
+    // SHOOTINGSTAR: a periodic meteor streaks across the otherwise calm sky. Integer
+    // only — its timing and path come from get_ticks(), and each meteor's launch
+    // point is varied by an integer hash of the period index so they don't all trace
+    // the same line. The compositor forces a faster repaint while this style is
+    // selected (below), so the streak reads as smooth motion.
+    if (style == WP_STYLE_SHOOTINGSTAR) {
+        uint32_t tms = get_ticks();
+        const uint32_t PERIOD = 3600, STREAK = 900;     // one ~0.9 s streak every ~3.6 s
+        uint32_t ph = tms % PERIOD;
+        if (ph < STREAK) {
+            uint32_t h = (tms / PERIOD) * 2654435761u;  // hash the meteor index -> varied path
+            int startx = (int)(fw / 2) + (int)(h % (fw / 3));          // launch in the upper right
+            int starty = 24 + (int)((h >> 9) % (star_zone / 3));
+            int span   = (int)fw * 3 / 5;                             // travel distance
+            int prog   = (int)(ph * 256u / STREAK);                   // 0..256 along the streak
+            int hx     = startx - span * prog / 256;                  // move down-LEFT...
+            int hy     = starty + (span / 2) * prog / 256;            // ...and gently downward
+            // A dense, continuous streak: the head leads at (hx,hy) and the tail trails
+            // up-right (opposite the 2:1 down-left motion) as a fading line ~44 px long.
+            for (int s = 0; s <= 44; s++) {
+                int tx = hx + 2 * s;                                  // 2:1 diagonal, adjacent points
+                int ty = hy - s;
+                if (tx < 0 || tx >= (int)fw || ty < 0 || ty >= (int)fh) continue;
+                int lum = 255 - s * 5; if (lum < 30) lum = 30;       // bright head -> faded tail
+                int sz = (s < 2) ? 3 : (s < 12 ? 2 : 1);             // fat glowing head, thinning tail
+                fb_fill_rect(tx, ty, sz, sz,
+                             fb_rgb((uint8_t)(lum * 92 / 100), (uint8_t)(lum * 96 / 100), (uint8_t)lum));
+            }
+        }
     }
 }
 
@@ -2814,11 +2847,15 @@ done_click:
                 }
         }
 
-        // Animated wallpaper: the Starfield style twinkles, so force a modest ~8 fps
-        // desktop repaint while it is selected. Gated on the style, so every other
-        // wallpaper still lets the desktop idle at rest (no needless recomposite).
+        // Animated wallpaper: Starfield twinkles (~8 fps is plenty) and Meteoros
+        // streaks a shooting star (needs a faster ~14 fps for smooth motion). Force a
+        // desktop repaint while one of them is selected; gated on the style, so every
+        // other wallpaper still lets the desktop idle at rest (no needless recomposite).
         static uint32_t wp_anim_ms = 0;
-        if (wallpaper_style() == WP_STYLE_STARFIELD && now - wp_anim_ms >= 120) {
+        int wp_st = wallpaper_style();
+        uint32_t wp_iv = (wp_st == WP_STYLE_SHOOTINGSTAR) ? 70u : 120u;
+        if ((wp_st == WP_STYLE_STARFIELD || wp_st == WP_STYLE_SHOOTINGSTAR) &&
+            now - wp_anim_ms >= wp_iv) {
             wp_anim_ms = now;
             redraw = 1;
         }
