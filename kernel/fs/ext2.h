@@ -125,6 +125,9 @@ uint32_t ext2_resolve(const char* path);
 uint32_t ext2_get_size(const char* path);
 int  ext2_read_file(const char* path, void* buf, uint32_t maxlen);
 int  ext2_readdir(const char* path, dirent_t* entries, uint32_t max_entries);
+// Adversarial self-test for the directory-block scanner (it parses untrusted
+// on-disk directory blocks): returns 0 if all cases pass, else the failure count.
+int  ext2_dir_selftest(void);
 
 // Write operations
 int  ext2_write_block(uint32_t block, const void* buf);

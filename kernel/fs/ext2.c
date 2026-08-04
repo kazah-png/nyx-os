@@ -301,6 +301,33 @@ int ext2_read_inode_block(ext2_inode_t* inode, uint32_t iblock, void* buf) {
     return -1;
 }
 
+// Look one directory block up for an entry named `name`, returning its inode
+// number (0 if not present in this block). EVERY field here is read off an
+// untrusted on-disk block, so rec_len and name_len are bounded against the block
+// size and the scan STOPS on the first corrupt record — the driver's hostile-image
+// safety for directory parsing lives here (exercised by ext2_dir_selftest).
+static uint32_t ext2_dirblock_lookup(const uint8_t* block, uint32_t block_size,
+                                     uint32_t bytes_left, const char* name) {
+    uint32_t off = 0;
+    while (off + EXT2_DIRENT_HDR <= block_size && off < bytes_left) {
+        const ext2_dirent_t* de = (const ext2_dirent_t*)(block + off);
+        if (de->rec_len < EXT2_DIRENT_HDR) break;                    // too small: corrupt
+        if (off + de->rec_len > block_size) break;                   // runs past the block
+        if (de->inode != 0) {
+            uint8_t name_len = de->name_len;
+            if (off + EXT2_DIRENT_HDR + name_len > block_size) break; // name would over-read
+            if (name_len < MAX_FILENAME) {
+                char dname[MAX_FILENAME];
+                __builtin_memcpy(dname, de->name, name_len);
+                dname[name_len] = '\0';
+                if (strcmp(dname, name) == 0) return de->inode;
+            }
+        }
+        off += de->rec_len;
+    }
+    return 0;
+}
+
 static uint32_t resolve_path(const char* path) {
     if (!path || path[0] != '/') return 0;
     if (path[1] == '\0') return EXT2_ROOT_INO;
@@ -334,33 +361,11 @@ static uint32_t resolve_path(const char* path) {
         while (bytes_left > 0 && !found) {
             uint8_t* block_buf_local = get_block_buf();
             if (ext2_read_inode_block(&dir_inode, iblock, block_buf_local) < 0) break;
-            uint32_t off = 0;
-            while (off + EXT2_DIRENT_HDR <= ext2_fs.block_size && off < bytes_left) {
-                ext2_dirent_t* de = (ext2_dirent_t*)(block_buf_local + off);
-                /* The old guard nudged `off` forward by 1 on a rec_len below the
-                 * header size, which kept the loop alive walking misaligned
-                 * garbage instead of stopping at an obviously corrupt block. */
-                if (de->rec_len < EXT2_DIRENT_HDR) break;
-                if (off + de->rec_len > ext2_fs.block_size) break;
-                if (de->inode == 0) { off += de->rec_len; continue; }
-
-                uint8_t name_len = de->name_len & 0xFF;
-                /* A 255-byte name near the end of the block reads past the buffer;
-                 * one longer than a component can be simply cannot match. */
-                if (off + EXT2_DIRENT_HDR + name_len > ext2_fs.block_size) break;
-                if (name_len >= MAX_FILENAME) { off += de->rec_len; continue; }
-
-                char dname[MAX_FILENAME];
-                __builtin_memcpy(dname, de->name, name_len);
-                dname[name_len] = '\0';
-                if (strcmp(dname, component) == 0) {
-                    cur_ino = de->inode;
-                    found = 1;
-                    break;
-                }
-                off += de->rec_len;
-            }
-            bytes_left -= ext2_fs.block_size;
+            uint32_t hit = ext2_dirblock_lookup(block_buf_local, ext2_fs.block_size, bytes_left, component);
+            if (hit) { cur_ino = hit; found = 1; break; }
+            // Directory sizes are whole blocks; guard the subtraction anyway so a
+            // hostile non-block-multiple dir size can't underflow into a long spin.
+            bytes_left = (bytes_left > ext2_fs.block_size) ? bytes_left - ext2_fs.block_size : 0;
             iblock++;
         }
 
@@ -368,6 +373,60 @@ static uint32_t resolve_path(const char* path) {
     }
 
     return cur_ino;
+}
+
+// Write a raw on-disk dirent into a test block (for ext2_dir_selftest only).
+static void ext2_dir_wr(uint8_t* blk, uint32_t off, uint32_t ino, uint16_t rec_len, const char* name) {
+    ext2_dirent_t* de = (ext2_dirent_t*)(blk + off);
+    de->inode = ino;
+    de->rec_len = rec_len;
+    uint8_t nl = 0; while (name[nl]) nl++;
+    de->name_len = nl;
+    de->file_type = 0;
+    for (uint8_t k = 0; k < nl; k++) de->name[k] = name[k];
+}
+
+// Adversarial self-test for the directory-block scanner ext2_dirblock_lookup(),
+// which parses UNTRUSTED on-disk directory blocks (a corrupt or hostile disk image
+// is the normal input for a filesystem driver). Feeds it crafted blocks — valid
+// entries, a zero rec_len, a rec_len past the block, and a 255-byte name near the
+// block end — and checks it finds the valid names and stays bounded (never
+// over-reads / spins) on the corrupt ones. Returns 0 on pass. Mirrors imgreject.
+int ext2_dir_selftest(void) {
+    static uint8_t blk[4096];
+    const uint32_t bs = 1024;
+    int fails = 0;
+
+    // 1) Two valid entries filling the block.
+    memset_asm(blk, 0, sizeof(blk));
+    ext2_dir_wr(blk, 0, 11, 16, "alpha");        // 8-byte hdr + 5-byte name, rec_len 16
+    ext2_dir_wr(blk, 16, 12, bs - 16, "beta");   // last entry spans to the block end
+    if (ext2_dirblock_lookup(blk, bs, bs, "alpha") != 11) fails++;
+    if (ext2_dirblock_lookup(blk, bs, bs, "beta")  != 12) fails++;
+    if (ext2_dirblock_lookup(blk, bs, bs, "gamma") != 0)  fails++;
+
+    // 2) rec_len = 0 must stop immediately (no hang, no over-read).
+    memset_asm(blk, 0, sizeof(blk));
+    ext2_dir_wr(blk, 0, 11, 0, "x");
+    if (ext2_dirblock_lookup(blk, bs, bs, "x") != 0) fails++;
+
+    // 3) rec_len larger than the block must be rejected.
+    memset_asm(blk, 0, sizeof(blk));
+    ext2_dir_wr(blk, 0, 11, bs + 64, "big");
+    if (ext2_dirblock_lookup(blk, bs, bs, "big") != 0) fails++;
+
+    // 4) A 255-byte name near the block end must NOT be read past the block. A valid
+    //    "first" entry (rec_len jumps to bs-16) leads the scan to the hostile record.
+    memset_asm(blk, 0, sizeof(blk));
+    ext2_dir_wr(blk, 0, 11, bs - 16, "first");
+    { ext2_dirent_t* de = (ext2_dirent_t*)(blk + (bs - 16));
+      de->inode = 12; de->rec_len = 16; de->name_len = 255; de->file_type = 0; }
+    if (ext2_dirblock_lookup(blk, bs, bs, "first") != 11) fails++;   // still finds the valid one
+    if (ext2_dirblock_lookup(blk, bs, bs, "zzz")   != 0)  fails++;   // stops at the corrupt tail
+
+    printf("[EXT2DIR] %s (%d failure%s across 4 cases)\n",
+           fails ? "FAILURES" : "all cases passed", fails, fails == 1 ? "" : "s");
+    return fails;
 }
 
 // ========== VFS driver functions ==========

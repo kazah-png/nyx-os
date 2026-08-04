@@ -177,6 +177,7 @@ static void cmd_giftest(int argc, char** argv);
 static void cmd_jpegtest(int argc, char** argv);
 static void cmd_imgreject(int argc, char** argv);
 static void cmd_httptest(int argc, char** argv);
+static void cmd_ext2test(int argc, char** argv);
 static void cmd_rsatest(int argc, char** argv);
 static void cmd_sha512test(int argc, char** argv);
 static void cmd_chaintest(int argc, char** argv);
@@ -306,6 +307,7 @@ static const command_t commands[] = {
     {"jpegtest",  cmd_jpegtest,  "JPEG (baseline) decoder self-test (Huffman + IDCT + YCbCr)", false},
     {"imgreject", cmd_imgreject, "Image-decoder reject self-test (png/bmp/gif/jpeg refuse hostile input)", false},
     {"httptest", cmd_httptest, "HTTP-parser robustness self-test (untrusted responses: chunked, hostile sizes)", false},
+    {"ext2test", cmd_ext2test, "ext2 directory-scanner self-test (untrusted dir blocks: bad rec_len/name_len)", false},
     {"rsatest",   cmd_rsatest,   "RSA PKCS#1 v1.5 SHA-256 signature-verify self-test", false},
     {"sha512test",cmd_sha512test,"SHA-512 / SHA-384 self-test (FIPS 180-4 vectors)", false},
     {"chaintest", cmd_chaintest, "X.509 certificate-chain verification self-test (pinned root)", false},
@@ -499,7 +501,7 @@ static const char* const HC_net[]   = {"ifconfig","dhcp","dns","ping","setip","h
 static const char* const HC_dev[]   = {"cc","xbm",0};
 static const char* const HC_media[] = {"play","sb16play","imageview","selene",0};
 static const char* const HC_games[] = {"doom","pong","voxel","fire","matrix","lava","fractal","julia","particles","snake","tetris",0};
-static const char* const HC_test[]  = {"mtdemo","smpstress","smpuser","smpthreads","smpbalance","tlbtest","cowtest","crash","usertest","tcptest","tcpdrop","tcploop","tcpserve","posttest","tlsstrict","prftest","gcmtest","dertest","p256test","p384test","x25519test","tlskeytest","tlsrectest","csprngtest","skp384test","deflatetest","sha512test","pngtest","bmptest","giftest","jpegtest","imgreject","httptest","rsatest","chaintest","formtest",0};
+static const char* const HC_test[]  = {"mtdemo","smpstress","smpuser","smpthreads","smpbalance","tlbtest","cowtest","crash","usertest","tcptest","tcpdrop","tcploop","tcpserve","posttest","tlsstrict","prftest","gcmtest","dertest","p256test","p384test","x25519test","tlskeytest","tlsrectest","csprngtest","skp384test","deflatetest","sha512test","pngtest","bmptest","giftest","jpegtest","imgreject","httptest","ext2test","rsatest","chaintest","formtest",0};
 static const help_cat_t help_cats[] = {
     {"Shell & help",              HC_shell},
     {"Files & directories",       HC_files},
@@ -628,6 +630,7 @@ static const man_page_t man_pages[] = {
     {"beep",     "Sound a tone through the PC speaker at [freq] Hz for [ms] milliseconds."},
     {"imgreject","Run the adversarial image-decoder self-test: check that the PNG, BMP, GIF and JPEG decoders refuse malformed or hostile input instead of crashing."},
     {"httptest","Run the HTTP-response parser robustness self-test: feed http_parse_response crafted responses (chunked, header-less, hostile oversized/overflowing chunk sizes, Content-Length larger than the body) and check it stays bounds-safe. The parser is on the xbm package-fetch path, so it handles untrusted server data."},
+    {"ext2test","Run the ext2 directory-scanner self-test: feed the on-disk directory-block parser crafted blocks (valid entries plus hostile ones - a zero record length, a length past the block, a 255-byte name near the block end) and check it finds the valid names and stays bounds-safe on the corrupt ones. A filesystem driver's normal input includes corrupt or hostile disk images."},
     {"desktop",  "Start the NyxOS graphical desktop: the window compositor with the taskbar, Start menu, draggable windows and the app/game launchers. This is the main GUI; `gui` is a lighter demo."},
     {"gui",      "Launch a small GUI demo with a working mouse cursor — a quick way to exercise the framebuffer, pointer and window drawing without bringing up the full `desktop`."},
     {"doom",     "Play the original 1993 DOOM (shareware episode) in a window: the software renderer runs E1M1 with the status-bar HUD. Move and fire from the keyboard; Ctrl-C quits back to the shell. Also launchable from the desktop Games folder."},
@@ -2794,6 +2797,13 @@ static void cmd_httptest(int argc, char** argv) {
     printf("httptest: %s\n", f == 0 ? "PASS" : "FAIL");
 }
 
+static void cmd_ext2test(int argc, char** argv) {
+    (void)argc; (void)argv;
+    printf("Running ext2 directory-scanner self-test (untrusted dir blocks: bad rec_len/name_len)...\n");
+    int f = ext2_dir_selftest();
+    printf("ext2test: %s\n", f == 0 ? "PASS" : "FAIL");
+}
+
 // `rsatest` — self-test RSA PKCS#1 v1.5 SHA-256 signature verification, needed to check the
 // RSA CA signatures in a real certificate chain. Pure computation; no network needed.
 static void cmd_rsatest(int argc, char** argv) {
@@ -3635,7 +3645,7 @@ extern int bmp_selftest(void);
 extern int gif_selftest(void);
 extern int jpeg_selftest(void);
 extern int image_reject_selftest(void);
-// http_parse_selftest is declared in ../net/http.h (included above).
+// http_parse_selftest / ext2_dir_selftest are declared in ../net/http.h / ../fs/ext2.h (included above).
 
 // Run the whole offline self-test battery, print a machine-readable summary, and
 // halt. Triggered ONLY by the "selftest" multiboot command line (used by CI); a
@@ -3653,7 +3663,7 @@ static void run_selftests(void) {
         {"inflate",      inflate_selftest},       {"png",           png_selftest},
         {"bmp",          bmp_selftest},           {"gif",           gif_selftest},
         {"jpeg",         jpeg_selftest},          {"imgreject",     image_reject_selftest},
-        {"httpparse",    http_parse_selftest},
+        {"httpparse",    http_parse_selftest},    {"ext2dir",       ext2_dir_selftest},
     };
     int n = (int)(sizeof(t) / sizeof(t[0])), passed = 0, failed = 0;
     serial_puts("SELFTEST-BEGIN\n");
