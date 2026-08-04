@@ -107,6 +107,7 @@ static void cmd_tr(int argc, char** argv);
 static void cmd_fold(int argc, char** argv);
 static void cmd_printf(int argc, char** argv);
 static void cmd_expand(int argc, char** argv);
+static void cmd_unexpand(int argc, char** argv);
 static void cmd_tree(int argc, char** argv);
 static void cmd_env(int argc, char** argv);
 static void cmd_export(int argc, char** argv);
@@ -241,6 +242,7 @@ static const command_t commands[] = {
     {"fold",      cmd_fold,      "Wrap long lines to a width: fold [-w width] <file>", false},
     {"printf",    cmd_printf,    "Format and print: printf FORMAT [ARG...]", false},
     {"expand",    cmd_expand,    "Convert tabs to spaces: expand [-t N] <file>", false},
+    {"unexpand",  cmd_unexpand,  "Convert spaces to tabs: unexpand [-a] [-t N] <file>", false},
     {"wc",        cmd_wc,        "Count lines/words/chars: wc <file>", false},
     {"write",     cmd_write,     "Write text to file: write <file> <text>", false},
     {"dhcp",      cmd_dhcp,      "Request IP via DHCP", false},
@@ -486,7 +488,7 @@ void execute_command(const char* cmd_line) {
 typedef struct { const char* title; const char* const* names; } help_cat_t;
 static const char* const HC_shell[] = {"help","man","version","clear","history","exec","spawn","jobs","wait","nice","renice",0};
 static const char* const HC_files[] = {"ls","cd","pwd","cat","open","touch","mkdir","rm","cp","mv","tree","find","which","basename","dirname","files","df","mount","ext2ls","ext2cat",0};
-static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tr","fold","expand","printf","wc","write","hexdump",0};
+static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tr","fold","expand","unexpand","printf","wc","write","hexdump",0};
 static const char* const HC_sys[]   = {"ps","kill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch",0};
 static const char* const HC_user[]  = {"useradd","users",0};
 static const char* const HC_net[]   = {"ifconfig","dhcp","dns","ping","setip","httpget","tls",0};
@@ -571,6 +573,7 @@ static const man_page_t man_pages[] = {
     {"fold",     "Wrap the lines of <file> so no output line is longer than the given width (80 by default, or -w width). A line longer than the width is broken with a hard newline at exactly that many characters; shorter lines and existing line breaks are left alone."},
     {"printf",   "Print ARGs under the control of FORMAT (like the C/coreutil printf). FORMAT is reused as needed to consume all ARGs. It interprets backslash escapes (\\n \\t \\r \\a \\b \\f \\v \\\\) and the conversions %s %d %i %u %x %X %c %% with optional flags and field width (e.g. %-10s, %05d). Numeric ARGs are read as decimal. Unlike echo, printf never appends a trailing newline unless FORMAT contains one."},
     {"expand",   "Convert the tabs in <file> to spaces. Each tab advances to the next tab stop, which are spaced N columns apart (8 by default, or -t N), so columns stay aligned instead of a fixed number of spaces per tab. Non-tab characters and newlines pass through unchanged (a newline resets the column count)."},
+    {"unexpand", "The inverse of expand: convert runs of spaces in <file> back into tabs, collapsing each blank run to the fewest tabs+spaces at N-column tab stops (8 by default, or -t N). A single space is never turned into a tab. By default only the LEADING blanks of each line are converted (matching GNU unexpand); -a converts blank runs everywhere on the line, and -t N implies -a."},
     {"wc",       "Count the lines, words and characters in <file>. -l, -w or -c limit the output to just one of those counts."},
     {"basename", "Strip the directory prefix (and, if given, a trailing suffix) from <path>, printing only the final component."},
     {"dirname",  "Strip the final component from <path>, printing the directory portion that remains."},
@@ -1068,6 +1071,67 @@ static void cmd_expand(int argc, char** argv) {
             putchar(c); col++;
         }
     }
+}
+
+// Emit a run of blank columns [from, to) as the FEWEST tabs+spaces that reproduce
+// it: step tab stop to tab stop, using a tab whenever it collapses >= 2 columns
+// (a single column to the next stop stays a space, since one blank must never
+// become a tab), then any leftover columns short of a stop as spaces.
+static void unexpand_flush(int from, int to, int tabw) {
+    int c = from;
+    while ((c / tabw + 1) * tabw <= to) {
+        int nt = (c / tabw + 1) * tabw;
+        if (nt - c >= 2) { putchar('\t'); c = nt; }
+        else             { putchar(' ');  c++;    }
+    }
+    while (c < to) { putchar(' '); c++; }
+}
+
+// unexpand — the inverse of expand: turn runs of spaces back into tabs. Default
+// converts only the LEADING blanks of each line (GNU behaviour); -a converts
+// blank runs anywhere; -t N sets the tab width and, like GNU, implies -a.
+static void cmd_unexpand(int argc, char** argv) {
+    int tabw = 8, all = 0, ai = 1;
+    while (ai < argc && argv[ai][0] == '-' && argv[ai][1] != '\0') {
+        const char* f = argv[ai];
+        if (f[1] == 'a' && f[2] == '\0') { all = 1; ai++; }
+        else if (f[1] == 't') {
+            all = 1;                                                    // GNU: -t enables -a
+            if (f[2] != '\0')       { tabw = atoi(f + 2); ai++; }        // -tN
+            else if (ai + 1 < argc) { tabw = atoi(argv[ai + 1]); ai += 2; } // -t N
+            else { printf("Usage: unexpand [-a] [-t N] <file>\n"); return; }
+        } else break;
+    }
+    if (tabw < 1) tabw = 1;
+    if (ai >= argc) { printf("Usage: unexpand [-a] [-t N] <file>\n"); return; }
+
+    int fd = vfs_open(argv[ai], 0, 0);
+    if (fd < 0) { printf("unexpand: cannot open '%s'\n", argv[ai]); return; }
+    char buf[2048];
+    int bytes = vfs_read(fd, buf, sizeof(buf) - 1);
+    vfs_close(fd);
+    if (bytes <= 0) return;
+
+    // col = current column; while `convert` is on, blanks are buffered as a column
+    // run [runstart, col) and only flushed (collapsed to tabs) at the next non-blank
+    // / newline / EOF. Default mode turns convert off after the first non-blank of a
+    // line (leading-only); -a keeps it on for the whole line.
+    int col = 0, run = 0, runstart = 0, convert = 1;
+    for (int i = 0; i < bytes; i++) {
+        char c = buf[i];
+        if (convert && (c == ' ' || c == '\t')) {
+            if (run == 0) runstart = col;
+            col = (c == '\t') ? (col / tabw + 1) * tabw : col + 1;
+            run = col - runstart;
+        } else {
+            if (run > 0) { unexpand_flush(runstart, col, tabw); run = 0; }
+            if (c == '\n')      { putchar('\n'); col = 0; convert = 1; }
+            else if (c == '\t') { putchar('\t'); col = (col / tabw + 1) * tabw; }
+            else if (c == ' ')  { putchar(' ');  col++; }
+            else                { putchar(c); col++; if (!all) convert = 0; }
+        }
+    }
+    if (run > 0) unexpand_flush(runstart, col, tabw);
 }
 
 static void cmd_tree(int argc, char** argv) {
