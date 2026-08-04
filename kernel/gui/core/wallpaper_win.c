@@ -53,6 +53,72 @@ int wallpaper_style(void) {
 #define WP_OY     92     // grid origin y within the content (below the style row)
 #define WP_ROW_H  (WP_SH + 22 + WP_GAP)   // swatch + label + gap
 
+// Fill a disc clipped to the rect [clx,cly,clw,clh) — a tiny moon for the preview
+// swatches (bg_fill_circle lives in compositor.c and isn't visible here).
+static void wp_fill_disc_clip(int cx, int cy, int r, uint32_t c, int clx, int cly, int clw, int clh) {
+    for (int dy = -r; dy <= r; dy++) {
+        int yy = cy + dy;
+        if (yy < cly || yy >= cly + clh) continue;
+        int dx = 0; while ((dx + 1) * (dx + 1) + dy * dy <= r * r) dx++;
+        int x0 = cx - dx, x1 = cx + dx;
+        if (x0 < clx) x0 = clx;
+        if (x1 >= clx + clw) x1 = clx + clw - 1;
+        if (x1 >= x0) fb_fill_rect(x0, yy, x1 - x0 + 1, 1, c);
+    }
+}
+
+// Paint a faithful MINIATURE of the wallpaper scene into (x,y,w,h): the same
+// 45%..115% vertical gradient of the base hue that draw_background() paints, plus
+// — for the night styles (Nightfall / Estrellas / Meteoros) — a small moon in the
+// upper-right and a scatter of tiny stars, and for Meteoros a short meteor streak.
+// Flat is a solid fill; Limpio is just the gradient. This turns each colour swatch
+// into a LIVE PREVIEW of what that hue looks like in the currently-selected style.
+static void wallpaper_draw_preview(int x, int y, int w, int h, int br, int bg, int bb, int style) {
+    if (style == WP_STYLE_FLAT) {
+        fb_fill_rect(x, y, w, h, fb_rgb((uint8_t)br, (uint8_t)bg, (uint8_t)bb));
+        return;
+    }
+    int hd = (h > 1) ? h : 1;
+    for (int i = 0; i < h; i++) {
+        int pct = 45 + i * 70 / hd;                         // 45% (top) .. 115% (bottom)
+        int r = br * pct / 100; if (r > 255) r = 255;
+        int g = bg * pct / 100; if (g > 255) g = 255;
+        int b = bb * pct / 100; if (b > 255) b = 255;
+        fb_fill_rect(x, y + i, w, 1, fb_rgb((uint8_t)r, (uint8_t)g, (uint8_t)b));
+    }
+    if (style != WP_STYLE_NIGHTFALL && style != WP_STYLE_STARFIELD && style != WP_STYLE_SHOOTINGSTAR)
+        return;                                             // Limpio: gradient only.
+
+    // Moon (upper-right) with a small halo, then deterministic tiny stars that keep
+    // clear of the moon — the same LCG draw_background() uses, so previews are stable.
+    int mx = x + w - 15, my = y + 13, mr = 6;
+    wp_fill_disc_clip(mx, my, mr + 3, fb_rgb(88, 78, 126),   x, y, w, h);
+    wp_fill_disc_clip(mx, my, mr + 1, fb_rgb(150, 138, 196), x, y, w, h);
+    wp_fill_disc_clip(mx, my, mr,     fb_rgb(214, 202, 244), x, y, w, h);
+    uint32_t seed = 0x9E3779B1u;
+    for (int i = 0; i < 16; i++) {
+        seed = seed * 1103515245u + 12345u; int sx = x + (int)((seed >> 9) % (uint32_t)w);
+        seed = seed * 1103515245u + 12345u; int sy = y + (int)((seed >> 9) % (uint32_t)(h * 3 / 4));
+        int ex = sx - mx, ey = sy - my;
+        if (ex * ex + ey * ey < (mr + 3) * (mr + 3)) continue;
+        int shade = (int)((seed >> 20) & 3);
+        uint32_t sc = (shade == 0) ? fb_rgb(150, 142, 186)
+                    : (shade == 1) ? fb_rgb(190, 182, 220)
+                                   : fb_rgb(224, 218, 248);
+        fb_fill_rect(sx, sy, 1, 1, sc);
+    }
+    if (style == WP_STYLE_SHOOTINGSTAR) {                    // a short meteor streak
+        int hx = x + w / 3, hy = y + h / 2;
+        for (int s = 0; s <= 10; s++) {
+            int tx = hx + 2 * s, ty = hy - s;
+            if (tx < x || tx >= x + w || ty < y || ty >= y + h) continue;
+            int lum = 240 - s * 18; if (lum < 60) lum = 60;
+            int sz = (s < 2) ? 2 : 1;
+            fb_fill_rect(tx, ty, sz, sz, fb_rgb((uint8_t)(lum * 92 / 100), (uint8_t)(lum * 96 / 100), (uint8_t)lum));
+        }
+    }
+}
+
 void wallpaper_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     (void)win;
     const uint32_t bg = fb_rgb(28, 28, 34);
@@ -82,10 +148,10 @@ void wallpaper_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch)
         int col = i % WP_COLS, row = i / WP_COLS;
         int x = cx + WP_OX + col * (WP_SW + WP_GAP);
         int y = cy + WP_OY + row * WP_ROW_H;
-        uint32_t c = fb_rgb(palette[i].r, palette[i].g, palette[i].b);
         // The selected swatch gets a white frame.
         if (i == g_wallpaper) fb_fill_rect(x - 3, y - 3, WP_SW + 6, WP_SH + 6, fb_rgb(255, 255, 255));
-        fb_fill_rect(x, y, WP_SW, WP_SH, c);
+        // Live preview: the actual scene in this hue under the current style, not a flat block.
+        wallpaper_draw_preview(x, y, WP_SW, WP_SH, palette[i].r, palette[i].g, palette[i].b, g_style);
         int nlen = (int)strlen(palette[i].name) * FONT_WIDTH;
         font_draw_string(x + (WP_SW - nlen) / 2, y + WP_SH + 4, palette[i].name,
                          i == g_wallpaper ? fb_rgb(255, 255, 255) : fb_rgb(175, 175, 185), bg);
