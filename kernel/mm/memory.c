@@ -272,10 +272,15 @@ void kfree(void* ptr) {
     extern void heap_free(void*);
     if (hdr->magic == ALLOC_MAGIC_SLAB) {
         slab_free(hdr, hdr->size + sizeof(alloc_hdr_t));
-    } else {
-        // ALLOC_MAGIC_HEAP, or a raw heap block allocated without our header.
+    } else if (hdr->magic == ALLOC_MAGIC_HEAP) {
         heap_free(hdr);
     }
+    // Neither magic: the header is corrupted, the pointer never came from kmalloc,
+    // or the block was already freed. Every pointer kfree can legitimately see was
+    // stamped by kmalloc with one of the two magics (slab_alloc/heap_alloc are only
+    // ever reached through kmalloc), so an unknown header is invalid. Guessing a
+    // backend from it and calling slab_free/heap_free would let it rewrite an
+    // unrelated block's metadata (issue #52) — drop it instead of corrupting the heap.
     spin_unlock_irqrestore(&kmalloc_lock, fl);
 }
 
@@ -283,11 +288,13 @@ void* krealloc(void* ptr, size_t size) {
     if (!ptr) return kmalloc(size);
     if (!size) { kfree(ptr); return NULL; }
     void* newp = kmalloc(size);
-    if (newp) {
-        alloc_hdr_t* hdr = ((alloc_hdr_t*)ptr) - 1;
-        size_t old_size = hdr->size;
-        memcpy_asm(newp, ptr, old_size < size ? old_size : size);
-    }
+    // Allocation failed: keep the original block valid and return NULL, matching
+    // standard realloc semantics so a transient OOM doesn't cost the caller its data.
+    // The old code freed ptr unconditionally, destroying the only copy (issue #51).
+    if (!newp) return NULL;
+    alloc_hdr_t* hdr = ((alloc_hdr_t*)ptr) - 1;
+    size_t old_size = hdr->size;
+    memcpy_asm(newp, ptr, old_size < size ? old_size : size);
     kfree(ptr);
     return newp;
 }
