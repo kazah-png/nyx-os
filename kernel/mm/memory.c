@@ -148,10 +148,17 @@ void* alloc_page(void) {
 // Add a reference to an already-allocated physical page (used by the COW clone
 // in fork: the child maps the parent's page instead of copying it).
 void page_incref(void* addr) {
-    uint32_t page_idx = (uint32_t)(uintptr_t)addr / PAGE_SIZE;
+    uintptr_t a = (uintptr_t)addr;
+    if (a & (PAGE_SIZE - 1)) return;                 // must be a page-aligned frame
+    uint32_t page_idx = (uint32_t)(a / PAGE_SIZE);
     if (page_idx >= total_pages) return;
     uint64_t fl = spin_lock_irqsave(&page_lock);
-    if (page_refcount[page_idx] < 0xFF) page_refcount[page_idx]++;
+    // Only an already-allocated frame can gain a reference. Incref'ing a free frame
+    // (refcount 0) would leave it "referenced" yet still marked free in the bitmap,
+    // so alloc_page could hand the same frame out a second time (issue #53). Saturate
+    // at 0xFF rather than wrapping.
+    if (page_refcount[page_idx] >= 1 && page_refcount[page_idx] < 0xFF)
+        page_refcount[page_idx]++;
     spin_unlock_irqrestore(&page_lock, fl);
 }
 
@@ -168,9 +175,19 @@ uint32_t page_get_refcount(void* addr) {
 }
 
 void free_page(void* addr) {
-    uint32_t page_idx = (uint32_t)(uintptr_t)addr / PAGE_SIZE;
+    uintptr_t a = (uintptr_t)addr;
+    // Reject a non-page-aligned address: alloc_page only ever hands out page-aligned
+    // frames, so an interior pointer here is a caller bug. Silently flooring it (the
+    // old behaviour) could release a DIFFERENT frame than intended (issue #54).
+    if (a & (PAGE_SIZE - 1)) return;
+    uint32_t page_idx = (uint32_t)(a / PAGE_SIZE);
     if (page_idx >= total_pages) return;
     uint64_t fl = spin_lock_irqsave(&page_lock);
+    // Only an ALLOCATED frame (refcount >= 1) may be freed. A refcount of 0 means the
+    // frame is already free (a double-free) or was never allocated (a reserved frame);
+    // proceeding would push a bad frame into the pool and inflate free_pages /
+    // memory_used, corrupting the allocator's accounting (issue #50).
+    if (page_refcount[page_idx] == 0) { spin_unlock_irqrestore(&page_lock, fl); return; }
     // Shared page (COW): drop one reference, keep the frame for the others. The
     // read-decide-write on the refcount is exactly why this needs the lock: two
     // cores dropping the last two references could otherwise both see >1.
