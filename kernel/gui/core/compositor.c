@@ -9,6 +9,7 @@
 #include "../games/matrix_win.h"
 #include "../games/lava_win.h"
 #include "../games/mandel_win.h"
+#include "../games/julia_win.h"
 #include "../apps/fileman_win.h"
 #include "../apps/paint_win.h"
 #include "../apps/taskman_win.h"
@@ -1180,6 +1181,19 @@ void launch_mandel(void) {
     w->reserved = mandel_create_ctx();
     if (!w->reserved) { window_destroy(w->id); return; }
     w->on_tick = mandel_win_tick;
+}
+
+// Open the Nyx Julia window — a fixed-point Julia-set renderer whose constant c
+// orbits so the set morphs, a P4 rendering-performance-testing demo with the same
+// benchmark HUD as Nyx Fractal.
+void launch_julia(void) {
+    int px = ((int)fb_get_width()  - JULIA_WIN_W) / 2;              if (px < 0) px = 0;
+    int py = ((int)fb_get_height() - JULIA_WIN_H - TITLE_H) / 2;    if (py < 0) py = 0;
+    window_t* w = window_create(px, py, JULIA_WIN_W, JULIA_WIN_H, "Nyx Julia", julia_win_draw);
+    if (!w) return;
+    w->reserved = julia_create_ctx();
+    if (!w->reserved) { window_destroy(w->id); return; }
+    w->on_tick = julia_win_tick;
 }
 
 // Open a Snake window. In-kernel game like Pong: the compositor's game-tick steps it via

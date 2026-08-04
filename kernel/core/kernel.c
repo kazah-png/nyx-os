@@ -138,6 +138,7 @@ static void cmd_fire(int argc, char** argv);
 static void cmd_matrix(int argc, char** argv);
 static void cmd_lava(int argc, char** argv);
 static void cmd_fractal(int argc, char** argv);
+static void cmd_julia(int argc, char** argv);
 static void cmd_snake(int argc, char** argv);
 static void cmd_tetris(int argc, char** argv);
 static void cmd_selene(int argc, char** argv);
@@ -262,6 +263,7 @@ static const command_t commands[] = {
     {"matrix",    cmd_matrix,    "Open Nyx Matrix (green code-rain effect)", false},
     {"lava",      cmd_lava,      "Open Nyx Lava (animated plasma effect)", false},
     {"fractal",   cmd_fractal,   "Open Nyx Fractal (Mandelbrot render-perf demo)", false},
+    {"julia",     cmd_julia,     "Open Nyx Julia (morphing Julia-set render-perf demo)", false},
     {"snake",     cmd_snake,     "Play Snake (arrows/WASD)", false},
     {"tetris",    cmd_tetris,    "Play Tetris (arrows, Space=drop)", false},
     {"selene",    cmd_selene,    "Open Selene, the web browser", false},
@@ -488,7 +490,7 @@ static const char* const HC_user[]  = {"useradd","users",0};
 static const char* const HC_net[]   = {"ifconfig","dhcp","dns","ping","setip","httpget","tls",0};
 static const char* const HC_dev[]   = {"cc","xbm",0};
 static const char* const HC_media[] = {"play","sb16play","imageview","selene",0};
-static const char* const HC_games[] = {"doom","pong","voxel","fire","matrix","lava","fractal","snake","tetris",0};
+static const char* const HC_games[] = {"doom","pong","voxel","fire","matrix","lava","fractal","julia","snake","tetris",0};
 static const char* const HC_test[]  = {"mtdemo","smpstress","smpuser","smpthreads","smpbalance","tlbtest","cowtest","crash","usertest","tcptest","tcpdrop","tcploop","tcpserve","posttest","tlsstrict","prftest","gcmtest","dertest","p256test","p384test","x25519test","tlskeytest","tlsrectest","csprngtest","skp384test","deflatetest","sha512test","pngtest","bmptest","giftest","jpegtest","imgreject","rsatest","chaintest","formtest",0};
 static const help_cat_t help_cats[] = {
     {"Shell & help",              HC_shell},
@@ -574,6 +576,7 @@ static const man_page_t man_pages[] = {
     {"cc",       "Compile and link C source into an ELF program with the in-OS TinyCC toolchain. -c stops after producing an object file."},
     {"fire",     "Open Nyx Fire, an animated doom-fire effect window. It is also a visual performance demo, re-filling the whole framebuffer region each frame."},
     {"fractal",  "Open Nyx Fractal, a fixed-point Mandelbrot renderer that auto-zooms toward the seahorse valley. A P4 rendering-performance-testing demo: a benchmark HUD shows the measured per-frame render time, the derived render FPS, the current iteration cap, and the zoom factor, so you can watch the software renderer's cost rise and fall with the load. All-integer (Q8.24 fixed point)."},
+    {"julia",    "Open Nyx Julia, a fixed-point Julia-set renderer whose constant c orbits a circle so the set continuously morphs. A P4 rendering-performance-testing demo (sibling to `fractal`): its benchmark HUD shows the per-frame render time, render FPS, iteration cap and the live c value, so you can watch the renderer's cost change as the shape moves between connected and disconnected sets. All-integer (Q8.24 fixed point)."},
     {"voxel",    "Open Nyx Voxels, an isometric voxel sandbox used as a 3D-render performance testbed (press B for a benchmark HUD)."},
     {"selene",   "Open Selene, the NyxOS web browser (HTTP and TLS, HTML and images)."},
     {"man",      "Display the manual page for a command: its name, a synopsis, and a description of what it does."},
@@ -1899,6 +1902,12 @@ static void cmd_lava(int argc, char** argv) {
 static void cmd_fractal(int argc, char** argv) {
     (void)argc; (void)argv;
     launch_mandel();
+}
+
+// `julia` — open the Nyx Julia window (morphing Julia-set render-perf demo, compositor.c).
+static void cmd_julia(int argc, char** argv) {
+    (void)argc; (void)argv;
+    launch_julia();
 }
 
 // `snake` — open a Snake game window (in-kernel, compositor.c).
