@@ -473,17 +473,73 @@ void execute_command(const char* cmd_line) {
 // ------------------------------------------------------------
 // Implementación de comandos
 // ------------------------------------------------------------
+// `help` groups the builtins under category headers instead of one flat list, so
+// the ~110 commands are navigable. Each category lists the names that belong to it;
+// a final "Other" pass prints any visible command not placed above, so nothing is
+// ever dropped even if a new command isn't categorised here yet.
+typedef struct { const char* title; const char* const* names; } help_cat_t;
+static const char* const HC_shell[] = {"help","man","version","clear","history","exec","spawn","jobs","wait","nice","renice",0};
+static const char* const HC_files[] = {"ls","cd","pwd","cat","open","touch","mkdir","rm","cp","mv","tree","find","which","basename","dirname","files","df","mount","ext2ls","ext2cat",0};
+static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tr","fold","printf","wc","write","hexdump",0};
+static const char* const HC_sys[]   = {"ps","kill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch",0};
+static const char* const HC_user[]  = {"useradd","users",0};
+static const char* const HC_net[]   = {"ifconfig","dhcp","dns","ping","setip","httpget","tls",0};
+static const char* const HC_dev[]   = {"cc","xbm",0};
+static const char* const HC_media[] = {"play","sb16play","imageview","selene",0};
+static const char* const HC_games[] = {"doom","pong","voxel","fire","matrix","lava","fractal","snake","tetris",0};
+static const char* const HC_test[]  = {"mtdemo","smpstress","smpuser","smpthreads","smpbalance","tlbtest","cowtest","crash","usertest","tcptest","tcpdrop","tcploop","tcpserve","posttest","tlsstrict","prftest","gcmtest","dertest","p256test","p384test","x25519test","tlskeytest","tlsrectest","csprngtest","skp384test","deflatetest","sha512test","pngtest","bmptest","giftest","jpegtest","imgreject","rsatest","chaintest","formtest",0};
+static const help_cat_t help_cats[] = {
+    {"Shell & help",              HC_shell},
+    {"Files & directories",       HC_files},
+    {"Text",                      HC_text},
+    {"Processes & system",        HC_sys},
+    {"Users",                     HC_user},
+    {"Networking",                HC_net},
+    {"Development",               HC_dev},
+    {"Media & apps",              HC_media},
+    {"Games & visuals",           HC_games},
+    {"Self-tests & diagnostics",  HC_test},
+};
+#define HELP_NCATS ((int)(sizeof(help_cats) / sizeof(help_cats[0])))
+
+static const char* help_text_of(const char* name) {   // visible command's one-line help, or NULL
+    for (int i = 0; commands[i].name; i++)
+        if (!commands[i].hidden && strcmp(commands[i].name, name) == 0) return commands[i].help;
+    return 0;
+}
+static int help_in_any_cat(const char* name) {
+    for (int c = 0; c < HELP_NCATS; c++)
+        for (const char* const* n = help_cats[c].names; *n; n++)
+            if (strcmp(*n, name) == 0) return 1;
+    return 0;
+}
+static void help_print_row(const char* name, const char* help) {
+    char buf[16];
+    int len = (int)strlen(name); if (len > 14) len = 14;
+    memcpy(buf, name, (size_t)len);
+    for (int j = len; j < 14; j++) buf[j] = ' ';
+    buf[14] = '\0';
+    printf("  %s - %s\n", buf, help);
+}
+
 static void cmd_help(int argc, char** argv) {
     (void)argc; (void)argv;
-    printf("Available commands:\n");
-    for (int i = 0; commands[i].name != NULL; i++) {
-        if (commands[i].hidden) continue;
-        char buf[64];
-        int len = strlen(commands[i].name);
-        memcpy(buf, commands[i].name, len);
-        for (int j = len; j < 14; j++) buf[j] = ' ';
-        buf[14] = '\0';
-        printf("  %s - %s\n", buf, commands[i].help);
+    printf("NyxOS shell commands  (use `man <cmd>` for a full page):\n");
+    for (int c = 0; c < HELP_NCATS; c++) {
+        int printed_header = 0;
+        for (const char* const* n = help_cats[c].names; *n; n++) {
+            const char* h = help_text_of(*n);
+            if (!h) continue;                       // listed name that no longer exists / is hidden
+            if (!printed_header) { printf("\n%s:\n", help_cats[c].title); printed_header = 1; }
+            help_print_row(*n, h);
+        }
+    }
+    // Other: any visible command not placed in a category above.
+    int printed_other = 0;
+    for (int i = 0; commands[i].name; i++) {
+        if (commands[i].hidden || help_in_any_cat(commands[i].name)) continue;
+        if (!printed_other) { printf("\nOther:\n"); printed_other = 1; }
+        help_print_row(commands[i].name, commands[i].help);
     }
 }
 
