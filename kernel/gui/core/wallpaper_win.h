@@ -5,7 +5,7 @@
 #include "compositor.h"
 
 // Desktop wallpaper picker: 11 base colors (index 0 = the NyxOS brand purple) and
-// 6 render styles. draw_background() builds the desktop from the chosen base color
+// 7 render styles. draw_background() builds the desktop from the chosen base color
 // according to the chosen style.
 #define WALLPAPER_COUNT 11
 
@@ -17,7 +17,8 @@ enum {
     WP_STYLE_FLAT,        // a single flat solid color
     WP_STYLE_STARFIELD,   // Nightfall scene with an ANIMATED twinkling star field
     WP_STYLE_SHOOTINGSTAR,// Nightfall scene with a periodic ANIMATED shooting star
-    WP_STYLE_AURORA,      // Nightfall scene with slow ANIMATED aurora/nebula curtains
+    WP_STYLE_AURORA,      // Nightfall scene with slow ANIMATED aurora curtains
+    WP_STYLE_NEBULA,      // Nightfall scene with soft drifting ANIMATED nebula clouds
     WP_STYLE_COUNT
 };
 

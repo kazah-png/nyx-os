@@ -24,7 +24,7 @@ static const struct { uint8_t r, g, b; const char* name; } palette[WALLPAPER_COU
 // color). "Nightfall" — the moon-and-stars scene — is the default: NyxOS is named
 // for Nyx, the goddess of night, so the night sky IS the brand identity. The clean
 // gradient and a flat solid stay one click away in the Wallpaper app.
-static const char* style_names[WP_STYLE_COUNT] = { "Limpio", "Nightfall", "Plano", "Estrellas", "Meteoros", "Aurora" };
+static const char* style_names[WP_STYLE_COUNT] = { "Limpio", "Nightfall", "Plano", "Estrellas", "Meteoros", "Aurora", "Nebula" };
 
 static int g_wallpaper = 0;                    // selected base color; default = morado
 static int g_style     = WP_STYLE_NIGHTFALL;   // selected render style; default = moon + stars
@@ -87,7 +87,8 @@ static void wallpaper_draw_preview(int x, int y, int w, int h, int br, int bg, i
         fb_fill_rect(x, y + i, w, 1, fb_rgb((uint8_t)r, (uint8_t)g, (uint8_t)b));
     }
     if (style != WP_STYLE_NIGHTFALL && style != WP_STYLE_STARFIELD &&
-        style != WP_STYLE_SHOOTINGSTAR && style != WP_STYLE_AURORA)
+        style != WP_STYLE_SHOOTINGSTAR && style != WP_STYLE_AURORA &&
+        style != WP_STYLE_NEBULA)
         return;                                             // Limpio: gradient only.
 
     // Moon (upper-right) with a small halo, then deterministic tiny stars that keep
@@ -131,6 +132,25 @@ static void wallpaper_draw_preview(int x, int y, int w, int h, int br, int bg, i
                 fb_fill_rect(x + px, yy, 1, 1,
                              fb_rgb((uint8_t)(cr * lum / 100 + 30), (uint8_t)(cg * lum / 100 + 20),
                                     (uint8_t)(cb * lum / 100 + 30)));
+            }
+        }
+    }
+    if (style == WP_STYLE_NEBULA) {                          // two soft purple gas blobs
+        int cx0[2] = { x + w / 3, x + 2 * w / 3 }, cy0[2] = { y + h * 40 / 100, y + h * 55 / 100 };
+        int rad[2] = { w / 4, w / 5 };
+        for (int b = 0; b < 2; b++) {
+            for (int dy = -rad[b]; dy <= rad[b]; dy++) {
+                int yy = cy0[b] + dy; if (yy < y || yy >= y + h) continue;
+                for (int dx = -rad[b]; dx <= rad[b]; dx++) {
+                    int xx = cx0[b] + dx; if (xx < x || xx >= x + w) continue;
+                    int d2 = dx * dx + dy * dy, r2 = rad[b] * rad[b];
+                    if (d2 >= r2) continue;
+                    int lum = 46 * (r2 - d2) / r2;           // soft falloff to the edge
+                    int nr = b ? 120 : 165, ng = 74, nb = b ? 235 : 195;
+                    fb_fill_rect(xx, yy, 1, 1,
+                                 fb_rgb((uint8_t)(60 + nr * lum / 100), (uint8_t)(50 + ng * lum / 100),
+                                        (uint8_t)(90 + nb * lum / 100)));
+                }
             }
         }
     }

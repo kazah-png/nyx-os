@@ -765,7 +765,7 @@ static void do_ctx_menu_action(int idx) {
             break;
         case 4: // Wallpaper
             {
-                window_t* wwin = window_create(180, 110, 540, 380, "Wallpaper", wallpaper_win_draw);
+                window_t* wwin = window_create(180, 110, 624, 380, "Wallpaper", wallpaper_win_draw);
                 if (wwin) wwin->on_click = wallpaper_win_click;
             }
             break;
@@ -845,7 +845,8 @@ static void draw_background(void) {
     // SHOOTINGSTAR all go on to paint the moon + star field (STARFIELD additionally
     // twinkles; SHOOTINGSTAR keeps the calm sky and adds a periodic meteor below).
     if (style != WP_STYLE_NIGHTFALL && style != WP_STYLE_STARFIELD &&
-        style != WP_STYLE_SHOOTINGSTAR && style != WP_STYLE_AURORA) return;
+        style != WP_STYLE_SHOOTINGSTAR && style != WP_STYLE_AURORA &&
+        style != WP_STYLE_NEBULA) return;
 
     // Moon in the upper-right, with a soft halo (concentric rings fading inward).
     int mx = (int)fw - 130, my = 96, mr = 40;
@@ -960,6 +961,39 @@ static void draw_background(void) {
                     if (rr > 255) rr = 255; if (gg > 255) gg = 255; if (bb2 > 255) bb2 = 255;
                     fb_fill_rect(x, yy, 3, 2, fb_rgb((uint8_t)rr, (uint8_t)gg, (uint8_t)bb2));
                 }
+            }
+        }
+    }
+
+    // NEBULA: soft, slow-drifting clouds of purple-magenta gas over the upper sky. A
+    // cheap LOW-frequency plasma field (sums of wp_isin) picks out big blobs; only the
+    // field's upper range glows, so most of the sky (and the stars) shows through and
+    // the clouds read as diffuse nebulosity rather than a hard plasma. Each lit pixel
+    // blends from the LOCAL sky gradient toward a purple/blue nebula hue that itself
+    // drifts — keeping the Nyx night palette.
+    if (style == WP_STYLE_NEBULA) {
+        uint32_t tms = get_ticks();
+        int t1 = (int)(tms / 60), t2 = (int)(tms / 90), t3 = (int)(tms / 45);
+        int zone = (int)fh * 62 / 100;
+        for (int y = 0; y < zone; y += 2) {
+            int pct = 45 + y * 70 / (int)fh;
+            int skr = br * pct / 100, skg = bg * pct / 100, skb = bb * pct / 100;
+            for (int x = 0; x < (int)fw; x += 3) {
+                int f = wp_isin((x / 3 + t1) & 255)
+                      + wp_isin((y / 2 - t2) & 255)
+                      + wp_isin(((x + y) / 4 + t3) & 255);
+                int glow = f - 1100;                          // only the upper field glows
+                if (glow <= 0) continue;                       // sky + stars show through
+                int inten = glow * 48 / 1972;                  // 0..~48 soft max
+                if (inten > 48) inten = 48;
+                int hsel = wp_isin((x / 3 - y / 2 + t2) & 255);  // drifts the hue purple<->blue
+                int nr = 150 + hsel / 22, ng = 74, nb = 208 - hsel / 26;
+                int rr = skr + (nr - skr) * inten / 100;
+                int gg = skg + (ng - skg) * inten / 100;
+                int bb2 = skb + (nb - skb) * inten / 100;
+                if (rr > 255) rr = 255; if (gg > 255) gg = 255; if (bb2 > 255) bb2 = 255;
+                if (rr < 0) rr = 0; if (gg < 0) gg = 0; if (bb2 < 0) bb2 = 0;
+                fb_fill_rect(x, y, 3, 2, fb_rgb((uint8_t)rr, (uint8_t)gg, (uint8_t)bb2));
             }
         }
     }
@@ -2931,7 +2965,7 @@ done_click:
         int wp_st = wallpaper_style();
         uint32_t wp_iv = (wp_st == WP_STYLE_SHOOTINGSTAR) ? 70u : 120u;
         if ((wp_st == WP_STYLE_STARFIELD || wp_st == WP_STYLE_SHOOTINGSTAR ||
-             wp_st == WP_STYLE_AURORA) &&
+             wp_st == WP_STYLE_AURORA || wp_st == WP_STYLE_NEBULA) &&
             now - wp_anim_ms >= wp_iv) {
             wp_anim_ms = now;
             redraw = 1;
