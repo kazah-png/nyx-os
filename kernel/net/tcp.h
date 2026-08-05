@@ -29,6 +29,25 @@
 // per active conn), so a larger table costs almost no static memory.
 #define TCP_MAX_CONNS 32
 
+// One outstanding (unacknowledged) segment, buffered verbatim so it can be resent
+// if its ACK doesn't arrive within the RTO. Each connection keeps a small QUEUE of
+// these: a second write before the first is acked must NOT discard the earlier data
+// (issue #60), so buffered segments accumulate until the peer's cumulative ACK
+// clears them. HTTP/TLS keep a single segment in flight — the common fast path.
+typedef struct {
+    uint8_t* seg;            // full TCP segment bytes (header+payload), NULL if slot empty
+    uint32_t len;            // length of seg
+    uint32_t ack_seq;        // ack number that clears it (seq just past its bytes)
+    uint32_t sent_tick;      // get_ticks() when last (re)transmitted
+    uint32_t rto;            // current retransmit timeout in ticks (ms)
+    int      retries;        // resends so far (RTO backs off each time)
+} tcp_rtx_t;
+
+// Unacked segments buffered per connection before send() stops tracking further
+// ones for retransmit (they still go out; overflowing the window is rare here).
+// Ordered oldest-first so a cumulative ACK clears a prefix.
+#define TCP_RTX_QUEUE 8
+
 typedef struct {
     int active;
     int state;
@@ -44,15 +63,13 @@ typedef struct {
     uint32_t recv_cap;
     uint32_t sent_unacked;
 
-    // Retransmission: one outstanding segment (SYN or data) buffered verbatim so
-    // it can be resent if its ACK doesn't arrive within the RTO. HTTP is
-    // request/response with a single in-flight segment, so one slot suffices.
-    uint8_t* rt_seg;         // full TCP segment bytes (header+payload), NULL if none
-    uint32_t rt_len;         // length of rt_seg
-    uint32_t rt_ack_seq;     // ack number that clears it (seq just past its bytes)
-    uint32_t rt_sent_tick;   // get_ticks() when last (re)transmitted
-    uint32_t rt_rto;         // current retransmit timeout in ticks (ms)
-    int      rt_retries;     // resends so far (RTO backs off each time)
+    // Retransmission queue: outstanding seq-consuming segments (SYN/FIN/data),
+    // oldest first. A second write before the first is acked appends here instead
+    // of overwriting the earlier segment (issue #60), so lost data stays
+    // recoverable. A cumulative ACK clears a prefix; the RTO timer resends any
+    // entry whose timeout elapsed.
+    tcp_rtx_t rtx[TCP_RTX_QUEUE];  // buffered unacked segments, oldest at index 0
+    int       rtx_count;           // number of occupied rtx[] slots
 } tcp_conn_t;
 
 #define TCP_RTO_INITIAL   300   // ms before the first retransmit
