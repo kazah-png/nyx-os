@@ -1,4 +1,5 @@
 #include "../core/kernel.h"
+#include "../core/spinlock.h"
 #include "tcp.h"
 
 extern int ip_send(uint32_t dst_ip, uint8_t protocol, const uint8_t* data, uint32_t len, int iface_idx);
@@ -34,6 +35,16 @@ typedef struct __attribute__((packed)) {
 
 static tcp_conn_t conns[TCP_MAX_CONNS];
 static uint32_t next_isn = 1000;
+
+// One lock for the whole connection table. Every public entry point (connect/listen/
+// accept/send/recv/close/state + the RX handler tcp_handle_packet + the retransmit
+// timer tcp_tick) mutates the shared conns[] — slot allocation, sequence state, and the
+// per-conn RX/retransmit buffers — so without it two CPUs could hand out the same slot
+// or free a buffer another core is still using (issue #58). The public functions wrap a
+// _inner() worker with this lock; the inner workers and the internal helpers they call
+// (send_segment/find_slot/find_conn_by_tuple/tcp_conn_release) run with it held and must
+// never take it again or block on the net poll, so there is no re-entry/self-deadlock.
+static spinlock_t tcp_lock = SPINLOCK_INIT;
 
 static int find_slot(void) {
     for (int i = 0; i < TCP_MAX_CONNS; i++)
@@ -214,7 +225,7 @@ static int send_segment(tcp_conn_t* conn, uint8_t flags, const uint8_t* data, ui
 // Resend the buffered segment when its ACK hasn't arrived within the RTO, with
 // exponential backoff; after TCP_MAX_RETRIES give up and tear the conn down.
 // Called from the network poll loop (never an IRQ — it does ip_send/kmalloc).
-void tcp_tick(void) {
+static void tcp_tick_inner(void) {
     uint32_t now = get_ticks();
     for (int i = 0; i < TCP_MAX_CONNS; i++) {
         tcp_conn_t* conn = &conns[i];
@@ -241,13 +252,19 @@ void tcp_tick(void) {
     }
 }
 
+void tcp_tick(void) {
+    uint64_t fl = spin_lock_irqsave(&tcp_lock);
+    tcp_tick_inner();
+    spin_unlock_irqrestore(&tcp_lock, fl);
+}
+
 int tcp_init(void) {
     for (int i = 0; i < TCP_MAX_CONNS; i++)
         conns[i].active = 0;
     return 0;
 }
 
-int tcp_connect(uint32_t dst_ip, uint16_t dst_port, uint16_t src_port) {
+static int tcp_connect_inner(uint32_t dst_ip, uint16_t dst_port, uint16_t src_port) {
     int slot = find_slot();
     if (slot < 0) return -1;
 
@@ -293,10 +310,17 @@ int tcp_connect(uint32_t dst_ip, uint16_t dst_port, uint16_t src_port) {
     return slot;
 }
 
+int tcp_connect(uint32_t dst_ip, uint16_t dst_port, uint16_t src_port) {
+    uint64_t fl = spin_lock_irqsave(&tcp_lock);
+    int r = tcp_connect_inner(dst_ip, dst_port, src_port);
+    spin_unlock_irqrestore(&tcp_lock, fl);
+    return r;
+}
+
 // Passive open: reserve a slot that accepts inbound connections on `port`. It
 // stays in LISTEN; each inbound SYN spawns a separate child connection that
 // tcp_accept() hands out. dst_port==0 marks the slot as "unbound remote".
-int tcp_listen(uint16_t port) {
+static int tcp_listen_inner(uint16_t port) {
     int slot = find_slot();
     if (slot < 0) return -1;
     tcp_conn_t* conn = &conns[slot];
@@ -318,9 +342,16 @@ int tcp_listen(uint16_t port) {
     return slot;
 }
 
+int tcp_listen(uint16_t port) {
+    uint64_t fl = spin_lock_irqsave(&tcp_lock);
+    int r = tcp_listen_inner(port);
+    spin_unlock_irqrestore(&tcp_lock, fl);
+    return r;
+}
+
 // Return the id of a child of `listen_id` that has completed its handshake and
 // hasn't been accepted yet, else -1. Children share the listener's local port.
-int tcp_accept(int listen_id) {
+static int tcp_accept_inner(int listen_id) {
     if (listen_id < 0 || listen_id >= TCP_MAX_CONNS) return -1;
     tcp_conn_t* l = &conns[listen_id];
     if (!l->active || l->state != TCP_STATE_LISTEN) return -1;
@@ -336,7 +367,14 @@ int tcp_accept(int listen_id) {
     return -1;
 }
 
-int tcp_send(int conn_id, const uint8_t* data, uint32_t len) {
+int tcp_accept(int listen_id) {
+    uint64_t fl = spin_lock_irqsave(&tcp_lock);
+    int r = tcp_accept_inner(listen_id);
+    spin_unlock_irqrestore(&tcp_lock, fl);
+    return r;
+}
+
+static int tcp_send_inner(int conn_id, const uint8_t* data, uint32_t len) {
     if (conn_id < 0 || conn_id >= TCP_MAX_CONNS) return -1;
     tcp_conn_t* conn = &conns[conn_id];
     // CLOSE_WAIT is a valid send state: the peer has finished sending (its FIN
@@ -348,7 +386,14 @@ int tcp_send(int conn_id, const uint8_t* data, uint32_t len) {
     return send_segment(conn, TCP_FLAG_ACK | TCP_FLAG_PSH, data, len);
 }
 
-int tcp_recv(int conn_id, uint8_t* buf, uint32_t max_len) {
+int tcp_send(int conn_id, const uint8_t* data, uint32_t len) {
+    uint64_t fl = spin_lock_irqsave(&tcp_lock);
+    int r = tcp_send_inner(conn_id, data, len);
+    spin_unlock_irqrestore(&tcp_lock, fl);
+    return r;
+}
+
+static int tcp_recv_inner(int conn_id, uint8_t* buf, uint32_t max_len) {
     if (conn_id < 0 || conn_id >= TCP_MAX_CONNS) return -1;
     tcp_conn_t* conn = &conns[conn_id];
     if (!conn->active) return -1;
@@ -366,19 +411,36 @@ int tcp_recv(int conn_id, uint8_t* buf, uint32_t max_len) {
     return (int)to_copy;
 }
 
+int tcp_recv(int conn_id, uint8_t* buf, uint32_t max_len) {
+    uint64_t fl = spin_lock_irqsave(&tcp_lock);
+    int r = tcp_recv_inner(conn_id, buf, max_len);
+    spin_unlock_irqrestore(&tcp_lock, fl);
+    return r;
+}
+
 int tcp_state(int conn_id) {
-    if (conn_id < 0 || conn_id >= TCP_MAX_CONNS) return -1;
-    return conns[conn_id].active ? conns[conn_id].state : TCP_STATE_CLOSED;
+    uint64_t fl = spin_lock_irqsave(&tcp_lock);
+    int r = (conn_id < 0 || conn_id >= TCP_MAX_CONNS) ? -1
+            : (conns[conn_id].active ? conns[conn_id].state : TCP_STATE_CLOSED);
+    spin_unlock_irqrestore(&tcp_lock, fl);
+    return r;
 }
 
 // 1 if tcp_recv() would return immediately (buffered data, or EOF because the
 // connection is closed) — the readiness check behind poll()/select(). A live
 // connection with no buffered data is "not ready" (a read would block).
 int tcp_recv_ready(int conn_id) {
-    if (conn_id < 0 || conn_id >= TCP_MAX_CONNS) return 1;
-    tcp_conn_t* c = &conns[conn_id];
-    if (!c->active) return 1;                       // dead -> a read errors: treat as ready
-    return c->recv_len > 0 || c->state == TCP_STATE_CLOSED;
+    uint64_t fl = spin_lock_irqsave(&tcp_lock);
+    int r;
+    if (conn_id < 0 || conn_id >= TCP_MAX_CONNS) {
+        r = 1;
+    } else {
+        tcp_conn_t* c = &conns[conn_id];
+        r = !c->active ? 1                          // dead -> a read errors: treat as ready
+                       : (c->recv_len > 0 || c->state == TCP_STATE_CLOSED);
+    }
+    spin_unlock_irqrestore(&tcp_lock, fl);
+    return r;
 }
 
 // Release a connection: free its buffers and return the slot to the pool. Used once
@@ -390,7 +452,7 @@ static void tcp_conn_release(tcp_conn_t* conn) {
     conn->state = TCP_STATE_CLOSED;
 }
 
-int tcp_close(int conn_id) {
+static int tcp_close_inner(int conn_id) {
     if (conn_id < 0 || conn_id >= TCP_MAX_CONNS) return -1;
     tcp_conn_t* conn = &conns[conn_id];
     if (!conn->active) return -1;
@@ -416,7 +478,14 @@ int tcp_close(int conn_id) {
     return 0;
 }
 
-void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t dst_ip) {
+int tcp_close(int conn_id) {
+    uint64_t fl = spin_lock_irqsave(&tcp_lock);
+    int r = tcp_close_inner(conn_id);
+    spin_unlock_irqrestore(&tcp_lock, fl);
+    return r;
+}
+
+static void tcp_handle_packet_inner(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t dst_ip) {
     if (len < sizeof(tcp_header_t)) return;
     // Verify the TCP checksum over the pseudo-header + full segment BEFORE reading any
     // field. Passing the IP checksum only proves the IP header is intact; a segment
@@ -613,4 +682,10 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t 
             tcp_conn_release(conn);
         }
     }
+}
+
+void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t dst_ip) {
+    uint64_t fl = spin_lock_irqsave(&tcp_lock);
+    tcp_handle_packet_inner(packet, len, src_ip, dst_ip);
+    spin_unlock_irqrestore(&tcp_lock, fl);
 }
