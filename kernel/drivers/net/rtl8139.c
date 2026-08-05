@@ -76,6 +76,39 @@ static void rtl_writew(uint16_t reg, uint16_t val) {
 #define RTL_ISR_TOK  0x0004
 #define RTL_ISR_TER  0x0008
 
+// ---- Interrupt-driven RX (issue #62) --------------------------------------
+// The card historically ran fully polled (IMR=0): eth_poll() under
+// kernel_poll_net() pulled frames, so RX only advanced while some task kept
+// calling into the stack — one busy process could starve the NIC. rtl8139_init
+// now enables the RX-OK / TX-OK interrupts and installs this lightweight
+// handler, which just acknowledges the NIC's ISR and records that RX work is
+// pending. It deliberately does NOT drain the ring or enter the stack: that
+// would need net_lock, and net.c's giant lock is not structured for IRQ-context
+// entry yet. The polled drain in eth_poll stays the PRIMARY path (nothing
+// regresses); this is the groundwork a later increment builds on to wake a
+// blocked socket the instant a frame lands instead of busy-polling.
+static volatile uint32_t rtl_rx_irqs = 0;
+static volatile uint32_t rtl_tx_irqs = 0;
+static volatile int      rtl_rx_pending = 0;
+static uint8_t           rtl_irq_line = 0;
+
+static uint16_t rtl_readw(uint16_t reg) { return inw(rtl_io_base + reg); }
+
+static void rtl8139_irq_handler(void* ctx) {
+    (void)ctx;
+    uint16_t isr = rtl_readw(RTL_REG_ISR);
+    if (!isr) return;                       // not ours (shared line) / spurious
+    rtl_writew(RTL_REG_ISR, isr);           // ack: the RTL8139 clears each bit on write-1
+    if (isr & RTL_ISR_ROK) { rtl_rx_irqs++; rtl_rx_pending = 1; }
+    if (isr & RTL_ISR_TOK) { rtl_tx_irqs++; }
+}
+
+// Exposed for diagnostics and the future async-wakeup path.
+uint32_t rtl8139_rx_irq_count(void) { return rtl_rx_irqs; }
+uint32_t rtl8139_tx_irq_count(void) { return rtl_tx_irqs; }
+int      rtl8139_rx_pending(void)   { return rtl_rx_pending; }
+void     rtl8139_rx_clear_pending(void) { rtl_rx_pending = 0; }
+
 int rtl8139_init(void) {
     printf("[RTL8139] Probing PCI...\n");
     uint32_t vid_did = pci_read_config(0, 0, 0, 0);
@@ -175,8 +208,18 @@ int rtl8139_init(void) {
                 // Enable transmitter and receiver
                 rtl_writeb(RTL_REG_CR, RTL_CR_TE | RTL_CR_RE);
 
-                // Mask all interrupts (polling mode)
-                rtl_writeb(RTL_REG_IMR, 0x00);
+                // Interrupt-driven RX groundwork (issue #62): read the PCI-assigned
+                // IRQ line, install our handler, enable RX-OK/TX-OK in the IMR and
+                // unmask the line. eth_poll() still drains the ring (kept PRIMARY),
+                // but the NIC now also raises an interrupt so RX no longer depends
+                // solely on a task busy-polling the stack. A bogus line (0xFF on an
+                // unrouted device) is ignored by irq_install_handler/irq_unmask, so
+                // the card simply stays purely polled — no regression.
+                rtl_irq_line = (uint8_t)(pci_read_config(bus, slot, 0, 0x3C) & 0xFF);
+                irq_install_handler(rtl_irq_line, rtl8139_irq_handler);
+                rtl_writew(RTL_REG_IMR, RTL_ISR_ROK | RTL_ISR_TOK);
+                irq_unmask(rtl_irq_line);
+                printf("[RTL8139] IRQ line %d; RX/TX interrupts enabled\n", rtl_irq_line);
 
                 rtl_initialized = 1;
                 printf("[RTL8139] Initialized successfully\n");
