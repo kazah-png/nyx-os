@@ -11,6 +11,7 @@
 #include "../games/mandel_win.h"
 #include "../games/julia_win.h"
 #include "../games/particles_win.h"
+#include "../games/rotor_win.h"
 #include "../apps/fileman_win.h"
 #include "../apps/paint_win.h"
 #include "../apps/taskman_win.h"
@@ -1290,6 +1291,17 @@ void launch_particles(void) {
     if (!w->reserved) { window_destroy(w->id); return; }
     w->on_tick = particles_win_tick;
     w->on_key  = particles_win_key;
+}
+
+void launch_rotor(void) {
+    int px = ((int)fb_get_width()  - ROTOR_WIN_W) / 2;              if (px < 0) px = 0;
+    int py = ((int)fb_get_height() - ROTOR_WIN_H - TITLE_H) / 2;    if (py < 0) py = 0;
+    window_t* w = window_create(px, py, ROTOR_WIN_W, ROTOR_WIN_H, "Nyx Rotor", rotor_win_draw);
+    if (!w) return;
+    w->reserved = rotor_create_ctx();
+    if (!w->reserved) { window_destroy(w->id); return; }
+    w->on_tick = rotor_win_tick;
+    w->on_key  = rotor_win_key;
 }
 
 // Open a Snake window. In-kernel game like Pong: the compositor's game-tick steps it via

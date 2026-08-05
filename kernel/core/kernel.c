@@ -142,6 +142,7 @@ static void cmd_lava(int argc, char** argv);
 static void cmd_fractal(int argc, char** argv);
 static void cmd_julia(int argc, char** argv);
 static void cmd_particles(int argc, char** argv);
+static void cmd_rotor(int argc, char** argv);
 static void cmd_snake(int argc, char** argv);
 static void cmd_tetris(int argc, char** argv);
 static void cmd_selene(int argc, char** argv);
@@ -272,6 +273,7 @@ static const command_t commands[] = {
     {"fractal",   cmd_fractal,   "Open Nyx Fractal (Mandelbrot render-perf demo)", false},
     {"julia",     cmd_julia,     "Open Nyx Julia (morphing Julia-set render-perf demo)", false},
     {"particles", cmd_particles, "Open Nyx Particles (particle-fountain render-perf demo)", false},
+    {"rotor", cmd_rotor, "Open Nyx Rotor (spinning 3D point-lattice render-perf demo)", false},
     {"snake",     cmd_snake,     "Play Snake (arrows/WASD)", false},
     {"tetris",    cmd_tetris,    "Play Tetris (arrows, Space=drop)", false},
     {"selene",    cmd_selene,    "Open Selene, the web browser", false},
@@ -590,6 +592,7 @@ static const man_page_t man_pages[] = {
     {"fractal",  "Open Nyx Fractal, a fixed-point Mandelbrot renderer that auto-zooms toward the seahorse valley. A P4 rendering-performance-testing demo: a benchmark HUD shows the measured per-frame render time, the derived render FPS, the current iteration cap, and the zoom factor, so you can watch the software renderer's cost rise and fall with the load. All-integer (Q8.24 fixed point)."},
     {"julia",    "Open Nyx Julia, a fixed-point Julia-set renderer whose constant c orbits a circle so the set continuously morphs. A P4 rendering-performance-testing demo (sibling to `fractal`): its benchmark HUD shows the per-frame render time, render FPS, iteration cap and the live c value, so you can watch the renderer's cost change as the shape moves between connected and disconnected sets. All-integer (Q8.24 fixed point)."},
     {"particles","Open Nyx Particles, a purple particle-fountain and P4 rendering-performance-testing demo. Particles get integer sub-pixel physics (gravity plus floor/wall bounce) and respawn at the nozzle when they settle; the benchmark HUD shows the per-frame simulation time and derived FPS. Press + / - to change the live particle count so the frame-time rises and falls with the load, and r to reset. All-integer (no floats)."},
+    {"rotor","Open Nyx Rotor, a spinning 3D point-lattice and P4 rendering-performance-testing demo (the 3D-transform sibling of Nyx Particles). An NxNxN cube of points tumbles on two axes, each point rotated with fixed-point sin/cos, perspective-projected and shaded by depth; the benchmark HUD shows the per-frame render time and derived FPS. Press + / - to change the lattice density so the point count (N^3) and the frame-time scale with the load. All-integer (no floats)."},
     {"voxel",    "Open Nyx Voxels, an isometric voxel sandbox used as a 3D-render performance testbed (press B for a benchmark HUD)."},
     {"selene",   "Open Selene, the NyxOS web browser (HTTP and TLS, HTML and images)."},
     {"man",      "Display the manual page for a command: its name, a synopsis, and a description of what it does."},
@@ -2067,6 +2070,12 @@ static void cmd_julia(int argc, char** argv) {
 static void cmd_particles(int argc, char** argv) {
     (void)argc; (void)argv;
     launch_particles();
+}
+
+// `rotor` — open the Nyx Rotor window (spinning 3D point-lattice render-perf demo, compositor.c).
+static void cmd_rotor(int argc, char** argv) {
+    (void)argc; (void)argv;
+    launch_rotor();
 }
 
 // `snake` — open a Snake game window (in-kernel, compositor.c).
