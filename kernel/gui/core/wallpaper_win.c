@@ -24,7 +24,7 @@ static const struct { uint8_t r, g, b; const char* name; } palette[WALLPAPER_COU
 // color). "Nightfall" — the moon-and-stars scene — is the default: NyxOS is named
 // for Nyx, the goddess of night, so the night sky IS the brand identity. The clean
 // gradient and a flat solid stay one click away in the Wallpaper app.
-static const char* style_names[WP_STYLE_COUNT] = { "Limpio", "Nightfall", "Plano", "Estrellas", "Meteoros" };
+static const char* style_names[WP_STYLE_COUNT] = { "Limpio", "Nightfall", "Plano", "Estrellas", "Meteoros", "Aurora" };
 
 static int g_wallpaper = 0;                    // selected base color; default = morado
 static int g_style     = WP_STYLE_NIGHTFALL;   // selected render style; default = moon + stars
@@ -86,7 +86,8 @@ static void wallpaper_draw_preview(int x, int y, int w, int h, int br, int bg, i
         int b = bb * pct / 100; if (b > 255) b = 255;
         fb_fill_rect(x, y + i, w, 1, fb_rgb((uint8_t)r, (uint8_t)g, (uint8_t)b));
     }
-    if (style != WP_STYLE_NIGHTFALL && style != WP_STYLE_STARFIELD && style != WP_STYLE_SHOOTINGSTAR)
+    if (style != WP_STYLE_NIGHTFALL && style != WP_STYLE_STARFIELD &&
+        style != WP_STYLE_SHOOTINGSTAR && style != WP_STYLE_AURORA)
         return;                                             // Limpio: gradient only.
 
     // Moon (upper-right) with a small halo, then deterministic tiny stars that keep
@@ -115,6 +116,22 @@ static void wallpaper_draw_preview(int x, int y, int w, int h, int br, int bg, i
             int lum = 240 - s * 18; if (lum < 60) lum = 60;
             int sz = (s < 2) ? 2 : 1;
             fb_fill_rect(tx, ty, sz, sz, fb_rgb((uint8_t)(lum * 92 / 100), (uint8_t)(lum * 96 / 100), (uint8_t)lum));
+        }
+    }
+    if (style == WP_STYLE_AURORA) {                          // a soft green-violet aurora band
+        int cyb = y + h * 42 / 100;
+        for (int px = 0; px < w; px++) {
+            int wave = (px * 6) & 31;                        // cheap triangle undulation
+            int crest = cyb + (wave < 16 ? wave : 32 - wave) - 8;
+            for (int dy = -6; dy <= 6; dy++) {
+                int yy = crest + dy; if (yy < y || yy >= y + h) continue;
+                int ady = dy < 0 ? -dy : dy;
+                int lum = 90 - ady * 14; if (lum <= 0) continue;
+                int cr = (px & 8) ? 120 : 90, cg = 220, cb = (px & 8) ? 235 : 170;
+                fb_fill_rect(x + px, yy, 1, 1,
+                             fb_rgb((uint8_t)(cr * lum / 100 + 30), (uint8_t)(cg * lum / 100 + 20),
+                                    (uint8_t)(cb * lum / 100 + 30)));
+            }
         }
     }
 }

@@ -765,7 +765,7 @@ static void do_ctx_menu_action(int idx) {
             break;
         case 4: // Wallpaper
             {
-                window_t* wwin = window_create(180, 110, 450, 380, "Wallpaper", wallpaper_win_draw);
+                window_t* wwin = window_create(180, 110, 540, 380, "Wallpaper", wallpaper_win_draw);
                 if (wwin) wwin->on_click = wallpaper_win_click;
             }
             break;
@@ -808,6 +808,16 @@ static void bg_fill_circle(int cx, int cy, int rad, uint32_t col) {
 // gradient overlaid with a glowing moon and a deterministic star field (the classic
 // scene); FLAT = a single solid fill. The star layout is seeded by a fixed constant
 // so it is identical on every repaint (no flicker).
+// Integer sine for the aurora curtains: phase 0..255 (a full turn) -> -1024..1024.
+// Parabolic approximation — no float, no table — two mirrored parabolas per turn.
+static int wp_isin(int ph) {
+    ph &= 255;
+    int sign = 1;
+    if (ph >= 128) { ph -= 128; sign = -1; }   // second half mirrors + negates
+    int y = ph * (128 - ph);                    // 0..4096 parabola, peak at ph=64
+    return sign * (y / 4);                       // -1024..1024
+}
+
 static void draw_background(void) {
     uint32_t fw = fb_get_width(), fh = fb_get_height();
     uint32_t base = wallpaper_base_color();
@@ -835,7 +845,7 @@ static void draw_background(void) {
     // SHOOTINGSTAR all go on to paint the moon + star field (STARFIELD additionally
     // twinkles; SHOOTINGSTAR keeps the calm sky and adds a periodic meteor below).
     if (style != WP_STYLE_NIGHTFALL && style != WP_STYLE_STARFIELD &&
-        style != WP_STYLE_SHOOTINGSTAR) return;
+        style != WP_STYLE_SHOOTINGSTAR && style != WP_STYLE_AURORA) return;
 
     // Moon in the upper-right, with a soft halo (concentric rings fading inward).
     int mx = (int)fw - 130, my = 96, mr = 40;
@@ -910,6 +920,46 @@ static void draw_background(void) {
                 int sz = (s < 2) ? 3 : (s < 12 ? 2 : 1);             // fat glowing head, thinning tail
                 fb_fill_rect(tx, ty, sz, sz,
                              fb_rgb((uint8_t)(lum * 92 / 100), (uint8_t)(lum * 96 / 100), (uint8_t)lum));
+            }
+        }
+    }
+
+    // AURORA: slow drifting curtains of green-violet light over the mid sky. Integer
+    // only — each curtain's crest y rides a sum of two slow sines sampled from
+    // get_ticks(), and the glow blends from the LOCAL sky gradient toward the curtain
+    // hue by an intensity that fades vertically from a bright core to nothing, so it
+    // layers over the gradient + stars with no hard edges (blending from the sky, not
+    // a fixed base, keeps the faded margins invisible). Green/teal cores with a violet
+    // curtain keep the Nyx night palette.
+    if (style == WP_STYLE_AURORA) {
+        int drift = (int)(get_ticks() / 24);            // slow horizontal phase advance
+        struct { int basey; int amp; int half; int ph; int cr, cg, cb; } cur[3] = {
+            { (int)fh * 30 / 100, 26, 44,   0,  90, 225, 150 },   // green, higher/thin
+            { (int)fh * 42 / 100, 34, 58, 100, 130, 150, 235 },   // violet, lower/taller
+            { (int)fh * 36 / 100, 20, 34, 200,  90, 215, 205 },   // teal, mid
+        };
+        for (int k = 0; k < 3; k++) {
+            for (int x = 0; x < (int)fw; x += 3) {
+                int a1 = wp_isin((x * 3 + drift + cur[k].ph) & 255);
+                int a2 = wp_isin((x * 7 - drift / 2) & 255);
+                int crest = cur[k].basey + cur[k].amp * a1 / 1024 + cur[k].amp * a2 / 2048;
+                int half = cur[k].half;
+                for (int dy = -half; dy <= half; dy += 2) {
+                    int yy = crest + dy;
+                    if (yy < 0 || yy >= (int)fh) continue;
+                    int ady = dy < 0 ? -dy : dy;
+                    int fade = 100 - ady * 100 / half;           // 100 core -> 0 edge
+                    if (fade <= 4) continue;
+                    int sh = 78 + wp_isin((x * 5 + drift * 2 + cur[k].ph) & 255) * 22 / 1024;
+                    int lum = fade * sh / 100;                    // 0..100 glow strength
+                    int pct = 45 + yy * 70 / (int)fh;            // local sky gradient %
+                    int skr = br * pct / 100, skg = bg * pct / 100, skb = bb * pct / 100;
+                    int rr = skr + (cur[k].cr - skr) * lum / 100;
+                    int gg = skg + (cur[k].cg - skg) * lum / 100;
+                    int bb2 = skb + (cur[k].cb - skb) * lum / 100;
+                    if (rr > 255) rr = 255; if (gg > 255) gg = 255; if (bb2 > 255) bb2 = 255;
+                    fb_fill_rect(x, yy, 3, 2, fb_rgb((uint8_t)rr, (uint8_t)gg, (uint8_t)bb2));
+                }
             }
         }
     }
@@ -2880,7 +2930,8 @@ done_click:
         static uint32_t wp_anim_ms = 0;
         int wp_st = wallpaper_style();
         uint32_t wp_iv = (wp_st == WP_STYLE_SHOOTINGSTAR) ? 70u : 120u;
-        if ((wp_st == WP_STYLE_STARFIELD || wp_st == WP_STYLE_SHOOTINGSTAR) &&
+        if ((wp_st == WP_STYLE_STARFIELD || wp_st == WP_STYLE_SHOOTINGSTAR ||
+             wp_st == WP_STYLE_AURORA) &&
             now - wp_anim_ms >= wp_iv) {
             wp_anim_ms = now;
             redraw = 1;
