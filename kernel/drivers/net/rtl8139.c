@@ -76,6 +76,12 @@ static void rtl_writew(uint16_t reg, uint16_t val) {
 #define RTL_ISR_TOK  0x0004
 #define RTL_ISR_TER  0x0008
 
+// TX descriptor status (TSD) bits. A descriptor's buffer is safe to reuse once
+// the NIC has finished DMAing it out (OWN) — TOK additionally means the frame
+// left the wire. Starting a new TX (writing the byte count) clears both.
+#define RTL_TSD_OWN  0x2000
+#define RTL_TSD_TOK  0x8000
+
 // ---- Interrupt-driven RX (issue #62) --------------------------------------
 // The card historically ran fully polled (IMR=0): eth_poll() under
 // kernel_poll_net() pulled frames, so RX only advanced while some task kept
@@ -92,7 +98,15 @@ static volatile uint32_t rtl_tx_irqs = 0;
 static volatile int      rtl_rx_pending = 0;
 static uint8_t           rtl_irq_line = 0;
 
+// TX-completion accounting (issue #62): the 4 TX descriptors are reused round-
+// robin, so descriptor N must not be overwritten until the transmit we last
+// posted on it has drained. tx_posted[N] marks an outstanding transmit;
+// rtl_tx_completed counts descriptors observed complete before reuse.
+static int               tx_posted[4] = {0, 0, 0, 0};
+static volatile uint32_t rtl_tx_completed = 0;
+
 static uint16_t rtl_readw(uint16_t reg) { return inw(rtl_io_base + reg); }
+static uint32_t rtl_readl(uint16_t reg) { return inl(rtl_io_base + reg); }
 
 static void rtl8139_irq_handler(void* ctx) {
     (void)ctx;
@@ -106,6 +120,7 @@ static void rtl8139_irq_handler(void* ctx) {
 // Exposed for diagnostics and the future async-wakeup path.
 uint32_t rtl8139_rx_irq_count(void) { return rtl_rx_irqs; }
 uint32_t rtl8139_tx_irq_count(void) { return rtl_tx_irqs; }
+uint32_t rtl8139_tx_completed(void) { return rtl_tx_completed; }
 int      rtl8139_rx_pending(void)   { return rtl_rx_pending; }
 void     rtl8139_rx_clear_pending(void) { rtl_rx_pending = 0; }
 
@@ -245,8 +260,29 @@ int rtl8139_init(void) {
 
 int rtl8139_send_packet(const uint8_t* data, uint32_t len) {
     if (!rtl_initialized || len > TX_BUF_SIZE) return -1;
+
+    // TX-completion accounting (issue #62). Before overwriting tx_buffers[tx_cur]
+    // we must be sure the NIC finished the previous transmit posted on this same
+    // descriptor — otherwise a burst of >4 back-to-back sends would clobber a
+    // buffer the card is still DMAing, corrupting an in-flight frame. Wait
+    // (bounded) for the descriptor's TSD to report OWN/TOK, then count it. The
+    // wait is fail-safe: on timeout we proceed anyway (no worse than the old
+    // unconditional reuse) rather than hang the sender. In the common case the
+    // transmit completed long ago (a full 4-descriptor lap earlier), so the very
+    // first read breaks the loop and this costs nothing.
+    if (tx_posted[tx_cur]) {
+        int spin = 200000;
+        while (spin-- > 0) {
+            uint32_t tsd = rtl_readl(RTL_REG_TXSTATUS0 + tx_cur * 4);
+            if (tsd & (RTL_TSD_TOK | RTL_TSD_OWN)) break;
+        }
+        rtl_tx_completed++;
+        tx_posted[tx_cur] = 0;
+    }
+
     memcpy(tx_buffers[tx_cur], data, len);
     rtl_writel(RTL_REG_TXSTATUS0 + tx_cur * 4, len | 0x80000000);
+    tx_posted[tx_cur] = 1;
     tx_cur = (tx_cur + 1) % 4;
     return len;
 }
