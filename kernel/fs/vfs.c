@@ -365,16 +365,25 @@ static int proc_generate(vfs_node_t* ino, char* buf, int bufsz) {
     return (int)strlen(buf);
 }
 
+// Serializes proc_sync against itself across CPUs. preempt_disable() only stops a
+// context switch on the LOCAL core, so on SMP two cores could reconcile /proc at
+// once — their swap-removes and proc_make() appends into the SAME proc_node->children[]
+// then interleave and corrupt the array (or double-release a node). A real spinlock,
+// like node_pool_lock/mount_table_lock already use, is the actual fix (issue #57).
+// Lock order is proc_lock -> node_pool_lock (release_node/proc_make take the latter);
+// no caller holds node_pool_lock when entering here, so the order never inverts.
+static spinlock_t proc_lock = SPINLOCK_INIT;
+
 // Reconcile /proc/<pid> dirs with the live process table: drop dead ones, add
 // new ones (each with status + cmdline children). Idempotent and cheap; called
 // at vfs_open / vfs_isdir so an open/getdents/chdir sees the current pids. The
-// node-pool churn is guarded — alloc/free plus the children[] edits run with
-// preemption off so a kernel-context FS caller can't race it.
+// node-pool churn is guarded — alloc/free plus the children[] edits run under
+// proc_lock so a concurrent reconcile on another core can't race it.
 static void proc_sync(void) {
     if (!proc_node) return;
     extern process_t* process_table[];
     extern int process_count;
-    preempt_disable();
+    uint64_t fl = spin_lock_irqsave(&proc_lock);
     // 1. Remove pid dirs whose process is gone (free their children first).
     //
     // release_node, not free_node: a VFS fd IS the node pointer, and this runs
@@ -410,7 +419,7 @@ static void proc_sync(void) {
         proc_make(d, "cmdline", 0, PROC_PID_CMDLINE, p->pid);
         proc_make(d, "maps",    0, PROC_PID_MAPS,    p->pid);
     }
-    preempt_enable();
+    spin_unlock_irqrestore(&proc_lock, fl);
 }
 
 void init_vfs(void) {
