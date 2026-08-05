@@ -3644,6 +3644,7 @@ extern int tls_keyschedule_selftest(void);
 extern int tls_record_selftest(void);
 extern int tls_ske_p384_selftest(void);
 extern int der_selftest(void);
+extern int base64_selftest(void);
 extern int p256_selftest(void);
 extern int p384_selftest(void);
 extern int rsa_selftest(void);
@@ -3765,7 +3766,8 @@ static void run_selftests(void) {
         {"aes_gcm",      aes_gcm_selftest},       {"curve25519",    curve25519_selftest},
         {"tls_prf",      tls_prf_selftest},       {"tls_keysched",  tls_keyschedule_selftest},
         {"tls_record",   tls_record_selftest},    {"tls_ske_p384",  tls_ske_p384_selftest},
-        {"der",          der_selftest},           {"p256",          p256_selftest},
+        {"der",          der_selftest},           {"base64",        base64_selftest},
+        {"p256",          p256_selftest},
         {"p384",         p384_selftest},          {"rsa",           rsa_selftest},
         {"x509",         x509_selftest},
         {"inflate",      inflate_selftest},       {"png",           png_selftest},
