@@ -381,22 +381,38 @@ int tcp_recv_ready(int conn_id) {
     return c->recv_len > 0 || c->state == TCP_STATE_CLOSED;
 }
 
+// Release a connection: free its buffers and return the slot to the pool. Used once
+// the close handshake reaches CLOSED (or a state with no graceful close is torn down).
+static void tcp_conn_release(tcp_conn_t* conn) {
+    if (conn->rt_seg)   { kfree(conn->rt_seg);   conn->rt_seg = NULL;   conn->rt_len = 0; }
+    if (conn->recv_buf) { kfree(conn->recv_buf); conn->recv_buf = NULL; conn->recv_len = 0; conn->recv_cap = 0; }
+    conn->active = 0;
+    conn->state = TCP_STATE_CLOSED;
+}
+
 int tcp_close(int conn_id) {
     if (conn_id < 0 || conn_id >= TCP_MAX_CONNS) return -1;
     tcp_conn_t* conn = &conns[conn_id];
     if (!conn->active) return -1;
     if (conn->state == TCP_STATE_ESTABLISHED) {
+        // Active close: send our FIN and KEEP the conn alive (with its retransmit buffer
+        // armed) so a lost FIN is resent by tcp_tick and the peer's ACK + FIN still match
+        // this conn. The state machine in tcp_handle_packet drives it to CLOSED. The old
+        // code marked the conn inactive and freed rt_seg right here, so the handshake
+        // could never complete and a lost FIN was unrecoverable (issue #59).
         conn->state = TCP_STATE_FIN_WAIT1;
         send_segment(conn, TCP_FLAG_FIN | TCP_FLAG_ACK, NULL, 0);
-    } else if (conn->state == TCP_STATE_CLOSE_WAIT) {
-        // We already got the peer's FIN; sending ours completes the close.
+        return 0;
+    }
+    if (conn->state == TCP_STATE_CLOSE_WAIT) {
+        // Passive close: the peer already FIN'd (we are in CLOSE_WAIT); our FIN moves us
+        // to LAST_ACK and the peer's ACK of it completes the close.
         conn->state = TCP_STATE_LAST_ACK;
         send_segment(conn, TCP_FLAG_FIN | TCP_FLAG_ACK, NULL, 0);
+        return 0;
     }
-    if (conn->recv_buf) { kfree(conn->recv_buf); conn->recv_buf = NULL; }
-    if (conn->rt_seg) { kfree(conn->rt_seg); conn->rt_seg = NULL; conn->rt_len = 0; }
-    conn->active = 0;
-    conn->state = TCP_STATE_CLOSED;
+    // No graceful close is possible from other states (e.g. SYN_SENT): drop it outright.
+    tcp_conn_release(conn);
     return 0;
 }
 
@@ -501,6 +517,20 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t 
         conn->rt_len = 0;
     }
 
+    // Close-handshake progression driven by the peer's ACK of OUR FIN. send_segment()
+    // advanced conn->seq past the FIN, so ackno >= conn->seq means everything including
+    // our FIN is acknowledged. This is what completes the close tcp_close() now defers
+    // instead of aborting (issue #59); an idle ESTABLISHED conn hits this with an equal
+    // ack but is ignored by the state guards.
+    if ((flags & TCP_FLAG_ACK) && (int32_t)(ackno - conn->seq) >= 0) {
+        if (conn->state == TCP_STATE_LAST_ACK) {       // passive close acknowledged -> done
+            tcp_conn_release(conn);
+            return;
+        }
+        if (conn->state == TCP_STATE_FIN_WAIT1)        // our FIN acked; await the peer's FIN
+            conn->state = TCP_STATE_FIN_WAIT2;
+    }
+
     // Passive-open handshake completes when the client's ACK of our SYN-ACK
     // arrives (it may also carry the first data byte, handled just below).
     if ((flags & TCP_FLAG_ACK) && conn->state == TCP_STATE_SYN_RCVD) {
@@ -573,10 +603,14 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t 
             conn->ack = fin_seq + 1;
             conn->state = TCP_STATE_CLOSE_WAIT;
             send_segment(conn, TCP_FLAG_ACK, NULL, 0);
-        } else if (conn->state == TCP_STATE_FIN_WAIT1) {
+        } else if (conn->state == TCP_STATE_FIN_WAIT1 || conn->state == TCP_STATE_FIN_WAIT2) {
+            // The peer's FIN closes our active close (its ACK of our FIN either arrived
+            // just above, moving us to FIN_WAIT2, or rides this same segment). Ack it and
+            // finish — this stack collapses TIME_WAIT straight to CLOSED (no 2 MSL linger),
+            // freeing the slot instead of leaving the conn stranded (issue #59).
             conn->ack = fin_seq + 1;
-            conn->state = TCP_STATE_TIME_WAIT;
             send_segment(conn, TCP_FLAG_ACK, NULL, 0);
+            tcp_conn_release(conn);
         }
     }
 }
