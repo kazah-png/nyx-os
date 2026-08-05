@@ -3648,6 +3648,79 @@ extern int image_reject_selftest(void);
 extern int tcp_checksum_selftest(void);
 // http_parse_selftest / ext2_dir_selftest are declared in ../net/http.h / ../fs/ext2.h (included above).
 
+// ---- Advanced math: deterministic primality for any 64-bit integer -----------
+// A real number-theory capability (user backlog: "advanced-math tests / capability").
+// Deterministic Miller-Rabin: for 64-bit n the twelve witnesses 2..37 give a proven-
+// correct answer (they suffice past 3.3e24), so this is EXACT, not probabilistic —
+// it even rejects Carmichael numbers that fool a naive Fermat test. Integer only:
+// mulmod is the binary (shift-add) method so it never needs a 128-bit intermediate
+// (and thus no __int128 / libgcc __umodti3 the freestanding kernel can't link),
+// keeping it float-free and dependency-free like the rest of the kernel.
+static uint64_t addmod64(uint64_t a, uint64_t b, uint64_t m) {
+    a %= m; b %= m;                         // a,b < m; a+b may overflow 64 bits
+    if (a >= m - b) return a - (m - b);     // a+b >= m -> a-(m-b), computed without overflow
+    return a + b;
+}
+static uint64_t mulmod64(uint64_t a, uint64_t b, uint64_t m) {
+    uint64_t r = 0;
+    a %= m;
+    while (b) {
+        if (b & 1) r = addmod64(r, a, m);
+        a = addmod64(a, a, m);              // double
+        b >>= 1;
+    }
+    return r;
+}
+static uint64_t powmod64(uint64_t base, uint64_t e, uint64_t m) {
+    uint64_t r = 1 % m;
+    base %= m;
+    while (e) {
+        if (e & 1) r = mulmod64(r, base, m);
+        base = mulmod64(base, base, m);
+        e >>= 1;
+    }
+    return r;
+}
+int is_prime_u64(uint64_t n) {
+    static const uint64_t W[12] = {2,3,5,7,11,13,17,19,23,29,31,37};
+    if (n < 2) return 0;
+    for (int i = 0; i < 12; i++) {          // trivially prime, or a small factor
+        if (n == W[i]) return 1;
+        if (n % W[i] == 0) return 0;
+    }
+    uint64_t d = n - 1; int s = 0;          // n-1 = d * 2^s, d odd
+    while ((d & 1) == 0) { d >>= 1; s++; }
+    for (int i = 0; i < 12; i++) {
+        uint64_t x = powmod64(W[i], d, n);
+        if (x == 1 || x == n - 1) continue;
+        int composite = 1;
+        for (int r = 1; r < s; r++) {
+            x = mulmod64(x, x, n);
+            if (x == n - 1) { composite = 0; break; }
+        }
+        if (composite) return 0;
+    }
+    return 1;
+}
+// KAT: edge cases, small primes/composites, Carmichael numbers (composite yet
+// Fermat-pseudoprime to every coprime base), and large 64-bit primes/composites.
+static int mathx_selftest(void) {
+    if (is_prime_u64(0) || is_prime_u64(1)) return 1;
+    if (!is_prime_u64(2) || !is_prime_u64(3)) return 2;
+    if (is_prime_u64(4) || is_prime_u64(9))  return 3;
+    static const uint64_t P[] = {5,7,13,97,7919,104729};
+    for (int i = 0; i < 6; i++) if (!is_prime_u64(P[i])) return 10 + i;
+    static const uint64_t C[] = {15,100,7917,104730,999983ull*3};
+    for (int i = 0; i < 5; i++) if (is_prime_u64(C[i]))  return 20 + i;
+    static const uint64_t CARM[] = {561, 1105, 41041, 825265ull};   // must be rejected
+    for (int i = 0; i < 4; i++) if (is_prime_u64(CARM[i])) return 30 + i;
+    if (!is_prime_u64(2305843009213693951ull))  return 40;  // Mersenne M61
+    if (!is_prime_u64(18446744073709551557ull)) return 41;  // largest prime below 2^64
+    if (is_prime_u64(18446744073709551614ull))  return 42;  // 2^64-2, even -> composite
+    if (is_prime_u64(1000000007ull * 1000000009ull)) return 43; // product of two primes
+    return 0;
+}
+
 // Run the whole offline self-test battery, print a machine-readable summary, and
 // halt. Triggered ONLY by the "selftest" multiboot command line (used by CI); a
 // normal boot never calls this, so ordinary startup is unaffected. Each test is a
@@ -3665,7 +3738,7 @@ static void run_selftests(void) {
         {"bmp",          bmp_selftest},           {"gif",           gif_selftest},
         {"jpeg",         jpeg_selftest},          {"imgreject",     image_reject_selftest},
         {"httpparse",    http_parse_selftest},    {"ext2dir",       ext2_dir_selftest},
-        {"tcpcksum",     tcp_checksum_selftest},
+        {"tcpcksum",     tcp_checksum_selftest},   {"mathx",         mathx_selftest},
     };
     int n = (int)(sizeof(t) / sizeof(t[0])), passed = 0, failed = 0;
     serial_puts("SELFTEST-BEGIN\n");
