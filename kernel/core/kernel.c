@@ -3721,6 +3721,31 @@ static int mathx_selftest(void) {
     return 0;
 }
 
+// ---- CRC-32 (IEEE 802.3) data-integrity checksum -----------------------------
+// A standard building block a maturing OS should have: PNG chunk validation, zip/
+// gzip, an Ethernet FCS check, general file integrity. Reflected CRC-32 (poly
+// 0xEDB88320, init/final 0xFFFFFFFF) computed bitwise — no 1 KiB table, no deps,
+// float-free like the rest of the kernel. crc32("123456789") == 0xCBF43926.
+uint32_t crc32_calc(const uint8_t* data, uint32_t len) {
+    uint32_t crc = 0xFFFFFFFFu;
+    for (uint32_t i = 0; i < len; i++) {
+        crc ^= data[i];
+        for (int b = 0; b < 8; b++)
+            crc = (crc & 1) ? ((crc >> 1) ^ 0xEDB88320u) : (crc >> 1);
+    }
+    return ~crc;
+}
+// KAT: the canonical check value plus RFC/common vectors, and a distinctness check.
+static int crc32_selftest(void) {
+    if (crc32_calc((const uint8_t*)"", 0)          != 0x00000000u) return 1;
+    if (crc32_calc((const uint8_t*)"123456789", 9) != 0xCBF43926u) return 2;  // canonical
+    if (crc32_calc((const uint8_t*)"abc", 3)       != 0x352441C2u) return 3;
+    if (crc32_calc((const uint8_t*)"The quick brown fox jumps over the lazy dog", 43)
+                                                   != 0x414FA339u) return 4;
+    if (crc32_calc((const uint8_t*)"a", 1) == crc32_calc((const uint8_t*)"b", 1)) return 5;
+    return 0;
+}
+
 // Run the whole offline self-test battery, print a machine-readable summary, and
 // halt. Triggered ONLY by the "selftest" multiboot command line (used by CI); a
 // normal boot never calls this, so ordinary startup is unaffected. Each test is a
@@ -3739,6 +3764,7 @@ static void run_selftests(void) {
         {"jpeg",         jpeg_selftest},          {"imgreject",     image_reject_selftest},
         {"httpparse",    http_parse_selftest},    {"ext2dir",       ext2_dir_selftest},
         {"tcpcksum",     tcp_checksum_selftest},   {"mathx",         mathx_selftest},
+        {"crc32",        crc32_selftest},
     };
     int n = (int)(sizeof(t) / sizeof(t[0])), passed = 0, failed = 0;
     serial_puts("SELFTEST-BEGIN\n");
