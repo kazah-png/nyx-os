@@ -3645,6 +3645,7 @@ extern int bmp_selftest(void);
 extern int gif_selftest(void);
 extern int jpeg_selftest(void);
 extern int image_reject_selftest(void);
+extern int tcp_checksum_selftest(void);
 // http_parse_selftest / ext2_dir_selftest are declared in ../net/http.h / ../fs/ext2.h (included above).
 
 // Run the whole offline self-test battery, print a machine-readable summary, and
@@ -3664,6 +3665,7 @@ static void run_selftests(void) {
         {"bmp",          bmp_selftest},           {"gif",           gif_selftest},
         {"jpeg",         jpeg_selftest},          {"imgreject",     image_reject_selftest},
         {"httpparse",    http_parse_selftest},    {"ext2dir",       ext2_dir_selftest},
+        {"tcpcksum",     tcp_checksum_selftest},
     };
     int n = (int)(sizeof(t) / sizeof(t[0])), passed = 0, failed = 0;
     serial_puts("SELFTEST-BEGIN\n");

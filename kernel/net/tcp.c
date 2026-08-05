@@ -9,6 +9,10 @@ extern uint32_t get_ticks(void);
 static int g_tcp_drop_tx = 0;
 void tcp_debug_drop(int n) { g_tcp_drop_tx = n; }
 
+// RX segments dropped for a bad TCP checksum (issue #61). Exposed for tests/stats.
+static uint32_t g_tcp_rx_csum_drop = 0;
+uint32_t tcp_rx_csum_drops(void) { return g_tcp_rx_csum_drop; }
+
 typedef struct __attribute__((packed)) {
     uint16_t src_port;
     uint16_t dst_port;
@@ -59,19 +63,21 @@ static tcp_conn_t* find_listener(uint16_t port) {
     return NULL;
 }
 
-static uint16_t tcp_checksum(tcp_conn_t* conn, const uint8_t* tcp_seg, uint32_t tcp_len) {
-    // IPs are stored network-order (low byte = first octet), so the pseudo-header
-    // bytes are the uint32 bytes in ascending order — must match the IP header on
-    // the wire or the checksum is invalid.
+// Internet checksum over the TCP pseudo-header + segment, with the two IPs given
+// explicitly (both stored network-order: low byte = first octet). The result is the
+// value to place in the checksum field of an outgoing segment; run over a RECEIVED
+// segment whose checksum field is already filled in, a valid segment sums to 0.
+static uint16_t tcp_csum_over(uint32_t src_ip, uint32_t dst_ip,
+                              const uint8_t* tcp_seg, uint32_t tcp_len) {
     uint8_t pseudo[12];
-    pseudo[0] = conn->src_ip & 0xFF;
-    pseudo[1] = (conn->src_ip >> 8) & 0xFF;
-    pseudo[2] = (conn->src_ip >> 16) & 0xFF;
-    pseudo[3] = (conn->src_ip >> 24) & 0xFF;
-    pseudo[4] = conn->dst_ip & 0xFF;
-    pseudo[5] = (conn->dst_ip >> 8) & 0xFF;
-    pseudo[6] = (conn->dst_ip >> 16) & 0xFF;
-    pseudo[7] = (conn->dst_ip >> 24) & 0xFF;
+    pseudo[0] = src_ip & 0xFF;
+    pseudo[1] = (src_ip >> 8) & 0xFF;
+    pseudo[2] = (src_ip >> 16) & 0xFF;
+    pseudo[3] = (src_ip >> 24) & 0xFF;
+    pseudo[4] = dst_ip & 0xFF;
+    pseudo[5] = (dst_ip >> 8) & 0xFF;
+    pseudo[6] = (dst_ip >> 16) & 0xFF;
+    pseudo[7] = (dst_ip >> 24) & 0xFF;
     pseudo[8] = 0;
     pseudo[9] = 6;
     pseudo[10] = (tcp_len >> 8) & 0xFF;
@@ -94,6 +100,42 @@ static uint16_t tcp_checksum(tcp_conn_t* conn, const uint8_t* tcp_seg, uint32_t 
         if (sum & 0xFFFF0000) sum = (sum & 0xFFFF) + (sum >> 16);
     }
     return ~(sum & 0xFFFF);
+}
+
+// A connection's pseudo-header uses its own src/dst IPs (the TX direction).
+static uint16_t tcp_checksum(tcp_conn_t* conn, const uint8_t* tcp_seg, uint32_t tcp_len) {
+    return tcp_csum_over(conn->src_ip, conn->dst_ip, tcp_seg, tcp_len);
+}
+
+// CI self-test (issue #61): a segment stamped with a valid checksum must validate to
+// zero on the RX path, and any single-byte corruption (payload OR the checksum field
+// itself) must make it nonzero. Returns 0 on pass, else the number of the failing case.
+int tcp_checksum_selftest(void) {
+    uint32_t s_ip = 0x0100007F;   // 127.0.0.1, stored low-byte-first (as the stack does)
+    uint32_t d_ip = 0x0100007F;
+    uint8_t seg[sizeof(tcp_header_t) + 4];
+    tcp_header_t* h = (tcp_header_t*)seg;
+    h->src_port = htons(1234);
+    h->dst_port = htons(80);
+    h->seq = htonl(0x11223344u);
+    h->ack = htonl(0x55667788u);
+    h->offset_flags = htons((uint16_t)((5 << 12) | TCP_FLAG_ACK));
+    h->window = htons(0x2000);
+    h->checksum = 0;
+    h->urgent = 0;
+    seg[sizeof(tcp_header_t) + 0] = 'N';
+    seg[sizeof(tcp_header_t) + 1] = 'y';
+    seg[sizeof(tcp_header_t) + 2] = 'x';
+    seg[sizeof(tcp_header_t) + 3] = '!';
+    h->checksum = htons(tcp_csum_over(s_ip, d_ip, seg, sizeof(seg)));
+
+    if (tcp_csum_over(s_ip, d_ip, seg, sizeof(seg)) != 0) return 1;   // valid -> must sum to 0
+    seg[sizeof(tcp_header_t)] ^= 0x20;                                // corrupt a payload byte
+    if (tcp_csum_over(s_ip, d_ip, seg, sizeof(seg)) == 0) return 2;   // must now be nonzero
+    seg[sizeof(tcp_header_t)] ^= 0x20;                                // restore the payload
+    seg[16] ^= 0xFF;                                                  // corrupt the checksum field
+    if (tcp_csum_over(s_ip, d_ip, seg, sizeof(seg)) == 0) return 3;   // must be nonzero
+    return 0;
 }
 
 static int send_segment(tcp_conn_t* conn, uint8_t flags, const uint8_t* data, uint32_t data_len) {
@@ -360,6 +402,12 @@ int tcp_close(int conn_id) {
 
 void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t dst_ip) {
     if (len < sizeof(tcp_header_t)) return;
+    // Verify the TCP checksum over the pseudo-header + full segment BEFORE reading any
+    // field. Passing the IP checksum only proves the IP header is intact; a segment
+    // corrupted in flight could still flip flags/seq/ack or the payload and so ACK
+    // outstanding data, inject bytes, or tear a connection down. A segment carrying
+    // the sender's correct checksum sums to zero here; anything else is dropped (#61).
+    if (tcp_csum_over(src_ip, dst_ip, packet, len) != 0) { g_tcp_rx_csum_drop++; return; }
     tcp_header_t* hdr = (tcp_header_t*)packet;
 
     uint16_t dst_port = ntohs(hdr->dst_port);
