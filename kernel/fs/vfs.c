@@ -123,6 +123,21 @@ static vfs_node_t* alloc_node(void) {
     return node;
 }
 
+// A VFS fd handed to ring 3 (and to the ufd layer in syscall.c) is the node's
+// 1-based index in the static nodes[] pool, NOT the node pointer. Returning the
+// pointer as an int truncated it to 32 bits, so any node placed above 4 GiB
+// produced a corrupt handle and a wild pointer on the next read/write (issue
+// #55). An index is small (<= MAX_INODES), stable for the node's whole life, and
+// 64-bit-safe. handle_to_node maps back; a stale/out-of-range handle yields NULL,
+// which every consumer already treats as a bad fd (same as the old NULL guard).
+static inline int node_to_handle(vfs_node_t* n) {
+    return n ? (int)(n - nodes) + 1 : -1;
+}
+static inline vfs_node_t* handle_to_node(int fd) {
+    if (fd < 1 || fd > MAX_INODES) return NULL;
+    return &nodes[fd - 1];
+}
+
 /* Queue a node for reuse. The `on_free_list` check is not defensive padding:
  * pushing the same node twice puts it in free_nodes[] twice, and the next two
  * alloc_node() calls then hand ONE node to two different files. Several paths
@@ -456,7 +471,8 @@ void init_vfs(void) {
     };
     for (unsigned i = 0; i < sizeof(devs) / sizeof(devs[0]); i++) {
         int dfd = vfs_open(devs[i].path, 1, 0);           // O_CREAT
-        if (dfd >= 0) ((vfs_node_t*)(uintptr_t)(uint32_t)dfd)->dev_type = devs[i].dt;
+        vfs_node_t* dn = handle_to_node(dfd);
+        if (dn) dn->dev_type = devs[i].dt;
     }
 
     // /proc static files — generated on read (proc_generate); per-pid dirs are
@@ -503,7 +519,7 @@ int vfs_open(const char* path, int flags, mode_t mode) {
             strncpy(dn->mpath, sub, MAX_NAME - 1);
             dn->data = (uint8_t*)dents; dn->size = (uint32_t)nd;
             dn->open_refs = 1;
-            return (int)(uintptr_t)dn;
+            return node_to_handle(dn);
         }
         if (dents) kfree(dents);
 
@@ -529,7 +545,7 @@ int vfs_open(const char* path, int flags, mode_t mode) {
             }
         }
         n->open_refs = 1;
-        return (int)(uintptr_t)n;
+        return node_to_handle(n);
     }
 
     vfs_node_t* ino = resolve_path(path);
@@ -551,17 +567,17 @@ int vfs_open(const char* path, int flags, mode_t mode) {
             ino->size = 0;
         }
         ino->open_refs++;
-        return (int)(uintptr_t)ino;
+        return node_to_handle(ino);
     }
 
     if (!ino) return -1;
     ino->readdir_idx = 0;  // reset readdir cursor on open
     ino->open_refs++;
-    return (int)(uintptr_t)ino;
+    return node_to_handle(ino);
 }
 
 int vfs_read(int fd, void* buf, size_t count) {
-    vfs_node_t* ino = (vfs_node_t*)(uintptr_t)(uint32_t)fd;
+    vfs_node_t* ino = handle_to_node(fd);
     if (!ino || ino->type != 0) return -1;
     if (count > ino->size) count = ino->size;
     if (ino->data) memcpy(buf, ino->data, count);
@@ -577,7 +593,7 @@ static void flush_mount_node(vfs_node_t* ino) {
 }
 
 int vfs_write(int fd, const void* buf, size_t count) {
-    vfs_node_t* ino = (vfs_node_t*)(uintptr_t)(uint32_t)fd;
+    vfs_node_t* ino = handle_to_node(fd);
     if (!ino || ino->type != 0) return -1;
     if (!ino->data || ino->size < count) {
         uint8_t* new_data = (uint8_t*)kmalloc(count + BLOCK_SIZE);
@@ -597,7 +613,7 @@ int vfs_write(int fd, const void* buf, size_t count) {
 // Offset-aware read: copy up to `count` bytes starting at `offset`. Returns the
 // number of bytes read (0 at/after EOF), or -1 on a bad handle.
 int vfs_pread(int fd, void* buf, uint32_t count, uint32_t offset) {
-    vfs_node_t* ino = (vfs_node_t*)(uintptr_t)(uint32_t)fd;
+    vfs_node_t* ino = handle_to_node(fd);
     if (!ino || ino->type != 0) return -1;
     if (ino->dev_type) {                       // /dev special: content is generated
         switch (ino->dev_type) {
@@ -627,7 +643,7 @@ int vfs_pread(int fd, void* buf, uint32_t count, uint32_t offset) {
 // Offset-aware write: write `count` bytes at `offset`, growing the file (and
 // zero-filling any gap) as needed without discarding existing content.
 int vfs_pwrite(int fd, const void* buf, uint32_t count, uint32_t offset) {
-    vfs_node_t* ino = (vfs_node_t*)(uintptr_t)(uint32_t)fd;
+    vfs_node_t* ino = handle_to_node(fd);
     if (!ino || ino->type != 0) return -1;
     if (ino->dev_type) return (int)count;      // /dev/null etc: accept + discard
     uint32_t end = offset + count;
@@ -669,13 +685,15 @@ int vfs_pwrite(int fd, const void* buf, uint32_t count, uint32_t offset) {
  * just as capable of outliving the process whose directory it names. */
 void vfs_dup(int fd) {
     if (fd <= 0) return;
-    vfs_node_t* ino = (vfs_node_t*)(uintptr_t)(uint32_t)fd;
+    vfs_node_t* ino = handle_to_node(fd);
+    if (!ino) return;
     ino->open_refs++;
 }
 
 int vfs_close(int fd) {
     if (fd <= 0) return 0;
-    vfs_node_t* ino = (vfs_node_t*)(uintptr_t)(uint32_t)fd;
+    vfs_node_t* ino = handle_to_node(fd);
+    if (!ino) return 0;
     if (ino->open_refs > 0) ino->open_refs--;
     if (ino->open_refs > 0) return 0;              // another fd still holds it
 
@@ -736,7 +754,7 @@ int vfs_stat(const char* path, uint32_t* size, int* is_dir) {
 
 // fstat() core: size + type from an already-open internal vfs fd (a vfs_node_t*).
 int vfs_fstat(int fd, uint32_t* size, int* is_dir) {
-    vfs_node_t* ino = (vfs_node_t*)(uintptr_t)(uint32_t)fd;
+    vfs_node_t* ino = handle_to_node(fd);
     if (!ino) return -1;
     if (is_dir) *is_dir = (ino->type == 1);
     int sz = vfs_fsize(fd);
@@ -756,17 +774,17 @@ int vfs_create_from_mem(const char* path, uint8_t* data, uint32_t size) {
     ino->data = data;
     ino->parent = parent;
     if (vfs_append_child(parent, ino) != 0) { free_node(ino); return -1; }
-    return (int)(uintptr_t)ino;
+    return node_to_handle(ino);
 }
 
 uint32_t vfs_fsize(int fd) {
-    vfs_node_t* ino = (vfs_node_t*)(uintptr_t)(uint32_t)fd;
+    vfs_node_t* ino = handle_to_node(fd);
     if (!ino || ino->type != 0) return 0;
     return ino->size;
 }
 
 uint8_t* vfs_fdata(int fd) {
-    vfs_node_t* ino = (vfs_node_t*)(uintptr_t)(uint32_t)fd;
+    vfs_node_t* ino = handle_to_node(fd);
     if (!ino || ino->type != 0) return NULL;
     return ino->data;
 }
@@ -878,7 +896,7 @@ void vfs_rename(const char* old, const char* new) {
 }
 
 dirent_t* vfs_readdir(int fd) {
-    vfs_node_t* dir = (vfs_node_t*)(uintptr_t)(uint32_t)fd;
+    vfs_node_t* dir = handle_to_node(fd);
     if (!dir || dir->type != 1) return NULL;
     if (dir->mount_backed) {               // mounted-FS dir: entries loaded at open
         dirent_t* ents = (dirent_t*)dir->data;
