@@ -15,6 +15,10 @@
 #define PNG_MAX_DIM    4096
 #define PNG_MAX_PIXELS (1u << 20)          // 1M pixels — bounds the kmalloc for a decoded image
 
+// CRC-32 (kernel.c) validates each chunk so a corrupt/truncated chunk is refused
+// up front rather than reaching an inflate error or a downstream field check.
+extern uint32_t crc32_calc(const uint8_t* data, uint32_t len);
+
 static uint32_t png_u32(const uint8_t* p) {
     return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
 }
@@ -47,6 +51,10 @@ int png_decode(const uint8_t* src, uint32_t srclen, image_t* img) {
         const uint8_t* typ = src + p + 4;
         const uint8_t* data = src + p + 8;
         if ((uint64_t)p + 12 + len > srclen) return -3;
+        // Validate the chunk CRC (over type+data) before trusting any field — a
+        // corrupt or tampered chunk is rejected here. PNG stores it big-endian
+        // right after the data.
+        if (crc32_calc(typ, 4 + len) != png_u32(data + len)) return -15;
         if      (png_type_is(typ,'I','H','D','R')) {
             if (len < 13) return -4;
             w = png_u32(data); h = png_u32(data + 4);
@@ -310,21 +318,30 @@ int image_reject_selftest(void) {
     ok &= img_must_reject("jpeg/empty", jpeg_decode, empty, 0);
     ok &= img_must_reject("jpeg/junk",  jpeg_decode, junk,  sizeof(junk));
 
-    // Mutate the valid 4x4 RGB PNG into hostile variants. The decoder verifies no chunk
-    // CRCs, so a single corrupted field reaches that field's own validation. IHDR layout:
-    // [16..19]=width, [20..23]=height, [25]=colour type.
+    // Mutate the valid 4x4 RGB PNG into hostile variants. IHDR layout: [16..19]=width,
+    // [20..23]=height, [25]=colour type; its CRC is at [29..32] over the type+data at
+    // [12..28]. v6.4.97 added chunk-CRC validation, so after a DATA mutation we recompute
+    // that CRC (PNG_FIXCRC) — otherwise the CRC gate would catch it first and these cases
+    // would no longer reach the specific field check they are meant to exercise (a real
+    // attacker recomputes the CRC too). The dedicated bad-crc case leaves the CRC wrong on
+    // purpose to prove the new gate itself refuses a tampered chunk.
     uint8_t m[sizeof(PNG_RGB)];
     #define PNG_RESET() do { for (uint32_t _i = 0; _i < sizeof(PNG_RGB); _i++) m[_i] = PNG_RGB[_i]; } while (0)
-    PNG_RESET(); m[16] = m[17] = m[18] = m[19] = 0;                 // zero width
+    #define PNG_FIXCRC() do { uint32_t _c = crc32_calc(&m[12], 17); \
+        m[29]=(uint8_t)(_c>>24); m[30]=(uint8_t)(_c>>16); m[31]=(uint8_t)(_c>>8); m[32]=(uint8_t)_c; } while (0)
+    PNG_RESET(); m[16] = m[17] = m[18] = m[19] = 0; PNG_FIXCRC();   // zero width
     ok &= img_must_reject("png/zero-w", png_decode, m, sizeof(m));
-    PNG_RESET(); m[16] = 0; m[17] = 0; m[18] = 0x20; m[19] = 0x00;  // width 8192 > PNG_MAX_DIM
+    PNG_RESET(); m[16] = 0; m[17] = 0; m[18] = 0x20; m[19] = 0x00; PNG_FIXCRC(); // width 8192 > PNG_MAX_DIM
     ok &= img_must_reject("png/huge-w", png_decode, m, sizeof(m));
-    PNG_RESET(); m[25] = 7;                                         // invalid colour type
+    PNG_RESET(); m[25] = 7; PNG_FIXCRC();                          // invalid colour type
     ok &= img_must_reject("png/bad-ctype", png_decode, m, sizeof(m));
     PNG_RESET(); m[1] = 0x00;                                       // corrupt signature
     ok &= img_must_reject("png/bad-sig", png_decode, m, sizeof(m));
     PNG_RESET();                                                    // truncated stream (IDAT cut off)
     ok &= img_must_reject("png/truncated", png_decode, m, 40);
+    PNG_RESET(); m[29] ^= 0xFF;                                    // tamper the IHDR CRC (data intact)
+    ok &= img_must_reject("png/bad-crc", png_decode, m, sizeof(m));
+    #undef PNG_FIXCRC
     #undef PNG_RESET
 
     if (ok) printf("imgreject: all hostile inputs rejected PASS\n");
