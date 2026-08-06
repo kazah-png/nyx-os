@@ -3636,6 +3636,7 @@ static void enable_sse_fpu(void) {
 // on success. Declared here for run_selftests(); the cmd_* wrappers use the same
 // functions, so these match their existing header declarations.
 extern int sha512_selftest(void);
+extern int pbkdf2_selftest(void);
 extern int csprng_selftest(void);
 extern int aes_gcm_selftest(void);
 extern int curve25519_selftest(void);
@@ -3762,8 +3763,9 @@ static int crc32_selftest(void) {
 // known-answer check that needs no disk, network, or user — just a warm kernel.
 static void run_selftests(void) {
     struct { const char* name; int (*fn)(void); } t[] = {
-        {"sha512",       sha512_selftest},        {"csprng",        csprng_selftest},
-        {"aes_gcm",      aes_gcm_selftest},       {"curve25519",    curve25519_selftest},
+        {"sha512",       sha512_selftest},        {"pbkdf2",        pbkdf2_selftest},
+        {"csprng",       csprng_selftest},        {"aes_gcm",       aes_gcm_selftest},
+        {"curve25519",   curve25519_selftest},
         {"tls_prf",      tls_prf_selftest},       {"tls_keysched",  tls_keyschedule_selftest},
         {"tls_record",   tls_record_selftest},    {"tls_ske_p384",  tls_ske_p384_selftest},
         {"der",          der_selftest},           {"base64",        base64_selftest},

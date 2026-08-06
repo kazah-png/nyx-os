@@ -280,11 +280,11 @@ GitHub Actions (`.github/workflows/`) builds the kernel, assembles the ISOs, smo
 NyxOS in QEMU to the login prompt, and runs the **self-test battery** — a set of
 **Known-Answer Tests** driven by booting with the `selftest` kernel command line. The
 battery halts the machine after printing a `SELFTEST-SUMMARY` line so CI can read the
-serial log. As of this writing there are **24 KATs**:
+serial log. As of this writing there are **26 KATs**:
 
 | Domain | Tests |
 |---|---|
-| Crypto | `sha512`, `csprng`, `aes_gcm`, `curve25519`, `p256`, `p384`, `rsa`, `der`, `x509` |
+| Crypto | `sha512`, `pbkdf2`, `csprng`, `aes_gcm`, `curve25519`, `p256`, `p384`, `rsa`, `der`, `base64`, `x509` |
 | TLS | `tls_prf`, `tls_keysched`, `tls_record`, `tls_ske_p384` |
 | Images | `inflate`, `png`, `bmp`, `gif`, `jpeg`, `imgreject` |
 | FS / Net / Misc | `ext2dir`, `tcpcksum`, `httpparse`, `mathx`, `crc32` |

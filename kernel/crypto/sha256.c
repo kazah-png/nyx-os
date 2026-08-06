@@ -182,3 +182,57 @@ void sha256_to_hex(const uint8_t hash[SHA256_DIGEST_SIZE], char* hex) {
     }
     hex[SHA256_DIGEST_SIZE * 2] = '\0';
 }
+
+/* ------------------------------------------------------------------ */
+/*  Known-answer test for PBKDF2-HMAC-SHA256.                          */
+/*  This is the primitive behind every password check (auth.c hashes   */
+/*  and verifies logins with it), so a silent regression here would    */
+/*  weaken authentication itself — the highest-value thing to lock. It  */
+/*  transitively exercises HMAC-SHA256 and the SHA-256 core too. The    */
+/*  first three vectors are the canonical PBKDF2-HMAC-SHA256 vectors    */
+/*  (P="password", S="salt"); the fourth mirrors NyxOS's own /etc/passwd */
+/*  shape (short password + a 16-hex-char salt at a mid iteration count).*/
+/* ------------------------------------------------------------------ */
+static int pbkdf2_eq32(const uint8_t* a, const uint8_t* b) {
+    for (int i = 0; i < SHA256_DIGEST_SIZE; i++) if (a[i] != b[i]) return 0;
+    return 1;
+}
+
+static int pbkdf2_vec(const char* pw, uint32_t pwl, const char* salt, uint32_t sl,
+                      uint32_t iters, const uint8_t expect[SHA256_DIGEST_SIZE]) {
+    uint8_t out[SHA256_DIGEST_SIZE];
+    pbkdf2_hmac_sha256((const uint8_t*)pw, pwl, (const uint8_t*)salt, sl, iters, out);
+    return pbkdf2_eq32(out, expect);
+}
+
+int pbkdf2_selftest(void) {
+    static const uint8_t v_c1[32] = {
+        0x12,0x0f,0xb6,0xcf,0xfc,0xf8,0xb3,0x2c,0x43,0xe7,0x22,0x52,0x56,0xc4,0xf8,0x37,
+        0xa8,0x65,0x48,0xc9,0x2c,0xcc,0x35,0x48,0x08,0x05,0x98,0x7c,0xb7,0x0b,0xe1,0x7b };
+    static const uint8_t v_c2[32] = {
+        0xae,0x4d,0x0c,0x95,0xaf,0x6b,0x46,0xd3,0x2d,0x0a,0xdf,0xf9,0x28,0xf0,0x6d,0xd0,
+        0x2a,0x30,0x3f,0x8e,0xf3,0xc2,0x51,0xdf,0xd6,0xe2,0xd8,0x5a,0x95,0x47,0x4c,0x43 };
+    static const uint8_t v_c4096[32] = {
+        0xc5,0xe4,0x78,0xd5,0x92,0x88,0xc8,0x41,0xaa,0x53,0x0d,0xb6,0x84,0x5c,0x4c,0x8d,
+        0x96,0x28,0x93,0xa0,0x01,0xce,0x4e,0x11,0xa4,0x96,0x38,0x73,0xaa,0x98,0x13,0x4a };
+    static const uint8_t v_nyx[32] = {
+        0xb4,0x81,0x37,0xa1,0x24,0x76,0xea,0xf7,0x8c,0xb8,0x17,0x85,0xe7,0xb3,0x7a,0x69,
+        0xb8,0xab,0x81,0x3d,0x88,0x80,0x36,0x4a,0xbc,0x21,0xa1,0x84,0x62,0xe8,0x7b,0x14 };
+
+    if (!pbkdf2_vec("password", 8, "salt", 4, 1,    v_c1))    return 1;
+    if (!pbkdf2_vec("password", 8, "salt", 4, 2,    v_c2))    return 2;
+    if (!pbkdf2_vec("password", 8, "salt", 4, 4096, v_c4096)) return 3;
+    if (!pbkdf2_vec("nyx", 3, "0123456789abcdef", 16, 1000, v_nyx)) return 4;
+
+    /* Sensitivity: the iteration count, the salt, and the password must each
+     * change the derived key — guards against a stubbed or short-circuited KDF. */
+    uint8_t a[SHA256_DIGEST_SIZE], b[SHA256_DIGEST_SIZE];
+    pbkdf2_hmac_sha256((const uint8_t*)"password", 8, (const uint8_t*)"salt", 4, 1, a);
+    pbkdf2_hmac_sha256((const uint8_t*)"password", 8, (const uint8_t*)"salt", 4, 2, b);
+    if (pbkdf2_eq32(a, b)) return 5;                       /* iteration count matters */
+    pbkdf2_hmac_sha256((const uint8_t*)"password", 8, (const uint8_t*)"SALT", 4, 1, b);
+    if (pbkdf2_eq32(a, b)) return 6;                       /* salt matters            */
+    pbkdf2_hmac_sha256((const uint8_t*)"Password", 8, (const uint8_t*)"salt", 4, 1, b);
+    if (pbkdf2_eq32(a, b)) return 7;                       /* password matters        */
+    return 0;
+}
