@@ -139,7 +139,9 @@ keeps them small and 64-bit-safe.
 A hand-written TCP/IP stack: ARP, IPv4, ICMP (ping), UDP, and **TCP** with a real
 three-way open, checksum validation on RX, a retransmit **queue**, and a graceful close.
 On top sit **DHCP** (lease a v4 address), **DNS** (with anti-spoofing checks), and a
-BSD-ish **socket** layer. The stack is exercised over loopback in the self-tests.
+BSD-ish **socket** layer. The stack is exercised over loopback in the self-tests. See
+**`docs/NETWORK.md`** for the full walkthrough: the layer cake, the poll-driven model,
+the `net_lock` concurrency model, the `nsock_*` socket API, and each protocol client.
 
 ### Cryptography & TLS — `kernel/crypto/` + `kernel/crypto/tls/`
 Enough modern crypto to speak real TLS 1.2: **SHA-256/384/512**, **AES-GCM**, **RSA**,
