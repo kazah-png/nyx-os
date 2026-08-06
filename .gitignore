@@ -36,6 +36,28 @@ wget-log*
 *.swo
 *~
 
+# === Secrets / credentials (NEVER commit — keep keys in environment variables) ===
+# API keys, tokens (GitHub PATs), passwords and private keys must live in the
+# environment, never in the source tree. These patterns keep them out of git.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+*.keystore
+id_rsa
+id_ed25519
+*.ppk
+.netrc
+_netrc
+.git-credentials
+secrets.*
+*.secret
+credentials.json
+*.credentials
+
 # === Initramfs ===
 initramfs/
 # Generated every build by tools/mkinitramfs.py from the (untracked) user/*.elf + *.so.
