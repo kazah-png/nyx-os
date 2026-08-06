@@ -2276,13 +2276,16 @@ static uint32_t parse_ip(const char* s) {
     return ip;
 }
 
+extern int ipv4_parse(const char* s, uint32_t* out);   // strict dotted-quad (kernel/net/ipaddr.c)
+
 static void cmd_setip(int argc, char** argv) {
     if (argc < 2) { printf("Usage: setip <ip> [mask] [gw]\n"); return; }
-    uint32_t ip = parse_ip(argv[1]);
-    uint32_t mask = 0x00FFFFFF;
-    uint32_t gw = 0;
-    if (argc >= 3) mask = parse_ip(argv[2]);
-    if (argc >= 4) gw = parse_ip(argv[3]);
+    // Numeric config: validate strictly so a typo (e.g. `setip 300.1.1.1`) is rejected
+    // rather than silently masked to a wrong address like the lenient parse_ip() would.
+    uint32_t ip, mask = 0x00FFFFFF, gw = 0;
+    if (ipv4_parse(argv[1], &ip) != 0) { printf("setip: invalid IP address: %s\n", argv[1]); return; }
+    if (argc >= 3 && ipv4_parse(argv[2], &mask) != 0) { printf("setip: invalid netmask: %s\n", argv[2]); return; }
+    if (argc >= 4 && ipv4_parse(argv[3], &gw)   != 0) { printf("setip: invalid gateway: %s\n", argv[3]); return; }
     for (int i = 0; i < 8; i++) {
         if (net_interfaces[i].name[0] && strcmp(net_interfaces[i].name, "lo") != 0) {
             net_interfaces[i].ip = ip;
@@ -3667,6 +3670,7 @@ extern int base64_selftest(void);
 extern int base32_selftest(void);
 extern int utf8_selftest(void);
 extern int totp_selftest(void);
+extern int ipv4_parse_selftest(void);
 extern int p256_selftest(void);
 extern int p384_selftest(void);
 extern int rsa_selftest(void);
@@ -3801,7 +3805,7 @@ static void run_selftests(void) {
         {"httpparse",    http_parse_selftest},    {"ext2dir",       ext2_dir_selftest},
         {"tcpcksum",     tcp_checksum_selftest},  {"dns",           dns_response_selftest},
         {"mathx",        mathx_selftest},         {"crc32",         crc32_selftest},
-        {"totp",         totp_selftest},
+        {"totp",         totp_selftest},          {"ipv4",          ipv4_parse_selftest},
     };
     int n = (int)(sizeof(t) / sizeof(t[0])), passed = 0, failed = 0;
     serial_puts("SELFTEST-BEGIN\n");
