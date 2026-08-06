@@ -3666,6 +3666,7 @@ extern int der_selftest(void);
 extern int base64_selftest(void);
 extern int base32_selftest(void);
 extern int utf8_selftest(void);
+extern int totp_selftest(void);
 extern int p256_selftest(void);
 extern int p384_selftest(void);
 extern int rsa_selftest(void);
@@ -3800,6 +3801,7 @@ static void run_selftests(void) {
         {"httpparse",    http_parse_selftest},    {"ext2dir",       ext2_dir_selftest},
         {"tcpcksum",     tcp_checksum_selftest},  {"dns",           dns_response_selftest},
         {"mathx",        mathx_selftest},         {"crc32",         crc32_selftest},
+        {"totp",         totp_selftest},
     };
     int n = (int)(sizeof(t) / sizeof(t[0])), passed = 0, failed = 0;
     serial_puts("SELFTEST-BEGIN\n");
