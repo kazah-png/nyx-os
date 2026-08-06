@@ -850,6 +850,32 @@ static void bg_ripple_ring(int cx, int cy, int r, int fw, int fh,
     }
 }
 
+// A faint constellation edge: an integer Bresenham line whose every pixel blends from
+// the LOCAL sky gradient toward a soft lilac by `inten` (0..100), so the line reads as a
+// delicate thread between stars rather than a hard stroke. Used by the CONSTELACIONES
+// (Astral) wallpaper style.
+static void bg_star_line(int x0, int y0, int x1, int y1, int fw, int fh,
+                         int br, int bgc, int bb, int inten) {
+    int dx = (x1 > x0) ? x1 - x0 : x0 - x1, sx = (x0 < x1) ? 1 : -1;
+    int dy = (y1 > y0) ? -(y1 - y0) : -(y0 - y1), sy = (y0 < y1) ? 1 : -1;
+    int err = dx + dy;
+    for (;;) {
+        if (x0 >= 0 && x0 < fw && y0 >= 0 && y0 < fh) {
+            int pct = 45 + y0 * 70 / fh;
+            int skr = br * pct / 100, skg = bgc * pct / 100, skb = bb * pct / 100;
+            int rr = skr + (206 - skr) * inten / 100;
+            int gg = skg + (196 - skg) * inten / 100;
+            int bl = skb + (240 - skb) * inten / 100;
+            if (rr > 255) rr = 255; if (gg > 255) gg = 255; if (bl > 255) bl = 255;
+            fb_fill_rect(x0, y0, 1, 1, fb_rgb((uint8_t)rr, (uint8_t)gg, (uint8_t)bl));
+        }
+        if (x0 == x1 && y0 == y1) break;
+        int e2 = 2 * err;
+        if (e2 >= dy) { err += dy; x0 += sx; }
+        if (e2 <= dx) { err += dx; y0 += sy; }
+    }
+}
+
 static void draw_background(void) {
     uint32_t fw = fb_get_width(), fh = fb_get_height();
     uint32_t base = wallpaper_base_color();
@@ -879,7 +905,7 @@ static void draw_background(void) {
     if (style != WP_STYLE_NIGHTFALL && style != WP_STYLE_STARFIELD &&
         style != WP_STYLE_SHOOTINGSTAR && style != WP_STYLE_AURORA &&
         style != WP_STYLE_NEBULA && style != WP_STYLE_LUCES &&
-        style != WP_STYLE_ONDAS) return;
+        style != WP_STYLE_ONDAS && style != WP_STYLE_CONSTELACIONES) return;
 
     // Moon in the upper-right, with a soft halo (concentric rings fading inward).
     int mx = (int)fw - 130, my = 96, mr = 40;
@@ -1087,6 +1113,35 @@ static void draw_background(void) {
             if (r < mr + 10) continue;               // keep clear of the moon disc
             int inten = 42 * (maxr - r) / maxr;      // bright when young, fades as it grows
             bg_ripple_ring(mx, my, r, (int)fw, (int)fh, br, bg, bb, inten);
+        }
+    }
+
+    // CONSTELACIONES ("Astral"): a star map — a handful of constellations, each a short
+    // chain of bright anchor stars joined by faint lilac threads, laid over the calm sky.
+    // Deterministic (a fixed LCG seed) so the map never jumps, and each thread blends
+    // from the local sky so it reads as delicate light, not a hard stroke. A still sky.
+    if (style == WP_STYLE_CONSTELACIONES) {
+        uint32_t cs = 0x2545F491u;
+        for (int c = 0; c < 7; c++) {
+            cs = cs * 1103515245u + 12345u;
+            int npts = 3 + (int)((cs >> 7) % 3);            // 3..5 stars in this constellation
+            int px = (int)fw / 2, py = (int)star_zone / 2;
+            for (int tries = 0; tries < 10; tries++) {      // anchor it clear of the moon
+                cs = cs * 1103515245u + 12345u; px = 30 + (int)((cs >> 9) % (fw - 60));
+                cs = cs * 1103515245u + 12345u; py = 34 + (int)((cs >> 9) % (star_zone - 50));
+                int ex = px - mx, ey = py - my;
+                if (ex * ex + ey * ey > (mr + 55) * (mr + 55)) break;
+            }
+            fb_fill_rect(px, py, 2, 2, fb_rgb(216, 210, 246));   // first anchor star
+            for (int k = 1; k < npts; k++) {
+                cs = cs * 1103515245u + 12345u; int nx = px + (int)((cs >> 10) % 66) - 33;
+                cs = cs * 1103515245u + 12345u; int ny = py + (int)((cs >> 10) % 56) - 28;
+                if (nx < 10) nx = 10; if (nx > (int)fw - 10) nx = (int)fw - 10;
+                if (ny < 10) ny = 10; if (ny > (int)star_zone) ny = (int)star_zone;
+                bg_star_line(px, py, nx, ny, (int)fw, (int)fh, br, bg, bb, 34);   // faint thread
+                fb_fill_rect(nx, ny, 2, 2, fb_rgb(210, 204, 242));               // vertex star
+                px = nx; py = ny;
+            }
         }
     }
 }

@@ -33,7 +33,7 @@ returns `g_style`; `draw_background()` reads both on every composite.
 
 ---
 
-## The nine styles
+## The ten styles
 
 | Enum | Name | Animated | What it draws |
 |---|---|:---:|---|
@@ -46,6 +46,7 @@ returns `g_style`; `draw_background()` reads both on every composite.
 | `WP_STYLE_NEBULA` | Nebula | ✓ | Nightfall scene with soft drifting **nebula clouds** |
 | `WP_STYLE_LUCES` | Luces | ✓ | Nightfall scene with slow rising **glowing orbs** (fireflies) |
 | `WP_STYLE_ONDAS` | Ondas | ✓ | Nightfall scene with concentric **moonlight ripples** from the moon |
+| `WP_STYLE_CONSTELACIONES` | Astral | — | Nightfall scene with a static **star map** — constellations of stars joined by faint threads |
 
 `WP_STYLE_COUNT` closes the enum; the picker draws exactly that many style buttons.
 
@@ -160,6 +161,13 @@ faded margins are invisible and the effect melts into the night.
   circle (`bg_ripple_ring`) and fading as it grows, so a few soft lilac rings always hang around the
   moon — like light on still water. Each ring pixel blends from the local sky toward lilac and clips
   off-screen; rings inside the moon disc are skipped.
+- **Astral / `CONSTELACIONES`.** A static star map over the calm Nightfall sky: seven constellations,
+  each a short chain of three-to-five bright anchor stars joined by faint lilac threads. Positions are
+  deterministic (a fixed LCG seed) so the map never jumps, and there is no animation — hence no repaint
+  gate. Each thread is an integer Bresenham line (`bg_star_line`) whose every pixel blends from the
+  local sky gradient toward lilac (intensity 34/100), so it reads as delicate light rather than a hard
+  stroke; the constellations anchor clear of the moon. Distinct from *Estrellas*, whose stars only
+  twinkle — here the connecting threads are the point.
 
 ---
 

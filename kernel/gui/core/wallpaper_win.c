@@ -24,7 +24,7 @@ static const struct { uint8_t r, g, b; const char* name; } palette[WALLPAPER_COU
 // color). "Nightfall" — the moon-and-stars scene — is the default: NyxOS is named
 // for Nyx, the goddess of night, so the night sky IS the brand identity. The clean
 // gradient and a flat solid stay one click away in the Wallpaper app.
-static const char* style_names[WP_STYLE_COUNT] = { "Limpio", "Nightfall", "Plano", "Estrellas", "Meteoros", "Aurora", "Nebula", "Luces", "Ondas" };
+static const char* style_names[WP_STYLE_COUNT] = { "Limpio", "Nightfall", "Plano", "Estrellas", "Meteoros", "Aurora", "Nebula", "Luces", "Ondas", "Astral" };
 
 static int g_wallpaper = 0;                    // selected base color; default = morado
 static int g_style     = WP_STYLE_NIGHTFALL;   // selected render style; default = moon + stars
@@ -37,8 +37,8 @@ int wallpaper_style(void) {
     return g_style;
 }
 
-// Style-button grid geometry (top of the content; shared by draw + click). Nine
-// styles now, laid out 4 per row over 3 rows (the 3rd row holds just "Ondas").
+// Style-button grid geometry (top of the content; shared by draw + click). Ten
+// styles now, laid out 4 per row over 3 rows (the 3rd row holds "Ondas" + "Astral").
 #define WP_STYLE_COLS 4
 #define WP_STYLE_OX   16
 #define WP_STYLE_OY   34
@@ -94,7 +94,8 @@ static void wallpaper_draw_preview(int x, int y, int w, int h, int br, int bg, i
     }
     if (style != WP_STYLE_NIGHTFALL && style != WP_STYLE_STARFIELD &&
         style != WP_STYLE_SHOOTINGSTAR && style != WP_STYLE_AURORA &&
-        style != WP_STYLE_NEBULA && style != WP_STYLE_LUCES && style != WP_STYLE_ONDAS)
+        style != WP_STYLE_NEBULA && style != WP_STYLE_LUCES && style != WP_STYLE_ONDAS &&
+        style != WP_STYLE_CONSTELACIONES)
         return;                                             // Limpio: gradient only.
 
     // Moon (upper-right) with a small halo, then deterministic tiny stars that keep
@@ -188,6 +189,19 @@ static void wallpaper_draw_preview(int x, int y, int w, int h, int br, int bg, i
                 }
             }
         }
+    }
+    if (style == WP_STYLE_CONSTELACIONES) {                  // a tiny 3-star constellation
+        int vx[3] = { x + w / 4, x + w / 2, x + 2 * w / 3 };
+        int vy[3] = { y + h / 2, y + h * 2 / 5, y + h * 3 / 5 };
+        for (int s = 0; s < 2; s++)                          // faint connecting threads
+            for (int p = 0; p <= 8; p++) {
+                int lx = vx[s] + (vx[s + 1] - vx[s]) * p / 8;
+                int ly = vy[s] + (vy[s + 1] - vy[s]) * p / 8;
+                if (lx >= x && lx < x + w && ly >= y && ly < y + h) fb_fill_rect(lx, ly, 1, 1, fb_rgb(150, 142, 200));
+            }
+        for (int s = 0; s < 3; s++)                          // bright vertex stars
+            if (vx[s] >= x && vx[s] < x + w && vy[s] >= y && vy[s] < y + h)
+                fb_fill_rect(vx[s], vy[s], 2, 2, fb_rgb(216, 210, 246));
     }
 }
 
