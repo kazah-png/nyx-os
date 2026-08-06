@@ -241,7 +241,9 @@ FPS). To add one:
 Add a `WP_STYLE_*` to `kernel/gui/core/wallpaper_win.h`, render it in `draw_background()`
 in `compositor.c` (integer parabolic sine `wp_isin` for animation, blend from the local
 sky gradient so faded edges are invisible), add it to the animated-repaint gating, and add
-a picker button. Keep it in the Nightfall palette.
+a picker button. Keep it in the Nightfall palette. See **`docs/WALLPAPERS.md`** for the full
+wallpaper/background subsystem: the eight styles, the integer-animation pattern (`wp_isin`), the
+repaint gate, and a step-by-step recipe.
 
 ### Add a CI self-test (KAT)
 Only for **pure kernel logic**. Write `int <name>_selftest(void)` returning 0 on pass,
