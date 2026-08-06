@@ -767,7 +767,7 @@ static void do_ctx_menu_action(int idx) {
             break;
         case 4: // Wallpaper
             {
-                window_t* wwin = window_create(180, 96, 400, 440, "Wallpaper", wallpaper_win_draw);
+                window_t* wwin = window_create(180, 96, 400, 480, "Wallpaper", wallpaper_win_draw);
                 if (wwin) wwin->on_click = wallpaper_win_click;
             }
             break;
@@ -820,6 +820,35 @@ static int wp_isin(int ph) {
     return sign * (y / 4);                       // -1024..1024
 }
 
+// One expanding moonlight ripple: a thin ring (integer midpoint circle) centered on
+// the moon; each plotted pixel blends from the LOCAL sky gradient toward a soft lilac
+// by `inten` (0..100), so the ring melts into the night with no hard edge. Off-screen
+// octant points are clipped. Used by the ONDAS wallpaper style.
+static void bg_ripple_ring(int cx, int cy, int r, int fw, int fh,
+                           int br, int bgc, int bb, int inten) {
+    if (r < 1 || inten <= 0) return;
+    int x = r, y = 0, err = 0;
+    while (x >= y) {
+        int pts[8][2] = {
+            { cx + x, cy + y }, { cx + y, cy + x }, { cx - y, cy + x }, { cx - x, cy + y },
+            { cx - x, cy - y }, { cx - y, cy - x }, { cx + y, cy - x }, { cx + x, cy - y },
+        };
+        for (int p = 0; p < 8; p++) {
+            int px = pts[p][0], py = pts[p][1];
+            if (px < 0 || px >= fw - 1 || py < 0 || py >= fh - 1) continue;
+            int pct = 45 + py * 70 / fh;
+            int skr = br * pct / 100, skg = bgc * pct / 100, skb = bb * pct / 100;
+            int rr = skr + (214 - skr) * inten / 100;
+            int gg = skg + (200 - skg) * inten / 100;
+            int bl = skb + (248 - skb) * inten / 100;
+            if (rr > 255) rr = 255; if (gg > 255) gg = 255; if (bl > 255) bl = 255;
+            fb_fill_rect(px, py, 2, 2, fb_rgb((uint8_t)rr, (uint8_t)gg, (uint8_t)bl));
+        }
+        y++; err += 1 + 2 * y;
+        if (2 * (err - x) + 1 > 0) { x--; err += 1 - 2 * x; }
+    }
+}
+
 static void draw_background(void) {
     uint32_t fw = fb_get_width(), fh = fb_get_height();
     uint32_t base = wallpaper_base_color();
@@ -848,7 +877,8 @@ static void draw_background(void) {
     // twinkles; SHOOTINGSTAR keeps the calm sky and adds a periodic meteor below).
     if (style != WP_STYLE_NIGHTFALL && style != WP_STYLE_STARFIELD &&
         style != WP_STYLE_SHOOTINGSTAR && style != WP_STYLE_AURORA &&
-        style != WP_STYLE_NEBULA && style != WP_STYLE_LUCES) return;
+        style != WP_STYLE_NEBULA && style != WP_STYLE_LUCES &&
+        style != WP_STYLE_ONDAS) return;
 
     // Moon in the upper-right, with a soft halo (concentric rings fading inward).
     int mx = (int)fw - 130, my = 96, mr = 40;
@@ -1039,6 +1069,23 @@ static void draw_background(void) {
                     fb_fill_rect(px, py, 1, 1, fb_rgb((uint8_t)rr, (uint8_t)gg, (uint8_t)bb2));
                 }
             }
+        }
+    }
+
+    // ONDAS: slow concentric ripples of moonlight expand out from the moon, like light
+    // on still water. NR rings ride the same clock at even radius offsets; each fades
+    // as it grows, so a few soft lilac rings always hang around the moon.
+    if (style == WP_STYLE_ONDAS) {
+        uint32_t tms = get_ticks();
+        int maxr = (int)fw;                          // a ring reaches the far side, then wraps
+        const int NR = 4;
+        int step = maxr / NR;
+        int base = (int)(tms / 5) % step;            // shared outward phase (px)
+        for (int k = 0; k < NR; k++) {
+            int r = base + k * step;
+            if (r < mr + 10) continue;               // keep clear of the moon disc
+            int inten = 42 * (maxr - r) / maxr;      // bright when young, fades as it grows
+            bg_ripple_ring(mx, my, r, (int)fw, (int)fh, br, bg, bb, inten);
         }
     }
 }
@@ -3032,7 +3079,7 @@ done_click:
         uint32_t wp_iv = (wp_st == WP_STYLE_SHOOTINGSTAR) ? 70u : 120u;
         if ((wp_st == WP_STYLE_STARFIELD || wp_st == WP_STYLE_SHOOTINGSTAR ||
              wp_st == WP_STYLE_AURORA || wp_st == WP_STYLE_NEBULA ||
-             wp_st == WP_STYLE_LUCES) &&
+             wp_st == WP_STYLE_LUCES || wp_st == WP_STYLE_ONDAS) &&
             now - wp_anim_ms >= wp_iv) {
             wp_anim_ms = now;
             redraw = 1;

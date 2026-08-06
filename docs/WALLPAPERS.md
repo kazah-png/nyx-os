@@ -1,9 +1,9 @@
 # NyxOS wallpaper & desktop-background system
 
 The desktop background is not a static image — it is **painted from code every time the
-desktop composites**, from a chosen *base colour* and a chosen *render style*. Eight styles
-ship, five of them animated (a twinkling star field, a shooting star, aurora curtains, drifting
-nebula clouds, rising fireflies). Everything is drawn with **integer arithmetic only** — the
+desktop composites**, from a chosen *base colour* and a chosen *render style*. Nine styles
+ship, six of them animated (a twinkling star field, a shooting star, aurora curtains, drifting
+nebula clouds, rising fireflies, moonlight ripples). Everything is drawn with **integer arithmetic only** — the
 kernel is built `-mno-sse` with no floating point anywhere (see `docs/ARCHITECTURE.md`) — and
 every animated frame is a **pure function of the clock**, so there is no per-frame state to keep
 and no flicker. The whole system keeps the Nyx night-goddess identity: purple, moonlit, calm.
@@ -33,7 +33,7 @@ returns `g_style`; `draw_background()` reads both on every composite.
 
 ---
 
-## The eight styles
+## The nine styles
 
 | Enum | Name | Animated | What it draws |
 |---|---|:---:|---|
@@ -45,6 +45,7 @@ returns `g_style`; `draw_background()` reads both on every composite.
 | `WP_STYLE_AURORA` | Aurora | ✓ | Nightfall scene with slow drifting **aurora curtains** |
 | `WP_STYLE_NEBULA` | Nebula | ✓ | Nightfall scene with soft drifting **nebula clouds** |
 | `WP_STYLE_LUCES` | Luces | ✓ | Nightfall scene with slow rising **glowing orbs** (fireflies) |
+| `WP_STYLE_ONDAS` | Ondas | ✓ | Nightfall scene with concentric **moonlight ripples** from the moon |
 
 `WP_STYLE_COUNT` closes the enum; the picker draws exactly that many style buttons.
 
@@ -154,6 +155,11 @@ faded margins are invisible and the effect melts into the night.
   amplitude. An orb rises up the screen (`y` wraps over `fh+48`), sways horizontally via `wp_isin`,
   and pulses in brightness; it is drawn as a small disc (`dx²+dy² ≤ 16`) blending toward a lilac core
   `rgb(214,194,248)` with a soft radial falloff, and skips any position over the moon.
+- **Ondas / `ONDAS`.** Concentric moonlight ripples expand out from the moon. Four thin rings ride the
+  same clock at even radius offsets (`base + k·maxr/4`, wrapping), each drawn by an integer midpoint-
+  circle (`bg_ripple_ring`) and fading as it grows, so a few soft lilac rings always hang around the
+  moon — like light on still water. Each ring pixel blends from the local sky toward lilac and clips
+  off-screen; rings inside the moon disc are skipped.
 
 ---
 
@@ -187,7 +193,8 @@ immediately across the whole desktop.
 4. **Animate it (if live).** Add the style to the repaint gate in `compositor_run()` and pick an
    interval (70 ms for fast motion, 120 ms otherwise).
 5. **Expose it.** The picker grid sizes itself from `WP_STYLE_COUNT`, so a new style appears
-   automatically once steps 1–2 are done (the current grid holds 8; a 9th would start a third row).
+   automatically once steps 1–2 are done (the grid now holds nine over three rows of four; a 10th would
+   start a fourth row and want a taller Wallpaper window).
 
 Keep it in the Nightfall palette — purple, moonlit, calm. See also *Add a wallpaper style* in
 `docs/ARCHITECTURE.md`.
