@@ -12,6 +12,7 @@
 #include "../games/julia_win.h"
 #include "../games/particles_win.h"
 #include "../games/rotor_win.h"
+#include "../games/fill_win.h"
 #include "../apps/fileman_win.h"
 #include "../apps/paint_win.h"
 #include "../apps/taskman_win.h"
@@ -1344,6 +1345,17 @@ void launch_rotor(void) {
     if (!w->reserved) { window_destroy(w->id); return; }
     w->on_tick = rotor_win_tick;
     w->on_key  = rotor_win_key;
+}
+
+void launch_fill(void) {
+    int px = ((int)fb_get_width()  - FILL_WIN_W) / 2;              if (px < 0) px = 0;
+    int py = ((int)fb_get_height() - FILL_WIN_H - TITLE_H) / 2;    if (py < 0) py = 0;
+    window_t* w = window_create(px, py, FILL_WIN_W, FILL_WIN_H, "Nyx Fill", fill_win_draw);
+    if (!w) return;
+    w->reserved = fill_create_ctx();
+    if (!w->reserved) { window_destroy(w->id); return; }
+    w->on_tick = fill_win_tick;
+    w->on_key  = fill_win_key;
 }
 
 // Open a Snake window. In-kernel game like Pong: the compositor's game-tick steps it via
