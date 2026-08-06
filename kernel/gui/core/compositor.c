@@ -14,6 +14,7 @@
 #include "../games/rotor_win.h"
 #include "../games/fill_win.h"
 #include "../games/life_win.h"
+#include "../games/blobs_win.h"
 #include "../apps/fileman_win.h"
 #include "../apps/paint_win.h"
 #include "../apps/taskman_win.h"
@@ -1473,6 +1474,20 @@ void launch_life(void) {
     if (!w->reserved) { window_destroy(w->id); return; }
     w->on_tick = life_win_tick;
     w->on_key  = life_win_key;
+}
+
+// Open the Nyx Blobs window - a metaballs render-perf demo (the organic scalar-field
+// sibling of Nyx Fractal / Nyx Fill). A per-window ctx holds the drifting blobs; the
+// game tick moves them and repaints the field.
+void launch_blobs(void) {
+    int px = ((int)fb_get_width()  - BLOBS_WIN_W) / 2;              if (px < 0) px = 0;
+    int py = ((int)fb_get_height() - BLOBS_WIN_H - TITLE_H) / 2;    if (py < 0) py = 0;
+    window_t* w = window_create(px, py, BLOBS_WIN_W, BLOBS_WIN_H, "Nyx Blobs", blobs_win_draw);
+    if (!w) return;
+    w->reserved = blobs_create_ctx();
+    if (!w->reserved) { window_destroy(w->id); return; }
+    w->on_tick = blobs_win_tick;
+    w->on_key  = blobs_win_key;
 }
 
 // Open a Snake window. In-kernel game like Pong: the compositor's game-tick steps it via
