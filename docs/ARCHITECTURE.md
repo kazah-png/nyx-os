@@ -148,6 +148,9 @@ Enough modern crypto to speak real TLS 1.2: **SHA-256/384/512**, **AES-GCM**, **
 elliptic curves **P-256 / P-384** and **X25519**, a **CSPRNG**, and **DER / X.509**
 certificate parsing with a chain-verification trust model. The TLS layer has its own
 record and handshake self-tests. All of it is integer bignum math (no floats, no libgcc).
+See **`docs/CRYPTO.md`** for the full walkthrough: every primitive, the TLS 1.2
+handshake step by step, and the key-pinned X.509 trust model (`X509_OK` / `INCOMPLETE`
+/ `FORGED`, host + validity checks, strict mode).
 
 ### Image decoders — `kernel/image/`
 From-scratch **PNG** (with per-chunk CRC-32 validation), **BMP**, **GIF** (including
