@@ -3657,6 +3657,7 @@ extern int gif_selftest(void);
 extern int jpeg_selftest(void);
 extern int image_reject_selftest(void);
 extern int tcp_checksum_selftest(void);
+extern int dns_response_selftest(void);
 // http_parse_selftest / ext2_dir_selftest are declared in ../net/http.h / ../fs/ext2.h (included above).
 
 // ---- Advanced math: deterministic primality for any 64-bit integer -----------
@@ -3776,8 +3777,8 @@ static void run_selftests(void) {
         {"bmp",          bmp_selftest},           {"gif",           gif_selftest},
         {"jpeg",         jpeg_selftest},          {"imgreject",     image_reject_selftest},
         {"httpparse",    http_parse_selftest},    {"ext2dir",       ext2_dir_selftest},
-        {"tcpcksum",     tcp_checksum_selftest},   {"mathx",         mathx_selftest},
-        {"crc32",        crc32_selftest},
+        {"tcpcksum",     tcp_checksum_selftest},  {"dns",           dns_response_selftest},
+        {"mathx",        mathx_selftest},         {"crc32",         crc32_selftest},
     };
     int n = (int)(sizeof(t) / sizeof(t[0])), passed = 0, failed = 0;
     serial_puts("SELFTEST-BEGIN\n");

@@ -25,6 +25,24 @@ static volatile int dns_response_ready = 0;
 static uint32_t dns_response_ip = 0;
 static uint16_t dns_query_id = 0;        // transaction ID of the outstanding query (host order)
 
+// Advance past a DNS name in `data` (bounds-checked against `len`) and return the
+// new offset. A name is a run of length-prefixed labels ending in a 0 byte, and
+// with compression it may end early in a 2-byte pointer (top two bits of the first
+// byte set). This runs on UNTRUSTED response data, so it never reads past `len` and
+// always terminates: a bogus label length that overshoots the packet just ends the
+// walk (the caller re-checks bounds before reading the record that follows). We only
+// SKIP names — never follow a pointer to reconstruct one — so a self-referential
+// pointer cannot loop us.
+static uint32_t dns_skip_name(const uint8_t* data, uint32_t len, uint32_t off) {
+    while (off < len) {
+        uint8_t b = data[off];
+        if (b == 0)   return off + 1;          // root label: the name ends here
+        if (b & 0xC0) return off + 2;          // compression pointer: 2 bytes, ends the name
+        off += (uint32_t)b + 1;                // ordinary label: length byte + that many bytes
+    }
+    return off;                                 // ran off the end of the packet
+}
+
 static void dns_response_handler(uint8_t* data, uint32_t len, uint32_t src_ip, uint16_t src_port) {
     (void)src_ip;
     (void)src_port;
@@ -42,22 +60,12 @@ static void dns_response_handler(uint8_t* data, uint32_t len, uint32_t src_ip, u
     // Skip header
     uint32_t off = sizeof(dns_header_t);
 
-    // Skip the question section (variable-length name + QTYPE + QCLASS)
-    while (off < len) {
-        if (data[off] == 0) { off += 5; break; }
-        if (data[off] & 0xC0) { off += 2; break; } // compressed
-        off += data[off] + 1;
-    }
+    // Skip the question section: NAME + QTYPE(2) + QCLASS(2).
+    off = dns_skip_name(data, len, off) + 4;
 
     // Parse answer section
     for (uint16_t a = 0; a < ancount && off < len; a++) {
-        // Skip NAME (compressed pointer or sequence)
-        if (off < len && (data[off] & 0xC0)) {
-            off += 2;
-        } else {
-            while (off < len && data[off] != 0) off += data[off] + 1;
-            if (off < len) off++; // null terminator
-        }
+        off = dns_skip_name(data, len, off);   // NAME: label sequence and/or a compression pointer
 
         if (off + 10 > len) break;
         uint16_t type = (data[off] << 8) | data[off+1];
@@ -185,4 +193,64 @@ uint32_t dns_resolve(const char* hostname, int iface_idx) {
 
     udp_register_listener(src_port, NULL); // unregister on timeout
     return 0;
+}
+
+// Known-answer + adversarial test for the DNS response parser, which consumes
+// UNTRUSTED network data. Asserts a well-formed A-record reply (with a compressed
+// answer name) is parsed to the right address, and that a battery of malformed
+// packets — too short, not a response, wrong transaction ID, no answers, oversized
+// labels that walk off the end, a huge RDLENGTH, a non-A record — is rejected with
+// no spurious answer and (since we return at all) without reading out of bounds or
+// looping. Runs offline in the CI self-test battery. Returns 0 on pass, else the
+// failing case number. Restores the DNS state it touches so a later real query is
+// unaffected.
+int dns_response_selftest(void) {
+    uint16_t saved_id = dns_query_id;
+    int rc = 0;
+
+    // Positive: id 0x1234, QR set, 1 answer; question www.google.com; answer name is
+    // a compression pointer (0xC0 0x0C) back to the question; A record 93.184.216.34.
+    {
+        uint8_t p[] = {
+            0x12,0x34, 0x81,0x80, 0x00,0x01, 0x00,0x01, 0x00,0x00, 0x00,0x00,
+            0x03,'w','w','w', 0x06,'g','o','o','g','l','e', 0x03,'c','o','m', 0x00,
+            0x00,0x01, 0x00,0x01,
+            0xC0,0x0C,
+            0x00,0x01, 0x00,0x01, 0x00,0x00,0x00,0x3C, 0x00,0x04,
+            93,184,216,34
+        };
+        dns_query_id = 0x1234;
+        dns_response_ready = 0; dns_response_ip = 0;
+        dns_response_handler(p, sizeof(p), 0, 0);
+        uint32_t want = (uint32_t)93 | (184u << 8) | (216u << 16) | (34u << 24);
+        if (!dns_response_ready || dns_response_ip != want) { rc = 1; goto done; }
+    }
+
+    dns_query_id = 0x1234;   // negatives: none of these may set dns_response_ready
+
+    { uint8_t p[] = {0x12,0x34,0x81}; dns_response_ready = 0;                     // 1) shorter than header
+      dns_response_handler(p, sizeof(p), 0, 0); if (dns_response_ready) { rc = 2; goto done; } }
+
+    { uint8_t p[] = {0x12,0x34, 0x00,0x00, 0x00,0x01, 0x00,0x01, 0,0,0,0, 0};     // 2) QR clear (a query)
+      dns_response_ready = 0; dns_response_handler(p, sizeof(p), 0, 0); if (dns_response_ready) { rc = 3; goto done; } }
+
+    { uint8_t p[] = {0x99,0x99, 0x81,0x80, 0x00,0x01, 0x00,0x01, 0,0,0,0, 0};     // 3) wrong transaction ID
+      dns_response_ready = 0; dns_response_handler(p, sizeof(p), 0, 0); if (dns_response_ready) { rc = 4; goto done; } }
+
+    { uint8_t p[] = {0x12,0x34, 0x81,0x80, 0x00,0x01, 0x00,0x00, 0,0,0,0, 0};     // 4) ancount = 0
+      dns_response_ready = 0; dns_response_handler(p, sizeof(p), 0, 0); if (dns_response_ready) { rc = 5; goto done; } }
+
+    { uint8_t p[] = {0x12,0x34,0x81,0x80,0x00,0x01,0x00,0x01,0,0,0,0,            // 5) oversized labels off the end
+                     0x3F,'a','a','a', 0x3F,'b','b'};
+      dns_response_ready = 0; dns_response_handler(p, sizeof(p), 0, 0); if (dns_response_ready) { rc = 6; goto done; } }
+
+    { uint8_t p[] = {0x12,0x34,0x81,0x80,0x00,0x01,0x00,0x01,0,0,0,0,            // 6) CNAME + huge RDLENGTH
+                     0x00, 0x00,0x01,0x00,0x01,
+                     0xC0,0x0C, 0x00,0x05, 0x00,0x01, 0,0,0,0x3C, 0xFF,0xFF, 0xAA};
+      dns_response_ready = 0; dns_response_handler(p, sizeof(p), 0, 0); if (dns_response_ready) { rc = 7; goto done; } }
+
+done:
+    dns_response_ready = 0; dns_response_ip = 0;
+    dns_query_id = saved_id;
+    return rc;
 }
