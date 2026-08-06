@@ -144,6 +144,7 @@ static void cmd_julia(int argc, char** argv);
 static void cmd_particles(int argc, char** argv);
 static void cmd_rotor(int argc, char** argv);
 static void cmd_fill(int argc, char** argv);
+static void cmd_life(int argc, char** argv);
 static void cmd_snake(int argc, char** argv);
 static void cmd_tetris(int argc, char** argv);
 static void cmd_selene(int argc, char** argv);
@@ -276,6 +277,7 @@ static const command_t commands[] = {
     {"particles", cmd_particles, "Open Nyx Particles (particle-fountain render-perf demo)", false},
     {"rotor", cmd_rotor, "Open Nyx Rotor (spinning 3D point-lattice render-perf demo)", false},
     {"fill", cmd_fill, "Open Nyx Fill (2D fill-rate / overdraw render-perf demo)", false},
+    {"life", cmd_life, "Open Nyx Life (Conway's Game of Life compute/render-perf demo)", false},
     {"snake",     cmd_snake,     "Play Snake (arrows/WASD)", false},
     {"tetris",    cmd_tetris,    "Play Tetris (arrows, Space=drop)", false},
     {"selene",    cmd_selene,    "Open Selene, the web browser", false},
@@ -596,6 +598,7 @@ static const man_page_t man_pages[] = {
     {"particles","Open Nyx Particles, a purple particle-fountain and P4 rendering-performance-testing demo. Particles get integer sub-pixel physics (gravity plus floor/wall bounce) and respawn at the nozzle when they settle; the benchmark HUD shows the per-frame simulation time and derived FPS. Press + / - to change the live particle count so the frame-time rises and falls with the load, and r to reset. All-integer (no floats)."},
     {"rotor","Open Nyx Rotor, a spinning 3D point-lattice and P4 rendering-performance-testing demo (the 3D-transform sibling of Nyx Particles). An NxNxN cube of points tumbles on two axes, each point rotated with fixed-point sin/cos, perspective-projected and shaded by depth; the benchmark HUD shows the per-frame render time and derived FPS. Press + / - to change the lattice density so the point count (N^3) and the frame-time scale with the load. All-integer (no floats)."},
     {"fill","Open Nyx Fill, a 2D fill-rate / overdraw P4 rendering-performance-testing demo (the pure-fill sibling of Nyx Rotor and Nyx Fractal). Each frame paints the whole window over N times with a scrolling purple/lilac gradient; the benchmark HUD shows the pixels drawn per frame, the measured frame time, and the derived fill rate in Mpx/s. Press + / - to change the overdraw factor so the pixel throughput and the frame-time scale with the load. All-integer (no floats)."},
+    {"life","Open Nyx Life, Conway's Game of Life as a P4 compute/render performance testbed (the cellular-automaton sibling of Nyx Fill and Nyx Fractal). A bounded grid steps by the classic B3/S23 rule and renders live cells as blocks (fresh births glow brighter than survivors); the benchmark HUD shows the generation counter, the live-cell count, the per-frame step time and the derived generations/second. Press + / - to change generations-per-frame so the compute load and the frame-time scale; 'r' reseeds a random soup, 'p' pauses, 'c' clears. All-integer (no floats)."},
     {"voxel",    "Open Nyx Voxels, an isometric voxel sandbox used as a 3D-render performance testbed (press B for a benchmark HUD)."},
     {"selene",   "Open Selene, the NyxOS web browser (HTTP and TLS, HTML and images)."},
     {"man",      "Display the manual page for a command: its name, a synopsis, and a description of what it does."},
@@ -2085,6 +2088,12 @@ static void cmd_rotor(int argc, char** argv) {
 static void cmd_fill(int argc, char** argv) {
     (void)argc; (void)argv;
     launch_fill();
+}
+
+// `life` — open the Nyx Life window (Conway's Game of Life compute/render-perf demo, compositor.c).
+static void cmd_life(int argc, char** argv) {
+    (void)argc; (void)argv;
+    launch_life();
 }
 
 // `snake` — open a Snake game window (in-kernel, compositor.c).

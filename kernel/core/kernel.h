@@ -43,7 +43,7 @@ typedef __builtin_va_list va_list;
 // ============================================================
 #define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.4.117"
+#define KERNEL_VERSION "6.4.118"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -1033,6 +1033,7 @@ void launch_julia(void);                // open Nyx Julia, the Julia-set perf-de
 void launch_particles(void);            // open Nyx Particles, the particle-fountain perf-demo window (compositor.c)
 void launch_rotor(void);                // open Nyx Rotor, the spinning-3D-lattice perf-demo window (compositor.c)
 void launch_fill(void);                 // open Nyx Fill, the 2D fill-rate/overdraw perf-demo window (compositor.c)
+void launch_life(void);                 // open Nyx Life, the Game-of-Life compute/render perf-demo window (compositor.c)
 void launch_imageview(const char* path);// open the Image Viewer, optionally on a file (compositor.c)
 void launch_fileman(const char* path);  // open the File Manager, optionally at a directory (compositor.c)
 void reap_zombies(void);
