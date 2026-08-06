@@ -24,7 +24,7 @@ static const struct { uint8_t r, g, b; const char* name; } palette[WALLPAPER_COU
 // color). "Nightfall" — the moon-and-stars scene — is the default: NyxOS is named
 // for Nyx, the goddess of night, so the night sky IS the brand identity. The clean
 // gradient and a flat solid stay one click away in the Wallpaper app.
-static const char* style_names[WP_STYLE_COUNT] = { "Limpio", "Nightfall", "Plano", "Estrellas", "Meteoros", "Aurora", "Nebula" };
+static const char* style_names[WP_STYLE_COUNT] = { "Limpio", "Nightfall", "Plano", "Estrellas", "Meteoros", "Aurora", "Nebula", "Luces" };
 
 static int g_wallpaper = 0;                    // selected base color; default = morado
 static int g_style     = WP_STYLE_NIGHTFALL;   // selected render style; default = moon + stars
@@ -37,20 +37,26 @@ int wallpaper_style(void) {
     return g_style;
 }
 
-// Style-button row geometry (top of the content; shared by draw + click).
+// Style-button grid geometry (top of the content; shared by draw + click). Eight
+// styles now, laid out 4 per row over 2 rows so the picker stays compact.
+#define WP_STYLE_COLS 4
 #define WP_STYLE_OX   16
 #define WP_STYLE_OY   34
-#define WP_STYLE_BW   78     // four styles now share the row, so the buttons are a touch narrower
+#define WP_STYLE_BW   78
 #define WP_STYLE_BH   28
 #define WP_STYLE_BGAP 6
+#define WP_STYLE_RGAP 6
+// x/y of style button i (col-major within a row, then wrap to the next row).
+#define WP_STYLE_X(i) (WP_STYLE_OX + ((i) % WP_STYLE_COLS) * (WP_STYLE_BW + WP_STYLE_BGAP))
+#define WP_STYLE_Y(i) (WP_STYLE_OY + ((i) / WP_STYLE_COLS) * (WP_STYLE_BH + WP_STYLE_RGAP))
 
-// Color-swatch grid geometry (below the style row; shared by draw + click).
+// Color-swatch grid geometry (below the two style rows; shared by draw + click).
 #define WP_COLS   4
 #define WP_SW     74     // swatch width
 #define WP_SH     54     // swatch height
 #define WP_GAP    12
 #define WP_OX     16     // grid origin x within the content
-#define WP_OY     92     // grid origin y within the content (below the style row)
+#define WP_OY     126    // grid origin y within the content (below the 2-row style grid)
 #define WP_ROW_H  (WP_SH + 22 + WP_GAP)   // swatch + label + gap
 
 // Fill a disc clipped to the rect [clx,cly,clw,clh) — a tiny moon for the preview
@@ -88,7 +94,7 @@ static void wallpaper_draw_preview(int x, int y, int w, int h, int br, int bg, i
     }
     if (style != WP_STYLE_NIGHTFALL && style != WP_STYLE_STARFIELD &&
         style != WP_STYLE_SHOOTINGSTAR && style != WP_STYLE_AURORA &&
-        style != WP_STYLE_NEBULA)
+        style != WP_STYLE_NEBULA && style != WP_STYLE_LUCES)
         return;                                             // Limpio: gradient only.
 
     // Moon (upper-right) with a small halo, then deterministic tiny stars that keep
@@ -154,6 +160,22 @@ static void wallpaper_draw_preview(int x, int y, int w, int h, int br, int bg, i
             }
         }
     }
+    if (style == WP_STYLE_LUCES) {                           // a few soft lilac orbs (fireflies)
+        int ox[5] = { x + w/5, x + w/2, x + 3*w/4, x + w/3, x + 4*w/5 };
+        int oy[5] = { y + h*3/4, y + h/2, y + h*3/5, y + h*2/5, y + h*4/5 };
+        for (int o = 0; o < 5; o++) {
+            for (int dy = -2; dy <= 2; dy++) {
+                int yy = oy[o] + dy; if (yy < y || yy >= y + h) continue;
+                for (int dx = -2; dx <= 2; dx++) {
+                    int xx = ox[o] + dx; if (xx < x || xx >= x + w) continue;
+                    int d2 = dx*dx + dy*dy; if (d2 > 4) continue;
+                    int lum = (4 - d2) * 60 / 4;             // soft falloff
+                    fb_fill_rect(xx, yy, 1, 1,
+                                 fb_rgb((uint8_t)(120 + lum), (uint8_t)(110 + lum), (uint8_t)(150 + lum)));
+                }
+            }
+        }
+    }
 }
 
 void wallpaper_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
@@ -164,8 +186,8 @@ void wallpaper_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch)
     // --- Style row: pick how the desktop is painted -------------------------
     font_draw_string(cx + 12, cy + 14, "Estilo:", fb_rgb(230, 230, 240), bg);
     for (int i = 0; i < WP_STYLE_COUNT; i++) {
-        int x = cx + WP_STYLE_OX + i * (WP_STYLE_BW + WP_STYLE_BGAP);
-        int y = cy + WP_STYLE_OY;
+        int x = cx + WP_STYLE_X(i);
+        int y = cy + WP_STYLE_Y(i);
         int sel = (i == g_style);
         uint32_t fill = sel ? fb_rgb(130, 90, 210) : fb_rgb(48, 48, 58);
         fb_fill_rect(x, y, WP_STYLE_BW, WP_STYLE_BH, fill);
@@ -180,7 +202,7 @@ void wallpaper_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch)
     }
 
     // --- Color grid: pick the base hue --------------------------------------
-    font_draw_string(cx + 12, cy + 72, "Color:", fb_rgb(230, 230, 240), bg);
+    font_draw_string(cx + 12, cy + 108, "Color:", fb_rgb(230, 230, 240), bg);
     for (int i = 0; i < WALLPAPER_COUNT; i++) {
         int col = i % WP_COLS, row = i / WP_COLS;
         int x = cx + WP_OX + col * (WP_SW + WP_GAP);
@@ -199,10 +221,10 @@ void wallpaper_win_click(window_t* win, int mx, int my, int btn) {
     (void)btn;
     int cx = win->x, cy = win->y + TITLE_H;   // content origin (matches draw)
 
-    // Style row hit-test.
+    // Style grid hit-test (4 per row, 2 rows).
     for (int i = 0; i < WP_STYLE_COUNT; i++) {
-        int x = cx + WP_STYLE_OX + i * (WP_STYLE_BW + WP_STYLE_BGAP);
-        int y = cy + WP_STYLE_OY;
+        int x = cx + WP_STYLE_X(i);
+        int y = cy + WP_STYLE_Y(i);
         if (mx >= x && mx < x + WP_STYLE_BW && my >= y && my < y + WP_STYLE_BH) {
             g_style = i;                      // the compositor repaints (incl. the background)
             return;

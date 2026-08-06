@@ -766,7 +766,7 @@ static void do_ctx_menu_action(int idx) {
             break;
         case 4: // Wallpaper
             {
-                window_t* wwin = window_create(180, 110, 624, 380, "Wallpaper", wallpaper_win_draw);
+                window_t* wwin = window_create(180, 96, 400, 440, "Wallpaper", wallpaper_win_draw);
                 if (wwin) wwin->on_click = wallpaper_win_click;
             }
             break;
@@ -847,7 +847,7 @@ static void draw_background(void) {
     // twinkles; SHOOTINGSTAR keeps the calm sky and adds a periodic meteor below).
     if (style != WP_STYLE_NIGHTFALL && style != WP_STYLE_STARFIELD &&
         style != WP_STYLE_SHOOTINGSTAR && style != WP_STYLE_AURORA &&
-        style != WP_STYLE_NEBULA) return;
+        style != WP_STYLE_NEBULA && style != WP_STYLE_LUCES) return;
 
     // Moon in the upper-right, with a soft halo (concentric rings fading inward).
     int mx = (int)fw - 130, my = 96, mr = 40;
@@ -995,6 +995,48 @@ static void draw_background(void) {
                 if (rr > 255) rr = 255; if (gg > 255) gg = 255; if (bb2 > 255) bb2 = 255;
                 if (rr < 0) rr = 0; if (gg < 0) gg = 0; if (bb2 < 0) bb2 = 0;
                 fb_fill_rect(x, y, 3, 2, fb_rgb((uint8_t)rr, (uint8_t)gg, (uint8_t)bb2));
+            }
+        }
+    }
+
+    // LUCES: soft lilac orbs — "fireflies" — drift slowly UP the night sky, each on
+    // its own lane with a gentle horizontal sway and a slow brightness pulse. Every
+    // orb's position is a pure function of get_ticks() + its fixed LCG seed, so a
+    // repaint at a given instant is identical (no flicker); the motion comes from the
+    // compositor's periodic repaint advancing the clock. Each orb is a small disc that
+    // blends from the LOCAL sky gradient toward a lilac core with a soft radial
+    // falloff, so it glows over the gradient + stars with no hard edge.
+    if (style == WP_STYLE_LUCES) {
+        uint32_t tms = get_ticks();
+        uint32_t seed = 0x1234567u;
+        int span = (int)fh + 48;                        // rise distance before wrap
+        for (int i = 0; i < 16; i++) {
+            seed = seed * 1103515245u + 12345u; int lane  = (int)((seed >> 9) % fw);
+            seed = seed * 1103515245u + 12345u; int phase = (int)((seed >> 9) & 255);
+            seed = seed * 1103515245u + 12345u; int spd   = 34 + (int)((seed >> 9) % 34);   // ms per px up
+            seed = seed * 1103515245u + 12345u; int amp   = 16 + (int)((seed >> 9) % 40);   // sway px
+            int yy = (int)fh + 24 - (int)((tms / (uint32_t)spd + (uint32_t)phase * 4u) % (uint32_t)span);
+            int xx = lane + wp_isin((int)(tms / 40) + phase) * amp / 1024;
+            if (xx < 0 || xx >= (int)fw || yy < 0 || yy >= (int)fh) continue;
+            int ex = xx - mx, ey = yy - my;
+            if (ex * ex + ey * ey < (mr + 16) * (mr + 16)) continue;   // keep clear of the moon
+            int pp = ((int)(tms / 50) + phase) & 63;
+            int tri = (pp < 32) ? pp : (64 - pp);        // 0..32 pulse
+            int glow = 34 + tri * 2;                     // 34..98 peak intensity
+            int pct = 45 + yy * 70 / (int)fh;            // local sky gradient %
+            int skr = br * pct / 100, skg = bg * pct / 100, skb = bb * pct / 100;
+            for (int dy = -4; dy <= 4; dy++) {
+                int py = yy + dy; if (py < 0 || py >= (int)fh) continue;
+                for (int dx = -4; dx <= 4; dx++) {
+                    int d2 = dx * dx + dy * dy; if (d2 > 16) continue;
+                    int px = xx + dx; if (px < 0 || px >= (int)fw) continue;
+                    int inten = (16 - d2) * glow / 16;   // soft radial falloff, 0..glow
+                    int rr = skr + (214 - skr) * inten / 100;
+                    int gg = skg + (194 - skg) * inten / 100;
+                    int bb2 = skb + (248 - skb) * inten / 100;
+                    if (rr > 255) rr = 255; if (gg > 255) gg = 255; if (bb2 > 255) bb2 = 255;
+                    fb_fill_rect(px, py, 1, 1, fb_rgb((uint8_t)rr, (uint8_t)gg, (uint8_t)bb2));
+                }
             }
         }
     }
@@ -2977,7 +3019,8 @@ done_click:
         int wp_st = wallpaper_style();
         uint32_t wp_iv = (wp_st == WP_STYLE_SHOOTINGSTAR) ? 70u : 120u;
         if ((wp_st == WP_STYLE_STARFIELD || wp_st == WP_STYLE_SHOOTINGSTAR ||
-             wp_st == WP_STYLE_AURORA || wp_st == WP_STYLE_NEBULA) &&
+             wp_st == WP_STYLE_AURORA || wp_st == WP_STYLE_NEBULA ||
+             wp_st == WP_STYLE_LUCES) &&
             now - wp_anim_ms >= wp_iv) {
             wp_anim_ms = now;
             redraw = 1;
