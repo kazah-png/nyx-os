@@ -5,45 +5,19 @@
 #define KERNEL_H
 
 // ============================================================
-// Tipos básicos (sin incluir cabeceras estándar)
+// Base types (fixed-width typedefs, bool, stdarg, NULL) live in their own
+// zero-dependency header now, so a per-subsystem public header can pull in just
+// the primitives instead of all of kernel.h — first step of the modular-header
+// split (see the architecture-modularity note). Included first; every existing
+// includer of kernel.h still sees these exactly as before.
 // ============================================================
-typedef unsigned long size_t;
-typedef long ssize_t;
-typedef signed char int8_t;
-typedef unsigned char uint8_t;
-typedef short int16_t;
-typedef unsigned short uint16_t;
-typedef int int32_t;
-typedef unsigned int uint32_t;
-typedef long long int64_t;
-typedef unsigned long long uint64_t;
-typedef long intptr_t;
-typedef unsigned long uintptr_t;
-typedef int wchar_t;
-typedef unsigned int mode_t;
-typedef int32_t pid_t;
-#ifndef __bool_true_false_are_defined
-typedef _Bool bool;
-#define true 1
-#define false 0
-#endif
-#define false 0
-#define true 1
-
-// ============================================================
-// stdarg (usando built-ins de GCC)
-// ============================================================
-typedef __builtin_va_list va_list;
-#define va_start(v,l) __builtin_va_start(v,l)
-#define va_end(v) __builtin_va_end(v)
-#define va_arg(v,l) __builtin_va_arg(v,l)
+#include "types.h"
 
 // ============================================================
 // Constantes
 // ============================================================
-#define NULL ((void*)0)
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.4.127"
+#define KERNEL_VERSION "6.4.128"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 

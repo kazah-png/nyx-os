@@ -1,6 +1,9 @@
 #ifndef APIC_H
 #define APIC_H
 
+#include "../../core/types.h"   // uintN_t used in the prototypes below — self-contained now,
+                                // no longer relying on the includer having pulled in kernel.h first
+
 // IA32_APIC_BASE MSR (0x1B)
 #define IA32_APIC_BASE_MSR  0x1B
 #define APIC_BASE_BSP     (1 << 8)
