@@ -2364,6 +2364,10 @@ static void cmd_df(int argc, char** argv) {
            (uint32_t)chits, (uint32_t)cmisses, hitpct);
 }
 
+// strict, range-checked unsigned parser (kernel/core/numparse.c) — used for ports so a
+// typo or an out-of-range value is rejected instead of silently truncated to a uint16.
+extern int parse_u32_max(const char* s, uint32_t max, uint32_t* out);
+
 static void cmd_tcptest(int argc, char** argv) {
     uint32_t dst_ip = 0x0A000202; // 10.0.2.2
     uint16_t dst_port = 80;
@@ -2378,7 +2382,12 @@ static void cmd_tcptest(int argc, char** argv) {
             }
             if (iface_idx >= 0) dst_ip = dns_resolve(argv[1], iface_idx);
         }
-        dst_port = (uint16_t)atoi(argv[2]);
+        uint32_t pval;
+        if (parse_u32_max(argv[2], 65535, &pval) != 0) {
+            printf("tcptest: invalid port '%s' (expected 0..65535)\n", argv[2]);
+            return;
+        }
+        dst_port = (uint16_t)pval;
     } else if (argc >= 2) {
         dst_ip = parse_ip(argv[1]);
         if (!dst_ip) {
@@ -2535,7 +2544,15 @@ static void cmd_tcploop(int argc, char** argv) {
 }
 
 static void cmd_tcpserve(int argc, char** argv) {
-    uint16_t port = (argc >= 2) ? (uint16_t)atoi(argv[1]) : 80;
+    uint16_t port = 80;
+    if (argc >= 2) {
+        uint32_t pval;
+        if (parse_u32_max(argv[1], 65535, &pval) != 0) {
+            printf("tcpserve: invalid port '%s' (expected 0..65535)\n", argv[1]);
+            return;
+        }
+        port = (uint16_t)pval;
+    }
     int srv = tcp_listen(port);
     if (srv < 0) { printf("listen() failed (no free conn slot)\n"); return; }
     printf("Listening on 0.0.0.0:%d (waiting up to 20s for a client)...\n", port);
@@ -3680,6 +3697,7 @@ extern int base32_selftest(void);
 extern int utf8_selftest(void);
 extern int totp_selftest(void);
 extern int ipv4_parse_selftest(void);
+extern int numparse_selftest(void);
 extern int p256_selftest(void);
 extern int p384_selftest(void);
 extern int rsa_selftest(void);
@@ -3815,6 +3833,7 @@ static void run_selftests(void) {
         {"tcpcksum",     tcp_checksum_selftest},  {"dns",           dns_response_selftest},
         {"mathx",        mathx_selftest},         {"crc32",         crc32_selftest},
         {"totp",         totp_selftest},          {"ipv4",          ipv4_parse_selftest},
+        {"numparse",     numparse_selftest},
     };
     int n = (int)(sizeof(t) / sizeof(t[0])), passed = 0, failed = 0;
     serial_puts("SELFTEST-BEGIN\n");
