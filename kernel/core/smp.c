@@ -22,6 +22,11 @@ extern void tlb_ipi_stub(void);
 // APIC bus frequency, so the AP tick rate will differ there.
 #define AP_TIMER_INITCNT 62500
 
+// The AP real-mode trampoline is copied to this physical page; a Startup-IPI's
+// 8-bit vector is the START PAGE number, so vector = addr >> 12 (0x8000 -> 0x08).
+#define AP_TRAMPOLINE_ADDR 0x8000
+#define AP_SIPI_VECTOR     (AP_TRAMPOLINE_ADDR >> 12)
+
 // Which CPU is executing this code? Resolved from the initial APIC id in
 // CPUID(1).EBX[31:24] — an instruction, not a memory access, so it is valid
 // before the LAPIC mapping is reachable and safe to call from an interrupt.
@@ -474,7 +479,7 @@ void smp_init(void) {
     uint32_t tramp_size = (uint32_t)(uint64_t)_binary_trampoline_bin_end -
                           (uint32_t)(uint64_t)_binary_trampoline_bin_start;
     if (tramp_size > 0x1000) tramp_size = 0x1000;
-    __builtin_memcpy((void*)0x8000, _binary_trampoline_bin_start, tramp_size);
+    __builtin_memcpy((void*)AP_TRAMPOLINE_ADDR, _binary_trampoline_bin_start, tramp_size);
 
     for (int i = 1; i < ap_count && i < MAX_CPUS; i++) {
         uint32_t apic_id = cpu_info[i].apic_id;
@@ -487,7 +492,7 @@ void smp_init(void) {
 
         extern uint64_t kernel_pml4_phys;
         uint32_t data_off = tramp_size - 32;
-        volatile uint64_t* td_data = (volatile uint64_t*)(uintptr_t)(0x8000 + data_off);
+        volatile uint64_t* td_data = (volatile uint64_t*)(uintptr_t)(AP_TRAMPOLINE_ADDR + data_off);
         td_data[0] = kernel_pml4_phys;
         td_data[1] = cpu_info[i].stack_top;
         volatile uint32_t* cpu_id_ptr = (volatile uint32_t*)((uint8_t*)td_data + 16);
@@ -496,23 +501,24 @@ void smp_init(void) {
         entry_ptr[0] = (uint64_t)ap_main;
 
         if (!lapic) { printf("[SMP] No LAPIC, skipping AP %d\n", i); continue; }
-        volatile uint32_t* apic = lapic;
 
-        // INIT assert — 10 ms delay via io_wait (outb to port 0x80 triggers
-        // TCG VCPU exit, allowing QEMU to process IPI delivery).
-        apic[LAPIC_ICR1/4] = apic_id << 24;
-        apic[LAPIC_ICR0/4] = 0x000C500;
+        // Bring the AP up with the architectural INIT–SIPI sequence, reusing the
+        // apic.c ICR helper (named ICR_* delivery-mode constants + a delivery-status
+        // wait) rather than poking the LAPIC with magic numbers. The io_wait() delays
+        // stay HERE, not inside apic_send_init_ipi(): under single-threaded TCG only an
+        // outb (port 0x80) forces a VCPU exit that lets QEMU actually deliver the IPI
+        // and run the AP, so the settle must be the io_wait kind and sit between steps.
+
+        // INIT assert (level-triggered), then a ~10 ms settle.
+        apic_send_ipi(apic_id, ICR_INIT | ICR_PHYSICAL | ICR_LEVEL | ICR_ASSERT);
         for (volatile int d = 0; d < 500; d++) io_wait();
 
-        // INIT de-assert
-        apic[LAPIC_ICR1/4] = apic_id << 24;
-        apic[LAPIC_ICR0/4] = 0x0008500;
+        // INIT de-assert to complete the level-triggered message.
+        apic_send_ipi(apic_id, ICR_INIT | ICR_PHYSICAL | ICR_LEVEL);
         for (volatile int d = 0; d < 500; d++) io_wait();
 
-        // SIPI — send once, poll for AP start with io_wait. Each outb gives
-        // the AP VCPU execution time in single-threaded TCG.
-        apic[LAPIC_ICR1/4] = apic_id << 24;
-        apic[LAPIC_ICR0/4] = 0x608;
+        // SIPI (vector = the trampoline's start page); poll for the AP to signal in.
+        apic_send_ipi(apic_id, ICR_STARTUP | ICR_PHYSICAL | (AP_SIPI_VECTOR & 0xFF));
         for (int retry = 0; retry < 200 && !cpu_info[i].started; retry++) {
             for (volatile int d = 0; d < 50; d++) io_wait();
         }
