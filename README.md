@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="https://capsule-render.vercel.app/api?type=waving&color=0:0a0a0a,50:1a1a1a,100:2d2d2d&height=140&section=header&text=NyxOS&fontSize=52&fontColor=825AD2&animation=fadeIn&fontAlignY=55" />
+  <img src="media/nyxos-logo.png" alt="NyxOS" width="240" />
 </div>
 
 <p align="center"><strong>A from-scratch x86_64 operating system · C and Assembly · GUI desktop, real network stack, and a self-hosting C toolchain</strong></p>
