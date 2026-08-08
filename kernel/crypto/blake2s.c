@@ -65,23 +65,44 @@ static void compress(uint32_t h[8], const uint8_t block[64], uint64_t t, int las
     for (int i = 0; i < 8; i++) h[i] ^= v[i] ^ v[8 + i];
 }
 
-void blake2s256(const uint8_t* in, uint32_t inlen, uint8_t out[32]) {
+// Core: optional key (keylen 0..32) makes this a MAC. A keyed hash prepends the
+// key, zero-padded to a full 64-byte block, as the first compressed block.
+static void blake2s_core(uint8_t out[32], const uint8_t* key, uint32_t keylen,
+                         const uint8_t* in, uint32_t inlen) {
+    if (keylen > 32) keylen = 32;
     uint32_t h[8];
     for (int i = 0; i < 8; i++) h[i] = IV[i];
-    h[0] ^= 0x01010000 ^ 32;                 // param block: fanout=depth=1, keylen=0, digest=32
+    h[0] ^= 0x01010000 ^ (keylen << 8) ^ 32;  // param: fanout=depth=1, keylen, digest=32
 
     uint64_t t = 0;
-    while (inlen > 64) {                      // all but the final block
+    if (keylen > 0) {                          // keyed: the padded key is block 0
+        uint8_t kb[64];
+        for (uint32_t i = 0; i < 64; i++) kb[i] = (i < keylen) ? key[i] : 0;
+        if (inlen == 0) { compress(h, kb, 64, 1); goto emit; }
+        compress(h, kb, 64, 0); t = 64;
+    }
+    while (inlen > 64) {                        // all but the final message block
         t += 64;
         compress(h, in, t, 0);
         in += 64; inlen -= 64;
     }
-    uint8_t last[64];                          // final block, zero-padded
-    for (uint32_t i = 0; i < 64; i++) last[i] = (i < inlen) ? in[i] : 0;
-    t += inlen;
-    compress(h, last, t, 1);
-
+    {
+        uint8_t last[64];                       // final block, zero-padded
+        for (uint32_t i = 0; i < 64; i++) last[i] = (i < inlen) ? in[i] : 0;
+        t += inlen;
+        compress(h, last, t, 1);
+    }
+emit:
     for (int i = 0; i < 8; i++) store32le(out + 4 * i, h[i]);
+}
+
+void blake2s256(const uint8_t* in, uint32_t inlen, uint8_t out[32]) {
+    blake2s_core(out, 0, 0, in, inlen);
+}
+
+void blake2s256_keyed(const uint8_t* key, uint32_t keylen,
+                      const uint8_t* in, uint32_t inlen, uint8_t out[32]) {
+    blake2s_core(out, key, keylen, in, inlen);
 }
 
 // ---------------- Known-answer test (reference BLAKE2s-256 vectors) ----------------
@@ -112,5 +133,26 @@ int blake2s_selftest(void) {
     // Sensitivity: one flipped input bit must change the digest.
     uint8_t out2[32], m2[64]; for (int i = 0; i < 64; i++) m2[i] = m64[i]; m2[0] ^= 1;
     blake2s256(m2, 64, out2); if (eq32(out2, V64)) return 5;
+
+    // Keyed (MAC) mode — key = 00..1f, reference BLAKE2s keyed KAT vectors.
+    uint8_t key[32]; for (int i = 0; i < 32; i++) key[i] = (uint8_t)i;
+    static const uint8_t K0[32] = {   // empty message (first vector of the official keyed KAT)
+        0x48,0xa8,0x99,0x7d,0xa4,0x07,0x87,0x6b,0x3d,0x79,0xc0,0xd9,0x23,0x25,0xad,0x3b,
+        0x89,0xcb,0xb7,0x54,0xd8,0x6a,0xb7,0x1a,0xee,0x04,0x7a,0xd3,0x45,0xfd,0x2c,0x49 };
+    static const uint8_t K1[32] = {
+        0x40,0xd1,0x5f,0xee,0x7c,0x32,0x88,0x30,0x16,0x6a,0xc3,0xf9,0x18,0x65,0x0f,0x80,
+        0x7e,0x7e,0x01,0xe1,0x77,0x25,0x8c,0xdc,0x0a,0x39,0xb1,0x1f,0x59,0x80,0x66,0xf1 };
+    static const uint8_t K64V[32] = {
+        0x89,0x75,0xb0,0x57,0x7f,0xd3,0x55,0x66,0xd7,0x50,0xb3,0x62,0xb0,0x89,0x7a,0x26,
+        0xc3,0x99,0x13,0x6d,0xf0,0x7b,0xab,0xab,0xbd,0xe6,0x20,0x3f,0xf2,0x95,0x4e,0xd4 };
+    static const uint8_t K100[32] = {
+        0xc3,0x76,0x61,0x70,0x14,0xd2,0x01,0x58,0xbc,0xed,0x3d,0x3b,0xa5,0x52,0xb6,0xec,
+        0xcf,0x84,0xe6,0x2a,0xa3,0xeb,0x65,0x0e,0x90,0x02,0x9c,0x84,0xd1,0x3e,0xea,0x69 };
+    blake2s256_keyed(key, 32, (const uint8_t*)"", 0, out); if (!eq32(out, K0))   return 6;
+    uint8_t one = 0;
+    blake2s256_keyed(key, 32, &one, 1, out);               if (!eq32(out, K1))   return 7;
+    blake2s256_keyed(key, 32, m64, 64, out);               if (!eq32(out, K64V)) return 8;
+    uint8_t m100[100]; for (int i = 0; i < 100; i++) m100[i] = (uint8_t)i;
+    blake2s256_keyed(key, 32, m100, 100, out);             if (!eq32(out, K100)) return 9;
     return 0;
 }
