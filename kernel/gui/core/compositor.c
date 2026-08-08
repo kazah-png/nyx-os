@@ -906,7 +906,8 @@ static void draw_background(void) {
     if (style != WP_STYLE_NIGHTFALL && style != WP_STYLE_STARFIELD &&
         style != WP_STYLE_SHOOTINGSTAR && style != WP_STYLE_AURORA &&
         style != WP_STYLE_NEBULA && style != WP_STYLE_LUCES &&
-        style != WP_STYLE_ONDAS && style != WP_STYLE_CONSTELACIONES) return;
+        style != WP_STYLE_ONDAS && style != WP_STYLE_CONSTELACIONES &&
+        style != WP_STYLE_LLUVIA) return;
 
     // Moon in the upper-right, with a soft halo (concentric rings fading inward).
     int mx = (int)fw - 130, my = 96, mr = 40;
@@ -1142,6 +1143,45 @@ static void draw_background(void) {
                 bg_star_line(px, py, nx, ny, (int)fw, (int)fh, br, bg, bb, 34);   // faint thread
                 fb_fill_rect(nx, ny, 2, 2, fb_rgb(210, 204, 242));               // vertex star
                 px = nx; py = ny;
+            }
+        }
+    }
+
+    // LLUVIA: a soft rain of luminous lilac drops falling through the night. Each drop
+    // is a vertical streak whose bright head falls at its own steady speed and whose
+    // tail fades upward (a drop's motion blur trails behind it). Position is a pure
+    // function of get_ticks() + the drop's fixed LCG seed, so a repaint at any instant
+    // is identical (no flicker); the fall comes from the compositor advancing the clock.
+    // A faint wind sway rides wp_isin. Each streak pixel blends from the LOCAL sky
+    // gradient toward a soft lilac, so the rain glows over the gradient + stars with no
+    // hard edge and melts back into the night — keeping the Nyx palette. The long
+    // streaks overlap frame-to-frame so the motion reads smooth. Drops skip the moon.
+    if (style == WP_STYLE_LLUVIA) {
+        uint32_t tms = get_ticks();
+        uint32_t rs = 0x51ED2701u;
+        int span = (int)fh + 40;                         // fall distance before a drop wraps
+        for (int i = 0; i < 34; i++) {
+            rs = rs * 1103515245u + 12345u; int lane  = (int)((rs >> 9) % fw);
+            rs = rs * 1103515245u + 12345u; int phase = (int)((rs >> 9) % (uint32_t)span);
+            rs = rs * 1103515245u + 12345u; int spd   = 5 + (int)((rs >> 9) % 5);   // ms per px down
+            rs = rs * 1103515245u + 12345u; int len   = 16 + (int)((rs >> 9) % 14); // streak length px
+            rs = rs * 1103515245u + 12345u; int amp   = 2 + (int)((rs >> 9) % 5);   // wind sway px
+            int hy = (int)((tms / (uint32_t)spd + (uint32_t)phase) % (uint32_t)span);   // head y from top
+            int hx = lane + wp_isin((int)(tms / 60) + phase) * amp / 1024;
+            for (int s = 0; s <= len; s++) {
+                int py = hy - s;                          // tail trails UPWARD, opposite the fall
+                if (py < 0 || py >= (int)fh) continue;
+                if (hx < 0 || hx >= (int)fw) continue;
+                int ex = hx - mx, ey = py - my;
+                if (ex * ex + ey * ey < (mr + 12) * (mr + 12)) continue;   // keep clear of the moon
+                int inten = 70 * (len - s) / len;         // bright head -> faded tail (0..70)
+                int pct = 45 + py * 70 / (int)fh;         // local sky gradient %
+                int skr = br * pct / 100, skg = bg * pct / 100, skb = bb * pct / 100;
+                int rr = skr + (214 - skr) * inten / 100;
+                int gg = skg + (202 - skg) * inten / 100;
+                int bl = skb + (244 - skb) * inten / 100;
+                if (rr > 255) rr = 255; if (gg > 255) gg = 255; if (bl > 255) bl = 255;
+                fb_fill_rect(hx, py, (s < 3) ? 2 : 1, 1, fb_rgb((uint8_t)rr, (uint8_t)gg, (uint8_t)bl));
             }
         }
     }
@@ -3161,10 +3201,11 @@ done_click:
         // other wallpaper still lets the desktop idle at rest (no needless recomposite).
         static uint32_t wp_anim_ms = 0;
         int wp_st = wallpaper_style();
-        uint32_t wp_iv = (wp_st == WP_STYLE_SHOOTINGSTAR) ? 70u : 120u;
+        uint32_t wp_iv = (wp_st == WP_STYLE_SHOOTINGSTAR || wp_st == WP_STYLE_LLUVIA) ? 70u : 120u;
         if ((wp_st == WP_STYLE_STARFIELD || wp_st == WP_STYLE_SHOOTINGSTAR ||
              wp_st == WP_STYLE_AURORA || wp_st == WP_STYLE_NEBULA ||
-             wp_st == WP_STYLE_LUCES || wp_st == WP_STYLE_ONDAS) &&
+             wp_st == WP_STYLE_LUCES || wp_st == WP_STYLE_ONDAS ||
+             wp_st == WP_STYLE_LLUVIA) &&
             now - wp_anim_ms >= wp_iv) {
             wp_anim_ms = now;
             redraw = 1;

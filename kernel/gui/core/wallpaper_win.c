@@ -24,7 +24,7 @@ static const struct { uint8_t r, g, b; const char* name; } palette[WALLPAPER_COU
 // color). "Nightfall" — the moon-and-stars scene — is the default: NyxOS is named
 // for Nyx, the goddess of night, so the night sky IS the brand identity. The clean
 // gradient and a flat solid stay one click away in the Wallpaper app.
-static const char* style_names[WP_STYLE_COUNT] = { "Limpio", "Nightfall", "Plano", "Estrellas", "Meteoros", "Aurora", "Nebula", "Luces", "Ondas", "Astral" };
+static const char* style_names[WP_STYLE_COUNT] = { "Limpio", "Nightfall", "Plano", "Estrellas", "Meteoros", "Aurora", "Nebula", "Luces", "Ondas", "Astral", "Lluvia" };
 
 static int g_wallpaper = 0;                    // selected base color; default = morado
 static int g_style     = WP_STYLE_NIGHTFALL;   // selected render style; default = moon + stars
@@ -95,7 +95,7 @@ static void wallpaper_draw_preview(int x, int y, int w, int h, int br, int bg, i
     if (style != WP_STYLE_NIGHTFALL && style != WP_STYLE_STARFIELD &&
         style != WP_STYLE_SHOOTINGSTAR && style != WP_STYLE_AURORA &&
         style != WP_STYLE_NEBULA && style != WP_STYLE_LUCES && style != WP_STYLE_ONDAS &&
-        style != WP_STYLE_CONSTELACIONES)
+        style != WP_STYLE_CONSTELACIONES && style != WP_STYLE_LLUVIA)
         return;                                             // Limpio: gradient only.
 
     // Moon (upper-right) with a small halo, then deterministic tiny stars that keep
@@ -202,6 +202,18 @@ static void wallpaper_draw_preview(int x, int y, int w, int h, int br, int bg, i
         for (int s = 0; s < 3; s++)                          // bright vertex stars
             if (vx[s] >= x && vx[s] < x + w && vy[s] >= y && vy[s] < y + h)
                 fb_fill_rect(vx[s], vy[s], 2, 2, fb_rgb(216, 210, 246));
+    }
+    if (style == WP_STYLE_LLUVIA) {                          // a few falling lilac drops
+        int dx5[5] = { x + w/6, x + w/2, x + 3*w/4, x + w/3, x + 5*w/6 };
+        int dy5[5] = { y + h/3, y + h*3/5, y + h/4, y + h*4/5, y + h/2 };
+        for (int d = 0; d < 5; d++) {
+            for (int s = 0; s <= 5; s++) {                   // head at bottom, fading up the streak
+                int ty = dy5[d] - s; if (ty < y || ty >= y + h || dx5[d] < x || dx5[d] >= x + w) continue;
+                int lum = 230 - s * 30; if (lum < 60) lum = 60;
+                fb_fill_rect(dx5[d], ty, 1, (s < 2) ? 2 : 1,
+                             fb_rgb((uint8_t)(lum * 90 / 100), (uint8_t)(lum * 86 / 100), (uint8_t)lum));
+            }
+        }
     }
 }
 
