@@ -3694,6 +3694,7 @@ extern int tls_ske_p384_selftest(void);
 extern int der_selftest(void);
 extern int base64_selftest(void);
 extern int base32_selftest(void);
+extern int base16_selftest(void);
 extern int utf8_selftest(void);
 extern int totp_selftest(void);
 extern int ipv4_parse_selftest(void);
@@ -3828,7 +3829,8 @@ static void run_selftests(void) {
         {"tls_prf",      tls_prf_selftest},       {"tls_keysched",  tls_keyschedule_selftest},
         {"tls_record",   tls_record_selftest},    {"tls_ske_p384",  tls_ske_p384_selftest},
         {"der",          der_selftest},           {"base64",        base64_selftest},
-        {"base32",       base32_selftest},        {"utf8",          utf8_selftest},
+        {"base32",       base32_selftest},        {"base16",        base16_selftest},
+        {"utf8",          utf8_selftest},
         {"p256",          p256_selftest},
         {"p384",         p384_selftest},          {"rsa",           rsa_selftest},
         {"x509",         x509_selftest},
