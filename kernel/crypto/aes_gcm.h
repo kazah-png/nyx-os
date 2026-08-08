@@ -3,6 +3,13 @@
 // AES-128 in GCM (AEAD) — the record protection for TLS_*_AES_128_GCM_SHA256. See aes_gcm.c.
 #include "../core/kernel.h"
 
+// ---- Raw AES-128 block (FIPS-197), encryption only -----------------------------------
+// Exposed so other primitives (CMAC, CTR) can reuse the vetted block instead of shipping
+// a second copy of the S-box/key schedule. GCM's own selftest pins the block vector.
+typedef struct { uint8_t rk[176]; } aes128_ctx;   // 11 expanded round keys
+void aes128_key_expand(aes128_ctx* c, const uint8_t key[16]);
+void aes128_encrypt(const aes128_ctx* c, const uint8_t in[16], uint8_t out[16]);
+
 // AEAD seal: encrypt pt[pt_len] -> ct[pt_len] and produce the 16-byte auth tag over
 // aad[aad_len] + ct. iv is the 12-byte GCM nonce.
 void aes128_gcm_encrypt(const uint8_t key[16], const uint8_t iv[12],

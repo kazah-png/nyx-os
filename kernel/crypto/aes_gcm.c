@@ -39,9 +39,8 @@ static const uint8_t sbox[256] = {
 };
 static const uint8_t Rcon[11] = { 0x8d,0x01,0x02,0x04,0x08,0x10,0x20,0x40,0x80,0x1b,0x36 };
 
-typedef struct { uint8_t rk[176]; } aes128_ctx;   // 11 round keys
-
-static void aes128_key_expand(aes128_ctx* c, const uint8_t key[16]) {
+// aes128_ctx + these two are declared in aes_gcm.h so CMAC/CTR can reuse the block.
+void aes128_key_expand(aes128_ctx* c, const uint8_t key[16]) {
     uint8_t* rk = c->rk;
     for (int i = 0; i < 16; i++) rk[i] = key[i];
     uint8_t t[4];
@@ -61,7 +60,7 @@ static void aes128_key_expand(aes128_ctx* c, const uint8_t key[16]) {
 
 static uint8_t xtime(uint8_t x) { return (uint8_t)((x << 1) ^ (((x >> 7) & 1) * 0x1b)); }
 
-static void aes128_encrypt(const aes128_ctx* c, const uint8_t in[16], uint8_t out[16]) {
+void aes128_encrypt(const aes128_ctx* c, const uint8_t in[16], uint8_t out[16]) {
     uint8_t s[16];
     for (int i = 0; i < 16; i++) s[i] = in[i] ^ c->rk[i];    // AddRoundKey(0)
     for (int round = 1; round <= 10; round++) {
