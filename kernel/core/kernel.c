@@ -3702,6 +3702,7 @@ extern int hkdf_selftest(void);
 extern int chacha20_selftest(void);
 extern int siphash_selftest(void);
 extern int poly1305_selftest(void);
+extern int chacha20poly1305_selftest(void);
 extern int p256_selftest(void);
 extern int p384_selftest(void);
 extern int rsa_selftest(void);
@@ -3839,7 +3840,7 @@ static void run_selftests(void) {
         {"totp",         totp_selftest},          {"ipv4",          ipv4_parse_selftest},
         {"numparse",     numparse_selftest},        {"hkdf",          hkdf_selftest},
         {"chacha20",     chacha20_selftest},        {"siphash",       siphash_selftest},
-        {"poly1305",     poly1305_selftest},
+        {"poly1305",     poly1305_selftest},        {"chachapoly",    chacha20poly1305_selftest},
     };
     int n = (int)(sizeof(t) / sizeof(t[0])), passed = 0, failed = 0;
     serial_puts("SELFTEST-BEGIN\n");
