@@ -2,6 +2,7 @@
 // kernel.c - Núcleo principal de NyxOS v3.0.0
 // ============================================================
 #include "kernel.h"
+#include "namecheck.h"
 #include "../gui/core/compositor.h"
 #include "../drivers/misc/apic.h"
 #include "../drivers/misc/rtc.h"
@@ -3371,11 +3372,13 @@ static void cmd_open(int argc, char** argv) {
 
 static void cmd_touch(int argc, char** argv) {
     if (argc < 2) { printf("Usage: touch <file>\n"); return; }
+    if (!path_last_component_ok(argv[1])) { printf("touch: invalid file name '%s'\n", argv[1]); return; }
     if (vfs_touch(argv[1]) < 0) printf("touch: failed to create %s\n", argv[1]);
 }
 
 static void cmd_mkdir(int argc, char** argv) {
     if (argc < 2) { printf("Usage: mkdir <dir>\n"); return; }
+    if (!path_last_component_ok(argv[1])) { printf("mkdir: invalid directory name '%s'\n", argv[1]); return; }
     if (vfs_mkdir(argv[1], 0755) < 0) printf("mkdir: failed to create %s\n", argv[1]);
 }
 
@@ -3706,6 +3709,7 @@ extern int poly1305_selftest(void);
 extern int chacha20poly1305_selftest(void);
 extern int blake2s_selftest(void);
 extern int aes_cmac_selftest(void);
+extern int namecheck_selftest(void);
 extern int p256_selftest(void);
 extern int p384_selftest(void);
 extern int rsa_selftest(void);
@@ -3846,6 +3850,7 @@ static void run_selftests(void) {
         {"chacha20",     chacha20_selftest},        {"siphash",       siphash_selftest},
         {"poly1305",     poly1305_selftest},        {"chachapoly",    chacha20poly1305_selftest},
         {"blake2s",      blake2s_selftest},         {"cmac",          aes_cmac_selftest},
+        {"namecheck",    namecheck_selftest},
     };
     int n = (int)(sizeof(t) / sizeof(t[0])), passed = 0, failed = 0;
     serial_puts("SELFTEST-BEGIN\n");

@@ -17,7 +17,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.4.147"
+#define KERNEL_VERSION "6.4.148"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
