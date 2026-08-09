@@ -7,6 +7,8 @@
  *   -l LEN   stop after LEN bytes (decimal, or 0x.. hex)
  *   -s OFF   skip OFF bytes first, and start the offset column there
  *   -c COLS  bytes per line (default 16, 1..64)
+ *   -r       revert: read a hex dump and write the binary it encodes (the inverse
+ *            of the dump above, so `xxd f | xxd -r` reproduces f)
  * Unlike the kernel's `hexdump <addr>` builtin — which inspects live MEMORY — this
  * reads FILE contents, so you can eyeball any binary on disk (an ELF, a PNG, the
  * initramfs). Reads a file argument, or standard input when given none, so it also
@@ -48,14 +50,75 @@ static void emit(unsigned long off, const unsigned char* line, int have, int col
     write(1, out, o);
 }
 
+/* -r (revert): parse a hex dump back into the bytes it encodes. */
+static int hexval(int c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+static unsigned char wbuf[4096];
+static int wn = 0;
+static void wflush(void) { if (wn) { write(1, wbuf, wn); wn = 0; } }
+static void wbyte(unsigned char b) { if (wn == (int)sizeof(wbuf)) wflush(); wbuf[wn++] = b; }
+
+/* Reverse a dump: for each line, an optional "OFFSET:" positions the output (a forward
+ * jump zero-fills the gap), then hex byte-pairs are read until the two-space ASCII gutter
+ * (a run of >=2 spaces) or any non-hex byte. Handles our own layout and plain hex lines. */
+static int reverse(int fd) {
+    unsigned long outpos = 0;
+    char line[1024];
+    int ll = 0, c;
+    for (;;) {
+        c = get_byte(fd);
+        if (c != '\n' && c >= 0) {
+            if (ll < (int)sizeof(line) - 1) line[ll++] = (char)c;
+            continue;
+        }
+        if (ll > 0) {
+            int colon = -1;
+            for (int k = 0; k < ll; k++) if (line[k] == ':') { colon = k; break; }
+            int i = 0;
+            unsigned long off = 0; int have_off = 0;
+            if (colon > 0) {                              /* is the pre-colon field a hex offset? */
+                int ok = 1;
+                for (int k = 0; k < colon; k++)
+                    if (line[k] != ' ' && hexval((unsigned char)line[k]) < 0) { ok = 0; break; }
+                if (ok) for (int k = 0; k < colon; k++) {
+                    int v = hexval((unsigned char)line[k]);
+                    if (v >= 0) { off = off * 16 + (unsigned)v; have_off = 1; }
+                }
+                if (have_off) i = colon + 1;              /* bytes start after the offset colon */
+            }
+            if (have_off && off > outpos) while (outpos < off) { wbyte(0); outpos++; }  /* zero-fill a gap */
+            int hi = -1, prev_space = 0;
+            for (; i < ll; i++) {
+                unsigned char ch = (unsigned char)line[i];
+                if (ch == ' ') { if (prev_space) break; prev_space = 1; continue; }  /* gutter */
+                prev_space = 0;
+                int v = hexval(ch);
+                if (v < 0) break;                          /* ASCII/non-hex -> rest of line ignored */
+                if (hi < 0) hi = v;
+                else { wbyte((unsigned char)((hi << 4) | v)); outpos++; hi = -1; }
+            }
+        }
+        ll = 0;
+        if (c < 0) break;
+    }
+    wflush();
+    return 0;
+}
+
 int main(int argc, char** argv) {
     long limit = -1;                 /* -l: byte cap, -1 = whole input */
     long skip  = 0;                  /* -s: leading bytes to discard */
     int  cols  = 16;                 /* -c: bytes per line */
+    int  rev   = 0;                  /* -r: revert a hex dump back to binary */
 
     int ai = 1;
     for (; ai < argc && argv[ai][0] == '-' && argv[ai][1]; ai++) {
         const char* a = argv[ai];
+        if (a[1] == 'r') { rev = 1; continue; }           /* value-less flag: handle before -lsc */
         const char* v = a[2] ? a + 2 : (ai + 1 < argc ? argv[++ai] : 0);
         if      (a[1] == 'l' && v) limit = strtol(v, 0, 0);
         else if (a[1] == 's' && v) { skip = strtol(v, 0, 0); if (skip < 0) skip = 0; }
@@ -69,6 +132,8 @@ int main(int argc, char** argv) {
         if (f < 0) { printf("xxd: %s: not found\n", argv[ai]); return 1; }
         fd = (int)f;
     }
+
+    if (rev) { int rc = reverse(fd); if (fd != 0) close(fd); return rc; }   /* hex dump -> binary */
 
     for (long s = skip; s > 0; s--) if (get_byte(fd) < 0) break;   /* discard -s bytes */
 
