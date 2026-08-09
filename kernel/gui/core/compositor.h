@@ -26,7 +26,7 @@
 #define TASKBAR_H          36
 #define START_W            160
 #define START_H            400
-#define CLOCK_W            104   /* wide enough for "HH:MM  DD/MM" (time + date) */
+#define CLOCK_W            140   /* wide enough for "Www HH:MM  DD/MM" (weekday + time + date) */
 
 enum {
     RESIZE_NONE,

@@ -1,4 +1,5 @@
 #include "../../core/kernel.h"
+#include "../../core/caldate.h"
 #include "compositor.h"
 #include "theme.h"
 #include "../../drivers/video/font.h"
@@ -468,8 +469,11 @@ static void draw_taskbar(void) {
 
     rtc_time_t rt;
     rtc_read_time(&rt);
-    char timebuf[24];
-    snprintf(timebuf, sizeof(timebuf), "%02u:%02u  %02u/%02u", rt.hour, rt.minute, rt.day, rt.month);
+    static const char* const WD[7] = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
+    int wd = day_of_week((int)rt.year, (int)rt.month, (int)rt.day);   // computed, not the stale CMOS register
+    if (wd < 0 || wd > 6) wd = 0;
+    char timebuf[32];
+    snprintf(timebuf, sizeof(timebuf), "%s %02u:%02u  %02u/%02u", WD[wd], rt.hour, rt.minute, rt.day, rt.month);
     fb_fill_rect(fw - CLOCK_W - 4, tb_y + 4, CLOCK_W, TASKBAR_H - 8, fb_rgb(30,30,35));
     font_draw_string(fw - CLOCK_W - 2 + (CLOCK_W - strlen(timebuf) * FONT_WIDTH) / 2,
                      tb_y + (TASKBAR_H - FONT_HEIGHT) / 2, timebuf, fb_rgb(180,180,200), fb_rgb(30,30,35));
