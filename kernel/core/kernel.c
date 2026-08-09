@@ -3709,6 +3709,7 @@ extern int poly1305_selftest(void);
 extern int chacha20poly1305_selftest(void);
 extern int blake2s_selftest(void);
 extern int aes_cmac_selftest(void);
+extern int aes_ctr_selftest(void);
 extern int namecheck_selftest(void);
 extern int p256_selftest(void);
 extern int p384_selftest(void);
@@ -3850,7 +3851,7 @@ static void run_selftests(void) {
         {"chacha20",     chacha20_selftest},        {"siphash",       siphash_selftest},
         {"poly1305",     poly1305_selftest},        {"chachapoly",    chacha20poly1305_selftest},
         {"blake2s",      blake2s_selftest},         {"cmac",          aes_cmac_selftest},
-        {"namecheck",    namecheck_selftest},
+        {"aesctr",       aes_ctr_selftest},         {"namecheck",     namecheck_selftest},
     };
     int n = (int)(sizeof(t) / sizeof(t[0])), passed = 0, failed = 0;
     serial_puts("SELFTEST-BEGIN\n");
