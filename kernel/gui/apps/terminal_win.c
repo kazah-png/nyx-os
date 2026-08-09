@@ -1,4 +1,5 @@
 #include "../../core/kernel.h"
+#include "../../core/ansi.h"
 #include "../core/compositor.h"
 #include "terminal_win.h"
 #include "../../drivers/video/font.h"
@@ -151,9 +152,9 @@ int terminal_capture_putchar(int c) {
         return c;
     }
     if (esc_state == 2) {                         // inside CSI
-        if (c >= '0' && c <= '9') {               // accumulate a numeric param
+        if (c >= '0' && c <= '9') {               // accumulate a numeric param (saturating)
             int i = esc_np < 2 ? esc_np : 1;
-            esc_p[i] = esc_p[i] * 10 + (c - '0');
+            esc_p[i] = csi_param_accum(esc_p[i], c - '0');
             return c;
         }
         if (c == ';') { esc_np++; return c; }
