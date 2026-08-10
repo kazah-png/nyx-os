@@ -3710,6 +3710,7 @@ extern int chacha20poly1305_selftest(void);
 extern int blake2s_selftest(void);
 extern int aes_cmac_selftest(void);
 extern int aes_ctr_selftest(void);
+extern int sha3_selftest(void);
 extern int namecheck_selftest(void);
 extern int ansi_csi_selftest(void);
 extern int caldate_selftest(void);
@@ -3855,6 +3856,7 @@ static void run_selftests(void) {
         {"blake2s",      blake2s_selftest},         {"cmac",          aes_cmac_selftest},
         {"aesctr",       aes_ctr_selftest},         {"namecheck",     namecheck_selftest},
         {"ansicsi",      ansi_csi_selftest},        {"caldate",       caldate_selftest},
+        {"sha3",         sha3_selftest},
     };
     int n = (int)(sizeof(t) / sizeof(t[0])), passed = 0, failed = 0;
     serial_puts("SELFTEST-BEGIN\n");
