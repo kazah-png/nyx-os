@@ -51,6 +51,7 @@ static int user_menu_open = 0;      // the taskbar user badge's popup menu
 int compositor_logout_requested = 0; // set by the user menu; boot loop re-shows login
 static int ctx_menu_open = 0;
 static int ctx_menu_x = 0, ctx_menu_y = 0;
+static int cal_popup_open = 0;      // the taskbar clock's calendar popup
 static int mouse_x = 0, mouse_y = 0;
 static int mouse_z = 0;          // previous wheel total (see mouse_get_z); delta = new - this
 static uint8_t mouse_btns = 0;
@@ -477,6 +478,79 @@ static void draw_taskbar(void) {
     fb_fill_rect(fw - CLOCK_W - 4, tb_y + 4, CLOCK_W, TASKBAR_H - 8, fb_rgb(30,30,35));
     font_draw_string(fw - CLOCK_W - 2 + (CLOCK_W - strlen(timebuf) * FONT_WIDTH) / 2,
                      tb_y + (TASKBAR_H - FONT_HEIGHT) / 2, timebuf, fb_rgb(180,180,200), fb_rgb(30,30,35));
+}
+
+// ---- Taskbar clock -> calendar popup (like Windows: click the clock for a month view) ----
+#define CAL_CELL_W 26
+#define CAL_CELL_H 18
+#define CAL_PAD     8
+#define CAL_HDR    22                                   // month/year header bar height
+#define CAL_W      (7 * CAL_CELL_W + 2 * CAL_PAD)
+#define CAL_H      (CAL_HDR + 7 * CAL_CELL_H + 2 * CAL_PAD)   // header + weekday row + up to 6 weeks
+
+static int cal_popup_x(void) { return (int)fb_get_width()  - CAL_W - 4; }         // right edge, over the clock
+static int cal_popup_y(void) { return (int)fb_get_height() - TASKBAR_H - CAL_H - 4; }  // just above the taskbar
+
+// Is (mx,my) on the taskbar clock rectangle?
+static int clock_hit(int mx, int my) {
+    int fw = (int)fb_get_width(), tb_y = (int)fb_get_height() - TASKBAR_H;
+    return mx >= fw - CLOCK_W - 4 && mx < fw - 4 && my >= tb_y + 4 && my < tb_y + TASKBAR_H - 4;
+}
+static int cal_popup_hit(int mx, int my) {
+    if (!cal_popup_open) return 0;
+    int x = cal_popup_x(), y = cal_popup_y();
+    return mx >= x && mx < x + CAL_W && my >= y && my < y + CAL_H;
+}
+
+static void draw_cal_popup(void) {
+    if (!cal_popup_open) return;
+    rtc_time_t rt; rtc_read_time(&rt);
+    int Y = (int)rt.year, M = (int)rt.month, today = (int)rt.day;
+    if (M < 1 || M > 12) M = 1;
+
+    static const char* const MON[12] = { "January","February","March","April","May","June",
+                                         "July","August","September","October","November","December" };
+    static const unsigned char DIM[12] = { 31,28,31,30,31,30,31,31,30,31,30,31 };
+    int dim = DIM[M - 1];
+    if (M == 2 && ((Y % 4 == 0 && Y % 100 != 0) || Y % 400 == 0)) dim = 29;   // leap February
+    int first = day_of_week(Y, M, 1);                    // 0=Sun .. 6=Sat — the column day 1 starts in
+    if (first < 0 || first > 6) first = 0;
+
+    int x = cal_popup_x(), y = cal_popup_y();
+
+    // Panel body + a light/dark bevel border (matches the window frames).
+    fb_fill_rect(x, y, CAL_W, CAL_H, THEME_WINDOW_BG);
+    fb_fill_rect(x, y, CAL_W, 1, THEME_ACCENT);
+    fb_fill_rect(x, y + CAL_H - 1, CAL_W, 1, col_darken(THEME_WINDOW_BG, 30));
+    fb_fill_rect(x, y, 1, CAL_H, col_lighten(THEME_WINDOW_BG, 10));
+    fb_fill_rect(x + CAL_W - 1, y, 1, CAL_H, col_darken(THEME_WINDOW_BG, 30));
+
+    // Header: "Month YYYY" centred on an accent bar (same look as the start menu).
+    fb_fill_vgrad(x + 1, y + 1, CAL_W - 2, CAL_HDR - 1, THEME_ACCENT, col_darken(THEME_ACCENT, 22));
+    char hdr[32]; snprintf(hdr, sizeof(hdr), "%s %d", MON[M - 1], Y);
+    font_draw_string_trans(x + (CAL_W - (int)strlen(hdr) * FONT_WIDTH) / 2,
+                           y + (CAL_HDR - FONT_HEIGHT) / 2, hdr, THEME_ON_ACCENT);
+
+    // Weekday header row.
+    static const char* const WH[7] = { "Su","Mo","Tu","We","Th","Fr","Sa" };
+    int gx = x + CAL_PAD, gy = y + CAL_HDR + 2;
+    for (int c = 0; c < 7; c++)
+        font_draw_string_trans(gx + c * CAL_CELL_W + (CAL_CELL_W - 2 * FONT_WIDTH) / 2,
+                               gy + (CAL_CELL_H - FONT_HEIGHT) / 2, WH[c], fb_rgb(150,150,170));
+
+    // Day grid: today gets an accent tile.
+    int row = 0, col = first;
+    for (int d = 1; d <= dim; d++) {
+        int cellx = gx + col * CAL_CELL_W;
+        int celly = gy + CAL_CELL_H + row * CAL_CELL_H;         // +1 row past the weekday header
+        if (d == today)
+            fb_fill_rect(cellx + 1, celly, CAL_CELL_W - 2, CAL_CELL_H - 1, THEME_ACCENT);
+        char db[4]; snprintf(db, sizeof(db), "%d", d);
+        uint32_t fg = (d == today) ? THEME_ON_ACCENT : fb_rgb(210,210,225);
+        font_draw_string_trans(cellx + (CAL_CELL_W - (int)strlen(db) * FONT_WIDTH) / 2,
+                               celly + (CAL_CELL_H - FONT_HEIGHT) / 2, db, fg);
+        if (++col > 6) { col = 0; row++; }
+    }
 }
 
 static void draw_start_menu(void) {
@@ -1299,6 +1373,7 @@ static void redraw_all(void) {
     draw_start_menu();
     draw_user_menu();
     draw_ctx_menu();
+    draw_cal_popup();
     frame_dirty = 1;      // a fresh frame is in the back buffer, awaiting fb_present()
 }
 
@@ -1780,7 +1855,7 @@ void compositor_init(void) {
         }
     }
     window_count = 0; next_id = 100; focused_id = 0; drag_id = 0; resize_id = 0; quit = 0;
-    current_workspace = 0; start_menu_open = 0; user_menu_open = 0; cursor_saved = 0;
+    current_workspace = 0; start_menu_open = 0; user_menu_open = 0; cal_popup_open = 0; cursor_saved = 0;
 
     taskbar_bg = THEME_TASKBAR_BG;
     taskbar_fg = THEME_TASKBAR_FG;
@@ -2969,6 +3044,14 @@ void compositor_run(void) {
                     goto done_click;
                 }
 
+                if (cal_popup_open) {
+                    if (pressed && !cal_popup_hit(mx, my)) {   // click away closes the calendar
+                        cal_popup_open = 0;
+                        redraw = 1;
+                    }
+                    goto done_click;
+                }
+
                 if (badge_hit(mx, my)) {
                     if (pressed) {
                         user_menu_open = !user_menu_open;
@@ -2995,6 +3078,16 @@ void compositor_run(void) {
                 if (start_hit(mx, my)) {
                     if (pressed) {
                         start_menu_open = !start_menu_open;
+                        redraw = 1;
+                    }
+                    goto done_click;
+                }
+
+                if (clock_hit(mx, my)) {
+                    if (pressed) {
+                        cal_popup_open = !cal_popup_open;      // click the clock to open the calendar
+                        start_menu_open = 0;
+                        user_menu_open = 0;
                         redraw = 1;
                     }
                     goto done_click;
