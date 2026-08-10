@@ -10,6 +10,7 @@
 #include "chacha20poly1305.h"
 #include "chacha20.h"
 #include "poly1305.h"
+#include "ct.h"
 
 static void poly_key_gen(const uint8_t key[32], const uint8_t nonce[12], uint8_t otk[32]) {
     uint8_t block[64];
@@ -50,13 +51,6 @@ int chacha20poly1305_encrypt(const uint8_t key[32], const uint8_t nonce[12],
     return compute_tag(otk, aad, aad_len, ct, pt_len, tag);
 }
 
-// constant-time 16-byte equality
-static int ct_eq16(const uint8_t* a, const uint8_t* b) {
-    uint8_t d = 0;
-    for (int i = 0; i < 16; i++) d |= (uint8_t)(a[i] ^ b[i]);
-    return d == 0;
-}
-
 int chacha20poly1305_decrypt(const uint8_t key[32], const uint8_t nonce[12],
                              const uint8_t* aad, uint32_t aad_len,
                              const uint8_t* ct, uint32_t ct_len,
@@ -64,7 +58,7 @@ int chacha20poly1305_decrypt(const uint8_t key[32], const uint8_t nonce[12],
     uint8_t otk[32], expect[16];
     poly_key_gen(key, nonce, otk);
     if (compute_tag(otk, aad, aad_len, ct, ct_len, expect) != 0) return -1;
-    if (!ct_eq16(expect, tag)) return 1;                // authentication failed
+    if (ct_memcmp(expect, tag, 16) != 0) return 1;      // authentication failed (constant-time)
     chacha20_xor(key, 1, nonce, ct, pt, ct_len);        // only decrypt once authentic
     return 0;
 }

@@ -11,6 +11,7 @@
 #include "../../net/tcp.h"
 #include "../../net/dns.h"
 #include "tls.h"
+#include "../ct.h"
 #include "../curve25519.h"
 #include "tls_prf.h"
 #include "../aes_gcm.h"
@@ -160,9 +161,8 @@ int tls_keyschedule_selftest(void) {
 }
 
 static int tls_eq(const uint8_t* a, const uint8_t* b, int n) {
-    for (int i = 0; i < n; i++) if (a[i] != b[i]) return 0;
-    return 1;
-}
+    return ct_memcmp(a, b, (uint32_t)n) == 0;   // constant-time: the Finished verify_data
+}                                               // is secret, so never early-out on a mismatch
 
 // ---- TLS 1.2 AES-128-GCM record protection (RFC 5288) -------------------------------
 // GCM nonce = write_IV(4) || explicit_nonce(8). AAD = seq(8) || type || version || len.

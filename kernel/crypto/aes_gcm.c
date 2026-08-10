@@ -16,6 +16,7 @@
 // a later concern, noted alongside the CSPRNG work.
 #include "../core/kernel.h"
 #include "aes_gcm.h"
+#include "ct.h"
 
 // ---- AES-128 (FIPS-197), encryption only --------------------------------------------
 
@@ -186,9 +187,7 @@ int aes128_gcm_decrypt(const uint8_t key[16], const uint8_t iv[12],
 
     uint8_t want[16];
     gcm_tag(&c, H, iv, aad, aad_len, ct, ct_len, want);   // verify BEFORE decrypting
-    uint8_t diff = 0;
-    for (int i = 0; i < 16; i++) diff |= (uint8_t)(want[i] ^ tag[i]);
-    if (diff) return -1;
+    if (ct_memcmp(want, tag, 16) != 0) return -1;         // constant-time tag check
 
     uint8_t ctr[16];
     for (int i = 0; i < 12; i++) ctr[i] = iv[i];
