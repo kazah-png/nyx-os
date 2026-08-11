@@ -3,6 +3,7 @@
 // ============================================================
 #include "kernel.h"
 #include "namecheck.h"
+#include "urlparse.h"
 #include "../gui/core/compositor.h"
 #include "../drivers/misc/apic.h"
 #include "../drivers/misc/rtc.h"
@@ -1847,23 +1848,9 @@ static int pkg_valid_name(const char* s) {
 // success, -1 if it is not an http:// URL. (https is a later step — it needs the TLS
 // path; for now xbm fetches over plain HTTP.) Mirrors the parser in cmd_httpget.
 static int xbm_parse_url(const char* url, char* host, int hostsz, uint16_t* port, char* path, int pathsz) {
-    if (strncmp(url, "http://", 7) != 0) return -1;
-    const char* p = url + 7;
-    const char* hs = p;
-    while (*p && *p != ':' && *p != '/') p++;
-    int hl = (int)(p - hs);
-    if (hl <= 0 || hl >= hostsz) return -1;
-    memcpy(host, hs, (size_t)hl); host[hl] = '\0';
-    *port = 80;
-    if (*p == ':') {
-        p++; uint16_t pt = 0;
-        if (*p < '0' || *p > '9') return -1;
-        while (*p >= '0' && *p <= '9') { pt = (uint16_t)(pt * 10 + (*p - '0')); p++; }
-        *port = pt;
-    }
-    if (!*p) { path[0] = '/'; path[1] = '\0'; }
-    else if (*p == '/') { strncpy(path, p, (size_t)(pathsz - 1)); path[pathsz - 1] = '\0'; }
-    else return -1;
+    int https = 0;
+    if (url_parse(url, host, hostsz, port, path, pathsz, &https) != 0) return -1;
+    if (https) return -1;                    // xbm fetches over plain HTTP only (no TLS)
     return 0;
 }
 
@@ -3713,6 +3700,7 @@ extern int aes_ctr_selftest(void);
 extern int sha3_selftest(void);
 extern int ct_selftest(void);
 extern int aes_cbc_selftest(void);
+extern int url_parse_selftest(void);
 extern int namecheck_selftest(void);
 extern int ansi_csi_selftest(void);
 extern int caldate_selftest(void);
@@ -3859,7 +3847,7 @@ static void run_selftests(void) {
         {"aesctr",       aes_ctr_selftest},         {"namecheck",     namecheck_selftest},
         {"ansicsi",      ansi_csi_selftest},        {"caldate",       caldate_selftest},
         {"sha3",         sha3_selftest},           {"ct",            ct_selftest},
-        {"aescbc",       aes_cbc_selftest},
+        {"aescbc",       aes_cbc_selftest},        {"urlparse",      url_parse_selftest},
     };
     int n = (int)(sizeof(t) / sizeof(t[0])), passed = 0, failed = 0;
     serial_puts("SELFTEST-BEGIN\n");

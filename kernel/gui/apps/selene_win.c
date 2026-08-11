@@ -14,6 +14,7 @@
 // root-relative hrefs are resolved against the current page. (Back then HTTP only; HTTPS
 // over TLS 1.2 landed at v5.9.56, so Selene now fetches https:// pages too.)
 #include "../../core/kernel.h"
+#include "../../core/urlparse.h"
 #include "../core/compositor.h"
 #include "selene_win.h"
 #include "../../net/http.h"
@@ -2210,19 +2211,9 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
 
 // Parse http[://]host[:port][/path] into host/port/path (same shape as `httpget`).
 static void parse_url(const char* url, char* host, uint16_t* port, char* path, int* is_https) {
-    const char* p = url;
-    while (*p == ' ') p++;
-    *is_https = 0;
-    if (strncmp(p, "http://", 7) == 0) p += 7;
-    else if (strncmp(p, "https://", 8) == 0) { p += 8; *is_https = 1; }
-    const char* hs = p;
-    while (*p && *p != ':' && *p != '/') p++;
-    int hl = (int)(p - hs); if (hl > 127) hl = 127;
-    __builtin_memcpy(host, hs, hl); host[hl] = '\0';
-    *port = *is_https ? 443 : 80;
-    if (*p == ':') { p++; uint16_t v = 0; while (*p >= '0' && *p <= '9') { v = v*10 + (*p - '0'); p++; } *port = v ? v : *port; }
-    if (*p == '/') { strncpy(path, p, 255); path[255] = '\0'; }
-    else { path[0] = '/'; path[1] = '\0'; }
+    // Shared hardened parser (bounds the port, rejects an over-long host). Callers pass
+    // host[128] / path[256] and treat an empty host as "couldn't parse".
+    if (url_parse(url, host, 128, port, path, 256, is_https) != 0) host[0] = '\0';
 }
 
 static int find_iface(void) {
