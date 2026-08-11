@@ -12,6 +12,7 @@
 // includer of kernel.h still sees these exactly as before.
 // ============================================================
 #include "types.h"
+#include "../mm/paging.h"   // paging subsystem public interface (PTE flags + VM API), split out of this header
 
 // ============================================================
 // Constantes
@@ -207,7 +208,6 @@
 void shared_libc_load(void);            // parse + load /libc.so into shared frames (boot)
 void shared_libc_map(uint64_t* pml4);   // map it into a process's address space
 int  shared_libc_is_ready(void);
-void map_page_ro(uint64_t* pml4, void* phys, void* virt, int exec);  // paging.c: RO user page
 
 // A mapped virtual-address region (contiguous present user pages, same perms).
 typedef struct { uint64_t start, end; int writable, exec; } vm_region_t;
@@ -282,12 +282,7 @@ typedef struct {
 #define CR4_PAE     (1 << 5)
 #define CR4_SMEP    (1 << 20)
 
-// Page table entry flags
-#define PAGE_PRESENT  (1ULL << 0)
-#define PAGE_WRITABLE (1ULL << 1)
-#define PAGE_USER     (1ULL << 2)
-#define PAGE_HUGE     (1ULL << 7)
-#define PAGE_NX       (1ULL << 63)
+// Page-table entry flags (PAGE_*) live in mm/paging.h now.
 
 // EFER MSR (0xC0000080)
 #define MSR_EFER    0xC0000080
@@ -864,24 +859,8 @@ uint32_t page_get_refcount(void* addr); // COW: how many PTEs point at this page
 void page_pin(void* addr);              // mark a frame un-freeable (shared-libc masters)
 void slab_init_all(void);
 
-void init_paging(void);
-void* get_phys_addr(void* virtual_addr);
-void map_page(void* phys_addr, void* virt_addr, uint64_t flags);
-void unmap_page(void* virt_addr);
-void* clone_page_directory(void);
-uint64_t* clone_page_directory_cow(uint64_t* parent_pml4); // fork: COW-share the user half
-uint64_t* alloc_page_directory(void);
-uint64_t* get_kernel_page_directory(void);
-void switch_page_directory(uint64_t* pd);
-void map_page_dir(uint64_t* pd, void* phys, void* virt, uint64_t flags);
-
-// Demand paging + copy-on-write (serviced from the #PF handler).
-int vm_handle_fault(uint64_t cr2, uint64_t err);
-int vm_map_demand(uint64_t virt);            // mark virt as allocate-on-first-touch
-int vm_map_cow(uint64_t virt, uint64_t phys); // map virt -> phys read-only, copy on write
-void vm_unmap(uint64_t virt);
-uint64_t vm_stat_demand(void);
-uint64_t vm_stat_cow(void);
+// Paging / virtual-memory API (map_page*, PML4 lifecycle, vm_handle_fault, COW)
+// lives in mm/paging.h now (included at the top of this header).
 
 void init_heap(void);
 void* heap_alloc(size_t size);
@@ -911,14 +890,12 @@ uint64_t do_mmap(uint64_t addr, uint64_t length, int prot, int flags,
 int      do_munmap(uint64_t addr, uint64_t length);  // SYS_MUNMAP
 int      do_mprotect(uint64_t addr, uint64_t length, int prot); // SYS_MPROTECT
 vma_t*   vma_find(process_t* p, uint64_t addr);      // vm_handle_fault lookup
-void     vm_protect_range(uint64_t* pml4, uint64_t start, uint64_t end, int prot); // paging.c
 void     mmap_free_bufs(process_t* p);               // release file-backed snapshots at reap
 int do_execve(const uint8_t* data, uint32_t size,
               char* const* kargv, int argc,
               char* const* kenvp, int envc, const char* path); // SYS_EXECVE: replace caller's image; -1 on failure
 void proc_set_comm(process_t* p, const char* path); // set comm to basename(path) minus ".elf"
 int copy_to_user(uint64_t udst, const void* src, uint64_t len); // via user_cr3 page walk (syscall.c)
-void free_page_directory(uint64_t* pml4);           // free a user address space (COW-refcount aware)
 int elf_load_image(const uint8_t* data, uint32_t size, uint64_t** out_pd,
                    uint64_t* out_entry, uint64_t* out_stack_top, uint64_t* out_brk);
 int elf_load_args(const uint8_t* data, uint32_t size, char* const* argv, int argc,
