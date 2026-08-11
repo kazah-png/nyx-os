@@ -222,6 +222,29 @@ static void draw_grad_button(int x, int y, int w, int h, uint32_t base, uint32_t
     }
 }
 
+// Fit `title` into `avail_px` pixels of title-bar text space, writing the possibly
+// truncated result to out[0..outsz-1]. The whole title is copied when it fits; else
+// it is cut to the widest prefix that still leaves room for a trailing "..." ellipsis
+// (or, when even "..." will not fit, the widest bare prefix). Pure + unit-testable —
+// keeps a long title (or a normal one on a narrow/snapped window) from running under
+// the min/max/close buttons. FONT_WIDTH px per glyph.
+static void fit_title(const char* title, int avail_px, char* out, int outsz) {
+    int max_chars = (avail_px > 0) ? avail_px / FONT_WIDTH : 0;
+    if (max_chars > outsz - 1) max_chars = outsz - 1;
+    int tlen = (int)strlen(title);
+    int i = 0;
+    if (tlen <= max_chars) {                         // fits whole
+        for (; i < tlen; i++) out[i] = title[i];
+    } else if (max_chars >= 4) {                      // prefix + "..."
+        int keep = max_chars - 3;
+        for (; i < keep; i++) out[i] = title[i];
+        out[i++] = '.'; out[i++] = '.'; out[i++] = '.';
+    } else {                                          // too narrow for an ellipsis
+        for (; i < max_chars; i++) out[i] = title[i];
+    }
+    out[i] = '\0';
+}
+
 static void draw_titlebar(window_t* win) {
     uint32_t base = win->focused ? title_active : title_inactive;
     // A subtle top-lit vertical gradient gives the bar some dimension to sit with
@@ -243,8 +266,20 @@ static void draw_titlebar(window_t* win) {
                      vgrad_row(gtop, gbot, (int)row, TITLE_H));
     }
 
+    // Left edge of the leftmost button present, so the title can be truncated to end
+    // a few pixels before it instead of running underneath (walks the same right-to-
+    // left button layout the drawing below uses).
+    int bl = win->x + (int)win->w - CLOSE_W - 2;
+    int leftmost_btn = win->x + (int)win->w - 2;     // no buttons -> the inner right edge
+    if (win->has_close) { leftmost_btn = bl; bl -= CLOSE_W + 2; }
+    if (win->has_max)   { leftmost_btn = bl; bl -= CLOSE_W + 2; }
+    if (win->has_min)   { leftmost_btn = bl; }
+    int text_x = win->x + 4;
+    char tbuf[MAX_TITLE + 4];
+    fit_title(win->title, leftmost_btn - 6 - text_x, tbuf, (int)sizeof(tbuf));
+
     int y_off = win->y + (TITLE_H - FONT_HEIGHT) / 2;
-    font_draw_string_trans(win->x + 4, y_off, win->title, THEME_TITLE_TEXT);
+    font_draw_string_trans(text_x, y_off, tbuf, THEME_TITLE_TEXT);
 
     int bx = win->x + win->w - CLOSE_W - 2;
     if (win->has_close) {
