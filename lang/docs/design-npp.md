@@ -129,7 +129,7 @@ feature is debuggable by reading the generated C.
 
 | Stage | Contents | Gate |
 |---|---|---|
-| P1 | Type checker over the N subset (fixes N v0.1's §9.1–9.4: real inference incl. `i64` literals, `mut` enforcement, typed interpolation) | all `lang/examples` still compile bit-identically |
+| P1 | ✅ shipped in `ncc` v0.2–v0.4: inference (`i64` literals, typed interpolation, `mut`) + the expression-level checker (names, arity, argument/operand/return/assignment types) | all `lang/examples` still compile bit-identically ✅ |
 | P2 | `struct` + `impl` methods, `enum` + `match`, `defer` | examples: shapes, state machine |
 | P3 | `Result`/`?` + standard bindings (`fs`, `proc`) over the syscall table | rewrite `countdown.n` idiomatically as `.npp` |
 | P4 | `#[user]` pointers, `PageFlags`, capabilities | a kernel-module example checked at `ring0` |

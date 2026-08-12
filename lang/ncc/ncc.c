@@ -17,9 +17,12 @@
  *     type from the initializer (integer literals default to i64), `mut`
  *     is enforced, and the generated C is plain C99 (no __auto_type), so
  *     TinyCC — the in-OS compiler — can build it.
- *   - static checks (v0.3, the first N++ P1 slice): undeclared variables,
- *     unknown callees, wrong call arity, and argument/parameter type
- *     mismatches are compile errors with file:line diagnostics.
+ *   - static checks (v0.3 + v0.4, the N++ P1 checker): undeclared variables,
+ *     unknown callees, wrong call arity, argument/parameter mismatches,
+ *     binary-operand type errors (str in operators, pointer arithmetic,
+ *     int/pointer mixing), return-value vs declared return type, and
+ *     assignment value vs target type — all compile errors with file:line
+ *     diagnostics.
  * Not yet (N++ / type-checker territory): match, for, closures, struct/enum,
  * Result/?, methods, modules/use, defer.
  */
@@ -843,7 +846,30 @@ static void check_expr(Expr* e) {
         }
         case E_FIELD:  check_expr(e->base); break;
         case E_UN:     check_expr(e->r); break;
-        case E_BIN:    check_expr(e->l); check_expr(e->r); break;
+        case E_BIN: {
+            check_expr(e->l);
+            check_expr(e->r);
+            Ty lt = infer_type(e->l);
+            Ty rt = infer_type(e->r);
+            const char* o = e->op;
+            int is_cmp = !strcmp(o, "==") || !strcmp(o, "!=") || !strcmp(o, "<") ||
+                         !strcmp(o, "<=") || !strcmp(o, ">")  || !strcmp(o, ">=");
+            if (ty_is(lt, "str") || ty_is(rt, "str"))
+                die("%s:%d: operator '%s' cannot be applied to str values "
+                    "(build strings with interpolation)", FILENAME, e->line, o);
+            if (lt.ptrs || rt.ptrs) {
+                /* Pointers compare; they do not do arithmetic. Cast to `addr`
+                 * to compute on an address explicitly. */
+                if (!(is_cmp && lt.ptrs && rt.ptrs && ty_compat(lt, rt)))
+                    die("%s:%d: operator '%s': pointers only support comparison "
+                        "against a compatible pointer (cast to addr for arithmetic)",
+                        FILENAME, e->line, o);
+            } else if (!(ty_is_int(lt) && ty_is_int(rt))) {
+                die("%s:%d: operator '%s' expects integer operands (got %s and %s)",
+                    FILENAME, e->line, o, ty_str(lt), ty_str(rt));
+            }
+            break;
+        }
         case E_CAST:   check_expr(e->l); break;
         case E_INTERP:
             for (int i = 0; i < e->nfrags; i++)
@@ -994,6 +1020,16 @@ static void gen_stmt(Stmt* s, int ind) {
                     die("%s:%d: cannot assign to immutable '%s' (declare it with 'mut')",
                         FILENAME, s->line, s->lhs->name);
             }
+            {                                    /* value/target type check (v0.4) */
+                Ty lt = infer_type(s->lhs);
+                Ty rt = infer_type(s->e);
+                if (!ty_compat(rt, lt))
+                    die("%s:%d: cannot assign %s to a %s target",
+                        FILENAME, s->line, ty_str(rt), ty_str(lt));
+                if (strcmp(s->aop, "=") != 0 && !ty_is_int(lt))
+                    die("%s:%d: '%s' requires an integer target (got %s)",
+                        FILENAME, s->line, s->aop, ty_str(lt));
+            }
             gen_preludes(s->e, ind);
             indentf(ind);
             gen_expr(s->lhs);
@@ -1004,6 +1040,18 @@ static void gen_stmt(Stmt* s, int ind) {
         }
         case S_RET:
             check_expr(s->e);
+            if (s->e) {
+                if (!CUR_RET.name || is_never(CUR_RET))
+                    die("%s:%d: 'return' with a value in a function with no return type",
+                        FILENAME, s->line);
+                Ty vt = infer_type(s->e);
+                if (!ty_compat(vt, CUR_RET))
+                    die("%s:%d: return type mismatch: expected %s, got %s",
+                        FILENAME, s->line, ty_str(CUR_RET), ty_str(vt));
+            } else if (CUR_RET.name && !is_never(CUR_RET)) {
+                die("%s:%d: 'return' without a value in a function returning %s",
+                    FILENAME, s->line, ty_str(CUR_RET));
+            }
             gen_preludes(s->e, ind);
             indentf(ind);
             if (s->e) { fputs("return ", OUT); gen_expr(s->e); fputs(";\n", OUT); }
@@ -1048,6 +1096,12 @@ static void gen_block(Block* b, int ind, int fn_tail) {
     for (int i = 0; i < b->n; i++) gen_stmt(b->st[i], ind + 1);
     if (b->tail) {
         check_expr(b->tail);
+        if (fn_tail && CUR_RET.name && !is_never(CUR_RET)) {
+            Ty vt = infer_type(b->tail);         /* tail value = return value */
+            if (!ty_compat(vt, CUR_RET))
+                die("%s: tail expression type mismatch: expected %s, got %s",
+                    FILENAME, ty_str(CUR_RET), ty_str(vt));
+        }
         gen_preludes(b->tail, ind + 1);
         indentf(ind + 1);
         if (fn_tail && CUR_RET.name && !is_never(CUR_RET)) fputs("return ", OUT);

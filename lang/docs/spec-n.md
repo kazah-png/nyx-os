@@ -1,6 +1,6 @@
 # The N Language — Specification
 
-**Version:** v0.3 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
+**Version:** v0.4 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
 
 This document specifies N exactly as implemented by the bootstrap compiler
 `ncc`. It is a *descriptive* spec: everything here compiles today. Planned
@@ -300,7 +300,7 @@ argument or operand compatibility — that is the N++ type checker (P1). Where
 inference must guess (an unknown name), it assumes `i64`; use `as` to
 override at the use site.
 
-### 6.5 Static checks (since v0.3)
+### 6.5 Static checks (v0.3–v0.4 — the N++ P1 checker)
 
 The compiler rejects the following, each with a `file:line` diagnostic:
 
@@ -315,10 +315,21 @@ The compiler rejects the following, each with a `file:line` diagnostic:
   must match unless either side is `*u8`/`*void` (byte pointers); an `as`
   cast changes the inferred type and is therefore authoritative.
 - **Assignment to immutable bindings** (§5.1).
+- **Binary-operand type errors** (v0.4): `str` values do not participate in
+  any operator (build strings with interpolation); pointers support only
+  comparison against a compatible pointer — **there is no implicit pointer
+  arithmetic** in N: cast to `addr` (`p as addr + 1`) to compute on an
+  address explicitly; everything else requires integer operands on both
+  sides.
+- **Return values** (v0.4): a `return` (or function-body tail expression)
+  must carry a value exactly when the function declares a return type, and
+  that value must be compatible with it.
+- **Assignment values** (v0.4): the assigned value must be compatible with
+  the target's type, and `+=`/`-=` require an integer target.
 
-Not yet checked (completing N++ P1): operand mixing inside binary
-expressions, the `return`/tail value against the declared return type, and
-the assigned value against the target's type.
+Remaining outside the bootstrap's scope: *missing*-return flow analysis (a
+typed function whose control flow can fall off the end is caught by the C
+compiler on the generated file, not by `ncc`).
 
 ### 6.6 Calls and fields
 
@@ -422,10 +433,9 @@ interpolated expressions are parsed by the ordinary expression grammar.
 These are known, deliberate gaps in the bootstrap; each is queued for the
 N++/type-checker phase:
 
-1. **Checking is call-site-deep, not everywhere.** Names, arity, and argument
-   types are verified (§6.5), but operand mixing inside binary expressions,
-   return values, and assignment values still defer to the C compiler on the
-   generated file. Completing this is the rest of N++ P1.
+1. **No flow analysis.** Expression-level checking is complete (§6.5), but
+   whether every control path of a typed function actually returns defers to
+   the C compiler on the generated file.
 2. **Interpolation is text-or-decimal only.** `str` inserts text, everything
    else formats as signed decimal; there are no hex/width format controls yet.
 3. **Missing constructs:** `struct`/`enum` definitions, `match`, `for`,
