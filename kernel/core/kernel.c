@@ -16,6 +16,7 @@
 #include "ini.h"
 #include "numparse.h"
 #include "factor.h"
+#include "semver.h"
 #include "../net/dns.h"
 #include "../net/http.h"
 #include "../crypto/tls/tls.h"
@@ -113,6 +114,7 @@ static void cmd_file(int argc, char** argv);
 static void cmd_tar(int argc, char** argv);
 static void cmd_iniget(int argc, char** argv);
 static void cmd_factor(int argc, char** argv);
+static void cmd_semver(int argc, char** argv);
 static void cmd_rev(int argc, char** argv);
 static void cmd_tr(int argc, char** argv);
 static void cmd_fold(int argc, char** argv);
@@ -263,6 +265,7 @@ static const command_t commands[] = {
     {"fold",      cmd_fold,      "Wrap long lines to a width: fold [-w width] <file>", false},
     {"nl",        cmd_nl,        "Number lines: nl [-b a|t|n] [-w N] [-s SEP] <file>", false},
     {"factor",    cmd_factor,    "Prime factorization: factor N [N ...]", false},
+    {"semver",    cmd_semver,    "Validate/compare SemVer 2.0.0: semver <ver> [<ver2>]", false},
     {"printf",    cmd_printf,    "Format and print: printf FORMAT [ARG...]", false},
     {"expand",    cmd_expand,    "Convert tabs to spaces: expand [-t N] <file>", false},
     {"unexpand",  cmd_unexpand,  "Convert spaces to tabs: unexpand [-a] [-t N] <file>", false},
@@ -521,7 +524,7 @@ static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev",
 static const char* const HC_sys[]   = {"ps","kill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch",0};
 static const char* const HC_user[]  = {"useradd","users",0};
 static const char* const HC_net[]   = {"ifconfig","dhcp","dns","ping","setip","httpget","tls",0};
-static const char* const HC_dev[]   = {"cc","xbm",0};
+static const char* const HC_dev[]   = {"cc","xbm","semver",0};
 static const char* const HC_media[] = {"play","sb16play","imageview","selene",0};
 static const char* const HC_games[] = {"doom","pong","voxel","fire","matrix","lava","fractal","julia","particles","snake","tetris",0};
 static const char* const HC_test[]  = {"mtdemo","smpstress","smpuser","smpthreads","smpbalance","tlbtest","cowtest","crash","usertest","tcptest","tcpdrop","tcploop","tcpserve","posttest","tlsstrict","prftest","gcmtest","dertest","p256test","p384test","x25519test","tlskeytest","tlsrectest","csprngtest","skp384test","deflatetest","sha512test","pngtest","bmptest","giftest","jpegtest","imgreject","httptest","ext2test","rsatest","chaintest","formtest",0};
@@ -605,6 +608,7 @@ static const man_page_t man_pages[] = {
     {"fold",     "Wrap the lines of <file> so no output line is longer than the given width (80 by default, or -w width). A line longer than the width is broken with a hard newline at exactly that many characters; shorter lines and existing line breaks are left alone."},
     {"nl",       "Number the lines of <file>. By default only non-empty lines are numbered (-b t); -b a numbers every line and -b n numbers none. Each line number is right-justified in a field N columns wide (6 by default, or -w N) and followed by a separator (a tab by default, or -s SEP), then the line text."},
     {"factor",   "Print the prime factorization of each integer argument, one per line, as `N: p1 p2 ...` with factors ascending and repeated by multiplicity (e.g. `factor 90` prints `90: 2 3 3 5`). 0 and 1 print just `N:`. Accepts any 64-bit unsigned value; a non-numeric or negative argument is reported and skipped."},
+    {"semver",   "Parse and compare Semantic Versioning 2.0.0 strings (MAJOR.MINOR.PATCH[-prerelease][+build]). With one argument, validate it and print the parsed fields. With two, print their precedence relation (`A < B`, `A = B`, or `A > B`) per the semver spec: core numbers compared numerically, a prerelease ranks below the same version without one, and build metadata is ignored. Useful for comparing package versions."},
     {"printf",   "Print ARGs under the control of FORMAT (like the C/coreutil printf). FORMAT is reused as needed to consume all ARGs. It interprets backslash escapes (\\n \\t \\r \\a \\b \\f \\v \\\\) and the conversions %s %d %i %u %x %X %c %% with optional flags and field width (e.g. %-10s, %05d). Numeric ARGs are read as decimal. Unlike echo, printf never appends a trailing newline unless FORMAT contains one."},
     {"expand",   "Convert the tabs in <file> to spaces. Each tab advances to the next tab stop, which are spaced N columns apart (8 by default, or -t N), so columns stay aligned instead of a fixed number of spaces per tab. Non-tab characters and newlines pass through unchanged (a newline resets the column count)."},
     {"unexpand", "The inverse of expand: convert runs of spaces in <file> back into tabs, collapsing each blank run to the fewest tabs+spaces at N-column tab stops (8 by default, or -t N). A single space is never turned into a tab. By default only the LEADING blanks of each line are converted (matching GNU unexpand); -a converts blank runs everywhere on the line, and -t N implies -a."},
@@ -994,6 +998,34 @@ static void cmd_factor(int argc, char** argv) {
         for (int j = 0; j < k; j++) printf(" %lu", (unsigned long)f[j]);
         printf("\n");
     }
+}
+
+// semver <ver> [<ver2>] — validate one SemVer 2.0.0 string, or compare two by precedence.
+// Backed by the strict parser + comparator in kernel/core/semver.c.
+static void cmd_semver(int argc, char** argv) {
+    if (argc == 2) {
+        semver_t v;
+        if (semver_parse(argv[1], &v) == 0) {
+            char pbuf[64]; int m = v.pre_len; if (m > 63) m = 63;
+            for (int i = 0; i < m; i++) pbuf[i] = v.pre[i];
+            pbuf[m] = 0;
+            printf("%s: valid (%lu.%lu.%lu%s%s)\n", argv[1],
+                   (unsigned long)v.major, (unsigned long)v.minor, (unsigned long)v.patch,
+                   m ? " pre=" : "", pbuf);
+        } else {
+            printf("%s: invalid semver\n", argv[1]);
+        }
+        return;
+    }
+    if (argc == 3) {
+        semver_t a, b;
+        if (semver_parse(argv[1], &a) != 0) { printf("semver: '%s' is not valid semver\n", argv[1]); return; }
+        if (semver_parse(argv[2], &b) != 0) { printf("semver: '%s' is not valid semver\n", argv[2]); return; }
+        int c = semver_cmp(&a, &b);
+        printf("%s %s %s\n", argv[1], c < 0 ? "<" : (c > 0 ? ">" : "="), argv[2]);
+        return;
+    }
+    printf("Usage: semver <version> [<version2>]   (validate, or compare precedence)\n");
 }
 
 // rev <file> — print each line with its characters in reverse order (the classic
@@ -3792,6 +3824,7 @@ extern int tar_selftest(void);
 extern int datefmt_selftest(void);
 extern int ini_selftest(void);
 extern int factor_selftest(void);
+extern int semver_selftest(void);
 extern int tls_prf_selftest(void);
 extern int tls_keyschedule_selftest(void);
 extern int tls_record_selftest(void);
@@ -3951,6 +3984,7 @@ static void run_selftests(void) {
         {"tar",          tar_selftest},            {"datefmt",       datefmt_selftest},
         {"iniparse",     ini_selftest},
         {"factor",       factor_selftest},
+        {"semver",       semver_selftest},
         {"tls_prf",      tls_prf_selftest},       {"tls_keysched",  tls_keyschedule_selftest},
         {"tls_record",   tls_record_selftest},    {"tls_ske_p384",  tls_ske_p384_selftest},
         {"der",          der_selftest},           {"base64",        base64_selftest},
