@@ -73,6 +73,7 @@ typedef struct vfs_node {
 #define PROC_PID_STATUS  6   // /proc/<pid>/status  (proc_pid set)
 #define PROC_PID_CMDLINE 7   // /proc/<pid>/cmdline (proc_pid set)
 #define PROC_PID_MAPS    8   // /proc/<pid>/maps    (mapped memory regions)
+#define PROC_MOUNTS      9   // /proc/mounts        (mounted filesystems)
 
 /* xorshift64 PRNG for /dev/random, lazily seeded from the tick counter. */
 static uint64_t dev_rng_state = 0;
@@ -376,6 +377,23 @@ static int proc_generate(vfs_node_t* ino, char* buf, int bufsz) {
             }
             break;
         }
+        case PROC_MOUNTS: {
+            // The mounted filesystems, in the Linux /proc/mounts layout:
+            //   device  mountpoint  fstype  options  dump  pass
+            // First the in-memory root VFS, then every entry of the append-only
+            // mount_table (only /mnt ext2 at boot). The lockless [0,mount_count)
+            // read is safe by mount_table's design: an entry is fully written
+            // before mount_count is published. NyxOS keeps no backing-device path,
+            // so column 1 is a descriptive source label, not a /dev node.
+            int off = snprintf(buf, bufsz, "rootfs / nyxfs rw 0 0\n");
+            for (int i = 0; i < mount_count && off < bufsz - 80; i++) {
+                const char* fstype = mount_table[i].type == FS_TYPE_EXT2 ? "ext2" : "none";
+                const char* dev    = mount_table[i].type == FS_TYPE_EXT2 ? "ext2img" : "none";
+                off += snprintf(buf + off, bufsz - off, "%s %s %s rw 0 0\n",
+                                dev, mount_table[i].mount_point, fstype);
+            }
+            break;
+        }
     }
     return (int)strlen(buf);
 }
@@ -481,6 +499,7 @@ void init_vfs(void) {
     static const struct { const char* name; uint32_t pt; } procf[] = {
         {"meminfo", PROC_MEMINFO}, {"uptime", PROC_UPTIME},
         {"version", PROC_VERSION}, {"cpuinfo", PROC_CPUINFO},
+        {"mounts",  PROC_MOUNTS},
     };
     for (unsigned i = 0; i < sizeof(procf) / sizeof(procf[0]); i++)
         proc_make(proc_node, procf[i].name, 0, procf[i].pt, 0);
