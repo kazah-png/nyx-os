@@ -2289,6 +2289,27 @@ static int win_snap_state(int left, int vzone) {
     return left ? WSTATE_SNAP_LEFT : WSTATE_SNAP_RIGHT;
 }
 
+// Aero-snap zone for a title-bar drag: map the cursor position (during/at the end
+// of a drag) and the framebuffer size to the state a drop there should apply,
+// Windows-11-style — within SNAP_EDGE px of the left/right screen edge snaps to
+// that half, and the top/bottom third of that edge snaps to the corresponding
+// quarter; within SNAP_EDGE px of the top edge (and not a side) maximizes;
+// anywhere else is WSTATE_NORMAL (no snap — the window is left where it was
+// dropped). Pure function of its inputs, so it is unit-tested on the host.
+#define SNAP_EDGE 16
+static int snap_zone_for_cursor(int mx, int my, int fw, int fh) {
+    int near_l = mx <= SNAP_EDGE;
+    int near_r = mx >= fw - 1 - SNAP_EDGE;
+    if (near_l || near_r) {                          // a side edge takes the corners too
+        int left  = near_l;
+        int third = fh / 3;
+        int vzone = (my <= third) ? 1 : (my >= fh - third) ? 2 : 0;
+        return win_snap_state(left, vzone);
+    }
+    if (my <= SNAP_EDGE) return WSTATE_MAXIMIZED;    // top edge (not a corner) -> maximize
+    return WSTATE_NORMAL;
+}
+
 // Fill a snapped window's rect for the CURRENT framebuffer from its state's two
 // axes. Shared by window_snap (initial placement) and windows_reflow (re-derive
 // on a mode change) so the two paths cannot drift — the same reason maximize is
@@ -2371,6 +2392,24 @@ void window_restore(int id) {
     win->x = win->normal_x; win->y = win->normal_y;
     win->w = win->normal_w; win->h = win->normal_h;
     win->state = WSTATE_NORMAL;
+}
+
+// Drop-snap: SET a window outright to `state` (from a title-bar drag onto a screen
+// edge), unlike window_snap's Alt+arrow toggling. `state` is WSTATE_MAXIMIZED or a
+// WSTATE_SNAP_*; anything else is ignored. save_normal_geom (a no-op unless the
+// window is currently NORMAL) preserves the pre-snap rect for a later restore, and
+// the layout is re-derived by the same apply_snap_geom the keyboard path uses.
+static void window_snap_to(int id, int state) {
+    window_t* win = find_window(id);
+    if (!win) return;
+    if (state == WSTATE_MAXIMIZED) {
+        if (win->state != WSTATE_MAXIMIZED) window_maximize(id);   // saves normal + maximizes
+        return;
+    }
+    if (!win_is_snapped(state)) return;
+    save_normal_geom(win);
+    win->state = state;
+    apply_snap_geom(win);
 }
 
 void window_set_workspace(int id, int ws) {
@@ -2889,7 +2928,9 @@ void compositor_run(void) {
             mouse_z = wz;
         }
 
-        if (drag_id && !(btns & 1)) {
+        if (drag_id && !(btns & 1)) {                    // dropped a title-bar drag
+            int zone = snap_zone_for_cursor(mx, my, (int)fw, (int)fh);
+            if (zone != WSTATE_NORMAL) window_snap_to(drag_id, zone);   // Aero-snap on drop
             drag_id = 0; redraw = 1;
         }
 
