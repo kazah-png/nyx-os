@@ -464,6 +464,11 @@ static const char* const start_items[START_ITEM_N] = {
 // kept already-lowercased.
 static char start_filter[24];
 static int  start_filter_len = 0;
+// Keyboard navigation of the (filtered) menu: start_sel is the selected row within the
+// filtered list; start_nav is set once the user types or arrows, so the selection
+// highlight only appears during keyboard use (mouse-only stays hover-driven).
+static int  start_sel = 0;
+static int  start_nav = 0;
 static int  start_lc(int c) { return (c >= 'A' && c <= 'Z') ? c + 32 : c; }
 static int  start_item_matches(const char* label) {
     if (start_filter_len == 0) return 1;
@@ -702,9 +707,10 @@ static void draw_start_menu(void) {
     int fcount = start_menu_filtered(fidx);
     for (int r = 0; r < fcount; r++) {
         int i = fidx[r];
+        int sel = (i == hov) || (start_nav && r == start_sel);   // hover OR keyboard selection
         int iy = sm_y + START_ITEM_Y + r * START_ITEM_H;
         if ((uint32_t)(iy + START_ITEM_H) > fh - TASKBAR_H) break;
-        if (i == hov)
+        if (sel)
             fb_fill_vgrad(sm_x + 4, iy, START_W - 8, START_ITEM_H - 2,
                           col_lighten(THEME_ACCENT, 12), col_darken(THEME_ACCENT, 14));
         else
@@ -718,8 +724,8 @@ static void draw_start_menu(void) {
         font_draw_string_trans(cx + (cw - FONT_WIDTH) / 2, cy + (cw - FONT_HEIGHT) / 2, ini, fb_rgb(255, 255, 255));
 
         // label, to the right of the chip
-        if (i == hov) font_draw_string_trans(sm_x + 30, iy + 5, start_items[i], THEME_ON_ACCENT);
-        else          font_draw_string(sm_x + 30, iy + 5, start_items[i], THEME_TEXT, THEME_WINDOW_BG);
+        if (sel) font_draw_string_trans(sm_x + 30, iy + 5, start_items[i], THEME_ON_ACCENT);
+        else     font_draw_string(sm_x + 30, iy + 5, start_items[i], THEME_TEXT, THEME_WINDOW_BG);
 
         fb_fill_rect(sm_x + 4, iy + START_ITEM_H - 1, START_W - 8, 1, THEME_ROW_DIV);
     }
@@ -3261,6 +3267,7 @@ void compositor_run(void) {
                     if (pressed) {
                         start_menu_open = !start_menu_open;
                         start_filter_len = 0; start_filter[0] = 0;   // fresh query each open
+                        start_sel = 0; start_nav = 0;                // no keyboard selection yet
                         redraw = 1;
                     }
                     goto done_click;
@@ -3387,24 +3394,36 @@ void compositor_run(void) {
             // instead of going to a window. Only active while the menu is open, so
             // ordinary typing in apps is untouched.
             if (start_menu_open && k > 0) {
-                if (k == '\n' || k == '\r') {                 // Enter: launch the top match
-                    int fi[START_ITEM_N]; int fc = start_menu_filtered(fi);
-                    start_filter_len = 0; start_filter[0] = 0;
-                    if (fc > 0) do_start_menu_action(fi[0]);   // (also closes the menu)
-                    else        start_menu_open = 0;
+                int fi[START_ITEM_N]; int fc = start_menu_filtered(fi);
+                if (k == '\n' || k == '\r') {                 // Enter: launch the SELECTED match
+                    int idx = (start_nav && start_sel < fc) ? fi[start_sel] : (fc > 0 ? fi[0] : -1);
+                    start_filter_len = 0; start_filter[0] = 0; start_sel = 0; start_nav = 0;
+                    if (idx >= 0) do_start_menu_action(idx);    // (also closes the menu)
+                    else          start_menu_open = 0;
                     redraw = 1; goto done_click;
                 }
                 if (k == 27) {                                // Escape: close
                     start_menu_open = 0; start_filter_len = 0; start_filter[0] = 0;
+                    start_sel = 0; start_nav = 0;
+                    redraw = 1; goto done_click;
+                }
+                if (k == KEY_UP || k == KEY_DOWN) {           // arrow keys: move the selection (wraps)
+                    start_nav = 1;
+                    if (fc > 0) {
+                        if (k == KEY_UP) start_sel = (start_sel <= 0) ? fc - 1 : start_sel - 1;
+                        else             start_sel = (start_sel >= fc - 1) ? 0 : start_sel + 1;
+                    }
                     redraw = 1; goto done_click;
                 }
                 if (k == '\b' || k == 127) {                  // Backspace: edit the query
                     if (start_filter_len > 0) start_filter[--start_filter_len] = 0;
+                    start_sel = 0; start_nav = 1;             // reset to the new top match
                     redraw = 1; goto done_click;
                 }
                 if (k >= 32 && k < 127 && start_filter_len < (int)sizeof(start_filter) - 1) {
                     start_filter[start_filter_len++] = (char)start_lc(k);
                     start_filter[start_filter_len] = 0;
+                    start_sel = 0; start_nav = 1;             // highlight the new top match
                     redraw = 1; goto done_click;
                 }
             }
