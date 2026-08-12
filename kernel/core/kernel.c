@@ -14,6 +14,8 @@
 #include "../fs/tar.h"
 #include "datefmt.h"
 #include "ini.h"
+#include "numparse.h"
+#include "factor.h"
 #include "../net/dns.h"
 #include "../net/http.h"
 #include "../crypto/tls/tls.h"
@@ -110,6 +112,7 @@ static void cmd_head(int argc, char** argv);
 static void cmd_file(int argc, char** argv);
 static void cmd_tar(int argc, char** argv);
 static void cmd_iniget(int argc, char** argv);
+static void cmd_factor(int argc, char** argv);
 static void cmd_rev(int argc, char** argv);
 static void cmd_tr(int argc, char** argv);
 static void cmd_fold(int argc, char** argv);
@@ -259,6 +262,7 @@ static const command_t commands[] = {
     {"tr",        cmd_tr,        "Translate/delete/squeeze chars: tr [-ds] SET1 [SET2] <file>", false},
     {"fold",      cmd_fold,      "Wrap long lines to a width: fold [-w width] <file>", false},
     {"nl",        cmd_nl,        "Number lines: nl [-b a|t|n] [-w N] [-s SEP] <file>", false},
+    {"factor",    cmd_factor,    "Prime factorization: factor N [N ...]", false},
     {"printf",    cmd_printf,    "Format and print: printf FORMAT [ARG...]", false},
     {"expand",    cmd_expand,    "Convert tabs to spaces: expand [-t N] <file>", false},
     {"unexpand",  cmd_unexpand,  "Convert spaces to tabs: unexpand [-a] [-t N] <file>", false},
@@ -513,7 +517,7 @@ void execute_command(const char* cmd_line) {
 typedef struct { const char* title; const char* const* names; } help_cat_t;
 static const char* const HC_shell[] = {"help","man","version","clear","history","exec","spawn","jobs","wait","nice","renice",0};
 static const char* const HC_files[] = {"ls","cd","pwd","cat","file","tar","iniget","open","touch","mkdir","rm","cp","mv","tree","find","which","basename","dirname","files","df","mount","ext2ls","ext2cat",0};
-static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tr","fold","nl","expand","unexpand","printf","wc","write","hexdump",0};
+static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tr","fold","nl","expand","unexpand","factor","printf","wc","write","hexdump",0};
 static const char* const HC_sys[]   = {"ps","kill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch",0};
 static const char* const HC_user[]  = {"useradd","users",0};
 static const char* const HC_net[]   = {"ifconfig","dhcp","dns","ping","setip","httpget","tls",0};
@@ -600,6 +604,7 @@ static const man_page_t man_pages[] = {
     {"tr",       "Translate, delete or squeeze characters read from <file>. With two sets, each character of <file> that appears in SET1 is replaced by the character at the same position in SET2 (a shorter SET2 repeats its last character). -d deletes every SET1 character instead; -s collapses each run of a repeated result character into one. Sets may use ascending ranges such as a-z or 0-9."},
     {"fold",     "Wrap the lines of <file> so no output line is longer than the given width (80 by default, or -w width). A line longer than the width is broken with a hard newline at exactly that many characters; shorter lines and existing line breaks are left alone."},
     {"nl",       "Number the lines of <file>. By default only non-empty lines are numbered (-b t); -b a numbers every line and -b n numbers none. Each line number is right-justified in a field N columns wide (6 by default, or -w N) and followed by a separator (a tab by default, or -s SEP), then the line text."},
+    {"factor",   "Print the prime factorization of each integer argument, one per line, as `N: p1 p2 ...` with factors ascending and repeated by multiplicity (e.g. `factor 90` prints `90: 2 3 3 5`). 0 and 1 print just `N:`. Accepts any 64-bit unsigned value; a non-numeric or negative argument is reported and skipped."},
     {"printf",   "Print ARGs under the control of FORMAT (like the C/coreutil printf). FORMAT is reused as needed to consume all ARGs. It interprets backslash escapes (\\n \\t \\r \\a \\b \\f \\v \\\\) and the conversions %s %d %i %u %x %X %c %% with optional flags and field width (e.g. %-10s, %05d). Numeric ARGs are read as decimal. Unlike echo, printf never appends a trailing newline unless FORMAT contains one."},
     {"expand",   "Convert the tabs in <file> to spaces. Each tab advances to the next tab stop, which are spaced N columns apart (8 by default, or -t N), so columns stay aligned instead of a fixed number of spaces per tab. Non-tab characters and newlines pass through unchanged (a newline resets the column count)."},
     {"unexpand", "The inverse of expand: convert runs of spaces in <file> back into tabs, collapsing each blank run to the fewest tabs+spaces at N-column tab stops (8 by default, or -t N). A single space is never turned into a tab. By default only the LEADING blanks of each line are converted (matching GNU unexpand); -a converts blank runs everywhere on the line, and -t N implies -a."},
@@ -970,6 +975,25 @@ static void cmd_iniget(int argc, char** argv) {
     vfs_close(fd);
     if (found) printf("%s\n", val);
     else       printf("iniget: '%s' not found in [%s]\n", argv[3], sec[0] ? sec : "(global)");
+}
+
+// factor N [N ...] — print the prime factorization of each integer, GNU factor style:
+// "N: p1 p2 ..." (ascending, with multiplicity). Strict parse via parse_u64(); the
+// factoring core is factor_one() (kernel/core/factor.c).
+static void cmd_factor(int argc, char** argv) {
+    if (argc < 2) { printf("Usage: factor N [N ...]\n"); return; }
+    for (int i = 1; i < argc; i++) {
+        uint64_t n;
+        if (parse_u64(argv[i], &n) != 0) {
+            printf("factor: '%s' is not a valid positive integer\n", argv[i]);
+            continue;
+        }
+        uint64_t f[64];
+        int k = factor_one(n, f, 64);
+        printf("%lu:", (unsigned long)n);
+        for (int j = 0; j < k; j++) printf(" %lu", (unsigned long)f[j]);
+        printf("\n");
+    }
 }
 
 // rev <file> — print each line with its characters in reverse order (the classic
@@ -3767,6 +3791,7 @@ extern int filetype_selftest(void);
 extern int tar_selftest(void);
 extern int datefmt_selftest(void);
 extern int ini_selftest(void);
+extern int factor_selftest(void);
 extern int tls_prf_selftest(void);
 extern int tls_keyschedule_selftest(void);
 extern int tls_record_selftest(void);
@@ -3925,6 +3950,7 @@ static void run_selftests(void) {
         {"ed25519vfy",   ed25519_verify_selftest}, {"filetype",      filetype_selftest},
         {"tar",          tar_selftest},            {"datefmt",       datefmt_selftest},
         {"iniparse",     ini_selftest},
+        {"factor",       factor_selftest},
         {"tls_prf",      tls_prf_selftest},       {"tls_keysched",  tls_keyschedule_selftest},
         {"tls_record",   tls_record_selftest},    {"tls_ske_p384",  tls_ske_p384_selftest},
         {"der",          der_selftest},           {"base64",        base64_selftest},
