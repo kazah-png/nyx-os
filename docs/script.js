@@ -20,7 +20,7 @@
           r: (Math.random() * 1.3 + 0.2) * dpr,
           a: Math.random() * 0.6 + 0.15,
           tw: Math.random() * 0.02 + 0.004,
-          hue: Math.random() < 0.15 ? "124,92,255" : (Math.random() < 0.2 ? "0,255,157" : "230,232,240")
+          hue: Math.random() < 0.15 ? "168,85,247" : (Math.random() < 0.2 ? "217,70,239" : "230,232,240")
         });
       }
     }
@@ -57,9 +57,15 @@
   var toggle = document.getElementById("navToggle");
   var links = document.getElementById("navLinks");
   if (toggle) {
-    toggle.addEventListener("click", function () { links.classList.toggle("open"); });
+    toggle.addEventListener("click", function () {
+      var open = links.classList.toggle("open");
+      toggle.setAttribute("aria-expanded", open ? "true" : "false");
+    });
     links.addEventListener("click", function (e) {
-      if (e.target.tagName === "A") links.classList.remove("open");
+      if (e.target.tagName === "A") {
+        links.classList.remove("open");
+        toggle.setAttribute("aria-expanded", "false");
+      }
     });
   }
 
@@ -109,7 +115,7 @@
         '    <span class="m">.:oo.. :o.</span>              <span class="p">-----------------</span>',
         '  <span class="m">:oo:.oo.o:</span>                <span class="k">OS:</span>         NyxOS x86_64',
         ' <span class="m">.#o:.   :.</span>                 <span class="k">Host:</span>       QEMU Standard PC',
-        ' <span class="m">#:::....:</span>                  <span class="k">Kernel:</span>     NyxOS 5.9.44 (Full Suite)',
+        ' <span class="m">#:::....:</span>                  <span class="k">Kernel:</span>     NyxOS 6.4.180',
         '<span class="m">o#::. . o.</span>                  <span class="k">Uptime:</span>     00:00:11',
         '<span class="m">o#.o:   :o</span>                  <span class="k">Resolution:</span> 1024 x 768',
         '<span class="m">o###o   o#</span>                  <span class="k">CPU:</span>        QEMU Virtual CPU version 2.5+ (1)',
@@ -141,6 +147,12 @@
         'This domain is for use in documentation examples',
         'without needing permission. Avoid use in operations.',
         '<span class="v">rendered 559 bytes 🌙</span>',
+        ''
+      ]},
+      { type: "cmd", text: "cc hello.c -o hello && ./hello" },
+      { type: "out", lines: [
+        '<span class="k">tcc</span>: compiling in-OS &rarr; <span class="v">hello</span>',
+        '<span class="v">hello from NyxOS — compiled on the metal 🌙</span>',
         ''
       ]}
     ];

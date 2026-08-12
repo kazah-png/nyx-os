@@ -1,7 +1,21 @@
 /* ============================================================
-   NyxOS — GitHub Pages manual
-   Night-themed (Nyx = goddess of night): deep space + neon mint.
+   NyxOS — nyxos.cc
+   Night-themed (Nyx = goddess of night): deep space + brand purple.
    ============================================================ */
+
+/* Self-hosted fonts (latin subset, woff2). OFL/Apache — see fonts/LICENSES.txt.
+   No external requests: privacy + strict CSP + speed. */
+@font-face{font-family:'Inter';font-style:normal;font-weight:400;font-display:swap;src:url('fonts/inter-400.woff2') format('woff2');}
+@font-face{font-family:'Inter';font-style:normal;font-weight:500;font-display:swap;src:url('fonts/inter-500.woff2') format('woff2');}
+@font-face{font-family:'Inter';font-style:normal;font-weight:600;font-display:swap;src:url('fonts/inter-600.woff2') format('woff2');}
+@font-face{font-family:'Inter';font-style:normal;font-weight:700;font-display:swap;src:url('fonts/inter-700.woff2') format('woff2');}
+@font-face{font-family:'Inter';font-style:normal;font-weight:800;font-display:swap;src:url('fonts/inter-800.woff2') format('woff2');}
+@font-face{font-family:'Space Grotesk';font-style:normal;font-weight:500;font-display:swap;src:url('fonts/space-grotesk-500.woff2') format('woff2');}
+@font-face{font-family:'Space Grotesk';font-style:normal;font-weight:600;font-display:swap;src:url('fonts/space-grotesk-600.woff2') format('woff2');}
+@font-face{font-family:'Space Grotesk';font-style:normal;font-weight:700;font-display:swap;src:url('fonts/space-grotesk-700.woff2') format('woff2');}
+@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400;font-display:swap;src:url('fonts/jetbrains-mono-400.woff2') format('woff2');}
+@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:500;font-display:swap;src:url('fonts/jetbrains-mono-500.woff2') format('woff2');}
+@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:700;font-display:swap;src:url('fonts/jetbrains-mono-700.woff2') format('woff2');}
 
 :root {
   --bg:        #05060a;
@@ -12,7 +26,7 @@
   --border-2:  rgba(255,255,255,.16);
   --text:      #e7e9f0;
   --muted:     #9aa0b4;
-  --faint:     #6b7288;
+  --faint:     #868ea6;   /* raised from #6b7288 to meet WCAG AA on the dark bg */
   --accent:    #a855f7;
   --accent-2:  #7c22ce;
   --accent-3:  #d946ef;
@@ -54,6 +68,29 @@ body::before {
 .glow-2 { width: 460px; height: 460px; top: 40vh; left: -160px; background: radial-gradient(circle, rgba(217,70,239,.32), transparent 70%); }
 
 a { color: inherit; text-decoration: none; }
+
+/* ============ ACCESSIBILITY ============ */
+/* Visible keyboard focus for every interactive element */
+:focus-visible {
+  outline: 2px solid var(--accent-3);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+/* don't show the ring on mouse click, only keyboard */
+:focus:not(:focus-visible) { outline: none; }
+/* skip-to-content link — first thing a keyboard/SR user reaches */
+.skip-link {
+  position: fixed; top: -60px; left: 12px; z-index: 200;
+  padding: .7rem 1.1rem; border-radius: 10px;
+  background: var(--accent); color: #fff; font-weight: 600;
+  transition: top .2s var(--ease);
+}
+.skip-link:focus { top: 12px; }
+.sr-only {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0;
+}
+
 .mono { font-family: var(--mono); font-size: .9em; color: var(--accent); background: rgba(168,85,247,.07); padding: .05em .4em; border-radius: 6px; }
 .muted { color: var(--muted); }
 
@@ -221,7 +258,7 @@ h3 { font-family: var(--display); font-size: 1.15rem; margin: 0 0 .5rem; }
 }
 .mem.row .mono { color: var(--accent-3); background: none; padding: 0; }
 .mem.row em { color: var(--muted); font-style: normal; font-size: .86rem; text-align: right; }
-.mem.row.accent { border-color: rgba(0,255,157,.3); }
+.mem.row.accent { border-color: rgba(168,85,247,.3); }
 .mem.row.accent .mono { color: var(--accent); }
 
 /* ============ MANUAL / STEPS ============ */

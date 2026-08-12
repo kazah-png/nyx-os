@@ -1,0 +1,15 @@
+Self-hosted webfonts bundled with the NyxOS site (latin subset, woff2).
+All three families are free/open-source and licensed under the SIL Open Font
+License 1.1 (OFL-1.1), which permits self-hosting and redistribution with the
+software/website. Full license text: https://openfontlicense.org
+
+- Inter          © The Inter Project Authors — https://github.com/rsms/inter
+                 (github.com/rsms/inter/blob/master/LICENSE.txt)
+- Space Grotesk  © The Space Grotesk Project Authors
+                 (github.com/floriankarsten/space-grotesk)
+- JetBrains Mono © 2020 The JetBrains Mono Project Authors
+                 (github.com/JetBrains/JetBrainsMono)
+
+These files are the latin unicode-range subset served by Google Fonts,
+re-hosted here so the site makes zero third-party requests (privacy + a strict
+Content-Security-Policy). No modifications were made to the glyph outlines.

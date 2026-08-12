@@ -3,18 +3,47 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+
+  <!-- Security: strict CSP (no external origins, no inline scripts), no referrer leak.
+       HSTS is served by GitHub Pages on the custom domain once HTTPS is enforced. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; manifest-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests" />
+  <meta name="referrer" content="strict-origin-when-cross-origin" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="theme-color" content="#05060a" />
+
   <title>NyxOS — a 64-bit operating system, written from scratch</title>
-  <meta name="description" content="NyxOS is a from-scratch x86_64 operating system in C and Assembly: preemptive multitasking, a windowed desktop with the Selene web browser and five games, a real TCP/IP stack, and an EXT2 filesystem." />
-  <meta property="og:title" content="NyxOS — a 64-bit OS from scratch" />
-  <meta property="og:description" content="Preemptive multitasking, a window compositor, the Selene web browser, five games, a real TCP/IP stack, EXT2 — all in C and x86_64 Assembly." />
+  <meta name="description" content="NyxOS is a from-scratch x86_64 operating system in C and Assembly: a preemptive kernel, a windowed desktop with the Selene web browser and five games, a real TCP/IP stack, an EXT2 filesystem, an in-OS C toolchain (self-hosting TinyCC + the xbm package manager), and the native N language." />
+  <meta name="keywords" content="NyxOS, operating system, x86_64, kernel, from scratch, C, assembly, TCP/IP, EXT2, TinyCC, hobby OS, osdev" />
+  <meta name="author" content="NyxOS" />
+  <link rel="canonical" href="https://nyxos.cc/" />
+
+  <!-- Open Graph / social -->
   <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="NyxOS" />
+  <meta property="og:url" content="https://nyxos.cc/" />
+  <meta property="og:title" content="NyxOS — a 64-bit OS from scratch" />
+  <meta property="og:description" content="A preemptive kernel, a window compositor, the Selene web browser, five games, a real TCP/IP stack, EXT2, and a self-hosting in-OS C toolchain — all in C and x86_64 Assembly." />
+  <meta property="og:image" content="https://nyxos.cc/gui.png" />
+  <meta property="og:image:alt" content="The NyxOS desktop: the Selene web browser on a live page, app icons, wallpaper and taskbar" />
+  <meta name="twitter:card" content="summary_large_image" />
+  <meta name="twitter:title" content="NyxOS — a 64-bit OS from scratch" />
+  <meta name="twitter:description" content="A preemptive kernel, a windowed desktop, the Selene web browser, five games, a real TCP/IP stack, EXT2, and a self-hosting in-OS C toolchain." />
+  <meta name="twitter:image" content="https://nyxos.cc/gui.png" />
+
+  <!-- Icons + PWA manifest -->
   <link rel="icon" href="favicon.svg" type="image/svg+xml" />
-  <link rel="preconnect" href="https://fonts.googleapis.com" />
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
+  <link rel="apple-touch-icon" href="apple-touch-icon.png" />
+  <link rel="manifest" href="site.webmanifest" />
+
+  <!-- Self-hosted fonts: preload the two above-the-fold faces -->
+  <link rel="preload" href="fonts/space-grotesk-700.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="preload" href="fonts/inter-400.woff2" as="font" type="font/woff2" crossorigin />
   <link rel="stylesheet" href="style.css" />
+
+  <noscript><style>.reveal{opacity:1 !important;transform:none !important}</style></noscript>
 </head>
 <body>
+  <a class="skip-link" href="#top">Skip to content</a>
   <canvas id="starfield" aria-hidden="true"></canvas>
   <div class="glow glow-1" aria-hidden="true"></div>
   <div class="glow glow-2" aria-hidden="true"></div>
@@ -41,13 +70,13 @@
         <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M12 .5A11.5 11.5 0 0 0 .5 12a11.5 11.5 0 0 0 7.86 10.92c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.37-3.88-1.37-.53-1.34-1.29-1.7-1.29-1.7-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.2 1.77 1.2 1.03 1.76 2.7 1.25 3.36.96.1-.75.4-1.26.73-1.55-2.55-.29-5.24-1.28-5.24-5.7 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11 11 0 0 1 5.8 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.84 1.19 3.1 0 4.43-2.69 5.4-5.25 5.69.41.36.78 1.05.78 2.12v3.15c0 .31.21.67.8.56A11.5 11.5 0 0 0 23.5 12 11.5 11.5 0 0 0 12 .5Z"/></svg>
         GitHub
       </a>
-      <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation">
+      <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation" aria-controls="navLinks" aria-expanded="false">
         <span></span><span></span><span></span>
       </button>
     </div>
   </header>
 
-  <main id="top">
+  <main id="top" tabindex="-1">
     <!-- ============ HERO ============ -->
     <section class="hero">
       <div class="hero-copy reveal">
@@ -55,13 +84,14 @@
         <h1 class="hero-title">Nyx<span class="grad">OS</span></h1>
         <p class="hero-sub">
           A 64-bit operating system written from scratch in <strong>C</strong> and
-          <strong>x86_64 Assembly</strong> — preemptive multitasking, a windowed
+          <strong>x86_64 Assembly</strong> — a preemptive kernel, a windowed
           desktop with the <strong>Selene web browser</strong> and five games, a real
-          TCP/IP stack, 57 syscalls, I/O multiplexing with <span class="mono">poll()</span>,
-          and an EXT2 filesystem. No libraries. Just the metal.
+          TCP/IP stack, an EXT2 filesystem, and an <strong>in-OS C toolchain</strong> that
+          self-hosts (a ported TinyCC + the <span class="mono">xbm</span> package manager)
+          plus the native <strong>N</strong> language. No libraries. Just the metal.
         </p>
         <div class="hero-badges">
-          <span class="pill pill-accent">◆ v5.9.44</span>
+          <span class="pill pill-accent">◆ v6.4.180</span>
           <span class="pill">LTS · v5.9.0</span>
           <span class="pill">GPL-2.0+</span>
           <span class="pill">0 build warnings</span>
@@ -72,7 +102,7 @@
         </div>
       </div>
 
-      <div class="hero-term reveal">
+      <div class="hero-term reveal" aria-hidden="true">
         <div class="term">
           <div class="term-bar">
             <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
@@ -87,13 +117,16 @@
     <section class="stats reveal" aria-label="At a glance">
       <div class="stat"><b>x86_64</b><span>long mode · 4-level paging</span></div>
       <div class="stat"><b>C + NASM</b><span>zero external libraries</span></div>
-      <div class="stat"><b>🌙 Nyx C</b><span>native language runtime</span></div>
       <div class="stat"><b>57</b><span>syscalls</span></div>
       <div class="stat"><b>TCP/IP</b><span>DHCP · DNS · HTTP · poll()</span></div>
       <div class="stat"><b>32 windows</b><span>compositor + taskbar</span></div>
       <div class="stat"><b>EXT2</b><span>read / write, auto-mount</span></div>
+      <div class="stat"><b>cc + xbm</b><span>self-hosting toolchain + packages</span></div>
+      <div class="stat"><b>🌙 N</b><span>native language · <span class="mono">ncc</span></span></div>
+      <div class="stat"><b>55 KATs</b><span>crypto self-tests in CI</span></div>
       <div class="stat"><b>🌙 Selene</b><span>web browser · real HTTP</span></div>
       <div class="stat"><b>5 games</b><span>DOOM · Tetris · Snake · Pong · Mines</span></div>
+      <div class="stat"><b>NX·SMEP·SMAP</b><span>W^X · ring-3 isolation</span></div>
     </section>
 
     <!-- ============ OVERVIEW ============ -->
@@ -142,7 +175,17 @@
         <article class="card reveal">
           <div class="card-ic">◈</div>
           <h3>ELF userspace</h3>
-          <p>An ELF64 loader, an embedded initramfs, <span class="mono">fork()</span> with copy-on-write, 57 syscalls via <span class="mono">syscall/sysret</span>, a minimal libc, isolated per-process file descriptors, and the <b>🌙 Nyx C</b> language runtime for first-class userspace programming.</p>
+          <p>An ELF64 loader, an embedded initramfs, <span class="mono">fork()</span> with copy-on-write, 57 syscalls via <span class="mono">syscall/sysret</span>, a minimal libc, and isolated per-process file descriptors — a real ring-3 environment.</p>
+        </article>
+        <article class="card reveal">
+          <div class="card-ic">⚒</div>
+          <h3>In-OS C toolchain</h3>
+          <p>A ported <b>TinyCC</b> compiles C <em>inside</em> NyxOS and self-hosts — <span class="mono">tcc</span> compiles <span class="mono">tcc</span>. The <span class="mono">cc</span> command builds &amp; runs C by bare name, and <b>xbm</b> — the package manager — compiles a recipe and installs it to <span class="mono">/mnt/bin</span>.</p>
+        </article>
+        <article class="card reveal">
+          <div class="card-ic">🌙</div>
+          <h3>N &amp; N++ languages</h3>
+          <p>NyxOS's own languages: <b>N</b> (<span class="mono">.n</span>, built with <span class="mono">ncc</span>) and the typed superset <b>N++</b> — HolyC-style, first-class, compiled in-OS. <span class="mono">xbm install ncc</span> builds the N compiler on the machine itself.</p>
         </article>
         <article class="card reveal">
           <div class="card-ic">❯</div>
@@ -157,7 +200,12 @@
         <article class="card reveal">
           <div class="card-ic">🗔</div>
           <h3>GUI compositor</h3>
-          <p>Up to 32 windows with z-ordering, drag &amp; resize, four workspaces, drop shadows, a taskbar and Start menu — plus a Terminal, File Manager, Text Editor, Image Viewer, Paint, Calculator, Settings and Sound Test, each with its own hand-drawn icon.</p>
+          <p>Up to 32 windows with z-ordering, drag &amp; resize, four workspaces, drop shadows, snap-to-edge with a live preview, a taskbar and Start menu — plus a Terminal, File Manager, Text Editor, Image Viewer, Paint, Calculator, Settings and Sound Test, each with its own hand-drawn icon.</p>
+        </article>
+        <article class="card reveal">
+          <div class="card-ic">◨</div>
+          <h3>Desktop &amp; rendering</h3>
+          <p>A polished 1080p desktop with animated wallpapers (<span class="mono">/lava</span>, <span class="mono">/matrix</span>, <span class="mono">/fire</span>) and real-time render testbeds — <b>Nyx Voxels</b> and <b>Nyx Fractal</b> — with on-screen benchmark HUDs. Fluid, personal, unmistakably Nyx.</p>
         </article>
         <article class="card reveal">
           <div class="card-ic">🌙</div>
@@ -182,7 +230,7 @@
         <article class="card reveal">
           <div class="card-ic">🛡</div>
           <h3>Security &amp; isolation</h3>
-          <p><span class="mono">NX</span> + <span class="mono">SMEP</span> + <span class="mono">SMAP</span> and W^X page permissions, per-process address spaces, a hardened syscall boundary (bounded ELF loads, validated user pointers), ring-3 fault isolation — a crash kills the process, not the kernel — with catchable signals, and PBKDF2-HMAC-SHA256 login.</p>
+          <p><span class="mono">NX</span> + <span class="mono">SMEP</span> + <span class="mono">SMAP</span> and W^X page permissions, per-process address spaces, a hardened syscall boundary (bounded ELF loads, validated user pointers), ring-3 fault isolation — a crash kills the process, not the kernel — and PBKDF2-HMAC-SHA256 login, backed by a from-scratch crypto library verified by <b>55 known-answer tests</b> in CI.</p>
         </article>
       </div>
     </section>
@@ -281,6 +329,7 @@ qemu-system-x86_64 -cdrom NyxOS.iso -m 256M -no-reboot \
             <tr><td>System</td><td><span class="mono">help clear nyxfetch uname date version reboot history env export</span></td></tr>
             <tr><td>Files</td><td><span class="mono">ls cd pwd cat touch mkdir rm cp mv head tail grep sort wc find tree write which diff hexdump</span></td></tr>
             <tr><td>Processes</td><td><span class="mono">ps mem exec spawn jobs wait kill nice renice usertest pmap free</span></td></tr>
+            <tr><td>Toolchain</td><td><span class="mono">cc xbm ncc tcc</span> · compile &amp; run C in-OS; <span class="mono">xbm install &lt;pkg&gt;</span> builds a recipe into <span class="mono">/mnt/bin</span></td></tr>
             <tr><td>Network</td><td><span class="mono">ifconfig dhcp ping setip httpget tcptest tcpdrop tcploop tcpserve nc</span></td></tr>
             <tr><td>Apps &amp; games</td><td><span class="mono">selene doom pong snake tetris</span> · plus a desktop icon for each &amp; a Games folder</td></tr>
             <tr><td>Filesystem</td><td><span class="mono">mount</span> · EXT2 auto-mounts at <span class="mono">/mnt</span></td></tr>
@@ -335,78 +384,14 @@ qemu-system-x86_64 -cdrom NyxOS.iso -m 256M -no-reboot \
         <div class="tl reveal"><span class="tl-v">v1.x</span><div><h3>Foundations</h3><p>Base kernel, ramdisk VFS + shell commands, and the first real networking (RTL8139, ARP/IP/UDP/ICMP).</p></div></div>
         <div class="tl reveal"><span class="tl-v">v2.x</span><div><h3>Multitasking, GUI &amp; disks</h3><p>Preemptive multitasking, a full TCP stack, the window compositor, PC-speaker audio, EXT2 read support, and a Sound Blaster 16 driver.</p></div></div>
         <div class="tl reveal"><span class="tl-v">v3.x</span><div><h3>Userspace</h3><p>ELF loader, initramfs, per-process paging, ring-3 execution, syscalls, an RTC driver and a minimal libc.</p></div></div>
-        <div class="tl reveal"><span class="tl-v">v4.x</span><div><h3>64-bit &amp; hardening</h3><p>Full x86_64 long mode, higher-half kernel, user/kernel page-table isolation, and <span class="mono">NX</span> + <span class="mono">SMEP</span> with APIC init.</p></div></div>
-        <div class="tl reveal"><span class="tl-v">v5.0–5.6</span><div><h3>Apps, login &amp; ring-3</h3><p>A full GUI app suite, a boot animation + login screen, security hardening of the syscall boundary, and ring-3 userspace that actually runs.</p></div></div>
-        <div class="tl reveal"><span class="tl-v">v5.7.x</span><div><h3>Scheduler &amp; the network arc</h3><p>Preemptive scheduling with job control &amp; <span class="mono">nice</span>, per-process fds, drag-and-drop in the File Manager, and a networking sprint: loopback + ICMP, TCP retransmission, multi-segment receive, passive open, and an HTTP server that answers real clients.</p></div></div>
-        <div class="tl reveal"><span class="tl-v">v5.8.0</span><div><h3>🌙 Nyx C language runtime</h3><p>Nyx C — a Go/Zig-inspired typed subset of C that transpiles to C and links against the <span class="mono">nyxrt</span> runtime. The first <span class="mono">.nyx</span> program prints <span class="mono">"hola desde nyx c! pid=5"</span> via string interpolation and direct syscalls.</p></div></div>
-        <div class="tl reveal"><span class="tl-v">v5.8.1</span><div><h3>waitpid(): fork is complete</h3><p><span class="mono">SYS_WAITPID</span> (11) — a ring-3 parent reaps its children and collects their exit codes.</p></div></div>
-        <div class="tl reveal"><span class="tl-v">v5.8.3</span><div><h3>Anonymous pipes &amp; blocking IPC</h3><p><span class="mono">pipe()</span> (<span class="mono">SYS_PIPE</span>, 12) with kernel ring buffers, reference-counted ends, and blocking <span class="mono">read()</span> — real cross-process IPC. Per-process syscall stacks enable true blocking in ring 0.</p></div></div>
-        <div class="tl reveal"><span class="tl-v">v5.8.3–5.8.25</span><div><h3>Userspace &amp; terminal polish</h3><p>execve argv, dup2, getdents, coreutils (cat/wc/ls), shell background jobs, interactive REPL, lazy sbrk, signals, mmap/mprotect, /dev, /proc, shell line editing &amp; history, Tab completion, ANSI SGR color — a complete ring-3 environment.</p></div></div>
-        <div class="tl reveal"><span class="tl-v">v5.8.26</span><div><h3>ANSI colors &amp; new nyxfetch</h3><p>The GUI terminal renders <span class="mono">ESC[…m</span> SGR colors (fg, bg, bold, reverse) with a per-character color scrollback. <span class="mono">nyxfetch</span> gets a neofetch-style ASCII fox on the left, facts on the right — by <b>@kurawi-debug</b>.</p></div></div>
-        <div class="tl reveal"><span class="tl-v">v5.8.27–5.8.40</span><div><h3>Desktop, visual refresh &amp; double buffering</h3><p>Unified crescent-moon logo across login, nyxfetch and panic screen. Wallpaper app with 11-color palette picker. Double-buffered compositor (no flicker). Shell operators <span class="mono">&amp;&amp;</span>/<span class="mono">||</span>/<span class="mono">;</span>, globbing (<span class="mono">*</span>/<span class="mono">?</span>), <span class="mono">~</span> expansion, and job control (Ctrl-Z, <span class="mono">fg</span>/<span class="mono">bg</span>).</p></div></div>
-        <div class="tl reveal"><span class="tl-v">v5.8.41–5.8.49</span><div><h3>Stability, signals &amp; catchable faults</h3><p>Graphical kernel panic stop screen. Ring-3 fault isolation (a crash kills the process, not the kernel). <span class="mono">less</span>/<span class="mono">more</span> pager. Catchable signals (<span class="mono">SIGSEGV</span>/<span class="mono">SIGFPE</span>/<span class="mono">SIGILL</span>) with <span class="mono">setjmp</span>/<span class="mono">longjmp</span> recovery, <span class="mono">sigsetjmp</span>/<span class="mono">siglongjmp</span> for multi-fault recovery, and <span class="mono">alarm()</span> + SIGALRM.</p></div></div>
-        <div class="tl reveal"><span class="tl-v">v5.8.50–5.8.55</span><div><h3>Network stack maturity &amp; UDP sockets</h3><p>Network byte-order consolidation. Userspace TCP sockets with <span class="mono">socket</span>/<span class="mono">connect</span>/<span class="mono">read</span>/<span class="mono">write</span>. Server-side <span class="mono">bind</span>/<span class="mono">listen</span>/<span class="mono">accept</span>. Scheduler CR3 fix for mid-syscall preemption. Userspace UDP sockets (<span class="mono">sendto</span>/<span class="mono">recvfrom</span>). 41 syscalls.</p></div></div>
-        <div class="tl reveal"><span class="tl-v">v5.8.56–5.8.70</span><div><h3>Userspace sockets, login polish &amp; persistent accounts</h3><p><span class="mono">nc</span> (netcat), catchable-signal multi-recovery (<span class="mono">sigsetjmp</span>/<span class="mono">siglongjmp</span>), <span class="mono">alarm()</span> + <span class="mono">SIGALRM</span>, persistent EXT2 verified end-to-end, <span class="mono">poll()</span> I/O multiplexing, full-duplex <span class="mono">nc</span>. GUI File Manager browses &amp; opens <span class="mono">/mnt</span> files in the Text Editor. Persistent user accounts with random salts, avatar picker &amp; lockout. Taskbar user menu (change picture, logout, per-user home dirs).</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.8.71</span><div><h3>Starter home directory content</h3><p>New home directories get <span class="mono">Documents/</span>, <span class="mono">Downloads/</span> and <span class="mono">welcome.txt</span> — only on first creation, so subsequent logins never overwrite user files.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.8.72</span><div><h3>Minesweeper — GUI game</h3><p>Classic 9×9 / 10-mine Minesweeper as a compositor window. Lazy mine placement (first click always safe), flagging, chording, face button, timer. Also fixes right-click dispatching to respect z-order instead of slot order.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.8.73</span><div><h3>wget — userspace HTTP client</h3><p>Self-contained HTTP GET over TCP sockets with its own DNS-over-UDP resolver. Supports <span class="mono">-O</span> output file, <span class="mono">-r</span>/<span class="mono">-p</span> resolver, and status output. No new syscalls.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.8.74</span><div><h3>exec forwards argv — tools run with args from the kernel shell</h3><p><span class="mono">exec &lt;file&gt; a b c</span> and <span class="mono">spawn</span> build the child's SysV argv frame and launch it directly. <span class="mono">wget</span>, <span class="mono">grep</span>, <span class="mono">cat</span> all work without <span class="mono">/sh.elf</span>. No new syscalls.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.8.75</span><div><h3>Kernel shell auto-execs userspace ELFs by bare name</h3><p>When a typed command isn't a builtin, <span class="mono">execute_command</span> resolves it to a userspace ELF and runs it with argv. Type <span class="mono">whoami</span> or <span class="mono">wget</span> directly — no <span class="mono">exec</span> prefix needed.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.8.76</span><div><h3>Tab-completion includes userspace ELFs</h3><p>Completes not just builtins but also <span class="mono">.elf</span> base names from initramfs, with builtins taking priority. Type <span class="mono">whoa</span>+Tab → <span class="mono">whoami</span>.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.8.77</span><div><h3>wget follows redirects + open command</h3><p><span class="mono">wget</span> follows HTTP 3xx redirects (up to 5 hops) and a new <span class="mono">open</span> builtin opens files in the GUI Text Editor from the kernel shell.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.8.78</span><div><h3>Concurrent multi-process sockets hardening</h3><p>Net-stack re-entrancy serialization, atomic ephemeral-port pick, connection table capacity bumped. New <span class="mono">netstorm</span> repro forks 4 processes hammering loopback echo.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.8.79</span><div><h3>Root-caused the netstorm Heisenbug — Makefile stale-build gap</h3><p>The v5.8.78 "ultra-fragile timing" bug was a conn-table capacity limit masked by a Makefile that didn't recompile on header changes. GCC auto-dependencies (<span class="mono">-MMD -MP</span>) fix it.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.8.80</span><div><h3>Four POSIX file syscalls — stat/fstat/lseek/getppid</h3><p>New syscalls 44-47: <span class="mono">stat</span>/<span class="mono">fstat</span> (size+mode), <span class="mono">lseek</span> (SEEK_SET/CUR/END), <span class="mono">getppid</span>. Makefile fix: <span class="mono">.DEFAULT_GOAL</span> prevents stale builds.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.8.81</span><div><h3>VFS hardening — MAX_CHILDREN heap OOB fixed + caps raised</h3><p>Unified <span class="mono">vfs_append_child</span> choke point (8 creation paths were missing the bound check). Caps: <span class="mono">MAX_INODES 128→256</span>, <span class="mono">MAX_CHILDREN 64→128</span>. Initramfs logs warnings instead of silently dropping files.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.8.82</span><div><h3>dup + rename syscalls + spawned tools inherit terminal cwd</h3><p>New <span class="mono">SYS_DUP(48)</span>/<span class="mono">SYS_RENAME(49)</span>. <span class="mono">create_user_process</span> seeds cwd from the spawning terminal. <span class="mono">fsx.elf</span> demo.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.8.83</span><div><h3>THE pipeline-corruption Heisenbug FIXED — ROM hole + .lbss</h3><p>Root-caused: <span class="mono">init_memory</span> left the firmware hole <span class="mono">0xA0000–0xFFFFF</span> marked FREE, so under memory pressure <span class="mono">alloc_page</span> handed out VGA/BIOS ROM frames. Also <span class="mono">.lbss/.ldata/.lrodata</span> were unreserved in <span class="mono">linker.ld</span>. Issue #20 closed.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.8.84</span><div><h3>Physical allocator honors multiboot2 memory map</h3><p><span class="mono">init_memory</span> parses the multiboot2 type-6 tag and frees ONLY type-1 (available RAM) pages — every firmware hole is reserved automatically. Falls back to v5.8.83 behavior when no tag present.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.8.85</span><div><h3>Demand-grown user stacks with guard page</h3><p>User stacks are no longer fixed 64 KB — they start at 16 KB and grow on demand up to 512 KB, with a permanent unmapped guard page for clear overflow diagnostics.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.9.0-LTS</span><div><h3>LTS release — P0.1 closed: preemptible CR3-switch → iretq window fixed</h3><p>The one release-blocking bug root-caused and fixed with a single <span class="mono">cli</span> — closing the preemptible window between user-CR3 reload and iretq. Also: 3 GUI highs (paint divide-by-zero, menu hit-test skew, fb backbuffer repoint, level-triggered menus), VFS fd refcounts, ext2 write-path overhaul verified by e2fsck (9 defects), editor truncation guard, audit/hardening (ELF bounds, user_v2p, FMASK, cld, TSS struct, 22-pixel GUI offset, framebuffer clipping, dynamic linker, fork isolation with mprotect), SMP stages (per-CPU TSS, user procs on APs, spinlocks, TLB shootdown IPIs), and thread/fd table coherence.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.9.1</span><div><h3>"Nightfall" desktop — central GUI palette &amp; brand purple</h3><p><span class="mono">kernel/theme.h</span> — every colour is now a named ROLE (<span class="mono">THEME_ACCENT</span>, <span class="mono">THEME_TEXT</span>, …) instead of scattered <span class="mono">fb_rgb()</span> literals. The accent is the brand purple <code>{130,90,210}</code> everywhere — Start menu, taskbar, focused window. Desktop wallpaper rewritten as a nightfall sky with a glowing moon, craters, and a seeded star field. Workspace indicator fixed (light-vs-dark over the wallpaper). All README badges updated to the brand purple.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.9.2</span><div><h3>Palette reaches the apps — focused window gets the brand colour</h3><p>The v5.9.1 <span class="mono">theme.h</span> roles rolled out to all ten app windows: <b>206 → 169</b> <span class="mono">fb_rgb()</span> literals converted, <b>61</b> named role uses. Window chrome: <span class="mono">THEME_TITLE_ACTIVE</span> = brand purple for the focused title bar, <span class="mono">THEME_TITLE_INACTIVE</span> = dark grey for the rest. Selection highlights (<span class="mono">THEME_SELECTION</span>), panel headers (<span class="mono">THEME_PANEL_HEADER</span>), and buttons (<span class="mono">THEME_BUTTON</span>) all themed. App content colours kept as data (paint swatches, Minesweeper cells, ANSI palette).</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.9.4</span><div><h3>Desktop icons wrap on narrow resolutions</h3><p>The icon layout was a single fixed row that ran off the screen at 640×480 (the resolution Settings offers). Now icons are laid out as a grid that re-flows on the framebuffer width. Settings' resolution change handler calls <span class="mono">init_desktop_icons()</span> so switching to a smaller mode re-flows them cleanly. At 1024×768 the layout is pixel-identical (13 columns, all nine icons in one row).</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.9.3</span><div><h3>Window frame joins the focus story</h3><p>The window frame now carries focus too: a focused window gets the brand accent on its top+left edge and a darker accent on bottom+right, so the border and title bar merge into one continuous coloured edge. Unfocused windows keep the neutral grey bevel for depth between stacked windows. Title text and button glyphs unified onto <span class="mono">THEME_TITLE_TEXT</span>. Traffic-light buttons untouched (close red, minimise grey, maximise green — control affordance, not branding).</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.9.5</span><div><h3>No window can be born off-screen</h3><p>Every new window is clamped fully on-screen at spawn, at any resolution — no more title bars appearing past the edge.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.9.6</span><div><h3>Window geometry follows the screen</h3><p>Window sizes and positions scale to the live framebuffer instead of assuming 1024×768, so the layout holds at 640×480 too.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.9.7</span><div><h3>Window-management keyboard shortcuts</h3><p>Alt+Tab cycles focus, Alt+F4 closes, Alt+Up/Down maximise/restore — full keyboard control of windows.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.9.8</span><div><h3>Window snapping</h3><p>Alt+Left / Alt+Right tile the focused window to the left or right half of the usable area.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.9.9</span><div><h3>Quarter-tiling</h3><p>Once a window is snapped to a half, Alt+Up/Down refines it to a top or bottom quarter.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.9.10</span><div><h3>Window drop shadows</h3><p>Soft shadows under windows — the compositor's first real depth cue.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.9.11</span><div><h3>Title-bar gradient</h3><p>The focused title bar gets a vertical gradient — the second depth cue, alongside the shadows.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.9.12</span><div><h3>Rounded window tops</h3><p>Rounded top corners complete the modern-window look: shadow + gradient + rounding.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.9.13</span><div><h3>Taskbar depth</h3><p>The taskbar gets the same gradient treatment carried down from the window chrome.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.9.14</span><div><h3>Start menu depth + hover</h3><p>The Start menu joins the polished chrome, with a gradient panel and hover highlighting on entries.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.9.15</span><div><h3>Context &amp; user menus polished</h3><p>Every menu now shares one consistent look — rounded, gradient, hover-highlighted.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.9.16</span><div><h3>Login card</h3><p>The brand look reaches the first screen the user sees — the login card gets the rounded, purple treatment.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.9.17</span><div><h3>Rounded-corner primitives consolidated into <span class="mono">fb.c</span></h3><p>Corner rounding moved into one reusable framebuffer helper instead of being re-derived per call site.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.9.18</span><div><h3>Windows round on all four corners</h3><p>The v5.9.12 follow-up, closed with a framebuffer clip region so bottom corners round too.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.9.19</span><div><h3>README hero screenshot refreshed</h3><p>The repo's public face finally matched the OS after the visual overhaul.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.9.20</span><div><h3>Per-CPU IST stacks</h3><p>Each core gets its own double-fault / NMI stacks — the first increment of the kernel-internals track.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.9.21</span><div><h3>VFS node-pool spinlock</h3><p>The VFS inode/node pool made SMP-safe — first increment of the T1 locking arc.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.9.22</span><div><h3>VFS mount-table spinlock</h3><p>The mount table serialized across cores (leaning on it being append-only).</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.9.23</span><div><h3>Keyboard input path locked</h3><p>The keyboard IRQ and the terminal's line discipline made SMP-safe with an irqsave lock.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.9.24</span><div><h3>Network stack under one <span class="mono">net_lock</span></h3><p>A giant lock serializes the whole non-reentrant TCP/UDP/IP stack + socket table — the capstone of the T1 arc.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.9.25</span><div><h3>The EXT2 driver locked</h3><p>The ext2 driver's shared scratch buffers serialized — the last major non-reentrant subsystem a user process can reach under <span class="mono">smpbalance</span>.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.9.26</span><div><h3>EXT2 sector cache</h3><p>A write-through 128 KB direct-mapped sector cache speeds disk reads — coherent by construction, verified <span class="mono">e2fsck</span>-clean.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.9.27</span><div><h3>Partial <span class="mono">munmap</span> now splits the VMA</h3><p>A partial unmap trims or splits the VMA instead of silently leaving the range mapped so it re-faulted a zero page.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.9.28</span><div><h3>Partial <span class="mono">mprotect</span> now splits the VMA too</h3><p>The companion to v5.9.27 — a partial mprotect carves the VMA precisely so pages outside the range keep their prot.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.9.29</span><div><h3>Fullscreen framebuffer syscalls</h3><p><span class="mono">SYS_FBINFO</span>/<span class="mono">FBPRESENT</span> let a userspace program put pixels on the screen — the first step toward the DOOM milestone.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.9.30</span><div><h3>Raw key-event path</h3><p>Press <em>and</em> release events (<span class="mono">DG_GetKey</span>) for a fullscreen game — the second DOOM-milestone enabler after the video path.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.9.31</span><div><h3>The DOOM port begins</h3><p>The <span class="mono">doomgeneric</span> engine recovered from git history, and the platform hooks scoped against the new syscalls.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.9.32</span><div><h3>DOOM compiles</h3><p>The whole engine builds as userspace; the link gap pinned to exactly 35 missing symbols.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.9.33</span><div><h3>DOOM links</h3><p>The engine now produces a userspace ELF (448 KB) with zero undefined symbols.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.9.34</span><div><h3>DOOM RUNS 🔥</h3><p>The original 1993 DOOM (shareware) is playable on NyxOS — E1M1 + HUD, ESC menu. The "but can it run DOOM?" milestone, reached.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.9.35</span><div><h3>DOOM gets a desktop icon</h3><p>Launch the game by clicking an icon, not by knowing the <span class="mono">doom</span> command.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.9.36</span><div><h3>The DOOM icon actually launches the game</h3><p>Two real bugs fixed: the launcher never attached the disk (no WAD), and the icon spawned DOOM unscheduled.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.9.37</span><div><h3>DOOM runs in a window</h3><p>Not fullscreen — <span class="mono">SYS_FBPRESENT</span> is rerouted into a compositor window so you see the desktop around the game.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.9.38</span><div><h3>Title-bar buttons made pixel-consistent</h3><p>The maximize glyph was malformed on every window; the minimise, maximise and close marks now share one inner box.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.9.39</span><div><h3>Pong — the compositor's first animated window</h3><p>An in-kernel Pong, driven by a new per-window <span class="mono">on_tick</span> + a ~30 fps game-tick so the ball moves with no input.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.9.40</span><div><h3>A "Games" desktop folder</h3><p>Gathers Minesweeper, DOOM and Pong as clickable emblems; Pong gets an icon "like DOOM" and the desktop stays tidy.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.9.41</span><div><h3>Every desktop app icon gets its own identity</h3><p>A distinct little picture per app — Terminal a console, Editor a page &amp; pencil, Settings sliders, Calc an LCD — instead of one generic square.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.9.42</span><div><h3>Snake</h3><p>A second in-kernel game, reusing Pong's <span class="mono">on_tick</span>; the Games folder grows to four.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.9.43</span><div><h3>Tetris — the fifth game</h3><p>Full 7-piece rotation (4×4-bitmask table), line clears, levels, and a NEXT/SCORE/LINES panel. Games folder grows to five.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.9.44</span><div><h3>Selene — the NyxOS web browser 🌙</h3><p>Selene fetches and renders real pages from the internet — DHCP + DNS + TCP, an HTML-to-text renderer, a URL bar and a moon-crescent icon. HTTP only for now.</p></div></div>
+        <div class="tl reveal"><span class="tl-v">v4.x</span><div><h3>64-bit &amp; hardening</h3><p>Full x86_64 long mode, a higher-half kernel, user/kernel page-table isolation, and <span class="mono">NX</span> + <span class="mono">SMEP</span> with APIC init.</p></div></div>
+        <div class="tl reveal"><span class="tl-v">v5.0–5.7</span><div><h3>Apps, login, ring-3 &amp; the network arc</h3><p>A full GUI app suite, a boot animation + login screen, syscall-boundary hardening, ring-3 userspace that actually runs, preemptive scheduling with job control, and a networking sprint — loopback + ICMP, TCP retransmission, passive open, and an HTTP server that answers real clients.</p></div></div>
+        <div class="tl reveal"><span class="tl-v">v5.8</span><div><h3>A complete ring-3 environment</h3><p>The native language runtime, <span class="mono">waitpid()</span>, anonymous pipes &amp; blocking IPC, signals with <span class="mono">setjmp</span>/<span class="mono">longjmp</span> recovery, <span class="mono">poll()</span> I/O multiplexing, <span class="mono">nc</span>, persistent EXT2 accounts, and the root-cause fix of the pipeline-corruption Heisenbug (a firmware-hole page-allocator bug).</p></div></div>
+        <div class="tl reveal accent"><span class="tl-v">v5.9.0 · LTS</span><div><h3>The stable baseline — P0.1 closed</h3><p>The one release-blocking bug root-caused and fixed with a single <span class="mono">cli</span>, closing the preemptible window between the user-CR3 reload and <span class="mono">iretq</span>. Plus a GUI/VFS/ext2 hardening sweep and the first SMP stages (per-CPU TSS, spinlocks, TLB-shootdown IPIs). The long-term-support release.</p></div></div>
+        <div class="tl reveal accent"><span class="tl-v">v5.9.x</span><div><h3>"Nightfall" desktop · DOOM · five games · Selene</h3><p>A central GUI palette in brand purple, modern window chrome (shadows, gradients, rounding), keyboard window management &amp; snapping. The original 1993 <b>DOOM</b> ported and playable in a window, joined by <b>Tetris</b>, <b>Snake</b>, <b>Pong</b> and <b>Minesweeper</b>. And <b>🌙 Selene</b> — the NyxOS web browser — fetches and renders real pages over DHCP + DNS + TCP + HTTP.</p></div></div>
+        <div class="tl reveal accent"><span class="tl-v">v6.0–6.1</span><div><h3>daedalOS pivot — Phase 1: the desktop</h3><p>The push toward a fully-functional daedalOS-style desktop OS: a polished 1080p desktop, visual file management, a Windows-like clean menu, and multi-session groundwork — all keeping the Nyx night-goddess identity.</p></div></div>
+        <div class="tl reveal accent"><span class="tl-v">v6.2–6.3</span><div><h3>Phase 2: an in-OS C toolchain that self-hosts</h3><p><b>TinyCC 0.9.27</b> ported to run <em>inside</em> NyxOS — <span class="mono">tcc</span> compiles <span class="mono">tcc</span>. The <span class="mono">cc</span> command and the <b>xbm</b> package manager compile C from a recipe and install it to <span class="mono">/mnt/bin</span>, runnable by bare name. The everyday <span class="mono">install/remove/update/search/list</span> verb set is complete.</p></div></div>
+        <div class="tl reveal accent"><span class="tl-v">v6.4.180</span><div><h3>Languages, IRQ-driven networking &amp; render testbeds — current</h3><p>The native <b>N</b> language (<span class="mono">.n</span> / <span class="mono">ncc</span>) and the typed superset <b>N++</b> with static checks; RTL8139 moved toward interrupt-driven RX/TX with a real retransmit queue and SMP-safe TCP; the <b>Nyx Voxels</b> and <b>Nyx Fractal</b> render benchmarks and animated wallpapers; AES Key Wrap (RFC 3394) landing a 55-KAT crypto battery in CI; and a steady security issue burn-down — one honest, verified increment at a time.</p></div></div>
       </div>
     </section>
 

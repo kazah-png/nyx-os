@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; manifest-src 'self'; frame-ancestors 'none'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests" />
+  <meta name="referrer" content="strict-origin-when-cross-origin" />
+  <meta name="color-scheme" content="dark" />
+  <meta name="theme-color" content="#05060a" />
+  <title>404 — lost in the night · NyxOS</title>
+  <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="style.css" />
+  <style>
+    .nf { min-height: 100vh; display: grid; place-items: center; text-align: center; padding: 2rem; }
+    .nf-inner { max-width: 34rem; }
+    .nf-code {
+      font-family: var(--display); font-weight: 700; line-height: 1;
+      font-size: clamp(5rem, 22vw, 11rem); letter-spacing: -4px; margin: 0;
+    }
+    .nf-code .grad { display: inline-block; }
+    .nf h1 { font-family: var(--display); font-size: clamp(1.3rem, 4vw, 1.8rem); margin: .6rem 0 .8rem; }
+    .nf p { color: var(--muted); margin: 0 0 2rem; }
+  </style>
+</head>
+<body>
+  <div class="glow glow-1" aria-hidden="true"></div>
+  <div class="glow glow-2" aria-hidden="true"></div>
+  <main class="nf">
+    <div class="nf-inner">
+      <p class="nf-code"><span class="grad">404</span></p>
+      <h1>This page drifted into the night 🌙</h1>
+      <p>The path you followed doesn't exist on NyxOS. Let's get you back to solid ground.</p>
+      <div class="hero-cta" style="justify-content:center">
+        <a class="btn btn-solid btn-lg" href="/">Back home</a>
+        <a class="btn btn-ghost btn-lg" href="https://github.com/kazah-png/nyx-os" target="_blank" rel="noopener">GitHub</a>
+      </div>
+    </div>
+  </main>
+</body>
+</html>

@@ -1,0 +1,7 @@
+# NyxOS security policy — https://nyxos.cc
+# Please report security issues privately via GitHub Security Advisories.
+Contact: https://github.com/kazah-png/nyx-os/security/advisories/new
+Contact: https://github.com/kazah-png/nyx-os/issues
+Expires: 2027-08-12T00:00:00.000Z
+Preferred-Languages: en, es
+Canonical: https://nyxos.cc/.well-known/security.txt
