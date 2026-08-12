@@ -17,6 +17,9 @@
  *     type from the initializer (integer literals default to i64), `mut`
  *     is enforced, and the generated C is plain C99 (no __auto_type), so
  *     TinyCC — the in-OS compiler — can build it.
+ *   - static checks (v0.3, the first N++ P1 slice): undeclared variables,
+ *     unknown callees, wrong call arity, and argument/parameter type
+ *     mismatches are compile errors with file:line diagnostics.
  * Not yet (N++ / type-checker territory): match, for, closures, struct/enum,
  * Result/?, methods, modules/use, defer.
  */
@@ -709,14 +712,27 @@ static Ty ty_named(const char* n) { Ty t; t.name = (char*)n; t.ptrs = 0; return 
 static Ty ty_ptr_u8(void)         { Ty t; t.name = (char*)"u8"; t.ptrs = 1; return t; }
 static int ty_is(Ty t, const char* n) { return t.name && t.ptrs == 0 && !strcmp(t.name, n); }
 
-/* Return type of a named function (extern syscalls and user fns are all
- * parsed before codegen runs, so forward references resolve). */
-static Ty ret_type_of(const char* name) {
+/* Look up a named function's signature (extern syscalls and user fns are all
+ * parsed before codegen runs, so forward references resolve). Returns 1 and
+ * fills the out-params on success, 0 for an unknown name. */
+static int fn_lookup(const char* name, Param** ps, int* np, Ty* ret) {
     for (int i = 0; i < NXFN; i++)
-        if (!strcmp(XFNS[i].name, name)) return XFNS[i].ret;
+        if (!strcmp(XFNS[i].name, name)) {
+            *ps = XFNS[i].ps; *np = XFNS[i].np; *ret = XFNS[i].ret;
+            return 1;
+        }
     for (int i = 0; i < NFN; i++)
-        if (!strcmp(FNS[i].name, name)) return FNS[i].ret;
-    return ty_named("i64");                     /* unknown callee: assume i64 */
+        if (!strcmp(FNS[i].name, name)) {
+            *ps = FNS[i].ps; *np = FNS[i].np; *ret = FNS[i].ret;
+            return 1;
+        }
+    return 0;
+}
+
+static Ty ret_type_of(const char* name) {
+    Param* ps; int np; Ty ret;
+    if (fn_lookup(name, &ps, &np, &ret)) return ret;
+    return ty_named("i64");    /* soft fallback; check_expr rejects unknowns */
 }
 
 /* Infer the N type of an expression. Integer literals default to i64 (the
@@ -756,6 +772,85 @@ static Ty infer_type(Expr* e) {
         case E_CAST:   return e->cast_to;
     }
     return ty_named("i64");
+}
+
+/* --- static checks (v0.3): the first N++ P1 slice ---------------------- */
+/* Render a type for diagnostics: "i64", "*u8", "raw"-ness is not tracked. */
+static const char* ty_str(Ty t) {
+    static char buf[2][40];
+    static int flip;
+    char* b = buf[flip ^= 1];
+    int n = 0;
+    for (int i = 0; i < t.ptrs && n < 8; i++) b[n++] = '*';
+    const char* nm = t.name ? t.name : "void";
+    while (*nm && n < 38) b[n++] = *nm++;
+    b[n] = '\0';
+    return b;
+}
+
+static int ty_is_int(Ty t) {
+    if (!t.name || t.ptrs) return 0;
+    static const char* I[] = { "i8", "u8", "i16", "u16", "i32", "u32",
+                               "i64", "u64", "isize", "usize", "addr", "bool" };
+    for (size_t i = 0; i < sizeof(I) / sizeof(I[0]); i++)
+        if (!strcmp(t.name, I[i])) return 1;
+    return 0;
+}
+
+/* Argument/parameter compatibility: integers inter-convert (C semantics);
+ * `str` only matches `str`; pointers must agree in depth and base, except
+ * that *u8/*void act as byte pointers and match any base. `as` casts are
+ * authoritative because they change the inferred type itself. */
+static int ty_compat(Ty a, Ty p) {
+    if (a.name && p.name && a.ptrs == p.ptrs && !strcmp(a.name, p.name)) return 1;
+    if (ty_is_int(a) && ty_is_int(p)) return 1;
+    if (a.ptrs && p.ptrs && a.ptrs == p.ptrs) {
+        if (!strcmp(a.name, "u8") || !strcmp(p.name, "u8")) return 1;
+        if (!strcmp(a.name, "void") || !strcmp(p.name, "void")) return 1;
+    }
+    return 0;
+}
+
+/* Recursive static check of one expression tree, run against the live
+ * symbol table right before the enclosing statement is emitted. Rejects
+ * undeclared variables, unknown callees, arity errors, and argument type
+ * mismatches — each with a file:line diagnostic. */
+static void check_expr(Expr* e) {
+    if (!e) return;
+    switch (e->k) {
+        case E_PATH:
+            if (!vars_find(e->name))
+                die("%s:%d: undeclared variable '%s'", FILENAME, e->line, e->name);
+            break;
+        case E_CALL: {
+            if (e->callee->k != E_PATH)
+                die("%s:%d: only named functions can be called", FILENAME, e->line);
+            Param* ps; int np; Ty ret;
+            if (!fn_lookup(e->callee->name, &ps, &np, &ret))
+                die("%s:%d: unknown function '%s'", FILENAME, e->line, e->callee->name);
+            if (e->nargs != np)
+                die("%s:%d: '%s' takes %d argument(s), got %d",
+                    FILENAME, e->line, e->callee->name, np, e->nargs);
+            for (int i = 0; i < e->nargs; i++) {
+                check_expr(e->args[i]);
+                Ty at = infer_type(e->args[i]);
+                if (!ty_compat(at, ps[i].ty))
+                    die("%s:%d: argument %d to '%s': expected %s, got %s",
+                        FILENAME, e->line, i + 1, e->callee->name,
+                        ty_str(ps[i].ty), ty_str(at));
+            }
+            break;
+        }
+        case E_FIELD:  check_expr(e->base); break;
+        case E_UN:     check_expr(e->r); break;
+        case E_BIN:    check_expr(e->l); check_expr(e->r); break;
+        case E_CAST:   check_expr(e->l); break;
+        case E_INTERP:
+            for (int i = 0; i < e->nfrags; i++)
+                if (e->frags[i].e) check_expr(e->frags[i].e);
+            break;
+        default: break;
+    }
 }
 /* ---------------------------------------------------------------------- */
 
@@ -876,6 +971,7 @@ static void gen_block(Block* b, int ind, int fn_tail);
 static void gen_stmt(Stmt* s, int ind) {
     switch (s->k) {
         case S_LET: {
+            check_expr(s->e);
             Ty t = infer_type(s->e);
             if (!t.name || is_never(t))
                 die("%s:%d: cannot bind '%s' to an expression with no value",
@@ -890,6 +986,8 @@ static void gen_stmt(Stmt* s, int ind) {
             break;
         }
         case S_ASSIGN: {
+            check_expr(s->lhs);
+            check_expr(s->e);
             if (s->lhs->k == E_PATH) {          /* mut enforcement (spec 5.1) */
                 VarInfo* v = vars_find(s->lhs->name);
                 if (v && !v->is_mut)
@@ -905,12 +1003,14 @@ static void gen_stmt(Stmt* s, int ind) {
             break;
         }
         case S_RET:
+            check_expr(s->e);
             gen_preludes(s->e, ind);
             indentf(ind);
             if (s->e) { fputs("return ", OUT); gen_expr(s->e); fputs(";\n", OUT); }
             else fputs("return;\n", OUT);
             break;
         case S_EXPR:
+            check_expr(s->e);
             gen_preludes(s->e, ind);
             indentf(ind);
             gen_expr(s->e);
@@ -919,6 +1019,7 @@ static void gen_stmt(Stmt* s, int ind) {
         case S_BREAK: indentf(ind); fputs("break;\n", OUT); break;
         case S_CONT:  indentf(ind); fputs("continue;\n", OUT); break;
         case S_WHILE:
+            check_expr(s->cond);
             gen_preludes(s->cond, ind);
             indentf(ind);
             fputs("while (", OUT);
@@ -928,6 +1029,7 @@ static void gen_stmt(Stmt* s, int ind) {
             fputs("\n", OUT);
             break;
         case S_IF:
+            check_expr(s->cond);
             gen_preludes(s->cond, ind);
             indentf(ind);
             fputs("if (", OUT);
@@ -945,6 +1047,7 @@ static void gen_block(Block* b, int ind, int fn_tail) {
     fputs("{\n", OUT);
     for (int i = 0; i < b->n; i++) gen_stmt(b->st[i], ind + 1);
     if (b->tail) {
+        check_expr(b->tail);
         gen_preludes(b->tail, ind + 1);
         indentf(ind + 1);
         if (fn_tail && CUR_RET.name && !is_never(CUR_RET)) fputs("return ", OUT);

@@ -1,6 +1,6 @@
 # The N Language — Specification
 
-**Version:** v0.2 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
+**Version:** v0.3 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
 
 This document specifies N exactly as implemented by the bootstrap compiler
 `ncc`. It is a *descriptive* spec: everything here compiles today. Planned
@@ -300,7 +300,27 @@ argument or operand compatibility — that is the N++ type checker (P1). Where
 inference must guess (an unknown name), it assumes `i64`; use `as` to
 override at the use site.
 
-### 6.5 Calls and fields
+### 6.5 Static checks (since v0.3)
+
+The compiler rejects the following, each with a `file:line` diagnostic:
+
+- **Undeclared variables** — every name used in an expression must be a
+  binding or parameter in scope.
+- **Unknown functions** — every callee must be a declared `fn` or an
+  `extern syscall` entry (only named functions are callable in N).
+- **Wrong argument count** — call arity must match the declaration.
+- **Argument type mismatches**, under these compatibility rules: any two
+  integer types are call-compatible (C conversion semantics then apply);
+  `str` matches only `str`; pointers must agree in depth, and base types
+  must match unless either side is `*u8`/`*void` (byte pointers); an `as`
+  cast changes the inferred type and is therefore authoritative.
+- **Assignment to immutable bindings** (§5.1).
+
+Not yet checked (completing N++ P1): operand mixing inside binary
+expressions, the `return`/tail value against the declared return type, and
+the assigned value against the target's type.
+
+### 6.6 Calls and fields
 
 Function calls take positional arguments. Field access uses `.` and applies to
 `str` values today (`.ptr`, `.len`); it generalizes to user types in N++.
@@ -402,10 +422,10 @@ interpolated expressions are parsed by the ordinary expression grammar.
 These are known, deliberate gaps in the bootstrap; each is queued for the
 N++/type-checker phase:
 
-1. **Inference is not verification.** Expressions are *typed* (§6.4) but not
-   *checked*: passing an `i64` where a `str` is declared, or mixing widths,
-   surfaces as a C compiler error on the generated file rather than an `ncc`
-   diagnostic. Full checking is N++ P1.
+1. **Checking is call-site-deep, not everywhere.** Names, arity, and argument
+   types are verified (§6.5), but operand mixing inside binary expressions,
+   return values, and assignment values still defer to the C compiler on the
+   generated file. Completing this is the rest of N++ P1.
 2. **Interpolation is text-or-decimal only.** `str` inserts text, everything
    else formats as signed decimal; there are no hex/width format controls yet.
 3. **Missing constructs:** `struct`/`enum` definitions, `match`, `for`,
