@@ -120,5 +120,21 @@ compiled `ncc`, the resulting in-OS `ncc` transpiled `lang/examples/hello.n`,
 pid — the full N pipeline with no dev machine involved. The runtime-side
 portability that enabled it (tcc-safe fixed-width types, the explicit-`movq`
 syscall asm, the `environ`/libc.o ownership rule) lives in `user/nyxrt.h` /
-`user/nyxrt.c` with comments explaining each rule. Remaining on this ladder:
-wire an `xbm` recipe so `xbm install ncc` does the M2 step on any NyxOS.
+`user/nyxrt.c` with comments explaining each rule.
+
+**`ncc` is an installable NyxOS package.** The `user/pkg/ncc/` recipe ships in
+the initramfs package repository, so on any NyxOS:
+
+```
+xbm install ncc        # compiles ncc from source with the in-OS cc -> /mnt/bin/ncc
+ncc program.n -o program.c
+cc program.c /mnt/nyxrt.c -I/mnt -o /mnt/bin/program
+```
+
+(verified in-OS: the xbm-installed `ncc` transpiled `hello.n` and the result
+ran, printing its pid). Maintenance note: `user/pkg/ncc/ncc.c` is a
+**byte-identical copy** of `lang/ncc/ncc.c` — xbm recipes can only build
+sources inside their own package directory (a path-traversal guard), so the
+copy is by design. When changing the compiler, refresh it with
+`cp lang/ncc/ncc.c user/pkg/ncc/ncc.c`; the canonical source is always
+`lang/ncc/`.

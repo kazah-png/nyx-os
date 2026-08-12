@@ -1,0 +1,3 @@
+name: ncc
+source: ncc.c
+bin: ncc

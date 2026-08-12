@@ -1,0 +1,1065 @@
+/* ncc — bootstrap compiler for N, the native language of NyxOS.
+ * Transpiles .n source to C targeting the nyxrt runtime (user/nyxrt.h).
+ * Hosted tool (runs on the dev machine); single file, no dependencies.
+ * See lang/docs/spec-n.md for the language specification this implements.
+ *
+ * Supported subset (N v0.2):
+ *   - extern syscall { fn name(params) [-> T] = N }
+ *   - fn decls with block bodies, params, return types
+ *   - statements: let (:=, mut), assignment (= += -=), return, while,
+ *     if/else, break, continue, expression statements, block tail-expr
+ *   - expressions: int (dec/hex), bool, string literals, string
+ *     interpolation "{expr}" (typed: str inserts text, integers decimal),
+ *     path, call, field access, unary - !, binary arith/cmp/logic/bit,
+ *     `as` casts, parens
+ *   - types: primitive names, *T, raw *T
+ *   - minimal type inference (v0.2): `x := e` bindings get a concrete C
+ *     type from the initializer (integer literals default to i64), `mut`
+ *     is enforced, and the generated C is plain C99 (no __auto_type), so
+ *     TinyCC — the in-OS compiler — can build it.
+ * Not yet (N++ / type-checker territory): match, for, closures, struct/enum,
+ * Result/?, methods, modules/use, defer.
+ */
+/* Platform includes. In-OS builds (milestone M2) compile this file with
+ * NyxOS's ported TinyCC, whose libc surface is the single header libc.h
+ * (stdio/stdlib/string/va_* over the fd syscalls) — the same pattern the
+ * self-hosted coreutils use. tcc always defines __TINYC__, and NyxOS is the
+ * only tcc environment we target, so that macro selects the in-OS build:
+ *     cc /mnt/ncc.c -I/usr/src/nyx -o /mnt/bin/ncc
+ * Hosted builds (any C99 compiler) take the standard-headers branch. */
+#ifdef __TINYC__
+#include "libc.h"
+#else
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdarg.h>
+#endif
+
+/* ------------------------------------------------------------------ */
+/* utils                                                              */
+/* ------------------------------------------------------------------ */
+static void die(const char* fmt, ...) {
+    va_list ap;
+    va_start(ap, fmt);
+    vfprintf(stderr, fmt, ap);
+    va_end(ap);
+    fputc('\n', stderr);
+    exit(1);
+}
+static void* xmalloc(size_t n) {
+    void* p = calloc(1, n ? n : 1);
+    if (!p) die("ncc: out of memory");
+    return p;
+}
+static char* xstrndup(const char* s, size_t n) {
+    char* p = xmalloc(n + 1);
+    memcpy(p, s, n);
+    return p;
+}
+
+/* ------------------------------------------------------------------ */
+/* lexer                                                              */
+/* ------------------------------------------------------------------ */
+typedef enum {
+    T_EOF, T_INT, T_STR, T_STR_HEAD, T_STR_MID, T_STR_TAIL, T_INTERP_R,
+    T_IDENT,
+    T_KW_EXTERN, T_KW_SYSCALL, T_KW_FN, T_KW_MUT, T_KW_RETURN,
+    T_KW_IF, T_KW_ELSE, T_KW_WHILE, T_KW_BREAK, T_KW_CONTINUE,
+    T_KW_AS, T_KW_RAW, T_KW_TRUE, T_KW_FALSE,
+    T_LP, T_RP, T_LB, T_RB, T_COMMA, T_SEMI, T_COLON,
+    T_WALRUS, T_ARROW, T_ASSIGN,
+    T_PLUS, T_MINUS, T_STAR, T_SLASH, T_PERCENT,
+    T_PLUSEQ, T_MINUSEQ,
+    T_EQ, T_NE, T_LT, T_LE, T_GT, T_GE,
+    T_NOT, T_ANDAND, T_OROR, T_AMP, T_PIPE, T_CARET, T_SHL, T_SHR,
+    T_DOT, T_QUESTION
+} TK;
+
+typedef struct {
+    TK k;
+    int line;
+    long long ival;
+    char* s;
+    int slen;
+} Tok;
+
+static const char* FILENAME;
+static const char* SRC;
+static int POS, LEN, LINE = 1, COL = 1;
+
+/* string-interpolation mode stack */
+static int istack[16], itop = -1, brace_depth = 0, resume_str = 0;
+
+static int is_idc(int c) { return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_'; }
+static int is_dg(int c)  { return c >= '0' && c <= '9'; }
+static int is_hx(int c)  { return is_dg(c) || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F'); }
+static int hxv(int c)    { return is_dg(c) ? c - '0' : (c | 32) - 'a' + 10; }
+
+static Tok mk(TK k, int sl) {
+    Tok t;
+    memset(&t, 0, sizeof t);
+    t.k = k;
+    t.line = sl;
+    return t;
+}
+
+static Tok scan_string_body(int cont) {
+    int sl = LINE;
+    char* out = xmalloc((size_t)LEN + 1);
+    int on = 0;
+    for (;;) {
+        if (POS >= LEN) die("%s:%d: unterminated string", FILENAME, sl);
+        char c = SRC[POS];
+        if (c == '"') {
+            POS++; COL++;
+            Tok t = mk(cont ? T_STR_TAIL : T_STR, sl);
+            t.s = out; t.slen = on;
+            return t;
+        }
+        if (c == '{') {
+            POS++; COL++;
+            if (itop + 1 >= 16) die("%s:%d: interpolation too deep", FILENAME, sl);
+            istack[++itop] = brace_depth;
+            Tok t = mk(cont ? T_STR_MID : T_STR_HEAD, sl);
+            t.s = out; t.slen = on;
+            return t;
+        }
+        if (c == '\\') {
+            POS++; COL++;
+            if (POS >= LEN) die("%s:%d: bad escape", FILENAME, sl);
+            char e = SRC[POS++]; COL++;
+            int v;
+            switch (e) {
+                case 'n': v = '\n'; break;
+                case 't': v = '\t'; break;
+                case 'r': v = '\r'; break;
+                case '0': v = 0;    break;
+                case '\\': v = '\\'; break;
+                case '"': v = '"';  break;
+                case '\'': v = '\''; break;
+                case '{': v = '{';  break;
+                case '}': v = '}';  break;
+                default: die("%s:%d: bad escape '\\%c'", FILENAME, sl, e); v = 0;
+            }
+            out[on++] = (char)v;
+            continue;
+        }
+        if (c == '\n') { LINE++; COL = 1; } else COL++;
+        out[on++] = c;
+        POS++;
+    }
+}
+
+static TK kwlook(const char* s, int n) {
+    static const struct { const char* w; TK k; } K[] = {
+        {"extern", T_KW_EXTERN}, {"syscall", T_KW_SYSCALL}, {"fn", T_KW_FN},
+        {"mut", T_KW_MUT}, {"return", T_KW_RETURN}, {"if", T_KW_IF},
+        {"else", T_KW_ELSE}, {"while", T_KW_WHILE}, {"break", T_KW_BREAK},
+        {"continue", T_KW_CONTINUE}, {"as", T_KW_AS}, {"raw", T_KW_RAW},
+        {"true", T_KW_TRUE}, {"false", T_KW_FALSE},
+    };
+    for (size_t i = 0; i < sizeof(K) / sizeof(K[0]); i++)
+        if ((int)strlen(K[i].w) == n && !memcmp(K[i].w, s, (size_t)n)) return K[i].k;
+    return T_IDENT;
+}
+
+static Tok next_token(void) {
+    if (resume_str) {
+        resume_str = 0;
+        return scan_string_body(1);
+    }
+    for (;;) {   /* skip whitespace + comments */
+        if (POS >= LEN) return mk(T_EOF, LINE);
+        char c = SRC[POS];
+        if (c == ' ' || c == '\t' || c == '\r') { POS++; COL++; continue; }
+        if (c == '\n') { POS++; LINE++; COL = 1; continue; }
+        if (c == '/' && POS + 1 < LEN && SRC[POS + 1] == '/') {
+            while (POS < LEN && SRC[POS] != '\n') POS++;
+            continue;
+        }
+        if (c == '/' && POS + 1 < LEN && SRC[POS + 1] == '*') {
+            int d = 1;
+            POS += 2; COL += 2;
+            while (POS < LEN && d) {
+                if (SRC[POS] == '/' && POS + 1 < LEN && SRC[POS + 1] == '*') { d++; POS += 2; continue; }
+                if (SRC[POS] == '*' && POS + 1 < LEN && SRC[POS + 1] == '/') { d--; POS += 2; continue; }
+                if (SRC[POS] == '\n') { LINE++; COL = 1; }
+                POS++;
+            }
+            continue;
+        }
+        break;
+    }
+    int sl = LINE;
+    char c = SRC[POS];
+
+    if (is_idc(c)) {
+        int st = POS;
+        while (POS < LEN && (is_idc(SRC[POS]) || is_dg(SRC[POS]))) { POS++; COL++; }
+        int n = POS - st;
+        TK k = kwlook(SRC + st, n);
+        Tok t = mk(k, sl);
+        if (k == T_IDENT) { t.s = xstrndup(SRC + st, (size_t)n); t.slen = n; }
+        return t;
+    }
+    if (is_dg(c)) {
+        long long v = 0;
+        if (c == '0' && POS + 1 < LEN && SRC[POS + 1] == 'x') {
+            POS += 2; COL += 2;
+            while (POS < LEN && (is_hx(SRC[POS]) || SRC[POS] == '_')) {
+                if (SRC[POS] != '_') v = v * 16 + hxv(SRC[POS]);
+                POS++; COL++;
+            }
+        } else {
+            while (POS < LEN && (is_dg(SRC[POS]) || SRC[POS] == '_')) {
+                if (SRC[POS] != '_') v = v * 10 + (SRC[POS] - '0');
+                POS++; COL++;
+            }
+        }
+        Tok t = mk(T_INT, sl);
+        t.ival = v;
+        return t;
+    }
+    if (c == '"') { POS++; COL++; return scan_string_body(0); }
+
+    POS++; COL++;
+    char n2 = POS < LEN ? SRC[POS] : 0;
+    switch (c) {
+        case '(': return mk(T_LP, sl);
+        case ')': return mk(T_RP, sl);
+        case ',': return mk(T_COMMA, sl);
+        case ';': return mk(T_SEMI, sl);
+        case '.': return mk(T_DOT, sl);
+        case '?': return mk(T_QUESTION, sl);
+        case '^': return mk(T_CARET, sl);
+        case '%': return mk(T_PERCENT, sl);
+        case '*': return mk(T_STAR, sl);
+        case '/': return mk(T_SLASH, sl);
+        case '{': brace_depth++; return mk(T_LB, sl);
+        case '}':
+            if (itop >= 0 && brace_depth == istack[itop]) {
+                itop--;
+                resume_str = 1;
+                return mk(T_INTERP_R, sl);
+            }
+            brace_depth--;
+            return mk(T_RB, sl);
+        case ':': if (n2 == '=') { POS++; COL++; return mk(T_WALRUS, sl); } return mk(T_COLON, sl);
+        case '-': if (n2 == '>') { POS++; COL++; return mk(T_ARROW, sl); }
+                  if (n2 == '=') { POS++; COL++; return mk(T_MINUSEQ, sl); }
+                  return mk(T_MINUS, sl);
+        case '+': if (n2 == '=') { POS++; COL++; return mk(T_PLUSEQ, sl); } return mk(T_PLUS, sl);
+        case '=': if (n2 == '=') { POS++; COL++; return mk(T_EQ, sl); } return mk(T_ASSIGN, sl);
+        case '!': if (n2 == '=') { POS++; COL++; return mk(T_NE, sl); } return mk(T_NOT, sl);
+        case '<': if (n2 == '=') { POS++; COL++; return mk(T_LE, sl); }
+                  if (n2 == '<') { POS++; COL++; return mk(T_SHL, sl); }
+                  return mk(T_LT, sl);
+        case '>': if (n2 == '=') { POS++; COL++; return mk(T_GE, sl); }
+                  if (n2 == '>') { POS++; COL++; return mk(T_SHR, sl); }
+                  return mk(T_GT, sl);
+        case '&': if (n2 == '&') { POS++; COL++; return mk(T_ANDAND, sl); } return mk(T_AMP, sl);
+        case '|': if (n2 == '|') { POS++; COL++; return mk(T_OROR, sl); } return mk(T_PIPE, sl);
+    }
+    die("%s:%d: unexpected character '%c'", FILENAME, sl, c);
+    return mk(T_EOF, sl);
+}
+
+/* ------------------------------------------------------------------ */
+/* parser                                                             */
+/* ------------------------------------------------------------------ */
+static Tok CUR, AHEAD;
+static int HAS_AHEAD;
+
+static Tok padv(void) {
+    Tok p = CUR;
+    if (HAS_AHEAD) { CUR = AHEAD; HAS_AHEAD = 0; }
+    else CUR = next_token();
+    return p;
+}
+static Tok ppeek2(void) {
+    if (!HAS_AHEAD) { AHEAD = next_token(); HAS_AHEAD = 1; }
+    return AHEAD;
+}
+static int pchk(TK k) { return CUR.k == k; }
+static int pacc(TK k) { if (pchk(k)) { padv(); return 1; } return 0; }
+static Tok pexp(TK k, const char* what) {
+    if (!pchk(k)) die("%s:%d: expected %s", FILENAME, CUR.line, what);
+    return padv();
+}
+
+/* --- AST --- */
+typedef struct { char* name; int ptrs; } Ty;   /* name==NULL means "no type" (void) */
+
+typedef struct Expr Expr;
+typedef struct Stmt Stmt;
+typedef struct Block Block;
+
+typedef enum { E_INT, E_BOOL, E_STR, E_INTERP, E_PATH, E_CALL, E_FIELD, E_UN, E_BIN, E_CAST } EK;
+
+typedef struct { char* text; int tlen; Expr* e; } Frag;
+
+struct Expr {
+    EK k;
+    int line;
+    long long ival;
+    char* s; int slen;
+    Frag* frags; int nfrags; int iid;
+    char* name;
+    Expr* callee; Expr** args; int nargs;
+    Expr* base; char* field;
+    const char* op; Expr* l; Expr* r;
+    Ty cast_to;
+};
+
+typedef enum { S_LET, S_ASSIGN, S_RET, S_EXPR, S_WHILE, S_IF, S_BREAK, S_CONT } SK;
+struct Stmt {
+    SK k;
+    int line;
+    int is_mut; char* name; Expr* e;
+    Expr* lhs; const char* aop;
+    Expr* cond; Block* body; Block* els;
+};
+struct Block { Stmt** st; int n; Expr* tail; };
+
+typedef struct { char* name; Ty ty; } Param;
+typedef struct { char* name; Param* ps; int np; Ty ret; long long num; } XFn;
+typedef struct { char* name; Param* ps; int np; Ty ret; Block* body; } Fn;
+
+static XFn XFNS[64]; static int NXFN;
+static Fn  FNS[64];  static int NFN;
+
+static Expr* newe(EK k) { Expr* e = xmalloc(sizeof(Expr)); e->k = k; e->line = CUR.line; return e; }
+static Stmt* news(SK k) { Stmt* s = xmalloc(sizeof(Stmt)); s->k = k; s->line = CUR.line; return s; }
+
+static Ty parse_type(void) {
+    Ty t; t.ptrs = 0; t.name = NULL;
+    pacc(T_KW_RAW);                       /* raw *T and *T lower identically in C */
+    while (pacc(T_STAR)) t.ptrs++;
+    Tok id = pexp(T_IDENT, "type name");
+    t.name = id.s;
+    return t;
+}
+
+static Expr* parse_expr(void);
+
+static Expr* parse_interp(void) {
+    Expr* e = newe(E_INTERP);
+    Frag* fr = xmalloc(sizeof(Frag) * 64);
+    int nf = 0;
+    Tok h = padv();                       /* T_STR_HEAD */
+    fr[nf].text = h.s; fr[nf].tlen = h.slen; fr[nf].e = NULL; nf++;
+    for (;;) {
+        if (nf + 2 >= 64) die("%s:%d: too many interpolations", FILENAME, e->line);
+        fr[nf].text = NULL; fr[nf].tlen = 0; fr[nf].e = parse_expr(); nf++;
+        pexp(T_INTERP_R, "'}' closing interpolation");
+        if (pchk(T_STR_MID)) {
+            Tok m = padv();
+            fr[nf].text = m.s; fr[nf].tlen = m.slen; fr[nf].e = NULL; nf++;
+            continue;
+        }
+        if (pchk(T_STR_TAIL)) {
+            Tok t2 = padv();
+            fr[nf].text = t2.s; fr[nf].tlen = t2.slen; fr[nf].e = NULL; nf++;
+            break;
+        }
+        die("%s:%d: expected string continuation after interpolation", FILENAME, CUR.line);
+    }
+    e->frags = fr; e->nfrags = nf;
+    return e;
+}
+
+static Expr* parse_primary(void) {
+    if (pchk(T_INT))  { Tok t = padv(); Expr* e = newe(E_INT);  e->ival = t.ival; return e; }
+    if (pchk(T_KW_TRUE) || pchk(T_KW_FALSE)) {
+        Expr* e = newe(E_BOOL);
+        e->ival = pchk(T_KW_TRUE);
+        padv();
+        return e;
+    }
+    if (pchk(T_STR))  { Tok t = padv(); Expr* e = newe(E_STR);  e->s = t.s; e->slen = t.slen; return e; }
+    if (pchk(T_STR_HEAD)) return parse_interp();
+    if (pchk(T_LP))   { padv(); Expr* e = parse_expr(); pexp(T_RP, "')'"); return e; }
+    if (pchk(T_IDENT)) { Tok t = padv(); Expr* e = newe(E_PATH); e->name = t.s; return e; }
+    die("%s:%d: expected an expression", FILENAME, CUR.line);
+    return NULL;
+}
+
+static Expr* parse_postfix(void) {
+    Expr* e = parse_primary();
+    for (;;) {
+        if (pchk(T_DOT)) {
+            padv();
+            Tok f = pexp(T_IDENT, "field name");
+            if (pchk(T_LP)) die("%s:%d: method calls are not supported in N v0.1", FILENAME, f.line);
+            Expr* fe = newe(E_FIELD);
+            fe->base = e; fe->field = f.s;
+            e = fe;
+            continue;
+        }
+        if (pchk(T_LP)) {
+            padv();
+            Expr* c = newe(E_CALL);
+            c->callee = e;
+            Expr** as = xmalloc(sizeof(Expr*) * 16);
+            int na = 0;
+            if (!pchk(T_RP)) {
+                do {
+                    if (na >= 16) die("%s:%d: too many call arguments", FILENAME, CUR.line);
+                    as[na++] = parse_expr();
+                } while (pacc(T_COMMA));
+            }
+            pexp(T_RP, "')'");
+            c->args = as; c->nargs = na;
+            e = c;
+            continue;
+        }
+        break;
+    }
+    return e;
+}
+
+static Expr* parse_unary(void) {
+    if (pchk(T_MINUS) || pchk(T_NOT)) {
+        const char* op = pchk(T_MINUS) ? "-" : "!";
+        padv();
+        Expr* e = newe(E_UN);
+        e->op = op; e->r = parse_unary();
+        return e;
+    }
+    return parse_postfix();
+}
+
+static Expr* parse_cast(void) {
+    Expr* e = parse_unary();
+    while (pacc(T_KW_AS)) {
+        Expr* c = newe(E_CAST);
+        c->l = e; c->cast_to = parse_type();
+        e = c;
+    }
+    return e;
+}
+
+static Expr* mkbin(const char* op, Expr* l, Expr* r) {
+    Expr* e = newe(E_BIN);
+    e->op = op; e->l = l; e->r = r;
+    return e;
+}
+
+static Expr* parse_mul(void) {
+    Expr* l = parse_cast();
+    for (;;) {
+        const char* op = pchk(T_STAR) ? "*" : pchk(T_SLASH) ? "/" : pchk(T_PERCENT) ? "%" : NULL;
+        if (!op) return l;
+        padv();
+        l = mkbin(op, l, parse_cast());
+    }
+}
+static Expr* parse_add(void) {
+    Expr* l = parse_mul();
+    for (;;) {
+        const char* op = pchk(T_PLUS) ? "+" : pchk(T_MINUS) ? "-" : NULL;
+        if (!op) return l;
+        padv();
+        l = mkbin(op, l, parse_mul());
+    }
+}
+static Expr* parse_shift(void) {
+    Expr* l = parse_add();
+    for (;;) {
+        const char* op = pchk(T_SHL) ? "<<" : pchk(T_SHR) ? ">>" : NULL;
+        if (!op) return l;
+        padv();
+        l = mkbin(op, l, parse_add());
+    }
+}
+static Expr* parse_band(void) {
+    Expr* l = parse_shift();
+    while (pchk(T_AMP)) { padv(); l = mkbin("&", l, parse_shift()); }
+    return l;
+}
+static Expr* parse_bxor(void) {
+    Expr* l = parse_band();
+    while (pchk(T_CARET)) { padv(); l = mkbin("^", l, parse_band()); }
+    return l;
+}
+static Expr* parse_bor(void) {
+    Expr* l = parse_bxor();
+    while (pchk(T_PIPE)) { padv(); l = mkbin("|", l, parse_bxor()); }
+    return l;
+}
+static Expr* parse_cmp(void) {
+    Expr* l = parse_bor();
+    for (;;) {
+        const char* op = pchk(T_EQ) ? "==" : pchk(T_NE) ? "!=" :
+                         pchk(T_LE) ? "<=" : pchk(T_GE) ? ">=" :
+                         pchk(T_LT) ? "<"  : pchk(T_GT) ? ">"  : NULL;
+        if (!op) return l;
+        padv();
+        l = mkbin(op, l, parse_bor());
+    }
+}
+static Expr* parse_and(void) {
+    Expr* l = parse_cmp();
+    while (pchk(T_ANDAND)) { padv(); l = mkbin("&&", l, parse_cmp()); }
+    return l;
+}
+static Expr* parse_or(void) {
+    Expr* l = parse_and();
+    while (pchk(T_OROR)) { padv(); l = mkbin("||", l, parse_and()); }
+    return l;
+}
+static Expr* parse_expr(void) { return parse_or(); }
+
+/* --- statements / blocks --- */
+static Block* parse_block(void);
+
+static Stmt* parse_if_stmt(void) {
+    padv();                               /* 'if' */
+    Stmt* s = news(S_IF);
+    s->cond = parse_expr();
+    s->body = parse_block();
+    if (pacc(T_KW_ELSE)) {
+        if (pchk(T_KW_IF)) {              /* else-if: wrap in a one-stmt block */
+            Block* b = xmalloc(sizeof(Block));
+            b->st = xmalloc(sizeof(Stmt*));
+            b->st[0] = parse_if_stmt();
+            b->n = 1; b->tail = NULL;
+            s->els = b;
+        } else {
+            s->els = parse_block();
+        }
+    }
+    return s;
+}
+
+static Block* parse_block(void) {
+    pexp(T_LB, "'{'");
+    Block* b = xmalloc(sizeof(Block));
+    Stmt** st = xmalloc(sizeof(Stmt*) * 256);
+    int n = 0;
+    while (!pchk(T_RB)) {
+        if (pchk(T_EOF)) die("%s:%d: unexpected EOF inside block", FILENAME, CUR.line);
+        if (n >= 256) die("%s:%d: too many statements in block", FILENAME, CUR.line);
+
+        if (pchk(T_KW_MUT) || (pchk(T_IDENT) && ppeek2().k == T_WALRUS)) {
+            Stmt* s = news(S_LET);
+            s->is_mut = pacc(T_KW_MUT);
+            Tok id = pexp(T_IDENT, "variable name");
+            s->name = id.s;
+            pexp(T_WALRUS, "':='");
+            s->e = parse_expr();
+            pexp(T_SEMI, "';'");
+            st[n++] = s;
+            continue;
+        }
+        if (pacc(T_KW_RETURN)) {
+            Stmt* s = news(S_RET);
+            if (!pchk(T_SEMI)) s->e = parse_expr();
+            pexp(T_SEMI, "';'");
+            st[n++] = s;
+            continue;
+        }
+        if (pacc(T_KW_BREAK))    { pexp(T_SEMI, "';'"); st[n++] = news(S_BREAK); continue; }
+        if (pacc(T_KW_CONTINUE)) { pexp(T_SEMI, "';'"); st[n++] = news(S_CONT);  continue; }
+        if (pchk(T_KW_WHILE)) {
+            padv();
+            Stmt* s = news(S_WHILE);
+            s->cond = parse_expr();
+            s->body = parse_block();
+            st[n++] = s;
+            continue;
+        }
+        if (pchk(T_KW_IF)) { st[n++] = parse_if_stmt(); continue; }
+
+        /* expression, assignment, or block tail */
+        Expr* e = parse_expr();
+        if (pchk(T_ASSIGN) || pchk(T_PLUSEQ) || pchk(T_MINUSEQ)) {
+            const char* op = pchk(T_ASSIGN) ? "=" : pchk(T_PLUSEQ) ? "+=" : "-=";
+            padv();
+            Stmt* s = news(S_ASSIGN);
+            s->lhs = e; s->aop = op; s->e = parse_expr();
+            pexp(T_SEMI, "';'");
+            st[n++] = s;
+            continue;
+        }
+        if (pacc(T_SEMI)) {
+            Stmt* s = news(S_EXPR);
+            s->e = e;
+            st[n++] = s;
+            continue;
+        }
+        if (pchk(T_RB)) { b->tail = e; break; }
+        die("%s:%d: expected ';' or '}' after expression", FILENAME, CUR.line);
+    }
+    pexp(T_RB, "'}'");
+    b->st = st; b->n = n;
+    return b;
+}
+
+/* --- items --- */
+static Param* parse_params(int* out_n) {
+    pexp(T_LP, "'('");
+    Param* ps = xmalloc(sizeof(Param) * 16);
+    int np = 0;
+    if (!pchk(T_RP)) {
+        do {
+            if (np >= 16) die("%s:%d: too many parameters", FILENAME, CUR.line);
+            Tok id = pexp(T_IDENT, "parameter name");
+            pexp(T_COLON, "':'");
+            ps[np].name = id.s;
+            ps[np].ty = parse_type();
+            np++;
+        } while (pacc(T_COMMA));
+    }
+    pexp(T_RP, "')'");
+    *out_n = np;
+    return ps;
+}
+
+static void parse_extern_block(void) {
+    pexp(T_KW_SYSCALL, "'syscall'");
+    pexp(T_LB, "'{'");
+    while (pacc(T_KW_FN)) {
+        if (NXFN >= 64) die("too many extern syscalls");
+        XFn* x = &XFNS[NXFN++];
+        Tok id = pexp(T_IDENT, "syscall name");
+        x->name = id.s;
+        x->ps = parse_params(&x->np);
+        x->ret.name = NULL; x->ret.ptrs = 0;
+        if (pacc(T_ARROW)) x->ret = parse_type();
+        pexp(T_ASSIGN, "'=' before the syscall number");
+        Tok num = pexp(T_INT, "syscall number");
+        x->num = num.ival;
+        pacc(T_SEMI);                     /* trailing ';' is optional here */
+    }
+    pexp(T_RB, "'}'");
+}
+
+static void parse_fn(void) {
+    if (NFN >= 64) die("too many functions");
+    Fn* f = &FNS[NFN++];
+    Tok id = pexp(T_IDENT, "function name");
+    f->name = id.s;
+    f->ps = parse_params(&f->np);
+    f->ret.name = NULL; f->ret.ptrs = 0;
+    if (pacc(T_ARROW)) f->ret = parse_type();
+    f->body = parse_block();
+}
+
+static void parse_program(void) {
+    for (;;) {
+        if (pchk(T_EOF)) return;
+        if (pacc(T_KW_EXTERN)) { parse_extern_block(); continue; }
+        if (pacc(T_KW_FN))     { parse_fn(); continue; }
+        die("%s:%d: expected 'extern' or 'fn' at top level", FILENAME, CUR.line);
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* codegen                                                            */
+/* ------------------------------------------------------------------ */
+static FILE* OUT;
+static int IID;                            /* per-function interp counter */
+static Ty CUR_RET;
+
+static const char* base_ctype(const char* n) {
+    static const struct { const char* a; const char* b; } M[] = {
+        {"i8", "nyx_i8"}, {"u8", "nyx_u8"}, {"i16", "nyx_i16"}, {"u16", "nyx_u16"},
+        {"i32", "nyx_i32"}, {"u32", "nyx_u32"}, {"i64", "nyx_i64"}, {"u64", "nyx_u64"},
+        {"isize", "nyx_isize"}, {"usize", "nyx_usize"}, {"addr", "nyx_addr"},
+        {"bool", "nyx_bool"}, {"str", "nyx_str"}, {"never", "void"}, {"void", "void"},
+    };
+    for (size_t i = 0; i < sizeof(M) / sizeof(M[0]); i++)
+        if (!strcmp(n, M[i].a)) return M[i].b;
+    return n;                             /* user types pass through */
+}
+static void emit_type(Ty t) {
+    if (!t.name) { fputs("void", OUT); return; }
+    fputs(base_ctype(t.name), OUT);
+    for (int i = 0; i < t.ptrs; i++) fputc('*', OUT);
+}
+static int is_never(Ty t) { return t.name && !strcmp(t.name, "never"); }
+
+/* --- minimal type inference (v0.2) ------------------------------------ */
+/* A flat per-function symbol table with block scoping via save/restore of
+ * the counter (gen_block records NVARS on entry and truncates on exit).
+ * This is deliberately not a full checker: it exists to give `:=` bindings
+ * a concrete C type, to dispatch interpolation by type, and to enforce
+ * `mut` — the three things codegen cannot do blind. The full checker is
+ * N++ P1 (lang/docs/design-npp.md). */
+typedef struct { char* name; Ty ty; int is_mut; } VarInfo;
+static VarInfo VARS[256];
+static int NVARS;
+
+static void vars_add(char* name, Ty ty, int is_mut) {
+    if (NVARS >= 256) die("ncc: too many locals in one function");
+    VARS[NVARS].name = name;
+    VARS[NVARS].ty = ty;
+    VARS[NVARS].is_mut = is_mut;
+    NVARS++;
+}
+static VarInfo* vars_find(const char* name) {
+    for (int i = NVARS - 1; i >= 0; i--)        /* innermost shadows */
+        if (!strcmp(VARS[i].name, name)) return &VARS[i];
+    return NULL;
+}
+
+static Ty ty_named(const char* n) { Ty t; t.name = (char*)n; t.ptrs = 0; return t; }
+static Ty ty_ptr_u8(void)         { Ty t; t.name = (char*)"u8"; t.ptrs = 1; return t; }
+static int ty_is(Ty t, const char* n) { return t.name && t.ptrs == 0 && !strcmp(t.name, n); }
+
+/* Return type of a named function (extern syscalls and user fns are all
+ * parsed before codegen runs, so forward references resolve). */
+static Ty ret_type_of(const char* name) {
+    for (int i = 0; i < NXFN; i++)
+        if (!strcmp(XFNS[i].name, name)) return XFNS[i].ret;
+    for (int i = 0; i < NFN; i++)
+        if (!strcmp(FNS[i].name, name)) return FNS[i].ret;
+    return ty_named("i64");                     /* unknown callee: assume i64 */
+}
+
+/* Infer the N type of an expression. Integer literals default to i64 (the
+ * language rule); comparisons and logic yield bool; `as` is authoritative. */
+static Ty infer_type(Expr* e) {
+    switch (e->k) {
+        case E_INT:    return ty_named("i64");
+        case E_BOOL:   return ty_named("bool");
+        case E_STR:
+        case E_INTERP: return ty_named("str");
+        case E_PATH: {
+            VarInfo* v = vars_find(e->name);
+            return v ? v->ty : ty_named("i64");
+        }
+        case E_CALL:
+            if (e->callee->k == E_PATH) return ret_type_of(e->callee->name);
+            return ty_named("i64");
+        case E_FIELD: {
+            Ty b = infer_type(e->base);
+            if (ty_is(b, "str")) {
+                if (!strcmp(e->field, "ptr")) return ty_ptr_u8();
+                if (!strcmp(e->field, "len")) return ty_named("u64");
+            }
+            return ty_named("i64");
+        }
+        case E_UN:
+            if (e->op[0] == '!') return ty_named("bool");
+            return infer_type(e->r);
+        case E_BIN: {
+            const char* o = e->op;
+            if (!strcmp(o, "==") || !strcmp(o, "!=") || !strcmp(o, "<") ||
+                !strcmp(o, "<=") || !strcmp(o, ">")  || !strcmp(o, ">=") ||
+                !strcmp(o, "&&") || !strcmp(o, "||"))
+                return ty_named("bool");
+            return infer_type(e->l);            /* arithmetic: left operand rules */
+        }
+        case E_CAST:   return e->cast_to;
+    }
+    return ty_named("i64");
+}
+/* ---------------------------------------------------------------------- */
+
+static void indentf(int ind) { for (int i = 0; i < ind; i++) fputs("    ", OUT); }
+
+static void emit_cstr(const char* s, int n) {
+    fputc('"', OUT);
+    for (int i = 0; i < n; i++) {
+        unsigned char c = (unsigned char)s[i];
+        switch (c) {
+            case '\n': fputs("\\n", OUT); break;
+            case '\t': fputs("\\t", OUT); break;
+            case '\r': fputs("\\r", OUT); break;
+            case '"':  fputs("\\\"", OUT); break;
+            case '\\': fputs("\\\\", OUT); break;
+            case 0:    fputs("\\0", OUT); break;
+            default:
+                if (c < 32 || c > 126) fprintf(OUT, "\\x%02x", c);
+                else fputc(c, OUT);
+        }
+    }
+    fputc('"', OUT);
+}
+
+static void gen_expr(Expr* e) {
+    switch (e->k) {
+        /* %ld, not %lld: both targets are LP64 (long == 64-bit) and the
+         * NyxOS libc formatter implements %l[dux] but not %ll. */
+        case E_INT:  fprintf(OUT, "%ld", (long)e->ival); break;
+        case E_BOOL: fprintf(OUT, "%d", (int)e->ival); break;
+        case E_STR:
+            fputs("((nyx_str){", OUT);
+            emit_cstr(e->s, e->slen);
+            fprintf(OUT, ", %d})", e->slen);
+            break;
+        case E_INTERP: fprintf(OUT, "__s%d", e->iid); break;
+        case E_PATH:   fputs(e->name, OUT); break;
+        case E_FIELD:  gen_expr(e->base); fprintf(OUT, ".%s", e->field); break;
+        case E_CALL:
+            gen_expr(e->callee);
+            fputc('(', OUT);
+            for (int i = 0; i < e->nargs; i++) {
+                if (i) fputs(", ", OUT);
+                gen_expr(e->args[i]);
+            }
+            fputc(')', OUT);
+            break;
+        case E_UN:
+            fprintf(OUT, "%s(", e->op);
+            gen_expr(e->r);
+            fputc(')', OUT);
+            break;
+        case E_BIN:
+            fputc('(', OUT);
+            gen_expr(e->l);
+            fprintf(OUT, " %s ", e->op);
+            gen_expr(e->r);
+            fputc(')', OUT);
+            break;
+        case E_CAST:
+            fputc('(', OUT);
+            emit_type(e->cast_to);
+            fputs(")(", OUT);
+            gen_expr(e->l);
+            fputc(')', OUT);
+            break;
+    }
+}
+
+/* Lower every string interpolation in the expr tree to prelude statements:
+ * hoisted buffer + nyx_str built with __nyx_fmt_*. The expression slot then
+ * references __sN. Interpolated exprs are formatted as i64 in N v0.1. */
+static void gen_preludes(Expr* e, int ind) {
+    if (!e) return;
+    switch (e->k) {
+        case E_INTERP: {
+            for (int i = 0; i < e->nfrags; i++)
+                if (e->frags[i].e) gen_preludes(e->frags[i].e, ind);
+            e->iid = IID++;
+            indentf(ind); fprintf(OUT, "char __b%d[256];\n", e->iid);
+            indentf(ind); fprintf(OUT, "nyx_str __s%d = __nyx_fmt_begin(__b%d, 256);\n", e->iid, e->iid);
+            for (int i = 0; i < e->nfrags; i++) {
+                Frag* f = &e->frags[i];
+                if (f->e) {
+                    indentf(ind);
+                    if (ty_is(infer_type(f->e), "str")) {   /* str: insert as text */
+                        fprintf(OUT, "__nyx_fmt_str(&__s%d, __b%d, 256, ", e->iid, e->iid);
+                        gen_expr(f->e);
+                        fputs(");\n", OUT);
+                    } else {                                /* everything else: i64 */
+                        fprintf(OUT, "__nyx_fmt_i64(&__s%d, __b%d, 256, (nyx_i64)(", e->iid, e->iid);
+                        gen_expr(f->e);
+                        fputs("));\n", OUT);
+                    }
+                } else if (f->tlen > 0) {
+                    indentf(ind);
+                    fprintf(OUT, "__nyx_fmt_str(&__s%d, __b%d, 256, (nyx_str){", e->iid, e->iid);
+                    emit_cstr(f->text, f->tlen);
+                    fprintf(OUT, ", %d});\n", f->tlen);
+                }
+            }
+            break;
+        }
+        case E_CALL:
+            gen_preludes(e->callee, ind);
+            for (int i = 0; i < e->nargs; i++) gen_preludes(e->args[i], ind);
+            break;
+        case E_FIELD: gen_preludes(e->base, ind); break;
+        case E_UN:    gen_preludes(e->r, ind); break;
+        case E_BIN:   gen_preludes(e->l, ind); gen_preludes(e->r, ind); break;
+        case E_CAST:  gen_preludes(e->l, ind); break;
+        default: break;
+    }
+}
+
+static void gen_block(Block* b, int ind, int fn_tail);
+
+static void gen_stmt(Stmt* s, int ind) {
+    switch (s->k) {
+        case S_LET: {
+            Ty t = infer_type(s->e);
+            if (!t.name || is_never(t))
+                die("%s:%d: cannot bind '%s' to an expression with no value",
+                    FILENAME, s->line, s->name);
+            gen_preludes(s->e, ind);
+            indentf(ind);
+            emit_type(t);
+            fprintf(OUT, " %s = ", s->name);
+            gen_expr(s->e);
+            fputs(";\n", OUT);
+            vars_add(s->name, t, s->is_mut);
+            break;
+        }
+        case S_ASSIGN: {
+            if (s->lhs->k == E_PATH) {          /* mut enforcement (spec 5.1) */
+                VarInfo* v = vars_find(s->lhs->name);
+                if (v && !v->is_mut)
+                    die("%s:%d: cannot assign to immutable '%s' (declare it with 'mut')",
+                        FILENAME, s->line, s->lhs->name);
+            }
+            gen_preludes(s->e, ind);
+            indentf(ind);
+            gen_expr(s->lhs);
+            fprintf(OUT, " %s ", s->aop);
+            gen_expr(s->e);
+            fputs(";\n", OUT);
+            break;
+        }
+        case S_RET:
+            gen_preludes(s->e, ind);
+            indentf(ind);
+            if (s->e) { fputs("return ", OUT); gen_expr(s->e); fputs(";\n", OUT); }
+            else fputs("return;\n", OUT);
+            break;
+        case S_EXPR:
+            gen_preludes(s->e, ind);
+            indentf(ind);
+            gen_expr(s->e);
+            fputs(";\n", OUT);
+            break;
+        case S_BREAK: indentf(ind); fputs("break;\n", OUT); break;
+        case S_CONT:  indentf(ind); fputs("continue;\n", OUT); break;
+        case S_WHILE:
+            gen_preludes(s->cond, ind);
+            indentf(ind);
+            fputs("while (", OUT);
+            gen_expr(s->cond);
+            fputs(") ", OUT);
+            gen_block(s->body, ind, 0);
+            fputs("\n", OUT);
+            break;
+        case S_IF:
+            gen_preludes(s->cond, ind);
+            indentf(ind);
+            fputs("if (", OUT);
+            gen_expr(s->cond);
+            fputs(") ", OUT);
+            gen_block(s->body, ind, 0);
+            if (s->els) { fputs(" else ", OUT); gen_block(s->els, ind, 0); }
+            fputs("\n", OUT);
+            break;
+    }
+}
+
+static void gen_block(Block* b, int ind, int fn_tail) {
+    int vsave = NVARS;                  /* block scope: locals die with the block */
+    fputs("{\n", OUT);
+    for (int i = 0; i < b->n; i++) gen_stmt(b->st[i], ind + 1);
+    if (b->tail) {
+        gen_preludes(b->tail, ind + 1);
+        indentf(ind + 1);
+        if (fn_tail && CUR_RET.name && !is_never(CUR_RET)) fputs("return ", OUT);
+        gen_expr(b->tail);
+        fputs(";\n", OUT);
+    }
+    indentf(ind);
+    fputs("}", OUT);
+    NVARS = vsave;
+}
+
+static void gen_extern_fns(void) {
+    for (int i = 0; i < NXFN; i++) {
+        XFn* x = &XFNS[i];
+        fputs("static inline ", OUT);
+        if (is_never(x->ret)) fputs("void", OUT);
+        else emit_type(x->ret);
+        fprintf(OUT, " %s(", x->name);
+        if (!x->np) fputs("void", OUT);
+        for (int k = 0; k < x->np; k++) {
+            if (k) fputs(", ", OUT);
+            emit_type(x->ps[k].ty);
+            fprintf(OUT, " %s", x->ps[k].name);
+        }
+        fputs(") {\n", OUT);
+        if (is_never(x->ret) || !x->ret.name) {
+            fprintf(OUT, "    (void)__nyx_syscall6(%ld", (long)x->num);
+            for (int k = 0; k < 6; k++) {
+                if (k < x->np) fprintf(OUT, ", (nyx_i64)%s", x->ps[k].name);
+                else fputs(", 0", OUT);
+            }
+            fputs(");\n", OUT);
+            if (is_never(x->ret)) fputs("    for (;;) {}\n", OUT);
+        } else {
+            fputs("    return (", OUT);
+            emit_type(x->ret);
+            fprintf(OUT, ")__nyx_syscall6(%ld", (long)x->num);
+            for (int k = 0; k < 6; k++) {
+                if (k < x->np) fprintf(OUT, ", (nyx_i64)%s", x->ps[k].name);
+                else fputs(", 0", OUT);
+            }
+            fputs(");\n", OUT);
+        }
+        fputs("}\n", OUT);
+    }
+    if (NXFN) fputs("\n", OUT);
+}
+
+static void gen_fn_sig(Fn* f) {
+    if (!f->ret.name || is_never(f->ret)) fputs("void", OUT);
+    else emit_type(f->ret);
+    fprintf(OUT, " %s(", f->name);
+    if (!f->np) fputs("void", OUT);
+    for (int i = 0; i < f->np; i++) {
+        if (i) fputs(", ", OUT);
+        emit_type(f->ps[i].ty);
+        fprintf(OUT, " %s", f->ps[i].name);
+    }
+    fputc(')', OUT);
+}
+
+static void gen_program(const char* srcname) {
+    fprintf(OUT, "/* Generated by ncc from %s */\n#include \"nyxrt.h\"\n\n", srcname);
+    gen_extern_fns();
+    for (int i = 0; i < NFN; i++) { gen_fn_sig(&FNS[i]); fputs(";\n", OUT); }
+    if (NFN) fputs("\n", OUT);
+    for (int i = 0; i < NFN; i++) {
+        Fn* f = &FNS[i];
+        IID = 0;
+        CUR_RET = f->ret;
+        NVARS = 0;                      /* fresh symbol table per function */
+        for (int p = 0; p < f->np; p++) /* parameters are immutable bindings */
+            vars_add(f->ps[p].name, f->ps[p].ty, 0);
+        gen_fn_sig(f);
+        fputc(' ', OUT);
+        gen_block(f->body, 0, 1);
+        fputs("\n\n", OUT);
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* driver                                                             */
+/* ------------------------------------------------------------------ */
+int main(int argc, char** argv) {
+    const char* in = NULL;
+    const char* out = NULL;
+    for (int i = 1; i < argc; i++) {
+        if (!strcmp(argv[i], "-o") && i + 1 < argc) out = argv[++i];
+        else if (argv[i][0] == '-') die("ncc: unknown option '%s'", argv[i]);
+        else if (!in) in = argv[i];
+        else die("ncc: multiple input files");
+    }
+    if (!in) die("usage: ncc <input.n> [-o output.c]");
+
+    FILE* f = fopen(in, "rb");
+    if (!f) die("ncc: cannot open '%s'", in);
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char* buf = xmalloc((size_t)sz + 1);
+    if (sz > 0 && fread(buf, 1, (size_t)sz, f) != (size_t)sz) die("ncc: read error on '%s'", in);
+    fclose(f);
+
+    FILENAME = in;
+    SRC = buf;
+    LEN = (int)sz;
+    CUR = next_token();
+    parse_program();
+
+    OUT = out ? fopen(out, "w") : stdout;
+    if (!OUT) die("ncc: cannot open output '%s'", out);
+    gen_program(in);
+    if (out) fclose(OUT);
+
+    fprintf(stderr, "ncc: OK — %d extern syscall(s), %d function(s)%s%s\n",
+            NXFN, NFN, out ? " -> " : "", out ? out : "");
+    return 0;
+}

@@ -76,8 +76,11 @@ as text, enforced `mut`) emitting strict C99 — and is verified three ways:
    numbers to Linux ones (the x86_64 `syscall` ABI is identical, only numbers
    differ), so N programs can be executed and checked without booting the OS.
 
+On NyxOS itself, the compiler is one command away — `xbm install ncc` builds
+it from source with the in-OS toolchain and installs it to `/mnt/bin`.
+
 See [ncc/README.md](ncc/README.md) for build and test instructions, and
-[docs/spec-n.md](docs/spec-n.md) for the complete v0.1 specification.
+[docs/spec-n.md](docs/spec-n.md) for the complete specification.
 
 ## Repository layout
 
