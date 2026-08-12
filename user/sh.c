@@ -419,33 +419,87 @@ static void builtin_bg(char* arg) {
     printf("[bg] %s &\n", j->cmd);
 }
 
-/* ---- filename globbing (* ?) ---------------------------------------------- */
+/* ---- filename globbing (* ? [..]) ----------------------------------------- */
 #define MAX_GLOB 32
 static nyx_dirent_t glob_ents[64];       /* .bss: getdents can't fault lazy pages */
 static char  glob_store[MAX_GLOB][96];
 static char* glob_av[MAX_GLOB + 1];
 
-/* Wildcard match: '*' matches any run (incl. empty), '?' one char, else literal. */
-static int glob_match(const char* pat, const char* s) {
-    while (*pat) {
-        if (*pat == '*') {
-            pat++;
-            if (!*pat) return 1;                         /* trailing * matches the rest */
-            for (; *s; s++) if (glob_match(pat, s)) return 1;
-            return glob_match(pat, s);                   /* also try the empty tail */
-        } else if (*pat == '?') {
-            if (!*s) return 0;
-            pat++; s++;
+/* Match a '[...]' class at *pp (pointing at '[') against char c; returns 1/0 and
+ * advances *pp past ']', or -1 for a malformed class (no ']' before the NUL),
+ * leaving *pp untouched so the caller treats '[' as a literal. */
+static int glob_match_class(const char** pp, char c) {
+    const char* p = *pp + 1;                             /* skip '[' */
+    int negate = 0;
+    if (*p == '!' || *p == '^') { negate = 1; p++; }
+    int matched = 0;
+    int first = 1;                                       /* ']' in slot 0 is a literal */
+    while (*p && (*p != ']' || first)) {
+        first = 0;
+        char lo;
+        if (*p == '\\' && p[1]) { lo = p[1]; p += 2; }   /* escaped member */
+        else                   { lo = *p;   p += 1; }
+        if (*p == '-' && p[1] && p[1] != ']') {          /* range  lo-hi */
+            const char* q = p + 1;
+            char hi;
+            if (*q == '\\' && q[1]) { hi = q[1]; p = q + 2; }
+            else                   { hi = *q;   p = q + 1; }
+            if ((unsigned char)c >= (unsigned char)lo &&
+                (unsigned char)c <= (unsigned char)hi) matched = 1;
         } else {
-            if (*pat != *s) return 0;
-            pat++; s++;
+            if ((unsigned char)c == (unsigned char)lo) matched = 1;
         }
     }
-    return *s == '\0';
+    if (*p != ']') return -1;                            /* unterminated -> literal '[' */
+    *pp = p + 1;
+    return negate ? !matched : matched;
+}
+
+/* Shell wildcard match — a byte-for-byte copy of the kernel's hardened matcher
+ * (kernel/core/fnmatch.c, KAT-verified as `glob`): iterative, with a single '*'
+ * backtrack point, so it runs in O(pat*str) and can neither blow the ring-3 stack
+ * nor backtrack catastrophically on a pattern like "*a*a*a*b" the way the old
+ * recursive matcher could. '*' any run (incl. empty), '?' one char, '[abc]'/
+ * '[a-z]'/'[!..]' a character class, '\' escapes the following metacharacter. */
+static int glob_match(const char* pat, const char* str) {
+    const char* p = pat;
+    const char* s = str;
+    const char* star_p = 0;                              /* pattern after the last '*' */
+    const char* star_s = 0;                              /* text pos when it was seen */
+
+    while (*s) {
+        int adv = 0;                                     /* consumed *s this token? */
+        if (*p == '*') {
+            star_p = ++p;                                /* record the one backtrack... */
+            star_s = s;                                  /* ...try '*' == empty first */
+            continue;
+        } else if (*p == '?') {
+            p++; adv = 1;
+        } else if (*p == '[') {
+            int r = glob_match_class(&p, *s);
+            if (r < 0) { if (*p == *s) { p++; adv = 1; } }  /* malformed -> literal '[' */
+            else if (r) { adv = 1; }                        /* matched; p past ']' */
+        } else if (*p == '\\' && p[1]) {                 /* escaped literal */
+            if (p[1] == *s) { p += 2; adv = 1; }
+        } else {                                         /* ordinary literal / p at NUL */
+            if (*p == *s) { p++; adv = 1; }
+        }
+
+        if (adv) {
+            s++;
+        } else if (star_p) {                             /* no match: '*' eats one more */
+            p = star_p;
+            s = ++star_s;
+        } else {
+            return 0;
+        }
+    }
+    while (*p == '*') p++;                                /* trailing '*'s match empty */
+    return *p == '\0';
 }
 
 /* Expand any wildcard args in av[0..*pac) against the filesystem, returning the new
- * argv (and count via *pac). A plain arg passes through; an arg with '*'/'?' is
+ * argv (and count via *pac). A plain arg passes through; an arg with '*'/'?'/'[' is
  * replaced by the sorted-ish directory entries it matches — leading-dot names are
  * skipped unless the pattern itself starts with '.'. A wildcard with no match stays
  * literal (nullglob off, like bash's default). Runs in the forked child before exec. */
