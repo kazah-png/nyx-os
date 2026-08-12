@@ -130,7 +130,7 @@ feature is debuggable by reading the generated C.
 | Stage | Contents | Gate |
 |---|---|---|
 | P1 | ✅ shipped in `ncc` v0.2–v0.4: inference (`i64` literals, typed interpolation, `mut`) + the expression-level checker (names, arity, argument/operand/return/assignment types) | all `lang/examples` still compile bit-identically ✅ |
-| P2 | `struct` ✅ (v0.5) · `defer` ✅ (v0.6) · `enum` + `match` ✅ (v0.7, exhaustive, tagged-union lowering) · remaining: `impl` methods | examples: structs.n ✅, defer.n ✅, enums.n ✅ |
+| P2 | ✅ **complete**: `struct` (v0.5) · `defer` (v0.6) · `enum` + `match` (v0.7) · `impl` methods (v0.8, static dispatch) | structs.n, defer.n, enums.n, methods.n |
 | P3 | `Result`/`?` + standard bindings (`fs`, `proc`) over the syscall table | rewrite `countdown.n` idiomatically as `.npp` |
 | P4 | `#[user]` pointers, `PageFlags`, capabilities | a kernel-module example checked at `ring0` |
 | P5 | `own` types, GUI bindings | a windowed N++ app on the NyxOS desktop |

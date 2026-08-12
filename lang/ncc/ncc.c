@@ -31,7 +31,11 @@
  *     fields, variant construction `Shape.Circle{ r: 5 }` (payload-less:
  *     `Shape.Empty`), and an exhaustive `match` statement that binds
  *     payload fields positionally — the Result foundation.
- * Not yet (N++ territory): for, closures, Result/?, methods, modules/use.
+ *   - impl methods (v0.8, closing N++ P2): `impl Type { fn m(self, ...) }`
+ *     attaches functions to structs and enums; calls dispatch statically
+ *     as `expr.m(args)` and lower to plain C functions Type_m(self, ...).
+ *     The receiver is by value and immutable.
+ * Not yet (N++ territory): for, closures, Result/?, modules/use.
  */
 /* Platform includes. In-OS builds (milestone M2) compile this file with
  * NyxOS's ported TinyCC, whose libc surface is the single header libc.h
@@ -80,7 +84,7 @@ typedef enum {
     T_KW_EXTERN, T_KW_SYSCALL, T_KW_FN, T_KW_MUT, T_KW_RETURN,
     T_KW_IF, T_KW_ELSE, T_KW_WHILE, T_KW_BREAK, T_KW_CONTINUE,
     T_KW_AS, T_KW_RAW, T_KW_TRUE, T_KW_FALSE, T_KW_STRUCT, T_KW_DEFER,
-    T_KW_ENUM, T_KW_MATCH, T_FATARROW,
+    T_KW_ENUM, T_KW_MATCH, T_FATARROW, T_KW_IMPL,
     T_LP, T_RP, T_LB, T_RB, T_COMMA, T_SEMI, T_COLON,
     T_WALRUS, T_ARROW, T_ASSIGN,
     T_PLUS, T_MINUS, T_STAR, T_SLASH, T_PERCENT,
@@ -173,6 +177,7 @@ static TK kwlook(const char* s, int n) {
         {"continue", T_KW_CONTINUE}, {"as", T_KW_AS}, {"raw", T_KW_RAW},
         {"true", T_KW_TRUE}, {"false", T_KW_FALSE}, {"struct", T_KW_STRUCT},
         {"defer", T_KW_DEFER}, {"enum", T_KW_ENUM}, {"match", T_KW_MATCH},
+        {"impl", T_KW_IMPL},
     };
     for (size_t i = 0; i < sizeof(K) / sizeof(K[0]); i++)
         if ((int)strlen(K[i].w) == n && !memcmp(K[i].w, s, (size_t)n)) return K[i].k;
@@ -393,6 +398,19 @@ static EnumDef* variant_ref(Expr* e, int* idx) {
     return ed;
 }
 
+/* impl methods (v0.8): functions attached to a struct or enum. Dispatch is
+ * static — the receiver's inferred type picks the method at compile time;
+ * the lowering is a plain C function Type_name(Type self, ...). */
+typedef struct { char* type; char* name; Param* ps; int np; Ty ret; Block* body; } Method;
+static Method METHODS[64]; static int NMETHODS;
+
+static Method* method_lookup(const char* type, const char* name) {
+    for (int i = 0; i < NMETHODS; i++)
+        if (!strcmp(METHODS[i].type, type) && !strcmp(METHODS[i].name, name))
+            return &METHODS[i];
+    return NULL;
+}
+
 /* Struct literals `Name{ ... }` are valid anywhere EXCEPT directly in an
  * if/while condition, where `{` must open the body block instead (the same
  * rule Rust uses). The parser sets this flag around condition parsing. */
@@ -486,7 +504,25 @@ static Expr* parse_postfix(void) {
         if (pchk(T_DOT)) {
             padv();
             Tok f = pexp(T_IDENT, "field name");
-            if (pchk(T_LP)) die("%s:%d: method calls are not supported yet", FILENAME, f.line);
+            if (pchk(T_LP)) {                   /* method call: recv.m(args) */
+                padv();
+                Expr* fe = newe(E_FIELD);
+                fe->base = e; fe->field = f.s;
+                Expr* c = newe(E_CALL);
+                c->callee = fe;
+                Expr** as = xmalloc(sizeof(Expr*) * 16);
+                int na = 0;
+                if (!pchk(T_RP)) {
+                    do {
+                        if (na >= 16) die("%s:%d: too many call arguments", FILENAME, CUR.line);
+                        as[na++] = parse_expr();
+                    } while (pacc(T_COMMA));
+                }
+                pexp(T_RP, "')'");
+                c->args = as; c->nargs = na;
+                e = c;
+                continue;
+            }
             if (pchk(T_LB) && !NO_SLIT && e->k == E_PATH) {
                 /* enum-variant literal: Enum.Variant{ field: value, ... } */
                 padv();
@@ -876,6 +912,38 @@ static void parse_enum(void) {
     if (nv == 0) die("%s: enum '%s' has no variants", FILENAME, ed->name);
 }
 
+static void parse_impl(void) {
+    Tok id = pexp(T_IDENT, "type name after 'impl'");
+    pexp(T_LB, "'{'");
+    while (pacc(T_KW_FN)) {
+        if (NMETHODS >= 64) die("too many methods");
+        Method* m = &METHODS[NMETHODS++];
+        m->type = id.s;
+        Tok mn = pexp(T_IDENT, "method name");
+        m->name = mn.s;
+        pexp(T_LP, "'('");
+        Tok self_ = pexp(T_IDENT, "'self' as the first parameter");
+        if (strcmp(self_.s, "self") != 0)
+            die("%s:%d: the first parameter of a method must be 'self'", FILENAME, self_.line);
+        Param* ps = xmalloc(sizeof(Param) * 16);
+        int np = 0;
+        while (pacc(T_COMMA)) {
+            if (np >= 16) die("%s: too many parameters in method '%s'", FILENAME, m->name);
+            Tok pn = pexp(T_IDENT, "parameter name");
+            pexp(T_COLON, "':'");
+            ps[np].name = pn.s;
+            ps[np].ty = parse_type();
+            np++;
+        }
+        pexp(T_RP, "')'");
+        m->ps = ps; m->np = np;
+        m->ret.name = NULL; m->ret.ptrs = 0;
+        if (pacc(T_ARROW)) m->ret = parse_type();
+        m->body = parse_block();
+    }
+    pexp(T_RB, "'}' closing impl");
+}
+
 static void parse_program(void) {
     for (;;) {
         if (pchk(T_EOF)) return;
@@ -883,7 +951,9 @@ static void parse_program(void) {
         if (pacc(T_KW_FN))     { parse_fn(); continue; }
         if (pacc(T_KW_STRUCT)) { parse_struct(); continue; }
         if (pacc(T_KW_ENUM))   { parse_enum(); continue; }
-        die("%s:%d: expected 'extern', 'fn', 'struct' or 'enum' at top level", FILENAME, CUR.line);
+        if (pacc(T_KW_IMPL))   { parse_impl(); continue; }
+        die("%s:%d: expected 'extern', 'fn', 'struct', 'enum' or 'impl' at top level",
+            FILENAME, CUR.line);
     }
 }
 
@@ -986,6 +1056,13 @@ static Ty infer_type(Expr* e) {
         }
         case E_CALL:
             if (e->callee->k == E_PATH) return ret_type_of(e->callee->name);
+            if (e->callee->k == E_FIELD) {      /* method: type from the receiver */
+                Ty rt = infer_type(e->callee->base);
+                if (rt.name && rt.ptrs == 0) {
+                    Method* m = method_lookup(rt.name, e->callee->field);
+                    if (m) return m->ret;
+                }
+            }
             return ty_named("i64");
         case E_FIELD: {
             int vi;
@@ -1071,6 +1148,28 @@ static void check_expr(Expr* e) {
                 die("%s:%d: undeclared variable '%s'", FILENAME, e->line, e->name);
             break;
         case E_CALL: {
+            if (e->callee->k == E_FIELD) {      /* method call: recv.m(args) */
+                Expr* recv = e->callee->base;
+                check_expr(recv);
+                Ty rt = infer_type(recv);
+                Method* m = (rt.name && rt.ptrs == 0)
+                            ? method_lookup(rt.name, e->callee->field) : NULL;
+                if (!m)
+                    die("%s:%d: %s has no method '%s'",
+                        FILENAME, e->line, ty_str(rt), e->callee->field);
+                if (e->nargs != m->np)
+                    die("%s:%d: method '%s.%s' takes %d argument(s), got %d",
+                        FILENAME, e->line, m->type, m->name, m->np, e->nargs);
+                for (int i = 0; i < e->nargs; i++) {
+                    check_expr(e->args[i]);
+                    Ty at = infer_type(e->args[i]);
+                    if (!ty_compat(at, m->ps[i].ty))
+                        die("%s:%d: argument %d to '%s.%s': expected %s, got %s",
+                            FILENAME, e->line, i + 1, m->type, m->name,
+                            ty_str(m->ps[i].ty), ty_str(at));
+                }
+                break;
+            }
             if (e->callee->k != E_PATH)
                 die("%s:%d: only named functions can be called", FILENAME, e->line);
             Param* ps; int np; Ty ret;
@@ -1295,6 +1394,17 @@ static void gen_expr(Expr* e) {
             break;
         }
         case E_CALL:
+            if (e->callee->k == E_FIELD) {      /* recv.m(a) -> Type_m(recv, a) */
+                Ty rt = infer_type(e->callee->base);
+                fprintf(OUT, "%s_%s(", rt.name, e->callee->field);
+                gen_expr(e->callee->base);
+                for (int i = 0; i < e->nargs; i++) {
+                    fputs(", ", OUT);
+                    gen_expr(e->args[i]);
+                }
+                fputc(')', OUT);
+                break;
+            }
             gen_expr(e->callee);
             fputc('(', OUT);
             for (int i = 0; i < e->nargs; i++) {
@@ -1698,6 +1808,13 @@ static void gen_program(const char* srcname) {
         for (int v = 0; v < ENUMS[i].nv; v++)
             for (int f = 0; f < ENUMS[i].vs[v].nf; f++)
                 validate_ty(ENUMS[i].vs[v].fs[f].ty, ENUMS[i].name);
+    for (int i = 0; i < NMETHODS; i++) {
+        Method* m = &METHODS[i];
+        if (!struct_lookup(m->type) && !enum_lookup(m->type))
+            die("%s: impl for unknown type '%s'", FILENAME, m->type);
+        validate_ty(m->ret, m->name);
+        for (int p = 0; p < m->np; p++) validate_ty(m->ps[p].ty, m->name);
+    }
 
     fprintf(OUT, "/* Generated by ncc from %s */\n#include \"nyxrt.h\"\n\n", srcname);
     for (int i = 0; i < NSTRUCTS; i++) {        /* struct layouts first */
@@ -1735,7 +1852,42 @@ static void gen_program(const char* srcname) {
     }
     gen_extern_fns();
     for (int i = 0; i < NFN; i++) { gen_fn_sig(&FNS[i]); fputs(";\n", OUT); }
-    if (NFN) fputs("\n", OUT);
+    for (int i = 0; i < NMETHODS; i++) {        /* method prototypes */
+        Method* m = &METHODS[i];
+        fputs("static ", OUT);
+        if (!m->ret.name || is_never(m->ret)) fputs("void", OUT);
+        else emit_type(m->ret);
+        fprintf(OUT, " %s_%s(%s self", m->type, m->name, m->type);
+        for (int p = 0; p < m->np; p++) {
+            fputs(", ", OUT);
+            emit_type(m->ps[p].ty);
+            fprintf(OUT, " %s", m->ps[p].name);
+        }
+        fputs(");\n", OUT);
+    }
+    if (NFN || NMETHODS) fputs("\n", OUT);
+    for (int i = 0; i < NMETHODS; i++) {        /* method bodies */
+        Method* m = &METHODS[i];
+        IID = 0;
+        CUR_RET = m->ret;
+        NVARS = 0;
+        NDEFERS = 0;
+        BLOCK_DEPTH = 0;
+        vars_add((char*)"self", ty_named(m->type), 0);   /* receiver: immutable */
+        for (int p = 0; p < m->np; p++) vars_add(m->ps[p].name, m->ps[p].ty, 0);
+        fputs("static ", OUT);
+        if (!m->ret.name || is_never(m->ret)) fputs("void", OUT);
+        else emit_type(m->ret);
+        fprintf(OUT, " %s_%s(%s self", m->type, m->name, m->type);
+        for (int p = 0; p < m->np; p++) {
+            fputs(", ", OUT);
+            emit_type(m->ps[p].ty);
+            fprintf(OUT, " %s", m->ps[p].name);
+        }
+        fputs(") ", OUT);
+        gen_block(m->body, 0, 1);
+        fputs("\n\n", OUT);
+    }
     for (int i = 0; i < NFN; i++) {
         Fn* f = &FNS[i];
         IID = 0;

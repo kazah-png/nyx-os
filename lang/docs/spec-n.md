@@ -1,6 +1,6 @@
 # The N Language — Specification
 
-**Version:** v0.7 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
+**Version:** v0.8 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
 
 This document specifies N exactly as implemented by the bootstrap compiler
 `ncc`. It is a *descriptive* spec: everything here compiles today. Planned
@@ -47,9 +47,12 @@ uninterpreted). The canonical file extension is `.n`.
 Identifiers match `[A-Za-z_][A-Za-z0-9_]*`. The following are reserved:
 
 ```
-as break continue defer else enum extern false fn if match mut raw
-return struct syscall true while
+as break continue defer else enum extern false fn if impl match mut
+raw return struct syscall true while
 ```
+
+(`self` is not reserved: it is the conventional name of a method's receiver
+and an ordinary binding elsewhere.)
 
 ### 2.4 Integer literals
 
@@ -287,6 +290,37 @@ without its literal is a compile error. Enum values participate in no
 operators — `match` (§5.6) is how you look inside one. This is the
 foundation `Result<T, E>` will be built on.
 
+### 4.5 `impl` methods (since v0.8)
+
+```n
+impl Rect {
+    fn area(self) -> i64 {
+        self.w * self.h
+    }
+    fn scale(self, k: i64) -> Rect {
+        Rect{ w: self.w * k, h: self.h * k }
+    }
+}
+
+r := Rect{ w: 3, h: 4 };
+n := r.scale(2).area();     // static dispatch; calls chain naturally
+```
+
+An `impl Type { ... }` block attaches functions to a declared struct or
+enum. Rules:
+
+- The first parameter is always `self`, written bare — it is the receiver,
+  typed as the impl'd type, passed **by value**, and immutable (methods
+  return new values rather than mutating; `mut self` is future work).
+- Dispatch is **static**: the receiver's compile-time type selects the
+  method. The lowering is a plain C function `Type_method(Type self, ...)`
+  — no vtables, no indirection, inspectable from C.
+- Calls are checked like functions: unknown method, wrong arity, and
+  argument type mismatches are compile errors naming `Type.method`.
+- Methods and fields share the `.` syntax; parentheses select the method
+  (`r.area` is the field lookup — an error if no such field — and
+  `r.area()` is the call).
+
 ### 5.6 `match` (since v0.7)
 
 ```n
@@ -507,7 +541,10 @@ is valid until the end of the enclosing block.
 Condensed EBNF of the implemented language:
 
 ```ebnf
-program      = { extern_block | fn_decl | struct_decl | enum_decl } ;
+program      = { extern_block | fn_decl | struct_decl | enum_decl
+               | impl_block } ;
+impl_block   = "impl" ident "{" { method } "}" ;
+method       = "fn" ident "(" "self" { "," param } ")" [ "->" type ] block ;
 
 extern_block = "extern" "syscall" "{" { extern_fn } "}" ;
 extern_fn    = "fn" ident params [ "->" type ] "=" int_lit [ ";" ] ;
@@ -572,9 +609,10 @@ N++/type-checker phase:
    the C compiler on the generated file.
 2. **Interpolation is text-or-decimal only.** `str` inserts text, everything
    else formats as signed decimal; there are no hex/width format controls yet.
-3. **Missing constructs:** `for`, closures, methods, modules/`use`,
-   `Result`/`?` — all specified in the N++ design document. (`struct`
-   landed in v0.5, `defer` in v0.6, `enum` + `match` in v0.7.)
+3. **Missing constructs:** `for`, closures, modules/`use`, `Result`/`?` —
+   all specified in the N++ design document. (`struct` landed in v0.5,
+   `defer` in v0.6, `enum` + `match` in v0.7, `impl` methods in v0.8 —
+   completing the N++ P2 stage.)
 4. Fixed implementation caps (per file: 64 functions, 64 syscalls; per call:
    16 arguments; per function: 256 live locals) — generous for the bootstrap,
    diagnosed clearly when exceeded.

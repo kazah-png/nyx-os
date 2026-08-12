@@ -1,0 +1,33 @@
+// methods.n — N v0.8 impl methods (closing N++ P2):
+//   - impl Type { fn m(self, ...) } attaches functions to a struct or enum
+//   - self is the receiver: by value, immutable, always the first parameter
+//   - calls dispatch statically on the receiver's type and chain naturally
+//   - lowering: plain C functions Type_m(self, ...) — zero indirection
+
+extern syscall {
+    fn write(fd: i32, buf: *u8, len: isize) -> i64 = 1
+}
+
+fn put(s: str) {
+    write(1, s.ptr as *u8, s.len as isize);
+}
+
+struct Rect {
+    w: i64,
+    h: i64,
+}
+
+impl Rect {
+    fn area(self) -> i64 {
+        self.w * self.h
+    }
+    fn scale(self, k: i64) -> Rect {
+        Rect{ w: self.w * k, h: self.h * k }
+    }
+}
+
+fn main() -> i64 {
+    r := Rect{ w: 3, h: 4 };
+    put("area={r.area()} scaled area={r.scale(2).area()}\n");
+    0
+}

@@ -1,7 +1,7 @@
 # N & N++ — the native languages of NyxOS
 
 <p align="center">
-  <img src="https://img.shields.io/badge/N-v0.7-825AD2?style=flat" />
+  <img src="https://img.shields.io/badge/N-v0.8-825AD2?style=flat" />
   &nbsp;
   <img src="https://img.shields.io/badge/N%2B%2B-design-825AD2?style=flat" />
   &nbsp;
@@ -31,7 +31,7 @@ N++ program, and N++ compiles down through the same pipeline.
 | Memory model | Manual, raw pointers | Ownership/borrowing opt-in, `#[user]` checked pointers |
 | Error handling | Return codes | `Result<T, E>` + `?` propagation |
 | Data types | Primitives, pointers, `str` | + `struct` methods, `enum` sum types, `match`, generics, traits |
-| Status | **v0.7 — working** (see below) | **P1 complete** · P2 nearly done (`struct`, `defer`, `enum`+`match` shipped) |
+| Status | **v0.8 — working** (see below) | **P1 + P2 complete** (`struct`, `defer`, `enum`+`match`, `impl` methods) |
 
 Both share the same DNA:
 
@@ -70,7 +70,8 @@ dependencies) implements N v0.6 — type inference (typed `:=` bindings with an
 callees, arity, argument/operand/return/assignment types — all compile errors
 with `file:line` diagnostics), `struct` records with checked literals and
 field access, Go-style function-scoped `defer`, `enum` tagged unions with an
-exhaustive `match` statement, strict-C99 output — and is verified three ways:
+exhaustive `match` statement, statically-dispatched `impl` methods,
+strict-C99 output — and is verified three ways:
 
 1. **Real programs run on NyxOS.** The first N program booted NyxOS and ran as
    a ring-3 process (`exec /hello_nyx.elf` → `pid=5`, clean exit).
@@ -104,7 +105,8 @@ lang/
     ├── inference.n      ← v0.2 type inference: typed bindings, typed interp, mut
     ├── structs.n        ← v0.5 structs: literals, field access, by-value passing
     ├── defer.n          ← v0.6 defer: LIFO cleanup on every exit path
-    └── enums.n          ← v0.7 enums + match: sum types, exhaustive dispatch
+    ├── enums.n          ← v0.7 enums + match: sum types, exhaustive dispatch
+    └── methods.n        ← v0.8 impl methods: static dispatch, chaining
 ```
 
 The runtime N programs link against lives with the rest of user space:
