@@ -1,7 +1,7 @@
 # N & N++ — the native languages of NyxOS
 
 <p align="center">
-  <img src="https://img.shields.io/badge/N-v0.1-825AD2?style=flat" />
+  <img src="https://img.shields.io/badge/N-v0.2-825AD2?style=flat" />
   &nbsp;
   <img src="https://img.shields.io/badge/N%2B%2B-design-825AD2?style=flat" />
   &nbsp;
@@ -31,7 +31,7 @@ N++ program, and N++ compiles down through the same pipeline.
 | Memory model | Manual, raw pointers | Ownership/borrowing opt-in, `#[user]` checked pointers |
 | Error handling | Return codes | `Result<T, E>` + `?` propagation |
 | Data types | Primitives, pointers, `str` | + `struct` methods, `enum` sum types, `match`, generics, traits |
-| Status | **v0.1 — working** (see below) | Design document (see [docs/design-npp.md](docs/design-npp.md)) |
+| Status | **v0.2 — working** (see below) | Design document (see [docs/design-npp.md](docs/design-npp.md)) |
 
 Both share the same DNA:
 
@@ -64,7 +64,9 @@ Both share the same DNA:
 ## Status — what works today
 
 The bootstrap compiler `ncc` ([ncc/ncc.c](ncc/ncc.c), single-file C, no
-dependencies) implements N v0.1 and is verified three ways:
+dependencies) implements N v0.2 — including minimal type inference (typed
+`:=` bindings with an `i64` default, interpolation that inserts `str` values
+as text, enforced `mut`) emitting strict C99 — and is verified three ways:
 
 1. **Real programs run on NyxOS.** The first N program booted NyxOS and ran as
    a ring-3 process (`exec /hello_nyx.elf` → `pid=5`, clean exit).
@@ -91,7 +93,8 @@ lang/
 │   └── host/nyxrt.h     ← Linux syscall shim for host-run tests
 └── examples/
     ├── hello.n          ← canonical first program
-    └── countdown.n      ← loops, functions, interpolation
+    ├── countdown.n      ← loops, functions, interpolation
+    └── inference.n      ← v0.2 type inference: typed bindings, typed interp, mut
 ```
 
 The runtime N programs link against lives with the rest of user space:

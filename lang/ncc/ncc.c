@@ -3,15 +3,20 @@
  * Hosted tool (runs on the dev machine); single file, no dependencies.
  * See lang/docs/spec-n.md for the language specification this implements.
  *
- * Supported subset (N v0.1):
+ * Supported subset (N v0.2):
  *   - extern syscall { fn name(params) [-> T] = N }
  *   - fn decls with block bodies, params, return types
  *   - statements: let (:=, mut), assignment (= += -=), return, while,
  *     if/else, break, continue, expression statements, block tail-expr
  *   - expressions: int (dec/hex), bool, string literals, string
- *     interpolation "{expr}" (formatted as i64), path, call, field access,
- *     unary - !, binary arith/cmp/logic/bit, `as` casts, parens
+ *     interpolation "{expr}" (typed: str inserts text, integers decimal),
+ *     path, call, field access, unary - !, binary arith/cmp/logic/bit,
+ *     `as` casts, parens
  *   - types: primitive names, *T, raw *T
+ *   - minimal type inference (v0.2): `x := e` bindings get a concrete C
+ *     type from the initializer (integer literals default to i64), `mut`
+ *     is enforced, and the generated C is plain C99 (no __auto_type), so
+ *     TinyCC — the in-OS compiler — can build it.
  * Not yet (N++ / type-checker territory): match, for, closures, struct/enum,
  * Result/?, methods, modules/use, defer.
  */
@@ -666,6 +671,84 @@ static void emit_type(Ty t) {
 }
 static int is_never(Ty t) { return t.name && !strcmp(t.name, "never"); }
 
+/* --- minimal type inference (v0.2) ------------------------------------ */
+/* A flat per-function symbol table with block scoping via save/restore of
+ * the counter (gen_block records NVARS on entry and truncates on exit).
+ * This is deliberately not a full checker: it exists to give `:=` bindings
+ * a concrete C type, to dispatch interpolation by type, and to enforce
+ * `mut` — the three things codegen cannot do blind. The full checker is
+ * N++ P1 (lang/docs/design-npp.md). */
+typedef struct { char* name; Ty ty; int is_mut; } VarInfo;
+static VarInfo VARS[256];
+static int NVARS;
+
+static void vars_add(char* name, Ty ty, int is_mut) {
+    if (NVARS >= 256) die("ncc: too many locals in one function");
+    VARS[NVARS].name = name;
+    VARS[NVARS].ty = ty;
+    VARS[NVARS].is_mut = is_mut;
+    NVARS++;
+}
+static VarInfo* vars_find(const char* name) {
+    for (int i = NVARS - 1; i >= 0; i--)        /* innermost shadows */
+        if (!strcmp(VARS[i].name, name)) return &VARS[i];
+    return NULL;
+}
+
+static Ty ty_named(const char* n) { Ty t; t.name = (char*)n; t.ptrs = 0; return t; }
+static Ty ty_ptr_u8(void)         { Ty t; t.name = (char*)"u8"; t.ptrs = 1; return t; }
+static int ty_is(Ty t, const char* n) { return t.name && t.ptrs == 0 && !strcmp(t.name, n); }
+
+/* Return type of a named function (extern syscalls and user fns are all
+ * parsed before codegen runs, so forward references resolve). */
+static Ty ret_type_of(const char* name) {
+    for (int i = 0; i < NXFN; i++)
+        if (!strcmp(XFNS[i].name, name)) return XFNS[i].ret;
+    for (int i = 0; i < NFN; i++)
+        if (!strcmp(FNS[i].name, name)) return FNS[i].ret;
+    return ty_named("i64");                     /* unknown callee: assume i64 */
+}
+
+/* Infer the N type of an expression. Integer literals default to i64 (the
+ * language rule); comparisons and logic yield bool; `as` is authoritative. */
+static Ty infer_type(Expr* e) {
+    switch (e->k) {
+        case E_INT:    return ty_named("i64");
+        case E_BOOL:   return ty_named("bool");
+        case E_STR:
+        case E_INTERP: return ty_named("str");
+        case E_PATH: {
+            VarInfo* v = vars_find(e->name);
+            return v ? v->ty : ty_named("i64");
+        }
+        case E_CALL:
+            if (e->callee->k == E_PATH) return ret_type_of(e->callee->name);
+            return ty_named("i64");
+        case E_FIELD: {
+            Ty b = infer_type(e->base);
+            if (ty_is(b, "str")) {
+                if (!strcmp(e->field, "ptr")) return ty_ptr_u8();
+                if (!strcmp(e->field, "len")) return ty_named("u64");
+            }
+            return ty_named("i64");
+        }
+        case E_UN:
+            if (e->op[0] == '!') return ty_named("bool");
+            return infer_type(e->r);
+        case E_BIN: {
+            const char* o = e->op;
+            if (!strcmp(o, "==") || !strcmp(o, "!=") || !strcmp(o, "<") ||
+                !strcmp(o, "<=") || !strcmp(o, ">")  || !strcmp(o, ">=") ||
+                !strcmp(o, "&&") || !strcmp(o, "||"))
+                return ty_named("bool");
+            return infer_type(e->l);            /* arithmetic: left operand rules */
+        }
+        case E_CAST:   return e->cast_to;
+    }
+    return ty_named("i64");
+}
+/* ---------------------------------------------------------------------- */
+
 static void indentf(int ind) { for (int i = 0; i < ind; i++) fputs("    ", OUT); }
 
 static void emit_cstr(const char* s, int n) {
@@ -746,9 +829,15 @@ static void gen_preludes(Expr* e, int ind) {
                 Frag* f = &e->frags[i];
                 if (f->e) {
                     indentf(ind);
-                    fprintf(OUT, "__nyx_fmt_i64(&__s%d, __b%d, 256, (nyx_i64)(", e->iid, e->iid);
-                    gen_expr(f->e);
-                    fputs("));\n", OUT);
+                    if (ty_is(infer_type(f->e), "str")) {   /* str: insert as text */
+                        fprintf(OUT, "__nyx_fmt_str(&__s%d, __b%d, 256, ", e->iid, e->iid);
+                        gen_expr(f->e);
+                        fputs(");\n", OUT);
+                    } else {                                /* everything else: i64 */
+                        fprintf(OUT, "__nyx_fmt_i64(&__s%d, __b%d, 256, (nyx_i64)(", e->iid, e->iid);
+                        gen_expr(f->e);
+                        fputs("));\n", OUT);
+                    }
                 } else if (f->tlen > 0) {
                     indentf(ind);
                     fprintf(OUT, "__nyx_fmt_str(&__s%d, __b%d, 256, (nyx_str){", e->iid, e->iid);
@@ -774,14 +863,27 @@ static void gen_block(Block* b, int ind, int fn_tail);
 
 static void gen_stmt(Stmt* s, int ind) {
     switch (s->k) {
-        case S_LET:
+        case S_LET: {
+            Ty t = infer_type(s->e);
+            if (!t.name || is_never(t))
+                die("%s:%d: cannot bind '%s' to an expression with no value",
+                    FILENAME, s->line, s->name);
             gen_preludes(s->e, ind);
             indentf(ind);
-            fprintf(OUT, "__auto_type %s = ", s->name);
+            emit_type(t);
+            fprintf(OUT, " %s = ", s->name);
             gen_expr(s->e);
             fputs(";\n", OUT);
+            vars_add(s->name, t, s->is_mut);
             break;
-        case S_ASSIGN:
+        }
+        case S_ASSIGN: {
+            if (s->lhs->k == E_PATH) {          /* mut enforcement (spec 5.1) */
+                VarInfo* v = vars_find(s->lhs->name);
+                if (v && !v->is_mut)
+                    die("%s:%d: cannot assign to immutable '%s' (declare it with 'mut')",
+                        FILENAME, s->line, s->lhs->name);
+            }
             gen_preludes(s->e, ind);
             indentf(ind);
             gen_expr(s->lhs);
@@ -789,6 +891,7 @@ static void gen_stmt(Stmt* s, int ind) {
             gen_expr(s->e);
             fputs(";\n", OUT);
             break;
+        }
         case S_RET:
             gen_preludes(s->e, ind);
             indentf(ind);
@@ -826,6 +929,7 @@ static void gen_stmt(Stmt* s, int ind) {
 }
 
 static void gen_block(Block* b, int ind, int fn_tail) {
+    int vsave = NVARS;                  /* block scope: locals die with the block */
     fputs("{\n", OUT);
     for (int i = 0; i < b->n; i++) gen_stmt(b->st[i], ind + 1);
     if (b->tail) {
@@ -837,6 +941,7 @@ static void gen_block(Block* b, int ind, int fn_tail) {
     }
     indentf(ind);
     fputs("}", OUT);
+    NVARS = vsave;
 }
 
 static void gen_extern_fns(void) {
@@ -898,6 +1003,9 @@ static void gen_program(const char* srcname) {
         Fn* f = &FNS[i];
         IID = 0;
         CUR_RET = f->ret;
+        NVARS = 0;                      /* fresh symbol table per function */
+        for (int p = 0; p < f->np; p++) /* parameters are immutable bindings */
+            vars_add(f->ps[p].name, f->ps[p].ty, 0);
         gen_fn_sig(f);
         fputc(' ', OUT);
         gen_block(f->body, 0, 1);

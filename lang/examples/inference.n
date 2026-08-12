@@ -1,0 +1,28 @@
+// inference.n — demonstrates N v0.2 type inference:
+//   - `:=` bindings get concrete types from the initializer
+//     (integer literals default to i64, strings to str)
+//   - str values interpolate as text, integers as decimal
+//   - immutable bindings reject assignment at compile time
+//     (delete a `mut` below and ncc refuses to compile)
+
+extern syscall {
+    fn write(fd: i32, buf: *u8, len: isize) -> i64 = 1
+    fn getpid() -> i64 = 6
+}
+
+fn put(s: str) {
+    write(1, s.ptr as *u8, s.len as isize);
+}
+
+fn main() -> i64 {
+    name := "N";                 // inferred: str
+    version := 2;                // inferred: i64
+    mut sum := 0;
+    mut i := 1;
+    while i <= 10 {
+        sum += i;
+        i += 1;
+    }
+    put("lang={name} v0.{version} sum(1..10)={sum} pid={getpid()}\n");
+    0
+}

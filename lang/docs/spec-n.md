@@ -1,6 +1,6 @@
 # The N Language — Specification
 
-**Version:** v0.1 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
+**Version:** v0.2 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
 
 This document specifies N exactly as implemented by the bootstrap compiler
 `ncc`. It is a *descriptive* spec: everything here compiles today. Planned
@@ -73,11 +73,12 @@ is evaluated and formatted into the string at that position.
 msg := "pid={getpid()} answer={40 + 2}\n";
 ```
 
-Semantics (v0.1): each interpolated expression is evaluated once, in order of
-appearance, converted as a signed 64-bit integer, and formatted in decimal.
-The result is a `str` built in a 256-byte function-scope buffer (§7.3); text
-beyond the buffer capacity is truncated, never overflowed. Use `\{` and `\}`
-for literal braces.
+Semantics: each interpolated expression is evaluated once, in order of
+appearance, and formatted **by its inferred type** (§6.4): a `str` value is
+inserted verbatim as text; every other type is converted as a signed 64-bit
+integer and formatted in decimal. The result is a `str` built in a 256-byte
+function-scope buffer (§7.3); text beyond the buffer capacity is truncated,
+never overflowed. Use `\{` and `\}` for literal braces.
 
 ### 2.6 Operators and punctuation
 
@@ -180,10 +181,11 @@ x := 42;              // immutable binding, type inferred
 mut counter := 0;     // mutable binding
 ```
 
-`:=` declares a new variable in the current scope. Bindings without `mut` must
-not be reassigned (v0.1 note: this rule is part of the language, but the
-bootstrap compiler does not yet reject violations — the C compiler's semantics
-apply meanwhile; see §9).
+`:=` declares a new variable in the current scope, typed by its initializer
+(§6.4). Bindings without `mut` must not be reassigned — the compiler rejects
+the assignment with an error (enforced since v0.2). Function parameters are
+immutable bindings. Binding an expression with no value (a `void` or `never`
+call) is an error.
 
 ### 5.2 Assignment
 
@@ -275,7 +277,30 @@ count as isize       // integer width/signedness conversion
 `as` performs a C-style explicit conversion to the named type. Narrowing casts
 truncate exactly as in C. Chaining is allowed: `x as u32 as u64`.
 
-### 6.3 Calls and fields
+### 6.4 Type inference
+
+Every expression has an inferred N type, computed by these rules (top match
+wins):
+
+| Expression | Inferred type |
+|---|---|
+| integer literal | `i64` (the language default) |
+| `true` / `false` | `bool` |
+| string literal, interpolated string | `str` |
+| variable / parameter | its binding's type |
+| `f(...)` | `f`'s declared return type |
+| `s.ptr` / `s.len` (on `str`) | `*u8` / `u64` |
+| comparison, `&&`, `\|\|`, `!` | `bool` |
+| other unary / binary arithmetic | the (left) operand's type |
+| `e as T` | `T` — casts are authoritative |
+
+Inference is *minimal by design*: it types `:=` bindings, drives interpolation
+formatting (§2.5), and enforces `mut` (§5.1). It does **not** yet verify
+argument or operand compatibility — that is the N++ type checker (P1). Where
+inference must guess (an unknown name), it assumes `i64`; use `as` to
+override at the use site.
+
+### 6.5 Calls and fields
 
 Function calls take positional arguments. Field access uses `.` and applies to
 `str` values today (`.ptr`, `.len`); it generalizes to user types in N++.
@@ -293,7 +318,7 @@ This section specifies what C the compiler is *required* to emit, because N's
 |---|---|
 | `extern syscall fn f(...) -> T = N` | `static inline T' f(...) { return (T')__nyx_syscall6(N, args…, 0…); }` |
 | `fn f(a: A) -> R { … }` | `R' f(A' a) { … }` + forward prototype |
-| `x := e;` | `__auto_type x = e';` (GCC/tcc extension) |
+| `x := e;` | `T' x = e';` where `T` is the inferred type (§6.4) |
 | `str` literal `"abc"` | `((nyx_str){"abc", 3})` |
 | block tail `e` | `return e';` (in a value-returning function) |
 | `never` return | `void` fn + `for (;;) {}` after the syscall |
@@ -377,19 +402,23 @@ interpolated expressions are parsed by the ordinary expression grammar.
 These are known, deliberate gaps in the bootstrap; each is queued for the
 N++/type-checker phase:
 
-1. **No type checker.** Types are parsed and used for codegen, but not
-   verified; type errors surface as C compiler errors on the generated file.
-2. **`:=` inference defers to C.** `n := 5` becomes `__auto_type n = 5` — a C
-   `int`, not N's intended default of `i64`. Annotate via casts
-   (`n := 5 as i64;`) where width matters.
-3. **Interpolation formats everything as `i64`.** Interpolating a `str` prints
-   its pointer value. Typed dispatch (str vs int vs hex) needs the checker.
-4. **`mut` is not enforced** (accepted syntactically, not yet checked).
-5. **Missing constructs:** `struct`/`enum` definitions, `match`, `for`,
+1. **Inference is not verification.** Expressions are *typed* (§6.4) but not
+   *checked*: passing an `i64` where a `str` is declared, or mixing widths,
+   surfaces as a C compiler error on the generated file rather than an `ncc`
+   diagnostic. Full checking is N++ P1.
+2. **Interpolation is text-or-decimal only.** `str` inserts text, everything
+   else formats as signed decimal; there are no hex/width format controls yet.
+3. **Missing constructs:** `struct`/`enum` definitions, `match`, `for`,
    closures, methods, modules/`use`, `defer`, `Result`/`?` — all specified in
    the N++ design document.
-6. Fixed implementation caps (per file: 64 functions, 64 syscalls; per call:
-   16 arguments) — generous for v0.1, diagnosed clearly when exceeded.
+4. Fixed implementation caps (per file: 64 functions, 64 syscalls; per call:
+   16 arguments; per function: 256 live locals) — generous for the bootstrap,
+   diagnosed clearly when exceeded.
+
+Resolved since v0.1: `:=` bindings now get concrete types with `i64` as the
+integer default; interpolation dispatches by type; `mut` is enforced; the
+generated C is strict C99 with no GNU extensions (TinyCC-compatible — this
+removed `__auto_type`, which tcc does not support).
 
 ## 10. Toolchain
 

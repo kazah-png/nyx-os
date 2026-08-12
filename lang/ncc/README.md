@@ -41,9 +41,11 @@ ld -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 \
 ```
 
 `-mno-red-zone` is mandatory (NyxOS interrupt handlers may run on the user
-stack region). The `__auto_type` and statement layout `ncc` emits are
-supported by both GCC and TinyCC — the latter matters because tcc is the
-in-OS compiler that will build N programs inside NyxOS at milestone M2/M3.
+stack region). Since v0.2 the emitted C is **strict C99 with no GNU
+extensions** (verified with `-std=c99 -pedantic-errors` in the test
+pipeline) — this matters because TinyCC is the in-OS compiler that will
+build N programs inside NyxOS at milestone M2/M3, and tcc does not support
+extensions like `__auto_type`.
 
 ## Testing without booting the OS
 
@@ -71,7 +73,8 @@ the release gate.
 |---|---|---|
 | Lexer | Tokens, comments, literals; string interpolation via a brace-depth mode stack that emits `HEAD/MID/TAIL` runs | `next_token`, `scan_string_body` |
 | Parser | Recursive descent, one-token lookahead; precedence ladder for expressions | `parse_program`, `parse_expr`, `parse_block` |
-| Codegen | Emits C per the spec's §7 contract; interpolations lowered to hoisted, bounds-checked buffers | `gen_program`, `gen_preludes` |
+| Inference | Minimal per-function symbol table (block-scoped via save/restore); types `:=` bindings, dispatches interpolation, enforces `mut` | `infer_type`, `vars_find` |
+| Codegen | Emits strict-C99 per the spec's §7 contract; interpolations lowered to hoisted, bounds-checked buffers | `gen_program`, `gen_preludes` |
 | Driver | CLI, file I/O | `main` |
 
 Two invariants worth knowing before editing:
