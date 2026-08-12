@@ -451,6 +451,38 @@ static int start_menu_hit(int mx, int my) {
 #define START_ITEM_H  28    /* entry pitch: 26 px body + 1 px separator + 1 */
 #define START_ITEM_N  13    /* entries in the menu (indices 0..12) */
 
+// The Start-menu entries — file scope so the draw, the hit test, and the
+// type-to-search filter share ONE list. The index IS do_start_menu_action()'s arg.
+static const char* const start_items[START_ITEM_N] = {
+    "File Manager", "Text Editor", "Image Viewer", "Terminal",
+    "Settings", "Task Manager", "Selene",
+    "Paint", "Sound Test", "About", "Shutdown", "Calculator",
+    "Games",
+};
+// Type-to-search (Windows-style): while the menu is open, typed letters narrow the
+// list to entries containing the query (case-insensitive substring). The buffer is
+// kept already-lowercased.
+static char start_filter[24];
+static int  start_filter_len = 0;
+static int  start_lc(int c) { return (c >= 'A' && c <= 'Z') ? c + 32 : c; }
+static int  start_item_matches(const char* label) {
+    if (start_filter_len == 0) return 1;
+    for (int i = 0; label[i]; i++) {
+        int j = 0;
+        while (start_filter[j] && label[i + j] && start_lc(label[i + j]) == start_filter[j]) j++;
+        if (j == start_filter_len) return 1;
+    }
+    return 0;
+}
+// Fill out[] with the real indices of the entries matching the filter (all, in order,
+// when the filter is empty). Returns the count. Shared by draw + hit-test + Enter.
+static int start_menu_filtered(int* out) {
+    int c = 0;
+    for (int i = 0; i < START_ITEM_N; i++)
+        if (start_item_matches(start_items[i])) out[c++] = i;
+    return c;
+}
+
 static int start_menu_item_hit(int mx, int my, int* idx) {
     if (!start_menu_open) return 0;
     uint32_t fh = fb_get_height();
@@ -459,8 +491,11 @@ static int start_menu_item_hit(int mx, int my, int* idx) {
     if (mx < sm_x || mx >= sm_x + START_W || my < sm_y || my >= sm_y + START_H) return 0;
     int rel = my - sm_y - START_ITEM_Y;
     if (rel < 0) return 0;                 // the header, not an entry
-    *idx = rel / START_ITEM_H;
-    if (*idx >= START_ITEM_N) return 0;    // below the last entry
+    int row = rel / START_ITEM_H;
+    int fi[START_ITEM_N];
+    int fc = start_menu_filtered(fi);      // rows are the FILTERED entries, packed
+    if (row >= fc) return 0;               // below the last matching entry
+    *idx = fi[row];                        // map the visible row to its real index
     return 1;
 }
 
@@ -632,20 +667,22 @@ static void draw_start_menu(void) {
         fb_fill_rect(sm_x + inset, sm_y + row, START_W - 2 * inset, 1,
                      vgrad_row(hg_t, hg_b, row, START_HDR_H));
     }
-    font_draw_string_trans(sm_x + 8, sm_y + 4, "NyxOS Menu", THEME_ON_ACCENT);
+    if (start_filter_len > 0) {                 // type-to-search: show the live query
+        char hdr[32];
+        int p = 0; hdr[p++] = '>'; hdr[p++] = ' ';
+        for (int i = 0; i < start_filter_len && p < (int)sizeof(hdr) - 2; i++) hdr[p++] = start_filter[i];
+        hdr[p++] = '_'; hdr[p] = '\0';
+        font_draw_string_trans(sm_x + 8, sm_y + 4, hdr, THEME_ON_ACCENT);
+    } else {
+        font_draw_string_trans(sm_x + 8, sm_y + 4, "NyxOS Menu", THEME_ON_ACCENT);
+    }
 
     // Index order here IS the argument do_start_menu_action() switches on, and
     // start_menu_item_hit() computes that index from the same START_ITEM_*
     // constants this loop lays the entries out with.
-    static const char* items[START_ITEM_N] = {
-        "File Manager", "Text Editor", "Image Viewer", "Terminal",
-        "Settings", "Task Manager", "Selene",
-        "Paint", "Sound Test", "About", "Shutdown", "Calculator",
-        "Games",
-    };
     // The entry under the pointer is highlighted with the accent, like a hovered
     // menu item (the event loop recomposites on pointer move while the menu is
-    // open, so this tracks the cursor).
+    // open, so this tracks the cursor). hov is a REAL item index.
     int hov = -1, hi;
     if (start_menu_item_hit(mouse_x, mouse_y, &hi)) hov = hi;
 
@@ -659,8 +696,13 @@ static void draw_start_menu(void) {
         fb_rgb(170,100,210),
     };
 
-    for (int i = 0; i < START_ITEM_N; i++) {
-        int iy = sm_y + START_ITEM_Y + i * START_ITEM_H;
+    // Only the entries matching the type-to-search filter are shown, packed from the
+    // top: visible row r draws start_items[fidx[r]].
+    int fidx[START_ITEM_N];
+    int fcount = start_menu_filtered(fidx);
+    for (int r = 0; r < fcount; r++) {
+        int i = fidx[r];
+        int iy = sm_y + START_ITEM_Y + r * START_ITEM_H;
         if ((uint32_t)(iy + START_ITEM_H) > fh - TASKBAR_H) break;
         if (i == hov)
             fb_fill_vgrad(sm_x + 4, iy, START_W - 8, START_ITEM_H - 2,
@@ -672,15 +714,17 @@ static void draw_start_menu(void) {
         int cw = 18, cx = sm_x + 7, cy = iy + (START_ITEM_H - 2 - cw) / 2;
         fb_fill_rect(cx, cy, cw, cw, chip_cols[i]);
         fb_fill_rect(cx, cy, cw, 1, col_lighten(chip_cols[i], 40));   // top highlight
-        char ini[2] = { items[i][0], '\0' };
+        char ini[2] = { start_items[i][0], '\0' };
         font_draw_string_trans(cx + (cw - FONT_WIDTH) / 2, cy + (cw - FONT_HEIGHT) / 2, ini, fb_rgb(255, 255, 255));
 
         // label, to the right of the chip
-        if (i == hov) font_draw_string_trans(sm_x + 30, iy + 5, items[i], THEME_ON_ACCENT);
-        else          font_draw_string(sm_x + 30, iy + 5, items[i], THEME_TEXT, THEME_WINDOW_BG);
+        if (i == hov) font_draw_string_trans(sm_x + 30, iy + 5, start_items[i], THEME_ON_ACCENT);
+        else          font_draw_string(sm_x + 30, iy + 5, start_items[i], THEME_TEXT, THEME_WINDOW_BG);
 
         fb_fill_rect(sm_x + 4, iy + START_ITEM_H - 1, START_W - 8, 1, THEME_ROW_DIV);
     }
+    if (fcount == 0)   // no entry matches the current query
+        font_draw_string(sm_x + 12, sm_y + START_ITEM_Y + 5, "(no matches)", fb_rgb(150,150,160), THEME_WINDOW_BG);
 
     // Border: rounded top corners to match the body, straight sides, square bottom
     // where it meets the taskbar.
@@ -3216,6 +3260,7 @@ void compositor_run(void) {
                 if (start_hit(mx, my)) {
                     if (pressed) {
                         start_menu_open = !start_menu_open;
+                        start_filter_len = 0; start_filter[0] = 0;   // fresh query each open
                         redraw = 1;
                     }
                     goto done_click;
@@ -3338,6 +3383,31 @@ void compositor_run(void) {
                 }
             }
         } else {
+            // Type-to-search in an open Start menu: keys narrow (or launch) the list
+            // instead of going to a window. Only active while the menu is open, so
+            // ordinary typing in apps is untouched.
+            if (start_menu_open && k > 0) {
+                if (k == '\n' || k == '\r') {                 // Enter: launch the top match
+                    int fi[START_ITEM_N]; int fc = start_menu_filtered(fi);
+                    start_filter_len = 0; start_filter[0] = 0;
+                    if (fc > 0) do_start_menu_action(fi[0]);   // (also closes the menu)
+                    else        start_menu_open = 0;
+                    redraw = 1; goto done_click;
+                }
+                if (k == 27) {                                // Escape: close
+                    start_menu_open = 0; start_filter_len = 0; start_filter[0] = 0;
+                    redraw = 1; goto done_click;
+                }
+                if (k == '\b' || k == 127) {                  // Backspace: edit the query
+                    if (start_filter_len > 0) start_filter[--start_filter_len] = 0;
+                    redraw = 1; goto done_click;
+                }
+                if (k >= 32 && k < 127 && start_filter_len < (int)sizeof(start_filter) - 1) {
+                    start_filter[start_filter_len++] = (char)start_lc(k);
+                    start_filter[start_filter_len] = 0;
+                    redraw = 1; goto done_click;
+                }
+            }
             // Ctrl+1..4: workspace switching
             if (is_ctrl_pressed() && k >= '1' && k <= '4') {
                 current_workspace = k - '1';
