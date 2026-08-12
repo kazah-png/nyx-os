@@ -43,8 +43,9 @@ static uint8_t gmul(uint8_t x, uint8_t n) {
 }
 
 // The FIPS-197 §5.3 inverse cipher: decrypt one 16-byte block using the forward key
-// schedule (rk[176]) applied from the last round key to the first.
-static void aes128_decrypt(const aes128_ctx* c, const uint8_t in[16], uint8_t out[16]) {
+// schedule (rk[176]) applied from the last round key to the first. Public (declared in
+// aes_gcm.h beside aes128_encrypt) so other block modes — e.g. AES Key Wrap — can reuse it.
+void aes128_decrypt(const aes128_ctx* c, const uint8_t in[16], uint8_t out[16]) {
     uint8_t s[16], t;
     for (int i = 0; i < 16; i++) s[i] = in[i] ^ c->rk[10 * 16 + i];   // AddRoundKey(10)
 

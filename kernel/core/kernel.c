@@ -3703,6 +3703,7 @@ extern int aes_ctr_selftest(void);
 extern int sha3_selftest(void);
 extern int ct_selftest(void);
 extern int aes_cbc_selftest(void);
+extern int aes_kw_selftest(void);
 extern int url_parse_selftest(void);
 extern int glob_selftest(void);
 extern int leb128_selftest(void);
@@ -3856,6 +3857,7 @@ static void run_selftests(void) {
         {"ansicsi",      ansi_csi_selftest},        {"caldate",       caldate_selftest},
         {"sha3",         sha3_selftest},           {"ct",            ct_selftest},
         {"aescbc",       aes_cbc_selftest},        {"urlparse",      url_parse_selftest},
+        {"aeskw",        aes_kw_selftest},
         {"glob",         glob_selftest},
         {"leb128",       leb128_selftest},        {"crc16",         crc16_selftest},
     };

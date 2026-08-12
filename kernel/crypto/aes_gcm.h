@@ -9,6 +9,7 @@
 typedef struct { uint8_t rk[176]; } aes128_ctx;   // 11 expanded round keys
 void aes128_key_expand(aes128_ctx* c, const uint8_t key[16]);
 void aes128_encrypt(const aes128_ctx* c, const uint8_t in[16], uint8_t out[16]);
+void aes128_decrypt(const aes128_ctx* c, const uint8_t in[16], uint8_t out[16]);  // FIPS-197 inverse (aes_cbc.c)
 
 // AEAD seal: encrypt pt[pt_len] -> ct[pt_len] and produce the 16-byte auth tag over
 // aad[aad_len] + ct. iv is the 12-byte GCM nonce.
