@@ -350,6 +350,17 @@ static int max_hit(window_t* win, int mx, int my) {
         && my >= win->y + 3 && my < win->y + 3 + CLOSE_W;
 }
 
+// --- title-bar double-click -> maximize/restore ---
+#define DBLCLICK_MS 400
+static uint32_t last_tb_click_ms = 0;
+static int      last_tb_click_id = -1;
+// Two presses on the SAME window's title bar within DBLCLICK_MS milliseconds are a
+// double-click. Unsigned subtraction so a wrap of the ms counter is handled. Pure +
+// unit-testable — the standard "double-click the title bar to (un)maximize" gesture.
+static int is_dblclick(uint32_t last_ms, uint32_t now_ms, int same_win) {
+    return same_win && (uint32_t)(now_ms - last_ms) <= DBLCLICK_MS;
+}
+
 static int min_hit(window_t* win, int mx, int my) {
     if (!win->has_min) return 0;
     int bx = win->x + win->w - CLOSE_W - 2 - (win->has_close ? CLOSE_W + 2 : 0) - (win->has_max ? CLOSE_W + 2 : 0);
@@ -3187,10 +3198,18 @@ void compositor_run(void) {
                     } else if (min_hit(hit, mx, my)) {
                         window_minimize(hit->id);
                     } else if (titlebar_hit(hit, mx, my)) {
-                        hit->dragging = 1;
-                        hit->drag_off_x = mx - hit->x;
-                        hit->drag_off_y = my - hit->y;
-                        drag_id = hit->id;
+                        uint32_t now = get_ticks();
+                        if (is_dblclick(last_tb_click_ms, now, hit->id == last_tb_click_id)) {
+                            window_maximize(hit->id);   // double-click toggles maximize/restore
+                            last_tb_click_id = -1;      // consume, so a 3rd click starts fresh
+                        } else {
+                            hit->dragging = 1;
+                            hit->drag_off_x = mx - hit->x;
+                            hit->drag_off_y = my - hit->y;
+                            drag_id = hit->id;
+                            last_tb_click_ms = now;
+                            last_tb_click_id = hit->id;
+                        }
                     } else {
                         int rdir;
                         if (resize_hit(hit, mx, my, &rdir)) {
