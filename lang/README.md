@@ -1,7 +1,7 @@
 # N & N++ — the native languages of NyxOS
 
 <p align="center">
-  <img src="https://img.shields.io/badge/N-v0.5-825AD2?style=flat" />
+  <img src="https://img.shields.io/badge/N-v0.6-825AD2?style=flat" />
   &nbsp;
   <img src="https://img.shields.io/badge/N%2B%2B-design-825AD2?style=flat" />
   &nbsp;
@@ -31,7 +31,7 @@ N++ program, and N++ compiles down through the same pipeline.
 | Memory model | Manual, raw pointers | Ownership/borrowing opt-in, `#[user]` checked pointers |
 | Error handling | Return codes | `Result<T, E>` + `?` propagation |
 | Data types | Primitives, pointers, `str` | + `struct` methods, `enum` sum types, `match`, generics, traits |
-| Status | **v0.5 — working** (see below) | **P1 complete** · P2 started (`struct` shipped) |
+| Status | **v0.6 — working** (see below) | **P1 complete** · P2 underway (`struct`, `defer` shipped) |
 
 Both share the same DNA:
 
@@ -64,12 +64,13 @@ Both share the same DNA:
 ## Status — what works today
 
 The bootstrap compiler `ncc` ([ncc/ncc.c](ncc/ncc.c), single-file C, no
-dependencies) implements N v0.5 — type inference (typed `:=` bindings with an
+dependencies) implements N v0.6 — type inference (typed `:=` bindings with an
 `i64` default, interpolation that inserts `str` values as text, enforced
 `mut`), a complete expression-level checker (undeclared names, unknown
 callees, arity, argument/operand/return/assignment types — all compile errors
 with `file:line` diagnostics), `struct` records with checked literals and
-field access, strict-C99 output — and is verified three ways:
+field access, Go-style function-scoped `defer`, strict-C99 output — and is
+verified three ways:
 
 1. **Real programs run on NyxOS.** The first N program booted NyxOS and ran as
    a ring-3 process (`exec /hello_nyx.elf` → `pid=5`, clean exit).
@@ -101,7 +102,8 @@ lang/
     ├── hello.n          ← canonical first program
     ├── countdown.n      ← loops, functions, interpolation
     ├── inference.n      ← v0.2 type inference: typed bindings, typed interp, mut
-    └── structs.n        ← v0.5 structs: literals, field access, by-value passing
+    ├── structs.n        ← v0.5 structs: literals, field access, by-value passing
+    └── defer.n          ← v0.6 defer: LIFO cleanup on every exit path
 ```
 
 The runtime N programs link against lives with the rest of user space:

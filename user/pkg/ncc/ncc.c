@@ -76,7 +76,7 @@ typedef enum {
     T_IDENT,
     T_KW_EXTERN, T_KW_SYSCALL, T_KW_FN, T_KW_MUT, T_KW_RETURN,
     T_KW_IF, T_KW_ELSE, T_KW_WHILE, T_KW_BREAK, T_KW_CONTINUE,
-    T_KW_AS, T_KW_RAW, T_KW_TRUE, T_KW_FALSE, T_KW_STRUCT,
+    T_KW_AS, T_KW_RAW, T_KW_TRUE, T_KW_FALSE, T_KW_STRUCT, T_KW_DEFER,
     T_LP, T_RP, T_LB, T_RB, T_COMMA, T_SEMI, T_COLON,
     T_WALRUS, T_ARROW, T_ASSIGN,
     T_PLUS, T_MINUS, T_STAR, T_SLASH, T_PERCENT,
@@ -168,6 +168,7 @@ static TK kwlook(const char* s, int n) {
         {"else", T_KW_ELSE}, {"while", T_KW_WHILE}, {"break", T_KW_BREAK},
         {"continue", T_KW_CONTINUE}, {"as", T_KW_AS}, {"raw", T_KW_RAW},
         {"true", T_KW_TRUE}, {"false", T_KW_FALSE}, {"struct", T_KW_STRUCT},
+        {"defer", T_KW_DEFER},
     };
     for (size_t i = 0; i < sizeof(K) / sizeof(K[0]); i++)
         if ((int)strlen(K[i].w) == n && !memcmp(K[i].w, s, (size_t)n)) return K[i].k;
@@ -324,7 +325,8 @@ struct Expr {
     Ty cast_to;
 };
 
-typedef enum { S_LET, S_ASSIGN, S_RET, S_EXPR, S_WHILE, S_IF, S_BREAK, S_CONT } SK;
+typedef enum { S_LET, S_ASSIGN, S_RET, S_EXPR, S_WHILE, S_IF, S_BREAK, S_CONT,
+               S_DEFER } SK;
 struct Stmt {
     SK k;
     int line;
@@ -617,6 +619,13 @@ static Block* parse_block(void) {
         }
         if (pacc(T_KW_BREAK))    { pexp(T_SEMI, "';'"); st[n++] = news(S_BREAK); continue; }
         if (pacc(T_KW_CONTINUE)) { pexp(T_SEMI, "';'"); st[n++] = news(S_CONT);  continue; }
+        if (pacc(T_KW_DEFER)) {
+            Stmt* s = news(S_DEFER);
+            s->e = parse_expr();
+            pexp(T_SEMI, "';'");
+            st[n++] = s;
+            continue;
+        }
         if (pchk(T_KW_WHILE)) {
             padv();
             Stmt* s = news(S_WHILE);
@@ -744,6 +753,15 @@ static void parse_program(void) {
 static FILE* OUT;
 static int IID;                            /* per-function interp counter */
 static Ty CUR_RET;
+
+/* defer (v0.6): function-scoped, Go-style. Deferred expressions register in
+ * textual order and run in LIFO order on EVERY exit path — each early
+ * `return`, the body's tail expression, and (for void functions) falling
+ * off the end. Restricted to the function's outermost block so that a
+ * static lowering is exact (no runtime defer stack needed). */
+static Expr* FN_DEFERS[16];
+static int   NDEFERS;
+static int   BLOCK_DEPTH;                  /* 1 = the function's own block */
 
 static const char* base_ctype(const char* n) {
     static const struct { const char* a; const char* b; } M[] = {
@@ -1147,6 +1165,16 @@ static void gen_preludes(Expr* e, int ind) {
 
 static void gen_block(Block* b, int ind, int fn_tail);
 
+/* Emit every pending defer, most recently registered first. */
+static void gen_defers(int ind) {
+    for (int i = NDEFERS - 1; i >= 0; i--) {
+        gen_preludes(FN_DEFERS[i], ind);
+        indentf(ind);
+        gen_expr(FN_DEFERS[i]);
+        fputs(";\n", OUT);
+    }
+}
+
 static void gen_stmt(Stmt* s, int ind) {
     switch (s->k) {
         case S_LET: {
@@ -1210,6 +1238,26 @@ static void gen_stmt(Stmt* s, int ind) {
                 die("%s:%d: 'return' without a value in a function returning %s",
                     FILENAME, s->line, ty_str(CUR_RET));
             }
+            if (NDEFERS && s->e) {
+                /* Semantics: the return value is computed BEFORE the defers
+                 * run, so a defer cannot change what gets returned. */
+                indentf(ind); fputs("{\n", OUT);
+                gen_preludes(s->e, ind + 1);
+                indentf(ind + 1);
+                emit_type(infer_type(s->e));
+                fputs(" __ret = ", OUT);
+                gen_expr(s->e);
+                fputs(";\n", OUT);
+                gen_defers(ind + 1);
+                indentf(ind + 1); fputs("return __ret;\n", OUT);
+                indentf(ind); fputs("}\n", OUT);
+                break;
+            }
+            if (NDEFERS) {                          /* void return */
+                gen_defers(ind);
+                indentf(ind); fputs("return;\n", OUT);
+                break;
+            }
             gen_preludes(s->e, ind);
             indentf(ind);
             if (s->e) { fputs("return ", OUT); gen_expr(s->e); fputs(";\n", OUT); }
@@ -1224,6 +1272,15 @@ static void gen_stmt(Stmt* s, int ind) {
             break;
         case S_BREAK: indentf(ind); fputs("break;\n", OUT); break;
         case S_CONT:  indentf(ind); fputs("continue;\n", OUT); break;
+        case S_DEFER:
+            if (BLOCK_DEPTH != 1)
+                die("%s:%d: defer is only allowed in the function's outermost block",
+                    FILENAME, s->line);
+            if (NDEFERS >= 16)
+                die("%s:%d: too many defers in one function", FILENAME, s->line);
+            check_expr(s->e);           /* names resolve at registration point */
+            FN_DEFERS[NDEFERS++] = s->e;
+            break;
         case S_WHILE:
             check_expr(s->cond);
             gen_preludes(s->cond, ind);
@@ -1250,24 +1307,41 @@ static void gen_stmt(Stmt* s, int ind) {
 
 static void gen_block(Block* b, int ind, int fn_tail) {
     int vsave = NVARS;                  /* block scope: locals die with the block */
+    BLOCK_DEPTH++;
     fputs("{\n", OUT);
     for (int i = 0; i < b->n; i++) gen_stmt(b->st[i], ind + 1);
     if (b->tail) {
         check_expr(b->tail);
-        if (fn_tail && CUR_RET.name && !is_never(CUR_RET)) {
+        int returns = fn_tail && CUR_RET.name && !is_never(CUR_RET);
+        if (returns) {
             Ty vt = infer_type(b->tail);         /* tail value = return value */
             if (!ty_compat(vt, CUR_RET))
                 die("%s: tail expression type mismatch: expected %s, got %s",
                     FILENAME, ty_str(CUR_RET), ty_str(vt));
         }
-        gen_preludes(b->tail, ind + 1);
-        indentf(ind + 1);
-        if (fn_tail && CUR_RET.name && !is_never(CUR_RET)) fputs("return ", OUT);
-        gen_expr(b->tail);
-        fputs(";\n", OUT);
+        if (returns && NDEFERS) {                /* tail value, then defers, then return */
+            gen_preludes(b->tail, ind + 1);
+            indentf(ind + 1);
+            emit_type(infer_type(b->tail));
+            fputs(" __ret = ", OUT);
+            gen_expr(b->tail);
+            fputs(";\n", OUT);
+            gen_defers(ind + 1);
+            indentf(ind + 1); fputs("return __ret;\n", OUT);
+        } else {
+            gen_preludes(b->tail, ind + 1);
+            indentf(ind + 1);
+            if (returns) fputs("return ", OUT);
+            gen_expr(b->tail);
+            fputs(";\n", OUT);
+            if (fn_tail && !returns && NDEFERS) gen_defers(ind + 1);
+        }
+    } else if (fn_tail && NDEFERS && (!CUR_RET.name || is_never(CUR_RET))) {
+        gen_defers(ind + 1);                     /* void fn falling off the end */
     }
     indentf(ind);
     fputs("}", OUT);
+    BLOCK_DEPTH--;
     NVARS = vsave;
 }
 
@@ -1361,6 +1435,8 @@ static void gen_program(const char* srcname) {
         IID = 0;
         CUR_RET = f->ret;
         NVARS = 0;                      /* fresh symbol table per function */
+        NDEFERS = 0;                    /* defers are function-scoped */
+        BLOCK_DEPTH = 0;
         for (int p = 0; p < f->np; p++) /* parameters are immutable bindings */
             vars_add(f->ps[p].name, f->ps[p].ty, 0);
         gen_fn_sig(f);

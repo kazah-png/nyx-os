@@ -1,6 +1,6 @@
 # The N Language — Specification
 
-**Version:** v0.5 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
+**Version:** v0.6 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
 
 This document specifies N exactly as implemented by the bootstrap compiler
 `ncc`. It is a *descriptive* spec: everything here compiles today. Planned
@@ -47,7 +47,7 @@ uninterpreted). The canonical file extension is `.n`.
 Identifiers match `[A-Za-z_][A-Za-z0-9_]*`. The following are reserved:
 
 ```
-as break continue else extern false fn if mut raw return
+as break continue defer else extern false fn if mut raw return
 struct syscall true while
 ```
 
@@ -264,7 +264,35 @@ break;           // exit innermost while
 continue;        // next iteration
 ```
 
-### 5.6 Block tail value
+### 5.6 `defer` (since v0.6)
+
+```n
+fn copy(src: str, dst: str) -> i64 {
+    fd := fs_open(src);
+    defer fs_close(fd);      // runs when copy() exits — on EVERY path
+    if fd < 0 {
+        return -1;           // defer runs here
+    }
+    do_copy(fd)              // and here (tail)
+}
+```
+
+`defer expr;` registers `expr` to execute when the **function** exits.
+Semantics (deliberately Go's):
+
+- Deferred expressions run in **LIFO** order — last registered, first run.
+- They run on **every** exit path: each early `return`, the body's tail
+  expression, and (for `void` functions) falling off the end.
+- The return value is computed **before** the defers run, so a defer cannot
+  change what the function returns.
+- Names in the deferred expression resolve at the point of registration.
+
+**v0.6 restriction:** `defer` may appear only in the function's *outermost*
+block (not inside `if`/`while` bodies). This keeps the static lowering exact
+— defers cannot be conditionally registered, so no runtime defer stack is
+needed. Registering conditionally is a compile error, not a silent surprise.
+
+### 5.7 Block tail value
 
 The final expression of a function body, written **without** a trailing `;`,
 is the function's return value:
@@ -445,6 +473,7 @@ stmt         = [ "mut" ] ident ":=" expr ";"
              | expr ( "=" | "+=" | "-=" ) expr ";"
              | "return" [ expr ] ";"
              | "break" ";" | "continue" ";"
+             | "defer" expr ";"          (* outermost function block only *)
              | "while" expr block
              | "if" expr block [ "else" ( if_stmt | block ) ]
              | expr ";" ;
@@ -484,8 +513,8 @@ N++/type-checker phase:
 2. **Interpolation is text-or-decimal only.** `str` inserts text, everything
    else formats as signed decimal; there are no hex/width format controls yet.
 3. **Missing constructs:** `enum` definitions, `match`, `for`, closures,
-   methods, modules/`use`, `defer`, `Result`/`?` — all specified in the N++
-   design document. (`struct` landed in v0.5.)
+   methods, modules/`use`, `Result`/`?` — all specified in the N++ design
+   document. (`struct` landed in v0.5, `defer` in v0.6.)
 4. Fixed implementation caps (per file: 64 functions, 64 syscalls; per call:
    16 arguments; per function: 256 live locals) — generous for the bootstrap,
    diagnosed clearly when exceeded.

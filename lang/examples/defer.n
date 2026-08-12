@@ -1,0 +1,32 @@
+// defer.n — N v0.6 defer: function-scoped cleanup, Go-style.
+//   - `defer expr;` registers expr to run when the function exits
+//   - deferred expressions run in LIFO order (last registered, first run)
+//   - they run on EVERY exit path: early returns and the tail expression
+//   - the return value is computed BEFORE the defers run
+//   - v0.6 restriction: defer only in the function's outermost block
+
+extern syscall {
+    fn write(fd: i32, buf: *u8, len: isize) -> i64 = 1
+}
+
+fn put(s: str) {
+    write(1, s.ptr as *u8, s.len as isize);
+}
+
+fn demo(early: i64) -> i64 {
+    defer put("  defer: registered first, runs last\n");
+    defer put("  defer: registered last, runs first\n");
+    put("  body\n");
+    if early > 0 {
+        return 1;      // both defers run here...
+    }
+    0                  // ...and here
+}
+
+fn main() -> i64 {
+    put("early return path:\n");
+    demo(1);
+    put("tail path:\n");
+    demo(0);
+    0
+}
