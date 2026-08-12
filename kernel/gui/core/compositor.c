@@ -794,6 +794,7 @@ static const char* ctx_menu_items[] = {
 
 // Forward declarations
 static void redraw_all(void);
+static void draw_snap_preview(void);
 static void do_start_menu_action(int idx);
 static void settings_win_click(window_t* win, int mx, int my, int btn);
 
@@ -1421,6 +1422,7 @@ static void redraw_all(void) {
         draw_titlebar(win);
     }
 
+    draw_snap_preview();          // Aero-snap target hint, on top of the windows
     draw_workspace_indicator();
     draw_taskbar();
     draw_start_menu_shadow();     // soft halo cast under the menu, before its body paints
@@ -2308,6 +2310,47 @@ static int snap_zone_for_cursor(int mx, int my, int fw, int fh) {
     }
     if (my <= SNAP_EDGE) return WSTATE_MAXIMIZED;    // top edge (not a corner) -> maximize
     return WSTATE_NORMAL;
+}
+
+// Outer on-screen footprint a window occupies when snapped to `zone` (WSTATE_MAXIMIZED
+// or a WSTATE_SNAP_*), on an fw x fh framebuffer with a bottom taskbar of height tb.
+// Pure geometry mirroring apply_snap_geom / window_maximize, so the drag preview and
+// the eventual drop land on exactly the same rectangle. Returns 1 and fills the out
+// params for a snap/maximize zone, 0 otherwise (leaving them untouched).
+static int snap_zone_rect(int zone, int fw, int fh, int tb,
+                          int* rx, int* ry, int* rw, int* rh) {
+    int usable = fh - tb;
+    int half_w = fw / 2;
+    int half_v = usable / 2;
+    if (zone == WSTATE_MAXIMIZED) { *rx = 0; *ry = 0; *rw = fw; *rh = usable; return 1; }
+    if (!win_is_snapped(zone)) return 0;
+    int left = win_snap_left(zone);
+    int vz   = win_snap_vzone(zone);
+    *rx = left ? 0 : half_w;
+    *rw = left ? half_w : (fw - half_w);
+    if (vz == 1)      { *ry = 0;      *rh = half_v; }            // top quarter
+    else if (vz == 2) { *ry = half_v; *rh = usable - half_v; }   // bottom quarter
+    else              { *ry = 0;      *rh = usable; }            // full-height half
+    return 1;
+}
+
+// While a title-bar drag is in progress, trace a 3px accent border around the zone an
+// Aero-snap would drop the window into (the exact rect window_snap_to will use), so the
+// snap is predictable — the Windows drag-to-edge snap hint. Nothing is drawn when the
+// window is not being dragged or the cursor is not in a snap zone. Called from
+// redraw_all after the windows, so the hint sits on top.
+static void draw_snap_preview(void) {
+    if (!drag_id) return;
+    int fw = (int)fb_get_width(), fh = (int)fb_get_height();
+    int zone = snap_zone_for_cursor(mouse_x, mouse_y, fw, fh);
+    int rx, ry, rw, rh;
+    if (!snap_zone_rect(zone, fw, fh, TASKBAR_H, &rx, &ry, &rw, &rh)) return;
+    uint32_t c = fb_rgb(150, 110, 235);
+    const int T = 3;                                  // border thickness
+    fb_fill_rect(rx, ry, rw, T, c);                   // top
+    fb_fill_rect(rx, ry + rh - T, rw, T, c);          // bottom
+    fb_fill_rect(rx, ry, T, rh, c);                   // left
+    fb_fill_rect(rx + rw - T, ry, T, rh, c);          // right
 }
 
 // Fill a snapped window's rect for the CURRENT framebuffer from its state's two
