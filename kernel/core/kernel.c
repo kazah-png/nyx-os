@@ -12,6 +12,7 @@
 #include "../drivers/audio/sb16.h"
 #include "../fs/ext2.h"
 #include "../fs/tar.h"
+#include "datefmt.h"
 #include "../net/dns.h"
 #include "../net/http.h"
 #include "../crypto/tls/tls.h"
@@ -206,7 +207,7 @@ static const command_t commands[] = {
     {"fastfetch", cmd_nyxfetch,  "Alias for nyxfetch", false},
     {"echo",      cmd_echo,      "Print a line of text", false},
     {"hexdump",   cmd_hexdump,   "Dump memory: hexdump <addr> [bytes]", false},
-    {"date",      cmd_date,      "Show current date and time", false},
+    {"date",      cmd_date,      "Show date/time; date +FORMAT for strftime output", false},
     {"uname",     cmd_uname,     "Show system information", false},
     {"reboot",    cmd_reboot,    "Reboot the system", false},
     {"ps",        cmd_ps,        "List processes", false},
@@ -627,7 +628,7 @@ static const man_page_t man_pages[] = {
     {"mem",      "Show a summary of physical memory: how much is in use, how much is free, and the total the kernel manages."},
     {"df",       "Report the total, used and available space of the mounted ext2 filesystem on /mnt."},
     {"mount",    "Mount an ext2 filesystem onto /mnt. With no arguments it probes the first ATA disk; [drive] and [part_lba] select a specific disk and partition."},
-    {"date",     "Print the current date and time read from the CMOS real-time clock."},
+    {"date",     "Print the current date and time from the CMOS real-time clock. With a `+FORMAT` argument, format it strftime-style: %Y %y %m %d %e %H %I %M %S %p (year/month/day/hour/min/sec), %A/%a (weekday), %B/%b (month name), %j (day of year), %% — e.g. `date +%A` or `date +%Y-%m-%d`."},
     {"uname",    "Print system information: the operating-system name, its version and the machine architecture."},
     {"nyxfetch", "Print a system summary beside the NyxOS logo: the version, uptime, memory use and other details. `fastfetch` is an alias."},
     {"clear",    "Clear the terminal and move the cursor back to the top-left corner."},
@@ -3301,9 +3302,15 @@ static void cmd_hexdump(int argc, char** argv) {
 }
 
 static void cmd_date(int argc, char** argv) {
-    (void)argc; (void)argv;
     rtc_time_t t;
     rtc_read_time(&t);
+    // date +FORMAT — strftime-style output (e.g. `date +%A` or `date +%Y-%m-%d`).
+    if (argc >= 2 && argv[1][0] == '+') {
+        char buf[256];
+        date_format(buf, sizeof(buf), argv[1] + 1, &t);
+        printf("%s\n", buf);
+        return;
+    }
     printf("%04u-%02u-%02u %02u:%02u:%02u\n",
            t.year, t.month, t.day, t.hour, t.minute, t.second);
 }
@@ -3733,6 +3740,7 @@ extern int ed25519_selftest(void);
 extern int ed25519_verify_selftest(void);
 extern int filetype_selftest(void);
 extern int tar_selftest(void);
+extern int datefmt_selftest(void);
 extern int tls_prf_selftest(void);
 extern int tls_keyschedule_selftest(void);
 extern int tls_record_selftest(void);
@@ -3889,7 +3897,7 @@ static void run_selftests(void) {
         {"csprng",       csprng_selftest},        {"aes_gcm",       aes_gcm_selftest},
         {"curve25519",   curve25519_selftest},     {"ed25519pub",    ed25519_selftest},
         {"ed25519vfy",   ed25519_verify_selftest}, {"filetype",      filetype_selftest},
-        {"tar",          tar_selftest},
+        {"tar",          tar_selftest},            {"datefmt",       datefmt_selftest},
         {"tls_prf",      tls_prf_selftest},       {"tls_keysched",  tls_keyschedule_selftest},
         {"tls_record",   tls_record_selftest},    {"tls_ske_p384",  tls_ske_p384_selftest},
         {"der",          der_selftest},           {"base64",        base64_selftest},
