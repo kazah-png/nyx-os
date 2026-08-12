@@ -3688,6 +3688,7 @@ extern int base16_selftest(void);
 extern int utf8_selftest(void);
 extern int totp_selftest(void);
 extern int ipv4_parse_selftest(void);
+extern int ipv6_parse_selftest(void);
 extern int numparse_selftest(void);
 extern int hkdf_selftest(void);
 extern int chacha20_selftest(void);
@@ -3841,6 +3842,7 @@ static void run_selftests(void) {
         {"tcpcksum",     tcp_checksum_selftest},  {"dns",           dns_response_selftest},
         {"mathx",        mathx_selftest},         {"crc32",         crc32_selftest},
         {"totp",         totp_selftest},          {"ipv4",          ipv4_parse_selftest},
+        {"ipv6",         ipv6_parse_selftest},
         {"numparse",     numparse_selftest},        {"hkdf",          hkdf_selftest},
         {"chacha20",     chacha20_selftest},        {"siphash",       siphash_selftest},
         {"poly1305",     poly1305_selftest},        {"chachapoly",    chacha20poly1305_selftest},
