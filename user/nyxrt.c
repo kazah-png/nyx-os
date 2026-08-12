@@ -2,9 +2,14 @@
 #include "nyxrt.h"
 
 /* crt0 publishes the process environment here (it references `environ` on every
- * launch). Nyx C programs link nyxrt instead of libc, so the symbol must live here
- * too — even though nothing in the Nyx runtime reads it yet. */
+ * launch). Cross-compiled N programs link nyxrt INSTEAD of libc, so the symbol
+ * must live here too — even though nothing in the N runtime reads it yet.
+ * In-OS builds (the `cc` builtin, milestone M3) always link /libc.o, which
+ * already defines environ — defining it here too would be a duplicate symbol,
+ * so the in-OS (tcc) build leaves it to libc. */
+#ifndef __TINYC__
 char** environ = 0;
+#endif
 
 nyx_str __nyx_fmt_begin(char* buf, nyx_u64 cap) {
     (void)cap;

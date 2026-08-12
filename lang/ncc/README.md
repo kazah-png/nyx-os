@@ -112,5 +112,13 @@ cc /mnt/ncc.c -I/usr/src/nyx -o /mnt/bin/ncc
 (`/usr/src/nyx` ships `libc.h`/`syscall.h` in the initramfs; the `cc` builtin
 passes `-I` through to tcc.) The header path is verified continuously on the
 dev machine by compiling with `-nostdinc` against `user/tcc/nyxshim` +
-`user/libc.h` — the exact set the in-OS tcc resolves. Remaining for M2: run
-that command inside a booted NyxOS and wire an `xbm` recipe.
+`user/libc.h` — the exact set the in-OS tcc resolves.
+
+**M2 and M3 are verified**: inside a booted NyxOS, that exact `cc` command
+compiled `ncc`, the resulting in-OS `ncc` transpiled `lang/examples/hello.n`,
+`cc` built the output against `nyxrt.c`, and the binary ran and printed its
+pid — the full N pipeline with no dev machine involved. The runtime-side
+portability that enabled it (tcc-safe fixed-width types, the explicit-`movq`
+syscall asm, the `environ`/libc.o ownership rule) lives in `user/nyxrt.h` /
+`user/nyxrt.c` with comments explaining each rule. Remaining on this ladder:
+wire an `xbm` recipe so `xbm install ncc` does the M2 step on any NyxOS.

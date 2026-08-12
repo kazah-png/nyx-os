@@ -110,15 +110,28 @@ compiles packages from source on the machine itself). N rides that ladder:
 |---|---|---|
 | M0 | Bootstrap `ncc` compiles N v0.1 on the dev machine | ✅ done |
 | M1 | Language home in-repo: compiler, spec, examples, docs | ✅ this directory |
-| M2 | `ncc` compiles *inside* NyxOS with the in-OS `cc` (tcc) | next |
-| M3 | `ncc hello.n` → running binary, entirely in-OS (the HolyC moment) | planned |
+| M2 | `ncc` compiles *inside* NyxOS with the in-OS `cc` (tcc) | ✅ done |
+| M3 | `ncc hello.n` → running binary, entirely in-OS (the HolyC moment) | ✅ done |
 | M4 | N++ front-end: type checker, structs/enums/match, `Result`/`?` | design ready |
 | M5 | Self-hosting: `ncc` rewritten in N | horizon |
 
-M2 is concrete engineering, not research: `ncc.c` is plain C99 in one file with
-stdio/stdlib only, and the same transpile-to-C pipeline that works on the dev
-machine works in-OS the moment `ncc` itself runs there — tcc compiles the C
-that `ncc` emits, exactly as the host gcc does today.
+M2 and M3 were reached with zero changes to the compiler's design: `ncc.c` is
+plain C99 in one file, so the in-OS tcc builds it directly, and the same
+transpile-to-C pipeline that works on the dev machine works in-OS. The
+verified full loop inside a booted NyxOS:
+
+```
+cc /mnt/ncc.c -I/usr/src/nyx -o /mnt/bin/ncc     # tcc compiles the N compiler
+ncc /mnt/hello.n -o /mnt/hello_gen.c             # ncc transpiles N source
+cc /mnt/hello_gen.c /mnt/nyxrt.c -I/mnt -o /mnt/bin/nhello
+nhello                                           # → hello from N! pid=8
+```
+
+The runtime carries the portability knowledge this took (see `user/nyxrt.h`):
+under tcc it spells the fixed-width types directly (no `<stdint.h>` on the
+in-OS include path) and loads the syscall ABI's r10/r8/r9 explicitly inside
+the asm (tcc cannot satisfy six bound register constraints), and `nyxrt.c`
+leaves `environ` to the in-OS `libc.o` to avoid a duplicate symbol.
 
 ## Documentation policy
 
