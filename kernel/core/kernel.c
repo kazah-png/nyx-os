@@ -3723,6 +3723,7 @@ extern int jpeg_selftest(void);
 extern int image_reject_selftest(void);
 extern int tcp_checksum_selftest(void);
 extern int dns_response_selftest(void);
+extern int dhcp_options_selftest(void);
 // http_parse_selftest / ext2_dir_selftest are declared in ../net/http.h / ../fs/ext2.h (included above).
 
 // ---- Advanced math: deterministic primality for any 64-bit integer -----------
@@ -3846,6 +3847,7 @@ static void run_selftests(void) {
         {"jpeg",         jpeg_selftest},          {"imgreject",     image_reject_selftest},
         {"httpparse",    http_parse_selftest},    {"ext2dir",       ext2_dir_selftest},
         {"tcpcksum",     tcp_checksum_selftest},  {"dns",           dns_response_selftest},
+        {"dhcpopt",      dhcp_options_selftest},
         {"mathx",        mathx_selftest},         {"crc32",         crc32_selftest},
         {"totp",         totp_selftest},          {"ipv4",          ipv4_parse_selftest},
         {"ipv6",         ipv6_parse_selftest},
