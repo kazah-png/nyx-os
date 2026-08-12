@@ -3706,6 +3706,7 @@ extern int aes_cbc_selftest(void);
 extern int url_parse_selftest(void);
 extern int glob_selftest(void);
 extern int leb128_selftest(void);
+extern int crc16_selftest(void);
 extern int namecheck_selftest(void);
 extern int ansi_csi_selftest(void);
 extern int caldate_selftest(void);
@@ -3856,7 +3857,7 @@ static void run_selftests(void) {
         {"sha3",         sha3_selftest},           {"ct",            ct_selftest},
         {"aescbc",       aes_cbc_selftest},        {"urlparse",      url_parse_selftest},
         {"glob",         glob_selftest},
-        {"leb128",       leb128_selftest},
+        {"leb128",       leb128_selftest},        {"crc16",         crc16_selftest},
     };
     int n = (int)(sizeof(t) / sizeof(t[0])), passed = 0, failed = 0;
     serial_puts("SELFTEST-BEGIN\n");
