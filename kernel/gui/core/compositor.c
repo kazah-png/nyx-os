@@ -505,6 +505,14 @@ static void draw_taskbar(void) {
         if (windows[i]->title[0])
             font_draw_string_trans(bx + 4, tb_y + (TASKBAR_H - FONT_HEIGHT) / 2,
                                    windows[i]->title, fb_rgb(230, 230, 235));
+        // Running-app indicator hugging the button's bottom edge, like Windows 11: a
+        // wide bright accent pill for the focused window, a short dim one for the other
+        // open windows, and nothing for a minimized (dormant) one.
+        if (windows[i]->state != WSTATE_MINIMIZED) {
+            int ind_w = windows[i]->focused ? bw - 16 : 12;
+            uint32_t ind_c = windows[i]->focused ? fb_rgb(150, 110, 235) : col_darken(THEME_ACCENT, 30);
+            fb_fill_rect(bx + (bw - ind_w) / 2, tb_y + TASKBAR_H - 6, ind_w, 2, ind_c);
+        }
         bx += bw + 2;
     }
 
