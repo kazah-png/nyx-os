@@ -1,8 +1,8 @@
 # ncc — the N bootstrap compiler
 
-Single-file, dependency-free C99 program that compiles N v0.1 (see the
-[language spec](../docs/spec-n.md)) to freestanding C targeting the NyxOS
-runtime. "Bootstrap" means: it exists to get N off the ground and to be simple
+Single-file, dependency-free C99 program that compiles N (see the
+[language spec](../docs/spec-n.md), versioned in lockstep with this compiler)
+to freestanding C targeting the NyxOS runtime. "Bootstrap" means: it exists to get N off the ground and to be simple
 enough to port *into* NyxOS (milestone M2) — clarity beats cleverness
 throughout.
 

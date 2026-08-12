@@ -1,6 +1,6 @@
 # The N Language — Specification
 
-**Version:** v0.8 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
+**Version:** v0.9 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
 
 This document specifies N exactly as implemented by the bootstrap compiler
 `ncc`. It is a *descriptive* spec: everything here compiles today. Planned
@@ -200,9 +200,10 @@ structures). Rules:
 - Structs are **values**: they pass to and return from functions by copy,
   and assignment copies. Field types may be any N type, including `str` and
   other structs.
-- In an `if`/`while` condition, `{` always opens the body — write
-  `x := Rect{ ... };` on its own line first if you need a literal there
-  (the same disambiguation rule Rust uses).
+- In an `if`/`while` condition (or a `match` subject), `{` always opens the
+  body — parenthesize the literal (`if (Rect{ … }.w > 0) { … }`, since
+  v0.9) or bind it on its own line first if you need one there (the same
+  disambiguation rule and escape hatch Rust uses).
 - The struct name space is checked: using an undeclared struct, an unknown
   field, or an incomplete literal is a compile error (§6.5).
 
@@ -348,8 +349,54 @@ match s {
   to that arm. The bind count must equal the payload field count;
   payload-less variants take no parentheses.
 - The subject is evaluated once. Arms are blocks (braces required).
-- v0.7 scope: `match` is a statement; match-as-expression (arms yielding a
-  value) arrives with `Result`/`?` in P3.
+
+#### 5.6.1 `match` as an expression (since v0.9)
+
+`match` can also *be* a value. In this form each arm yields a **single
+expression** after the `=>` (no braces), and the whole match evaluates to
+the selected arm's value:
+
+```n
+a := match shape {                 // binding
+    Circle(r)  => 3 * r * r,
+    Rect(w, h) => w * h,
+    Empty      => 0,
+};
+
+total = match shape { ... };       // assignment (target must be mut)
+
+fn area(s: Shape) -> i64 {
+    return match s { ... };        // return value
+}
+```
+
+Rules, on top of the statement form's (same subject/exhaustiveness/bind
+checks):
+
+- **Every arm must yield a value**, and all arms must agree on one result
+  type — the first arm fixes it, later arms must be compatible with it
+  (the integer types inter-convert; everything else is strict). An arm
+  whose expression has no value (a call to a `void` function) is a
+  compile error.
+- **Positions are deliberately limited** in v0.9: the value of a binding
+  (`x := match … ;`), of an assignment (`x = match … ;`, compound
+  assignments included), or of a `return`. Each position has one obvious,
+  readable lowering into strict C99 (an exhaustive `switch` assigning a
+  result temporary — see §7.1); general expression nesting
+  (`f(match …)`, `1 + match …`) is not accepted.
+- **Arm binds may shadow the target.** The lowering assigns the selected
+  arm's value to a compiler temporary and consumes the target *after* the
+  switch, so `x := match s { A(x) => x, … }` means what it says.
+- `return match` computes the value **before** any `defer`s run, exactly
+  like a plain `return` (§5.7).
+- The subject is parsed like a condition header (§4.3): a struct/enum
+  literal used directly as the subject must be parenthesized —
+  `match (Shape.Empty) { … }` — or bound first. Parens re-enable literals
+  in all condition headers since v0.9 (the same escape hatch Rust uses).
+
+This form is the groundwork for `Result`/`?` (N++ P3): `?` will lower to
+exactly this shape — an exhaustive match on `Ok`/`Err` whose value feeds
+the surrounding binding or return.
 
 ### 5.7 `defer` (since v0.6)
 
@@ -507,6 +554,8 @@ This section specifies what C the compiler is *required* to emit, because N's
 | `str` literal `"abc"` | `((nyx_str){"abc", 3})` |
 | block tail `e` | `return e';` (in a value-returning function) |
 | `never` return | `void` fn + `for (;;) {}` after the syscall |
+| `x := match s { … }` (§5.6.1) | `T x = 0;` + `{ E __m = s'; T __mres = 0; switch (__m.tag) { … __mres = arm'; … } x = __mres; }` — the zero init is a dead store (the switch is exhaustive) kept so the C is warning-free |
+| `return match s { … }` | same switch shape; defers run after `__mres` is computed, then `return __mres;` |
 
 ### 7.2 The runtime
 
@@ -559,9 +608,9 @@ field        = ident ":" type ;
 type         = [ "raw" ] { "*" } ident ;
 
 block        = "{" { stmt } [ expr ] "}" ;          (* trailing expr = tail *)
-stmt         = [ "mut" ] ident ":=" expr ";"
-             | expr ( "=" | "+=" | "-=" ) expr ";"
-             | "return" [ expr ] ";"
+stmt         = [ "mut" ] ident ":=" ( expr | match_val ) ";"
+             | expr ( "=" | "+=" | "-=" ) ( expr | match_val ) ";"
+             | "return" [ expr | match_val ] ";"
              | "break" ";" | "continue" ";"
              | "defer" expr ";"          (* outermost function block only *)
              | "match" expr "{" arm { "," arm } [ "," ] "}"
@@ -569,6 +618,8 @@ stmt         = [ "mut" ] ident ":=" expr ";"
              | "if" expr block [ "else" ( if_stmt | block ) ]
              | expr ";" ;
 arm          = ident [ "(" ident { "," ident } ")" ] "=>" block ;
+match_val    = "match" expr "{" varm { "," varm } [ "," ] "}" ;  (* v0.9 *)
+varm         = ident [ "(" ident { "," ident } ")" ] "=>" expr ;
 
 enum_decl    = "enum" ident "{" variant { "," variant } [ "," ] "}" ;
 variant      = ident [ "(" field { "," field } ")" ] ;
@@ -589,7 +640,8 @@ postfix      = primary { "." ident | "(" [ expr { "," expr } ] ")" } ;
 primary      = int_lit | "true" | "false" | string | interp_string
              | struct_lit | ident | "(" expr ")" ;
 struct_lit   = ident "{" [ finit { "," finit } [ "," ] ] "}" ;
-             (* not permitted directly in an if/while/match condition *)
+             (* not permitted directly in an if/while/match condition
+                header — parenthesize it there (since v0.9) *)
 finit        = ident ":" expr ;
              (* enum-variant literal: postfix `Enum.Variant{ finit, ... }`,
                 payload-less reference: `Enum.Variant` *)
@@ -612,8 +664,12 @@ N++/type-checker phase:
 3. **Missing constructs:** `for`, closures, modules/`use`, `Result`/`?` —
    all specified in the N++ design document. (`struct` landed in v0.5,
    `defer` in v0.6, `enum` + `match` in v0.7, `impl` methods in v0.8 —
-   completing the N++ P2 stage.)
-4. Fixed implementation caps (per file: 64 functions, 64 syscalls; per call:
+   completing the N++ P2 stage — and match-as-expression in v0.9, the
+   P3 groundwork.)
+4. **Match-expression positions are limited** (§5.6.1): binding,
+   assignment, and return values only — no general expression nesting
+   until the lowering needs it.
+5. Fixed implementation caps (per file: 64 functions, 64 syscalls; per call:
    16 arguments; per function: 256 live locals) — generous for the bootstrap,
    diagnosed clearly when exceeded.
 

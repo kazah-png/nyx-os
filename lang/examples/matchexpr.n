@@ -1,0 +1,51 @@
+// matchexpr.n — N v0.9 match as an expression (the Result/? groundwork):
+//   - match may appear as the VALUE of a binding, an assignment, or a return
+//   - arms yield single expressions: Variant(binds) => expr
+//   - all arms must agree on one result type; exhaustiveness still enforced
+//   - `return match` computes the value before any defers run (spec 5.7)
+//   - parens re-enable literals in a match subject: match (Shape.Empty) { .. }
+
+extern syscall {
+    fn write(fd: i32, buf: *u8, len: isize) -> i64 = 1
+}
+
+fn put(s: str) {
+    write(1, s.ptr as *u8, s.len as isize);
+}
+
+enum Shape {
+    Circle(r: i64),
+    Rect(w: i64, h: i64),
+    Empty,
+}
+
+// Position 3: `return match` — every arm returns through one exit.
+fn area(s: Shape) -> i64 {
+    return match s {
+        Circle(r)  => 3 * r * r,
+        Rect(w, h) => w * h,
+        Empty      => 0,
+    };
+}
+
+fn main() -> i64 {
+    // Position 1: binding — the first arm fixes the type (i64 here).
+    // The parenthesized subject is the literal escape hatch (Rust's rule).
+    a := match (Shape.Rect{ w: 4, h: 5 }) {
+        Circle(r)  => r,
+        Rect(w, h) => w * h,
+        Empty      => 0,
+    };
+    put("bound area={a}\n");
+
+    // Position 2: assignment — the target must already be mut.
+    mut total := 0;
+    total = match (Shape.Circle{ r: 3 }) {
+        Circle(r)  => 3 * r * r,
+        Rect(w, h) => w * h,
+        Empty      => 0,
+    };
+    total += area(Shape.Rect{ w: 2, h: 8 });
+    put("total={total}\n");
+    0
+}

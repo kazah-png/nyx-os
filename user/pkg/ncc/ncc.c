@@ -3,7 +3,7 @@
  * Hosted tool (runs on the dev machine); single file, no dependencies.
  * See lang/docs/spec-n.md for the language specification this implements.
  *
- * Supported subset (N v0.2):
+ * Supported subset (currently N v0.9):
  *   - extern syscall { fn name(params) [-> T] = N }
  *   - fn decls with block bodies, params, return types
  *   - statements: let (:=, mut), assignment (= += -=), return, while,
@@ -35,6 +35,11 @@
  *     attaches functions to structs and enums; calls dispatch statically
  *     as `expr.m(args)` and lower to plain C functions Type_m(self, ...).
  *     The receiver is by value and immutable.
+ *   - match as an expression (v0.9, the P3 groundwork): `match` may appear
+ *     as the value of a binding, an assignment, or a return; arms yield
+ *     single expressions (`Variant(binds) => expr`), all arms must agree
+ *     on one result type, and exhaustiveness is enforced as in the
+ *     statement form. This is the shape `Result`/`?` will lower through.
  * Not yet (N++ territory): for, closures, Result/?, modules/use.
  */
 /* Platform includes. In-OS builds (milestone M2) compile this file with
@@ -342,9 +347,17 @@ typedef enum { S_LET, S_ASSIGN, S_RET, S_EXPR, S_WHILE, S_IF, S_BREAK, S_CONT,
 typedef struct {
     char* variant;
     char** binds; int nbinds;   /* positional: bind i <- payload field i */
-    struct Block* body;
+    struct Block* body;         /* statement form: arm body is a block */
+    Expr* val;                  /* expression form (v0.9): arm yields this value */
     int line;
 } MatchArm;
+
+/* Where a v0.9 match-expression delivers its value. MT_STMT is the plain
+ * statement form (arm bodies are blocks, no value). The expression form is
+ * deliberately restricted to these three positions — each has a single,
+ * obvious lowering into strict C99 (see gen_stmt), which keeps the
+ * generated C readable and needs no statement-expressions. */
+typedef enum { MT_STMT, MT_LET, MT_ASSIGN, MT_RET } MTarget;
 struct Stmt {
     SK k;
     int line;
@@ -352,6 +365,7 @@ struct Stmt {
     Expr* lhs; const char* aop;
     Expr* cond; Block* body; Block* els;
     MatchArm* arms; int narms;              /* S_MATCH (subject in e) */
+    int mtarget;                            /* S_MATCH: an MTarget value */
 };
 struct Block { Stmt** st; int n; Expr* tail; };
 
@@ -466,7 +480,17 @@ static Expr* parse_primary(void) {
     }
     if (pchk(T_STR))  { Tok t = padv(); Expr* e = newe(E_STR);  e->s = t.s; e->slen = t.slen; return e; }
     if (pchk(T_STR_HEAD)) return parse_interp();
-    if (pchk(T_LP))   { padv(); Expr* e = parse_expr(); pexp(T_RP, "')'"); return e; }
+    if (pchk(T_LP)) {                 /* parens re-enable struct/enum literals
+                                       * inside if/while/match headers (v0.9,
+                                       * the same escape hatch Rust uses) */
+        padv();
+        int slit_save = NO_SLIT;
+        NO_SLIT = 0;
+        Expr* e = parse_expr();
+        NO_SLIT = slit_save;
+        pexp(T_RP, "')'");
+        return e;
+    }
     if (pchk(T_IDENT)) {
         Tok t = padv();
         if (pchk(T_LB) && !NO_SLIT) {           /* struct literal: Name{ f: e, ... } */
@@ -690,6 +714,46 @@ static Stmt* parse_if_stmt(void) {
     return s;
 }
 
+/* Parse `match <subject> { arms }` with the `match` keyword already
+ * consumed. Shared by the statement form (expr_arms == 0, arm bodies are
+ * blocks) and the v0.9 expression form (expr_arms == 1, each arm yields a
+ * single expression). The caller sets s->mtarget and the target fields. */
+static Stmt* parse_match(int expr_arms) {
+    Stmt* s = news(S_MATCH);
+    NO_SLIT = 1;                  /* `{` after the subject opens the arms */
+    s->e = parse_expr();
+    NO_SLIT = 0;
+    pexp(T_LB, "'{' opening match arms");
+    MatchArm* arms = xmalloc(sizeof(MatchArm) * 16);
+    int na = 0;
+    while (!pchk(T_RB)) {
+        if (pchk(T_EOF)) die("%s: unexpected EOF in match", FILENAME);
+        if (na >= 16) die("%s:%d: too many match arms", FILENAME, CUR.line);
+        MatchArm* a = &arms[na];
+        a->line = CUR.line;
+        Tok v = pexp(T_IDENT, "variant name");
+        a->variant = v.s;
+        a->binds = xmalloc(sizeof(char*) * 8);
+        a->nbinds = 0;
+        if (pacc(T_LP)) {
+            do {
+                if (a->nbinds >= 8) die("%s:%d: too many binds", FILENAME, CUR.line);
+                a->binds[a->nbinds++] = pexp(T_IDENT, "binding name").s;
+            } while (pacc(T_COMMA));
+            pexp(T_RP, "')'");
+        }
+        pexp(T_FATARROW, "'=>' after the pattern");
+        if (expr_arms) a->val = parse_expr();
+        else           a->body = parse_block();
+        na++;
+        if (!pacc(T_COMMA)) break;
+    }
+    pexp(T_RB, "'}' closing match");
+    s->arms = arms;
+    s->narms = na;
+    return s;
+}
+
 static Block* parse_block(void) {
     pexp(T_LB, "'{'");
     Block* b = xmalloc(sizeof(Block));
@@ -700,17 +764,36 @@ static Block* parse_block(void) {
         if (n >= 256) die("%s:%d: too many statements in block", FILENAME, CUR.line);
 
         if (pchk(T_KW_MUT) || (pchk(T_IDENT) && ppeek2().k == T_WALRUS)) {
-            Stmt* s = news(S_LET);
-            s->is_mut = pacc(T_KW_MUT);
+            int is_mut = pacc(T_KW_MUT);
             Tok id = pexp(T_IDENT, "variable name");
-            s->name = id.s;
             pexp(T_WALRUS, "':='");
+            if (pchk(T_KW_MATCH)) {       /* v0.9: x := match subj { ... }; */
+                padv();
+                Stmt* m = parse_match(1);
+                m->mtarget = MT_LET;
+                m->name = id.s;
+                m->is_mut = is_mut;
+                pexp(T_SEMI, "';'");
+                st[n++] = m;
+                continue;
+            }
+            Stmt* s = news(S_LET);
+            s->is_mut = is_mut;
+            s->name = id.s;
             s->e = parse_expr();
             pexp(T_SEMI, "';'");
             st[n++] = s;
             continue;
         }
         if (pacc(T_KW_RETURN)) {
+            if (pchk(T_KW_MATCH)) {       /* v0.9: return match subj { ... }; */
+                padv();
+                Stmt* m = parse_match(1);
+                m->mtarget = MT_RET;
+                pexp(T_SEMI, "';'");
+                st[n++] = m;
+                continue;
+            }
             Stmt* s = news(S_RET);
             if (!pchk(T_SEMI)) s->e = parse_expr();
             pexp(T_SEMI, "';'");
@@ -739,38 +822,7 @@ static Block* parse_block(void) {
         if (pchk(T_KW_IF)) { st[n++] = parse_if_stmt(); continue; }
         if (pchk(T_KW_MATCH)) {
             padv();
-            Stmt* s = news(S_MATCH);
-            NO_SLIT = 1;                  /* `{` after the subject opens the arms */
-            s->e = parse_expr();
-            NO_SLIT = 0;
-            pexp(T_LB, "'{' opening match arms");
-            MatchArm* arms = xmalloc(sizeof(MatchArm) * 16);
-            int na = 0;
-            while (!pchk(T_RB)) {
-                if (pchk(T_EOF)) die("%s: unexpected EOF in match", FILENAME);
-                if (na >= 16) die("%s:%d: too many match arms", FILENAME, CUR.line);
-                MatchArm* a = &arms[na];
-                a->line = CUR.line;
-                Tok v = pexp(T_IDENT, "variant name");
-                a->variant = v.s;
-                a->binds = xmalloc(sizeof(char*) * 8);
-                a->nbinds = 0;
-                if (pacc(T_LP)) {
-                    do {
-                        if (a->nbinds >= 8) die("%s:%d: too many binds", FILENAME, CUR.line);
-                        a->binds[a->nbinds++] = pexp(T_IDENT, "binding name").s;
-                    } while (pacc(T_COMMA));
-                    pexp(T_RP, "')'");
-                }
-                pexp(T_FATARROW, "'=>' after the pattern");
-                a->body = parse_block();
-                na++;
-                if (!pacc(T_COMMA)) break;
-            }
-            pexp(T_RB, "'}' closing match");
-            s->arms = arms;
-            s->narms = na;
-            st[n++] = s;
+            st[n++] = parse_match(0);     /* statement form (mtarget = MT_STMT) */
             continue;
         }
 
@@ -779,6 +831,16 @@ static Block* parse_block(void) {
         if (pchk(T_ASSIGN) || pchk(T_PLUSEQ) || pchk(T_MINUSEQ)) {
             const char* op = pchk(T_ASSIGN) ? "=" : pchk(T_PLUSEQ) ? "+=" : "-=";
             padv();
+            if (pchk(T_KW_MATCH)) {       /* v0.9: x = match subj { ... }; */
+                padv();
+                Stmt* m = parse_match(1);
+                m->mtarget = MT_ASSIGN;
+                m->lhs = e;
+                m->aop = op;
+                pexp(T_SEMI, "';'");
+                st[n++] = m;
+                continue;
+            }
             Stmt* s = news(S_ASSIGN);
             s->lhs = e; s->aop = op; s->e = parse_expr();
             pexp(T_SEMI, "';'");
@@ -1502,6 +1564,19 @@ static void gen_defers(int ind) {
     }
 }
 
+/* Emit a zero initializer for a declaration of type t. Used by the v0.9
+ * match-expression lowering: the switch that follows is exhaustive (the
+ * checker proved it), but a C compiler cannot see that, so the slot is
+ * zeroed to keep the generated C warning-free. Aggregates (str, structs,
+ * enums) take {0}; scalars and pointers take 0. */
+static void emit_zero(Ty t) {
+    if (t.ptrs == 0 && t.name &&
+        (ty_is(t, "str") || struct_lookup(t.name) || enum_lookup(t.name)))
+        fputs("{0}", OUT);
+    else
+        fputs("0", OUT);
+}
+
 static void gen_stmt(Stmt* s, int ind) {
     switch (s->k) {
         case S_LET: {
@@ -1633,6 +1708,119 @@ static void gen_stmt(Stmt* s, int ind) {
                     die("%s:%d: arm '%s' binds %d name(s), but the payload has %d field(s)",
                         FILENAME, s->arms[a].line, s->arms[a].variant,
                         s->arms[a].nbinds, ed->vs[vi].nf);
+            }
+            if (s->mtarget != MT_STMT) {
+                /* v0.9 expression form: every arm yields a value. Each arm
+                 * is typed with its binds in scope; the first arm fixes the
+                 * result type and every later arm must agree with it. */
+                Ty res; res.name = NULL; res.ptrs = 0;
+                for (int a = 0; a < s->narms; a++) {
+                    int vi = variant_index(ed, s->arms[a].variant);
+                    int vsave = NVARS;
+                    for (int b2 = 0; b2 < s->arms[a].nbinds; b2++)
+                        vars_add(s->arms[a].binds[b2], ed->vs[vi].fs[b2].ty, 0);
+                    check_expr(s->arms[a].val);
+                    Ty at = infer_type(s->arms[a].val);
+                    NVARS = vsave;
+                    if (!at.name || is_never(at))
+                        die("%s:%d: match arm '%s' must yield a value",
+                            FILENAME, s->arms[a].line, s->arms[a].variant);
+                    if (a == 0) res = at;
+                    else if (!ty_compat(at, res))
+                        die("%s:%d: match arms disagree: arm '%s' yields %s, expected %s",
+                            FILENAME, s->arms[a].line, s->arms[a].variant,
+                            ty_str(at), ty_str(res));
+                }
+                if (s->mtarget == MT_ASSIGN) {   /* same checks as S_ASSIGN */
+                    check_expr(s->lhs);
+                    Expr* root = s->lhs;
+                    while (root->k == E_FIELD) root = root->base;
+                    if (root->k == E_PATH) {
+                        VarInfo* v = vars_find(root->name);
+                        if (v && !v->is_mut)
+                            die("%s:%d: cannot assign to immutable '%s' (declare it with 'mut')",
+                                FILENAME, s->line, root->name);
+                    }
+                    Ty lt = infer_type(s->lhs);
+                    if (!ty_compat(res, lt))
+                        die("%s:%d: cannot assign %s to a %s target",
+                            FILENAME, s->line, ty_str(res), ty_str(lt));
+                    if (strcmp(s->aop, "=") != 0 && !ty_is_int(lt))
+                        die("%s:%d: '%s' requires an integer target (got %s)",
+                            FILENAME, s->line, s->aop, ty_str(lt));
+                }
+                if (s->mtarget == MT_RET) {      /* same checks as S_RET */
+                    if (!CUR_RET.name || is_never(CUR_RET))
+                        die("%s:%d: 'return' with a value in a function with no return type",
+                            FILENAME, s->line);
+                    if (!ty_compat(res, CUR_RET))
+                        die("%s:%d: return type mismatch: expected %s, got %s",
+                            FILENAME, s->line, ty_str(CUR_RET), ty_str(res));
+                }
+                /* Lowering: the selected arm assigns its value into a
+                 * __mres temp; the target is consumed AFTER the switch, so
+                 * an arm bind may freely shadow the target's name. For
+                 * `return match` the value is computed before the defers
+                 * run, exactly like a plain `return` (spec 5.7). */
+                int mid = IID++;
+                Ty rty = (s->mtarget == MT_RET) ? CUR_RET : res;
+                if (s->mtarget == MT_LET) {
+                    indentf(ind);
+                    emit_type(res);
+                    fprintf(OUT, " %s = ", s->name);
+                    emit_zero(res);
+                    fputs(";\n", OUT);
+                }
+                indentf(ind); fputs("{\n", OUT);
+                gen_preludes(s->e, ind + 1);
+                indentf(ind + 1);
+                fprintf(OUT, "%s __m%d = ", ed->name, mid);
+                gen_expr(s->e);
+                fputs(";\n", OUT);
+                indentf(ind + 1);
+                emit_type(rty);
+                fprintf(OUT, " __mres%d = ", mid);
+                emit_zero(rty);                  /* dead store: the switch is exhaustive */
+                fputs(";\n", OUT);
+                indentf(ind + 1); fprintf(OUT, "switch (__m%d.tag) {\n", mid);
+                for (int a = 0; a < s->narms; a++) {
+                    int vi = variant_index(ed, s->arms[a].variant);
+                    indentf(ind + 1);
+                    fprintf(OUT, "case %d: {\n", vi);
+                    int vsave = NVARS;
+                    for (int b2 = 0; b2 < s->arms[a].nbinds; b2++) {
+                        Param* pf = &ed->vs[vi].fs[b2];
+                        indentf(ind + 2);
+                        emit_type(pf->ty);
+                        fprintf(OUT, " %s = __m%d.u.%s.%s;\n",
+                                s->arms[a].binds[b2], mid, s->arms[a].variant, pf->name);
+                        vars_add(s->arms[a].binds[b2], pf->ty, 0);
+                    }
+                    gen_preludes(s->arms[a].val, ind + 2);
+                    indentf(ind + 2);
+                    fprintf(OUT, "__mres%d = ", mid);
+                    gen_expr(s->arms[a].val);
+                    fputs(";\n", OUT);
+                    indentf(ind + 2); fputs("break;\n", OUT);
+                    indentf(ind + 1); fputs("}\n", OUT);
+                    NVARS = vsave;
+                }
+                indentf(ind + 1); fputs("}\n", OUT);
+                if (s->mtarget == MT_LET) {
+                    indentf(ind + 1);
+                    fprintf(OUT, "%s = __mres%d;\n", s->name, mid);
+                } else if (s->mtarget == MT_ASSIGN) {
+                    indentf(ind + 1);
+                    gen_expr(s->lhs);
+                    fprintf(OUT, " %s __mres%d;\n", s->aop, mid);
+                } else {
+                    gen_defers(ind + 1);
+                    indentf(ind + 1); fprintf(OUT, "return __mres%d;\n", mid);
+                }
+                indentf(ind); fputs("}\n", OUT);
+                if (s->mtarget == MT_LET)
+                    vars_add(s->name, res, s->is_mut);
+                break;
             }
             /* lowering: subject once into a temp, switch on the tag, binds
              * become typed locals initialized from the payload fields */
