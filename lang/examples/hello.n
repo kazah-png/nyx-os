@@ -1,0 +1,20 @@
+// hello.n — the canonical first N program on NyxOS.
+//
+// Build (hosted):   ncc hello.n -o hello.c
+// Then compile the C output with the NyxOS user-space flags and link it
+// against crt0 + nyxrt (see lang/ncc/README.md for the exact commands).
+//
+// The `extern syscall` block binds NyxOS kernel syscalls by number: the
+// compiler emits the raw x86_64 `syscall` instruction inline — no libc.
+
+extern syscall {
+    fn write(fd: i32, buf: *u8, len: isize) -> i64 = 1
+    fn getpid() -> i64                             = 6
+}
+
+fn main() -> i64 {
+    pid := getpid();
+    msg := "hello from N! pid={pid}\n";
+    write(1, msg.ptr as *u8, msg.len as isize);
+    0
+}

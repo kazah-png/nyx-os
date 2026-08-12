@@ -1,0 +1,31 @@
+// countdown.n — second N example: user-defined functions, loops, mut,
+// arithmetic, if/else, and string interpolation inside a call argument.
+//
+// Build (hosted):   ncc countdown.n -o countdown.c
+// See lang/ncc/README.md for compile/link/run instructions (including how
+// to run it directly on Linux through the host syscall shim for testing).
+
+extern syscall {
+    fn write(fd: i32, buf: *u8, len: isize) -> i64 = 1
+    fn getpid() -> i64 = 6
+}
+
+// A tiny helper: print an N string to stdout through SYS_WRITE.
+fn put(s: str) {
+    write(1, s.ptr as *u8, s.len as isize);
+}
+
+fn main() -> i64 {
+    mut n := 5;
+    while n > 0 {
+        msg := "tick {n}\n";
+        put(msg);
+        n = n - 1;
+    }
+    if getpid() > 0 {
+        put("liftoff! from pid {getpid()}\n");
+    } else {
+        put("no pid?\n");
+    }
+    0
+}

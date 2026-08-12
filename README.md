@@ -12,6 +12,10 @@
   <img src="https://img.shields.io/badge/arch-x86__64-825AD2?style=flat" />
   &nbsp;
   <img src="https://img.shields.io/badge/license-GPL--2.0+-825AD2?style=flat" />
+  &nbsp;
+  <a href="lang/README.md"><img src="https://img.shields.io/badge/N-v0.1-825AD2?style=flat" /></a>
+  &nbsp;
+  <a href="lang/README.md"><img src="https://img.shields.io/badge/N%2B%2B-design-825AD2?style=flat" /></a>
 </p>
 
 <p align="center">
