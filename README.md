@@ -39,8 +39,8 @@
 **NyxOS** is a from-scratch x86_64 operating system written in C and x86_64 Assembly, with no external libraries. It boots via Multiboot (GRUB) into long mode with 4-level paging and full user/kernel isolation, and provides a preemptive multitasking kernel, a ring-3 POSIX-style userspace, a real TCP/IP network stack, a windowed desktop, and an in-OS C compiler that builds — and rebuilds itself — entirely inside the running system.
 
 <div align="center">
-  <img src="gui.png?v=6" alt="NyxOS desktop with the Selene web browser" width="700" />
-  <p><em>The NyxOS desktop — the Selene web browser, app icons, the Nightfall wallpaper, and the taskbar</em></p>
+  <img src="gui.png?v=7" alt="NyxOS desktop running nyxfetch in the terminal" width="700" />
+  <p><em>The NyxOS desktop — the terminal running <code>nyxfetch</code>, the Nightfall wallpaper, and the taskbar</em></p>
 </div>
 
 ---
@@ -50,11 +50,11 @@
 <table>
 <tr>
 <td width="50%" valign="top">
-<img src="media/startup.gif?v=2" alt="NyxOS login and desktop" width="100%"/>
+<img src="media/startup.gif?v=3" alt="NyxOS login and desktop" width="100%"/>
 <p align="center"><em>Login → windowed desktop → <code>nyxfetch</code></em></p>
 </td>
 <td width="50%" valign="top">
-<img src="media/terminal.gif?v=2" alt="NyxOS terminal session" width="100%"/>
+<img src="media/terminal.gif?v=3" alt="NyxOS terminal session" width="100%"/>
 <p align="center"><em>Live shell in color — <code>nyxfetch</code>, <code>ls</code>, <code>ps</code></em></p>
 </td>
 </tr>
