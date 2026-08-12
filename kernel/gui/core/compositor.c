@@ -1,5 +1,6 @@
 #include "../../core/kernel.h"
 #include "../../core/caldate.h"
+#include "../../core/datefmt.h"
 #include "compositor.h"
 #include "theme.h"
 #include "../../drivers/video/font.h"
@@ -564,11 +565,8 @@ static void draw_taskbar(void) {
 
     rtc_time_t rt;
     rtc_read_time(&rt);
-    static const char* const WD[7] = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
-    int wd = day_of_week((int)rt.year, (int)rt.month, (int)rt.day);   // computed, not the stale CMOS register
-    if (wd < 0 || wd > 6) wd = 0;
     char timebuf[32];
-    snprintf(timebuf, sizeof(timebuf), "%s %02u:%02u  %02u/%02u", WD[wd], rt.hour, rt.minute, rt.day, rt.month);
+    date_format(timebuf, sizeof(timebuf), "%a %H:%M  %d/%m", &rt);   // weekday computed by date_format (Sakamoto)
     fb_fill_rect(fw - CLOCK_W - 4, tb_y + 4, CLOCK_W, TASKBAR_H - 8, fb_rgb(30,30,35));
     font_draw_string(fw - CLOCK_W - 2 + (CLOCK_W - strlen(timebuf) * FONT_WIDTH) / 2,
                      tb_y + (TASKBAR_H - FONT_HEIGHT) / 2, timebuf, fb_rgb(180,180,200), fb_rgb(30,30,35));
@@ -602,8 +600,6 @@ static void draw_cal_popup(void) {
     int Y = (int)rt.year, M = (int)rt.month, today = (int)rt.day;
     if (M < 1 || M > 12) M = 1;
 
-    static const char* const MON[12] = { "January","February","March","April","May","June",
-                                         "July","August","September","October","November","December" };
     static const unsigned char DIM[12] = { 31,28,31,30,31,30,31,31,30,31,30,31 };
     int dim = DIM[M - 1];
     if (M == 2 && ((Y % 4 == 0 && Y % 100 != 0) || Y % 400 == 0)) dim = 29;   // leap February
@@ -621,7 +617,8 @@ static void draw_cal_popup(void) {
 
     // Header: "Month YYYY" centred on an accent bar (same look as the start menu).
     fb_fill_vgrad(x + 1, y + 1, CAL_W - 2, CAL_HDR - 1, THEME_ACCENT, col_darken(THEME_ACCENT, 22));
-    char hdr[32]; snprintf(hdr, sizeof(hdr), "%s %d", MON[M - 1], Y);
+    rtc_time_t ht = rt; ht.month = (uint8_t)M; ht.year = (uint16_t)Y;   // clamped month/year for "%B %Y"
+    char hdr[32]; date_format(hdr, sizeof(hdr), "%B %Y", &ht);
     font_draw_string_trans(x + (CAL_W - (int)strlen(hdr) * FONT_WIDTH) / 2,
                            y + (CAL_HDR - FONT_HEIGHT) / 2, hdr, THEME_ON_ACCENT);
 
