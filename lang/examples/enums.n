@@ -1,0 +1,41 @@
+// enums.n — N v0.7 enums + match (the first sum types):
+//   - an enum is a tagged union: each variant optionally carries named fields
+//   - construct with Enum.Variant{ field: value } (payload-less: Enum.Variant)
+//   - match is exhaustive: every variant covered exactly once, checked
+//   - arm binds are positional: Circle(r) binds r to the first payload field
+
+extern syscall {
+    fn write(fd: i32, buf: *u8, len: isize) -> i64 = 1
+}
+
+fn put(s: str) {
+    write(1, s.ptr as *u8, s.len as isize);
+}
+
+enum Shape {
+    Circle(r: i64),
+    Rect(w: i64, h: i64),
+    Empty,
+}
+
+// 3*r*r approximates a circle's area well enough for an integer demo.
+fn describe(s: Shape) {
+    match s {
+        Circle(r) => {
+            put("circle r={r} area~{3 * r * r}\n");
+        },
+        Rect(w, h) => {
+            put("rect {w}x{h} area={w * h}\n");
+        },
+        Empty => {
+            put("empty\n");
+        },
+    }
+}
+
+fn main() -> i64 {
+    describe(Shape.Circle{ r: 3 });
+    describe(Shape.Rect{ w: 4, h: 5 });
+    describe(Shape.Empty);
+    0
+}

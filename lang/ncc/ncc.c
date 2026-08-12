@@ -27,8 +27,11 @@
  *     records with literal construction `Rect{ w: 1, h: 2 }`, typed field
  *     access/assignment, by-value passing/returning — fully checked
  *     (unknown structs/fields, missing literal fields, mut-through-field).
- * Not yet (N++ territory): match, for, closures, enum, Result/?, methods,
- * modules/use, defer.
+ *   - enum + match (v0.7): tagged-union sum types with named payload
+ *     fields, variant construction `Shape.Circle{ r: 5 }` (payload-less:
+ *     `Shape.Empty`), and an exhaustive `match` statement that binds
+ *     payload fields positionally — the Result foundation.
+ * Not yet (N++ territory): for, closures, Result/?, methods, modules/use.
  */
 /* Platform includes. In-OS builds (milestone M2) compile this file with
  * NyxOS's ported TinyCC, whose libc surface is the single header libc.h
@@ -77,6 +80,7 @@ typedef enum {
     T_KW_EXTERN, T_KW_SYSCALL, T_KW_FN, T_KW_MUT, T_KW_RETURN,
     T_KW_IF, T_KW_ELSE, T_KW_WHILE, T_KW_BREAK, T_KW_CONTINUE,
     T_KW_AS, T_KW_RAW, T_KW_TRUE, T_KW_FALSE, T_KW_STRUCT, T_KW_DEFER,
+    T_KW_ENUM, T_KW_MATCH, T_FATARROW,
     T_LP, T_RP, T_LB, T_RB, T_COMMA, T_SEMI, T_COLON,
     T_WALRUS, T_ARROW, T_ASSIGN,
     T_PLUS, T_MINUS, T_STAR, T_SLASH, T_PERCENT,
@@ -168,7 +172,7 @@ static TK kwlook(const char* s, int n) {
         {"else", T_KW_ELSE}, {"while", T_KW_WHILE}, {"break", T_KW_BREAK},
         {"continue", T_KW_CONTINUE}, {"as", T_KW_AS}, {"raw", T_KW_RAW},
         {"true", T_KW_TRUE}, {"false", T_KW_FALSE}, {"struct", T_KW_STRUCT},
-        {"defer", T_KW_DEFER},
+        {"defer", T_KW_DEFER}, {"enum", T_KW_ENUM}, {"match", T_KW_MATCH},
     };
     for (size_t i = 0; i < sizeof(K) / sizeof(K[0]); i++)
         if ((int)strlen(K[i].w) == n && !memcmp(K[i].w, s, (size_t)n)) return K[i].k;
@@ -261,7 +265,9 @@ static Tok next_token(void) {
                   if (n2 == '=') { POS++; COL++; return mk(T_MINUSEQ, sl); }
                   return mk(T_MINUS, sl);
         case '+': if (n2 == '=') { POS++; COL++; return mk(T_PLUSEQ, sl); } return mk(T_PLUS, sl);
-        case '=': if (n2 == '=') { POS++; COL++; return mk(T_EQ, sl); } return mk(T_ASSIGN, sl);
+        case '=': if (n2 == '=') { POS++; COL++; return mk(T_EQ, sl); }
+                  if (n2 == '>') { POS++; COL++; return mk(T_FATARROW, sl); }
+                  return mk(T_ASSIGN, sl);
         case '!': if (n2 == '=') { POS++; COL++; return mk(T_NE, sl); } return mk(T_NOT, sl);
         case '<': if (n2 == '=') { POS++; COL++; return mk(T_LE, sl); }
                   if (n2 == '<') { POS++; COL++; return mk(T_SHL, sl); }
@@ -307,7 +313,7 @@ typedef struct Stmt Stmt;
 typedef struct Block Block;
 
 typedef enum { E_INT, E_BOOL, E_STR, E_INTERP, E_PATH, E_CALL, E_FIELD,
-               E_UN, E_BIN, E_CAST, E_SLIT } EK;
+               E_UN, E_BIN, E_CAST, E_SLIT, E_ELIT } EK;
 
 typedef struct { char* text; int tlen; Expr* e; } Frag;
 
@@ -318,21 +324,29 @@ struct Expr {
     char* s; int slen;
     Frag* frags; int nfrags; int iid;
     char* name;
-    Expr* callee; Expr** args; int nargs;   /* E_SLIT reuses args as values */
-    char** snames;                          /* E_SLIT: field name per value  */
-    Expr* base; char* field;
+    Expr* callee; Expr** args; int nargs;   /* E_SLIT/E_ELIT reuse args as values */
+    char** snames;                          /* E_SLIT/E_ELIT: field name per value */
+    Expr* base; char* field;                /* E_ELIT: name = enum, field = variant */
     const char* op; Expr* l; Expr* r;
     Ty cast_to;
 };
 
 typedef enum { S_LET, S_ASSIGN, S_RET, S_EXPR, S_WHILE, S_IF, S_BREAK, S_CONT,
-               S_DEFER } SK;
+               S_DEFER, S_MATCH } SK;
+
+typedef struct {
+    char* variant;
+    char** binds; int nbinds;   /* positional: bind i <- payload field i */
+    struct Block* body;
+    int line;
+} MatchArm;
 struct Stmt {
     SK k;
     int line;
     int is_mut; char* name; Expr* e;
     Expr* lhs; const char* aop;
     Expr* cond; Block* body; Block* els;
+    MatchArm* arms; int narms;              /* S_MATCH (subject in e) */
 };
 struct Block { Stmt** st; int n; Expr* tail; };
 
@@ -351,6 +365,32 @@ static StructDef* struct_lookup(const char* name) {
     for (int i = 0; i < NSTRUCTS; i++)
         if (!strcmp(STRUCTS[i].name, name)) return &STRUCTS[i];
     return NULL;
+}
+
+/* enum declarations (v0.7): tagged unions. Each variant has an optional
+ * named-field payload; the C lowering is { int tag; union { ... } u; }. */
+typedef struct { char* name; Param* fs; int nf; } VariantDef;
+typedef struct { char* name; VariantDef* vs; int nv; } EnumDef;
+static EnumDef ENUMS[16]; static int NENUMS;
+
+static EnumDef* enum_lookup(const char* name) {
+    for (int i = 0; i < NENUMS; i++)
+        if (!strcmp(ENUMS[i].name, name)) return &ENUMS[i];
+    return NULL;
+}
+static int variant_index(EnumDef* ed, const char* v) {
+    for (int i = 0; i < ed->nv; i++)
+        if (!strcmp(ed->vs[i].name, v)) return i;
+    return -1;
+}
+/* Is this expression a payload-less variant reference (`Shape.Empty`)?
+ * Returns the enum and sets *idx, or NULL. */
+static EnumDef* variant_ref(Expr* e, int* idx) {
+    if (e->k != E_FIELD || e->base->k != E_PATH) return NULL;
+    EnumDef* ed = enum_lookup(e->base->name);
+    if (!ed) return NULL;
+    *idx = variant_index(ed, e->field);
+    return ed;
 }
 
 /* Struct literals `Name{ ... }` are valid anywhere EXCEPT directly in an
@@ -446,7 +486,31 @@ static Expr* parse_postfix(void) {
         if (pchk(T_DOT)) {
             padv();
             Tok f = pexp(T_IDENT, "field name");
-            if (pchk(T_LP)) die("%s:%d: method calls are not supported in N v0.1", FILENAME, f.line);
+            if (pchk(T_LP)) die("%s:%d: method calls are not supported yet", FILENAME, f.line);
+            if (pchk(T_LB) && !NO_SLIT && e->k == E_PATH) {
+                /* enum-variant literal: Enum.Variant{ field: value, ... } */
+                padv();
+                Expr* v = newe(E_ELIT);
+                v->name = e->name;              /* enum */
+                v->field = f.s;                 /* variant */
+                v->args = xmalloc(sizeof(Expr*) * 16);
+                v->snames = xmalloc(sizeof(char*) * 16);
+                v->nargs = 0;
+                if (!pchk(T_RB)) {
+                    do {
+                        if (pchk(T_RB)) break;
+                        if (v->nargs >= 16) die("%s:%d: too many fields", FILENAME, CUR.line);
+                        Tok fn_ = pexp(T_IDENT, "field name");
+                        pexp(T_COLON, "':' after field name");
+                        v->snames[v->nargs] = fn_.s;
+                        v->args[v->nargs] = parse_expr();
+                        v->nargs++;
+                    } while (pacc(T_COMMA));
+                }
+                pexp(T_RB, "'}' closing variant literal");
+                e = v;
+                continue;
+            }
             Expr* fe = newe(E_FIELD);
             fe->base = e; fe->field = f.s;
             e = fe;
@@ -637,6 +701,42 @@ static Block* parse_block(void) {
             continue;
         }
         if (pchk(T_KW_IF)) { st[n++] = parse_if_stmt(); continue; }
+        if (pchk(T_KW_MATCH)) {
+            padv();
+            Stmt* s = news(S_MATCH);
+            NO_SLIT = 1;                  /* `{` after the subject opens the arms */
+            s->e = parse_expr();
+            NO_SLIT = 0;
+            pexp(T_LB, "'{' opening match arms");
+            MatchArm* arms = xmalloc(sizeof(MatchArm) * 16);
+            int na = 0;
+            while (!pchk(T_RB)) {
+                if (pchk(T_EOF)) die("%s: unexpected EOF in match", FILENAME);
+                if (na >= 16) die("%s:%d: too many match arms", FILENAME, CUR.line);
+                MatchArm* a = &arms[na];
+                a->line = CUR.line;
+                Tok v = pexp(T_IDENT, "variant name");
+                a->variant = v.s;
+                a->binds = xmalloc(sizeof(char*) * 8);
+                a->nbinds = 0;
+                if (pacc(T_LP)) {
+                    do {
+                        if (a->nbinds >= 8) die("%s:%d: too many binds", FILENAME, CUR.line);
+                        a->binds[a->nbinds++] = pexp(T_IDENT, "binding name").s;
+                    } while (pacc(T_COMMA));
+                    pexp(T_RP, "')'");
+                }
+                pexp(T_FATARROW, "'=>' after the pattern");
+                a->body = parse_block();
+                na++;
+                if (!pacc(T_COMMA)) break;
+            }
+            pexp(T_RB, "'}' closing match");
+            s->arms = arms;
+            s->narms = na;
+            st[n++] = s;
+            continue;
+        }
 
         /* expression, assignment, or block tail */
         Expr* e = parse_expr();
@@ -737,13 +837,53 @@ static void parse_struct(void) {
     if (nf == 0) die("%s: struct '%s' has no fields", FILENAME, sd->name);
 }
 
+static void parse_enum(void) {
+    if (NENUMS >= 16) die("too many enums");
+    EnumDef* ed = &ENUMS[NENUMS++];
+    Tok id = pexp(T_IDENT, "enum name");
+    ed->name = id.s;
+    pexp(T_LB, "'{'");
+    VariantDef* vs = xmalloc(sizeof(VariantDef) * 16);
+    int nv = 0;
+    while (!pchk(T_RB)) {
+        if (pchk(T_EOF)) die("%s: unexpected EOF in enum '%s'", FILENAME, ed->name);
+        if (nv >= 16) die("%s: too many variants in enum '%s'", FILENAME, ed->name);
+        Tok v = pexp(T_IDENT, "variant name");
+        vs[nv].name = v.s;
+        vs[nv].fs = NULL;
+        vs[nv].nf = 0;
+        if (pacc(T_LP)) {                        /* optional named-field payload */
+            Param* fs = xmalloc(sizeof(Param) * 8);
+            int nf = 0;
+            do {
+                if (nf >= 8) die("%s: too many payload fields", FILENAME);
+                Tok f = pexp(T_IDENT, "payload field name");
+                pexp(T_COLON, "':'");
+                fs[nf].name = f.s;
+                fs[nf].ty = parse_type();
+                nf++;
+            } while (pacc(T_COMMA));
+            pexp(T_RP, "')'");
+            vs[nv].fs = fs;
+            vs[nv].nf = nf;
+        }
+        nv++;
+        if (!pacc(T_COMMA)) break;
+    }
+    pexp(T_RB, "'}' closing enum");
+    ed->vs = vs;
+    ed->nv = nv;
+    if (nv == 0) die("%s: enum '%s' has no variants", FILENAME, ed->name);
+}
+
 static void parse_program(void) {
     for (;;) {
         if (pchk(T_EOF)) return;
         if (pacc(T_KW_EXTERN)) { parse_extern_block(); continue; }
         if (pacc(T_KW_FN))     { parse_fn(); continue; }
         if (pacc(T_KW_STRUCT)) { parse_struct(); continue; }
-        die("%s:%d: expected 'extern', 'fn' or 'struct' at top level", FILENAME, CUR.line);
+        if (pacc(T_KW_ENUM))   { parse_enum(); continue; }
+        die("%s:%d: expected 'extern', 'fn', 'struct' or 'enum' at top level", FILENAME, CUR.line);
     }
 }
 
@@ -848,6 +988,9 @@ static Ty infer_type(Expr* e) {
             if (e->callee->k == E_PATH) return ret_type_of(e->callee->name);
             return ty_named("i64");
         case E_FIELD: {
+            int vi;
+            EnumDef* ed = variant_ref(e, &vi);  /* Shape.Empty: a variant, not a field */
+            if (ed) return ty_named(ed->name);
             Ty b = infer_type(e->base);
             if (ty_is(b, "str")) {
                 if (!strcmp(e->field, "ptr")) return ty_ptr_u8();
@@ -862,6 +1005,7 @@ static Ty infer_type(Expr* e) {
             return ty_named("i64");
         }
         case E_SLIT: return ty_named(e->name);
+        case E_ELIT: return ty_named(e->name);
         case E_UN:
             if (e->op[0] == '!') return ty_named("bool");
             return infer_type(e->r);
@@ -946,6 +1090,20 @@ static void check_expr(Expr* e) {
             break;
         }
         case E_FIELD: {
+            {   /* payload-less variant reference: Shape.Empty */
+                int vi;
+                EnumDef* ed = variant_ref(e, &vi);
+                if (ed) {
+                    if (vi < 0)
+                        die("%s:%d: enum '%s' has no variant '%s'",
+                            FILENAME, e->line, ed->name, e->field);
+                    if (ed->vs[vi].nf != 0)
+                        die("%s:%d: variant '%s.%s' carries a payload — construct it "
+                            "with %s.%s{ ... }", FILENAME, e->line, ed->name, e->field,
+                            ed->name, e->field);
+                    break;
+                }
+            }
             check_expr(e->base);
             Ty b = infer_type(e->base);
             if (ty_is(b, "str")) {
@@ -990,6 +1148,39 @@ static void check_expr(Expr* e) {
                 if (!ty_compat(at, ft))
                     die("%s:%d: field '%s' of '%s': expected %s, got %s",
                         FILENAME, e->line, e->snames[j], e->name,
+                        ty_str(ft), ty_str(at));
+            }
+            break;
+        }
+        case E_ELIT: {
+            EnumDef* ed = enum_lookup(e->name);
+            if (!ed)
+                die("%s:%d: unknown enum '%s'", FILENAME, e->line, e->name);
+            int vi = variant_index(ed, e->field);
+            if (vi < 0)
+                die("%s:%d: enum '%s' has no variant '%s'",
+                    FILENAME, e->line, e->name, e->field);
+            VariantDef* vd = &ed->vs[vi];
+            for (int i = 0; i < vd->nf; i++) {
+                int seen = 0;
+                for (int j = 0; j < e->nargs; j++)
+                    if (!strcmp(e->snames[j], vd->fs[i].name)) seen++;
+                if (seen != 1)
+                    die("%s:%d: literal for '%s.%s' must initialize field '%s' exactly once",
+                        FILENAME, e->line, e->name, e->field, vd->fs[i].name);
+            }
+            if (e->nargs != vd->nf)
+                die("%s:%d: literal for '%s.%s' names a field it does not have",
+                    FILENAME, e->line, e->name, e->field);
+            for (int j = 0; j < e->nargs; j++) {
+                check_expr(e->args[j]);
+                Ty ft = ty_named("i64");
+                for (int i = 0; i < vd->nf; i++)
+                    if (!strcmp(vd->fs[i].name, e->snames[j])) ft = vd->fs[i].ty;
+                Ty at = infer_type(e->args[j]);
+                if (!ty_compat(at, ft))
+                    die("%s:%d: field '%s' of '%s.%s': expected %s, got %s",
+                        FILENAME, e->line, e->snames[j], e->name, e->field,
                         ty_str(ft), ty_str(at));
             }
             break;
@@ -1076,7 +1267,33 @@ static void gen_expr(Expr* e) {
             break;
         case E_INTERP: fprintf(OUT, "__s%d", e->iid); break;
         case E_PATH:   fputs(e->name, OUT); break;
-        case E_FIELD:  gen_expr(e->base); fprintf(OUT, ".%s", e->field); break;
+        case E_FIELD: {
+            int vi;
+            EnumDef* ed = variant_ref(e, &vi);
+            if (ed) {                   /* Shape.Empty -> tag-only value */
+                fprintf(OUT, "((%s){ .tag = %d })", ed->name, vi);
+                break;
+            }
+            gen_expr(e->base);
+            fprintf(OUT, ".%s", e->field);
+            break;
+        }
+        case E_ELIT: {                  /* Shape.Circle{ r: 5 } */
+            EnumDef* ed = enum_lookup(e->name);
+            int vi = ed ? variant_index(ed, e->field) : 0;
+            fprintf(OUT, "((%s){ .tag = %d", e->name, vi);
+            if (e->nargs) {
+                fprintf(OUT, ", .u = { .%s = { ", e->field);
+                for (int i = 0; i < e->nargs; i++) {
+                    if (i) fputs(", ", OUT);
+                    fprintf(OUT, ".%s = ", e->snames[i]);
+                    gen_expr(e->args[i]);
+                }
+                fputs(" } }", OUT);
+            }
+            fputs(" })", OUT);
+            break;
+        }
         case E_CALL:
             gen_expr(e->callee);
             fputc('(', OUT);
@@ -1281,6 +1498,66 @@ static void gen_stmt(Stmt* s, int ind) {
             check_expr(s->e);           /* names resolve at registration point */
             FN_DEFERS[NDEFERS++] = s->e;
             break;
+        case S_MATCH: {
+            check_expr(s->e);
+            Ty st_ = infer_type(s->e);
+            EnumDef* ed = (st_.name && st_.ptrs == 0) ? enum_lookup(st_.name) : NULL;
+            if (!ed)
+                die("%s:%d: match subject must be an enum value (got %s)",
+                    FILENAME, s->line, ty_str(st_));
+            /* exhaustive, no duplicates, binds match the payload */
+            for (int v = 0; v < ed->nv; v++) {
+                int seen = 0;
+                for (int a = 0; a < s->narms; a++)
+                    if (!strcmp(s->arms[a].variant, ed->vs[v].name)) seen++;
+                if (seen != 1)
+                    die("%s:%d: match must cover variant '%s' exactly once",
+                        FILENAME, s->line, ed->vs[v].name);
+            }
+            if (s->narms != ed->nv)
+                die("%s:%d: match names a variant '%s' does not have",
+                    FILENAME, s->line, ed->name);
+            for (int a = 0; a < s->narms; a++) {
+                int vi = variant_index(ed, s->arms[a].variant);
+                if (s->arms[a].nbinds != ed->vs[vi].nf)
+                    die("%s:%d: arm '%s' binds %d name(s), but the payload has %d field(s)",
+                        FILENAME, s->arms[a].line, s->arms[a].variant,
+                        s->arms[a].nbinds, ed->vs[vi].nf);
+            }
+            /* lowering: subject once into a temp, switch on the tag, binds
+             * become typed locals initialized from the payload fields */
+            int mid = IID++;
+            indentf(ind); fputs("{\n", OUT);
+            gen_preludes(s->e, ind + 1);
+            indentf(ind + 1);
+            fprintf(OUT, "%s __m%d = ", ed->name, mid);
+            gen_expr(s->e);
+            fputs(";\n", OUT);
+            indentf(ind + 1); fprintf(OUT, "switch (__m%d.tag) {\n", mid);
+            for (int a = 0; a < s->narms; a++) {
+                int vi = variant_index(ed, s->arms[a].variant);
+                indentf(ind + 1);
+                fprintf(OUT, "case %d: {\n", vi);
+                int vsave = NVARS;
+                for (int b2 = 0; b2 < s->arms[a].nbinds; b2++) {
+                    Param* pf = &ed->vs[vi].fs[b2];
+                    indentf(ind + 2);
+                    emit_type(pf->ty);
+                    fprintf(OUT, " %s = __m%d.u.%s.%s;\n",
+                            s->arms[a].binds[b2], mid, s->arms[a].variant, pf->name);
+                    vars_add(s->arms[a].binds[b2], pf->ty, 0);
+                }
+                indentf(ind + 2);
+                gen_block(s->arms[a].body, ind + 2, 0);
+                fputs("\n", OUT);
+                indentf(ind + 2); fputs("break;\n", OUT);
+                indentf(ind + 1); fputs("}\n", OUT);
+                NVARS = vsave;
+            }
+            indentf(ind + 1); fputs("}\n", OUT);
+            indentf(ind); fputs("}\n", OUT);
+            break;
+        }
         case S_WHILE:
             check_expr(s->cond);
             gen_preludes(s->cond, ind);
@@ -1400,7 +1677,7 @@ static void gen_fn_sig(Fn* f) {
 static void validate_ty(Ty t, const char* where) {
     if (!t.name) return;
     if (strcmp(base_ctype(t.name), t.name) != 0) return;   /* mapped: primitive */
-    if (!struct_lookup(t.name))
+    if (!struct_lookup(t.name) && !enum_lookup(t.name))
         die("%s: unknown type '%s' in %s", FILENAME, t.name, where);
 }
 
@@ -1417,6 +1694,11 @@ static void gen_program(const char* srcname) {
         for (int p = 0; p < FNS[i].np; p++) validate_ty(FNS[i].ps[p].ty, FNS[i].name);
     }
 
+    for (int i = 0; i < NENUMS; i++)
+        for (int v = 0; v < ENUMS[i].nv; v++)
+            for (int f = 0; f < ENUMS[i].vs[v].nf; f++)
+                validate_ty(ENUMS[i].vs[v].fs[f].ty, ENUMS[i].name);
+
     fprintf(OUT, "/* Generated by ncc from %s */\n#include \"nyxrt.h\"\n\n", srcname);
     for (int i = 0; i < NSTRUCTS; i++) {        /* struct layouts first */
         fprintf(OUT, "typedef struct {\n");
@@ -1426,6 +1708,30 @@ static void gen_program(const char* srcname) {
             fprintf(OUT, " %s;\n", STRUCTS[i].fs[f].name);
         }
         fprintf(OUT, "} %s;\n\n", STRUCTS[i].name);
+    }
+    for (int i = 0; i < NENUMS; i++) {          /* enum = tagged union */
+        EnumDef* ed = &ENUMS[i];
+        int has_payload = 0;
+        for (int v = 0; v < ed->nv; v++)
+            if (ed->vs[v].nf) has_payload = 1;
+        fprintf(OUT, "typedef struct {\n    int tag;    /*");
+        for (int v = 0; v < ed->nv; v++)
+            fprintf(OUT, " %d=%s", v, ed->vs[v].name);
+        fputs(" */\n", OUT);
+        if (has_payload) {                      /* an empty union is not valid C */
+            fputs("    union {\n", OUT);
+            for (int v = 0; v < ed->nv; v++) {
+                if (!ed->vs[v].nf) continue;
+                fputs("        struct { ", OUT);
+                for (int f = 0; f < ed->vs[v].nf; f++) {
+                    emit_type(ed->vs[v].fs[f].ty);
+                    fprintf(OUT, " %s; ", ed->vs[v].fs[f].name);
+                }
+                fprintf(OUT, "} %s;\n", ed->vs[v].name);
+            }
+            fputs("    } u;\n", OUT);
+        }
+        fprintf(OUT, "} %s;\n\n", ed->name);
     }
     gen_extern_fns();
     for (int i = 0; i < NFN; i++) { gen_fn_sig(&FNS[i]); fputs(";\n", OUT); }

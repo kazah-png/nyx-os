@@ -1,6 +1,6 @@
 # The N Language — Specification
 
-**Version:** v0.6 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
+**Version:** v0.7 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
 
 This document specifies N exactly as implemented by the bootstrap compiler
 `ncc`. It is a *descriptive* spec: everything here compiles today. Planned
@@ -47,8 +47,8 @@ uninterpreted). The canonical file extension is `.n`.
 Identifiers match `[A-Za-z_][A-Za-z0-9_]*`. The following are reserved:
 
 ```
-as break continue defer else extern false fn if mut raw return
-struct syscall true while
+as break continue defer else enum extern false fn if match mut raw
+return struct syscall true while
 ```
 
 ### 2.4 Integer literals
@@ -264,7 +264,60 @@ break;           // exit innermost while
 continue;        // next iteration
 ```
 
-### 5.6 `defer` (since v0.6)
+### 4.4 `enum` declarations (since v0.7)
+
+```n
+enum Shape {
+    Circle(r: i64),
+    Rect(w: i64, h: i64),
+    Empty,
+}
+
+s := Shape.Circle{ r: 3 };      // payload variant: named-field literal
+e := Shape.Empty;               // payload-less variant: bare reference
+```
+
+An `enum` is a **tagged union** — a value that is exactly one of its
+variants, each optionally carrying a named-field payload. The C lowering is
+`{ int tag; union { ... } u; }`, so enums are inspectable from C when
+needed. Construction rules mirror struct literals: a payload variant's
+literal must initialize every payload field exactly once; a payload-less
+variant is written bare (`Shape.Empty`) and referencing a payload variant
+without its literal is a compile error. Enum values participate in no
+operators — `match` (§5.6) is how you look inside one. This is the
+foundation `Result<T, E>` will be built on.
+
+### 5.6 `match` (since v0.7)
+
+```n
+match s {
+    Circle(r) => {
+        put("circle r={r}\n");
+    },
+    Rect(w, h) => {
+        put("rect {w}x{h}\n");
+    },
+    Empty => {
+        put("empty\n");
+    },
+}
+```
+
+`match` inspects an enum value and runs exactly one arm. Rules:
+
+- The subject must be an enum value; each arm names a variant, and the
+  match must be **exhaustive** — every variant covered exactly once
+  (adding a variant later makes every non-updated `match` a compile
+  error, which is the point).
+- Arm binds are **positional**: `Rect(w, h)` binds `w` and `h` to the
+  payload's fields in declared order, typed accordingly, immutable, scoped
+  to that arm. The bind count must equal the payload field count;
+  payload-less variants take no parentheses.
+- The subject is evaluated once. Arms are blocks (braces required).
+- v0.7 scope: `match` is a statement; match-as-expression (arms yielding a
+  value) arrives with `Result`/`?` in P3.
+
+### 5.7 `defer` (since v0.6)
 
 ```n
 fn copy(src: str, dst: str) -> i64 {
@@ -292,7 +345,7 @@ block (not inside `if`/`while` bodies). This keeps the static lowering exact
 — defers cannot be conditionally registered, so no runtime defer stack is
 needed. Registering conditionally is a compile error, not a silent surprise.
 
-### 5.7 Block tail value
+### 5.8 Block tail value
 
 The final expression of a function body, written **without** a trailing `;`,
 is the function's return value:
@@ -454,7 +507,7 @@ is valid until the end of the enclosing block.
 Condensed EBNF of the implemented language:
 
 ```ebnf
-program      = { extern_block | fn_decl | struct_decl } ;
+program      = { extern_block | fn_decl | struct_decl | enum_decl } ;
 
 extern_block = "extern" "syscall" "{" { extern_fn } "}" ;
 extern_fn    = "fn" ident params [ "->" type ] "=" int_lit [ ";" ] ;
@@ -474,9 +527,14 @@ stmt         = [ "mut" ] ident ":=" expr ";"
              | "return" [ expr ] ";"
              | "break" ";" | "continue" ";"
              | "defer" expr ";"          (* outermost function block only *)
+             | "match" expr "{" arm { "," arm } [ "," ] "}"
              | "while" expr block
              | "if" expr block [ "else" ( if_stmt | block ) ]
              | expr ";" ;
+arm          = ident [ "(" ident { "," ident } ")" ] "=>" block ;
+
+enum_decl    = "enum" ident "{" variant { "," variant } [ "," ] "}" ;
+variant      = ident [ "(" field { "," field } ")" ] ;
 
 expr         = or ;
 or           = and  { "||" and } ;
@@ -494,8 +552,10 @@ postfix      = primary { "." ident | "(" [ expr { "," expr } ] ")" } ;
 primary      = int_lit | "true" | "false" | string | interp_string
              | struct_lit | ident | "(" expr ")" ;
 struct_lit   = ident "{" [ finit { "," finit } [ "," ] ] "}" ;
-             (* not permitted directly in an if/while condition *)
+             (* not permitted directly in an if/while/match condition *)
 finit        = ident ":" expr ;
+             (* enum-variant literal: postfix `Enum.Variant{ finit, ... }`,
+                payload-less reference: `Enum.Variant` *)
 ```
 
 String interpolation is handled lexically: the lexer emits
@@ -512,9 +572,9 @@ N++/type-checker phase:
    the C compiler on the generated file.
 2. **Interpolation is text-or-decimal only.** `str` inserts text, everything
    else formats as signed decimal; there are no hex/width format controls yet.
-3. **Missing constructs:** `enum` definitions, `match`, `for`, closures,
-   methods, modules/`use`, `Result`/`?` — all specified in the N++ design
-   document. (`struct` landed in v0.5, `defer` in v0.6.)
+3. **Missing constructs:** `for`, closures, methods, modules/`use`,
+   `Result`/`?` — all specified in the N++ design document. (`struct`
+   landed in v0.5, `defer` in v0.6, `enum` + `match` in v0.7.)
 4. Fixed implementation caps (per file: 64 functions, 64 syscalls; per call:
    16 arguments; per function: 256 live locals) — generous for the bootstrap,
    diagnosed clearly when exceeded.
