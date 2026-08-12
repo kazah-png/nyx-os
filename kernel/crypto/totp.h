@@ -9,10 +9,13 @@
 // Base32-encoded (see kernel/crypto/base32.c) — decode it before passing the raw key.
 uint32_t hotp_sha256(const uint8_t* key, uint32_t keylen, uint64_t counter, int digits);
 uint32_t hotp_sha512(const uint8_t* key, uint32_t keylen, uint64_t counter, int digits);
+uint32_t hotp_sha1(const uint8_t* key, uint32_t keylen, uint64_t counter, int digits);   // RFC 4226/6238 default MAC (authenticator apps)
 uint32_t totp_sha256(const uint8_t* key, uint32_t keylen, uint64_t unix_time,
                      uint32_t period, int digits);
 uint32_t totp_sha512(const uint8_t* key, uint32_t keylen, uint64_t unix_time,
                      uint32_t period, int digits);
+uint32_t totp_sha1(const uint8_t* key, uint32_t keylen, uint64_t unix_time,
+                   uint32_t period, int digits);
 
 int totp_selftest(void);   // KAT against the RFC 6238 Appendix B test vectors
 
