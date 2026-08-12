@@ -89,8 +89,28 @@ Two invariants worth knowing before editing:
 
 ## Porting to NyxOS (milestone M2)
 
-The file deliberately uses only: `stdio` (fopen/fread/fprintf/stderr),
-`stdlib` (calloc/exit/strtod-free), `string`, `stdint`, `stdarg`. The port
-checklist is: verify those exist in NyxOS's shared libc, compile `ncc.c` with
-the in-OS `cc` (tcc), and wire an `xbm` recipe. No design changes expected —
-that constraint is why the compiler has no dependencies.
+`ncc.c` is already in-OS-portable at the source level: under TinyCC (which
+always defines `__TINYC__`, and NyxOS is the only tcc environment we target)
+it includes the single NyxOS libc header `libc.h` instead of the hosted
+standard headers — the same pattern the self-hosted coreutils use. The NyxOS
+libc provides everything it needs: buffered `FILE*` stdio with
+`fopen/fread/fseek/ftell`, `fprintf/vfprintf` + `stderr`, and `calloc`.
+Two portability rules are load-bearing:
+
+1. **`%ld`, never `%lld`** — the NyxOS formatter implements `%l[dux]` but not
+   `%ll`. Both targets are LP64, so `long` is 64-bit everywhere and `%ld` is
+   width-correct on host and OS alike.
+2. **No GNU extensions anywhere** — neither in `ncc.c` itself nor in the C it
+   emits (the strict-C99 gate in the test pipeline enforces the latter).
+
+The target in-OS build command is:
+
+```
+cc /mnt/ncc.c -I/usr/src/nyx -o /mnt/bin/ncc
+```
+
+(`/usr/src/nyx` ships `libc.h`/`syscall.h` in the initramfs; the `cc` builtin
+passes `-I` through to tcc.) The header path is verified continuously on the
+dev machine by compiling with `-nostdinc` against `user/tcc/nyxshim` +
+`user/libc.h` — the exact set the in-OS tcc resolves. Remaining for M2: run
+that command inside a booted NyxOS and wire an `xbm` recipe.

@@ -20,11 +20,21 @@
  * Not yet (N++ / type-checker territory): match, for, closures, struct/enum,
  * Result/?, methods, modules/use, defer.
  */
+/* Platform includes. In-OS builds (milestone M2) compile this file with
+ * NyxOS's ported TinyCC, whose libc surface is the single header libc.h
+ * (stdio/stdlib/string/va_* over the fd syscalls) — the same pattern the
+ * self-hosted coreutils use. tcc always defines __TINYC__, and NyxOS is the
+ * only tcc environment we target, so that macro selects the in-OS build:
+ *     cc /mnt/ncc.c -I/usr/src/nyx -o /mnt/bin/ncc
+ * Hosted builds (any C99 compiler) take the standard-headers branch. */
+#ifdef __TINYC__
+#include "libc.h"
+#else
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <stdint.h>
 #include <stdarg.h>
+#endif
 
 /* ------------------------------------------------------------------ */
 /* utils                                                              */
@@ -772,7 +782,9 @@ static void emit_cstr(const char* s, int n) {
 
 static void gen_expr(Expr* e) {
     switch (e->k) {
-        case E_INT:  fprintf(OUT, "%lld", e->ival); break;
+        /* %ld, not %lld: both targets are LP64 (long == 64-bit) and the
+         * NyxOS libc formatter implements %l[dux] but not %ll. */
+        case E_INT:  fprintf(OUT, "%ld", (long)e->ival); break;
         case E_BOOL: fprintf(OUT, "%d", (int)e->ival); break;
         case E_STR:
             fputs("((nyx_str){", OUT);
@@ -959,7 +971,7 @@ static void gen_extern_fns(void) {
         }
         fputs(") {\n", OUT);
         if (is_never(x->ret) || !x->ret.name) {
-            fprintf(OUT, "    (void)__nyx_syscall6(%lld", x->num);
+            fprintf(OUT, "    (void)__nyx_syscall6(%ld", (long)x->num);
             for (int k = 0; k < 6; k++) {
                 if (k < x->np) fprintf(OUT, ", (nyx_i64)%s", x->ps[k].name);
                 else fputs(", 0", OUT);
@@ -969,7 +981,7 @@ static void gen_extern_fns(void) {
         } else {
             fputs("    return (", OUT);
             emit_type(x->ret);
-            fprintf(OUT, ")__nyx_syscall6(%lld", x->num);
+            fprintf(OUT, ")__nyx_syscall6(%ld", (long)x->num);
             for (int k = 0; k < 6; k++) {
                 if (k < x->np) fprintf(OUT, ", (nyx_i64)%s", x->ps[k].name);
                 else fputs(", 0", OUT);
