@@ -23,8 +23,12 @@
  *     int/pointer mixing), return-value vs declared return type, and
  *     assignment value vs target type — all compile errors with file:line
  *     diagnostics.
- * Not yet (N++ / type-checker territory): match, for, closures, struct/enum,
- * Result/?, methods, modules/use, defer.
+ *   - struct declarations (v0.5, the first N++ P2 construct): named field
+ *     records with literal construction `Rect{ w: 1, h: 2 }`, typed field
+ *     access/assignment, by-value passing/returning — fully checked
+ *     (unknown structs/fields, missing literal fields, mut-through-field).
+ * Not yet (N++ territory): match, for, closures, enum, Result/?, methods,
+ * modules/use, defer.
  */
 /* Platform includes. In-OS builds (milestone M2) compile this file with
  * NyxOS's ported TinyCC, whose libc surface is the single header libc.h
@@ -72,7 +76,7 @@ typedef enum {
     T_IDENT,
     T_KW_EXTERN, T_KW_SYSCALL, T_KW_FN, T_KW_MUT, T_KW_RETURN,
     T_KW_IF, T_KW_ELSE, T_KW_WHILE, T_KW_BREAK, T_KW_CONTINUE,
-    T_KW_AS, T_KW_RAW, T_KW_TRUE, T_KW_FALSE,
+    T_KW_AS, T_KW_RAW, T_KW_TRUE, T_KW_FALSE, T_KW_STRUCT,
     T_LP, T_RP, T_LB, T_RB, T_COMMA, T_SEMI, T_COLON,
     T_WALRUS, T_ARROW, T_ASSIGN,
     T_PLUS, T_MINUS, T_STAR, T_SLASH, T_PERCENT,
@@ -163,7 +167,7 @@ static TK kwlook(const char* s, int n) {
         {"mut", T_KW_MUT}, {"return", T_KW_RETURN}, {"if", T_KW_IF},
         {"else", T_KW_ELSE}, {"while", T_KW_WHILE}, {"break", T_KW_BREAK},
         {"continue", T_KW_CONTINUE}, {"as", T_KW_AS}, {"raw", T_KW_RAW},
-        {"true", T_KW_TRUE}, {"false", T_KW_FALSE},
+        {"true", T_KW_TRUE}, {"false", T_KW_FALSE}, {"struct", T_KW_STRUCT},
     };
     for (size_t i = 0; i < sizeof(K) / sizeof(K[0]); i++)
         if ((int)strlen(K[i].w) == n && !memcmp(K[i].w, s, (size_t)n)) return K[i].k;
@@ -301,7 +305,8 @@ typedef struct Expr Expr;
 typedef struct Stmt Stmt;
 typedef struct Block Block;
 
-typedef enum { E_INT, E_BOOL, E_STR, E_INTERP, E_PATH, E_CALL, E_FIELD, E_UN, E_BIN, E_CAST } EK;
+typedef enum { E_INT, E_BOOL, E_STR, E_INTERP, E_PATH, E_CALL, E_FIELD,
+               E_UN, E_BIN, E_CAST, E_SLIT } EK;
 
 typedef struct { char* text; int tlen; Expr* e; } Frag;
 
@@ -312,7 +317,8 @@ struct Expr {
     char* s; int slen;
     Frag* frags; int nfrags; int iid;
     char* name;
-    Expr* callee; Expr** args; int nargs;
+    Expr* callee; Expr** args; int nargs;   /* E_SLIT reuses args as values */
+    char** snames;                          /* E_SLIT: field name per value  */
     Expr* base; char* field;
     const char* op; Expr* l; Expr* r;
     Ty cast_to;
@@ -334,6 +340,21 @@ typedef struct { char* name; Param* ps; int np; Ty ret; Block* body; } Fn;
 
 static XFn XFNS[64]; static int NXFN;
 static Fn  FNS[64];  static int NFN;
+
+/* struct declarations (v0.5): named field records, C-struct layout */
+typedef struct { char* name; Param* fs; int nf; } StructDef;
+static StructDef STRUCTS[32]; static int NSTRUCTS;
+
+static StructDef* struct_lookup(const char* name) {
+    for (int i = 0; i < NSTRUCTS; i++)
+        if (!strcmp(STRUCTS[i].name, name)) return &STRUCTS[i];
+    return NULL;
+}
+
+/* Struct literals `Name{ ... }` are valid anywhere EXCEPT directly in an
+ * if/while condition, where `{` must open the body block instead (the same
+ * rule Rust uses). The parser sets this flag around condition parsing. */
+static int NO_SLIT;
 
 static Expr* newe(EK k) { Expr* e = xmalloc(sizeof(Expr)); e->k = k; e->line = CUR.line; return e; }
 static Stmt* news(SK k) { Stmt* s = xmalloc(sizeof(Stmt)); s->k = k; s->line = CUR.line; return s; }
@@ -386,7 +407,33 @@ static Expr* parse_primary(void) {
     if (pchk(T_STR))  { Tok t = padv(); Expr* e = newe(E_STR);  e->s = t.s; e->slen = t.slen; return e; }
     if (pchk(T_STR_HEAD)) return parse_interp();
     if (pchk(T_LP))   { padv(); Expr* e = parse_expr(); pexp(T_RP, "')'"); return e; }
-    if (pchk(T_IDENT)) { Tok t = padv(); Expr* e = newe(E_PATH); e->name = t.s; return e; }
+    if (pchk(T_IDENT)) {
+        Tok t = padv();
+        if (pchk(T_LB) && !NO_SLIT) {           /* struct literal: Name{ f: e, ... } */
+            padv();
+            Expr* e = newe(E_SLIT);
+            e->name = t.s;
+            e->args = xmalloc(sizeof(Expr*) * 16);
+            e->snames = xmalloc(sizeof(char*) * 16);
+            e->nargs = 0;
+            if (!pchk(T_RB)) {
+                do {
+                    if (pchk(T_RB)) break;      /* trailing comma */
+                    if (e->nargs >= 16) die("%s:%d: too many fields in literal", FILENAME, CUR.line);
+                    Tok f = pexp(T_IDENT, "field name");
+                    pexp(T_COLON, "':' after field name");
+                    e->snames[e->nargs] = f.s;
+                    e->args[e->nargs] = parse_expr();
+                    e->nargs++;
+                } while (pacc(T_COMMA));
+            }
+            pexp(T_RB, "'}' closing struct literal");
+            return e;
+        }
+        Expr* e = newe(E_PATH);
+        e->name = t.s;
+        return e;
+    }
     die("%s:%d: expected an expression", FILENAME, CUR.line);
     return NULL;
 }
@@ -523,7 +570,9 @@ static Block* parse_block(void);
 static Stmt* parse_if_stmt(void) {
     padv();                               /* 'if' */
     Stmt* s = news(S_IF);
+    NO_SLIT = 1;                          /* `{` after the condition opens the body */
     s->cond = parse_expr();
+    NO_SLIT = 0;
     s->body = parse_block();
     if (pacc(T_KW_ELSE)) {
         if (pchk(T_KW_IF)) {              /* else-if: wrap in a one-stmt block */
@@ -571,7 +620,9 @@ static Block* parse_block(void) {
         if (pchk(T_KW_WHILE)) {
             padv();
             Stmt* s = news(S_WHILE);
+            NO_SLIT = 1;                  /* `{` after the condition opens the body */
             s->cond = parse_expr();
+            NO_SLIT = 0;
             s->body = parse_block();
             st[n++] = s;
             continue;
@@ -653,12 +704,37 @@ static void parse_fn(void) {
     f->body = parse_block();
 }
 
+static void parse_struct(void) {
+    if (NSTRUCTS >= 32) die("too many structs");
+    StructDef* sd = &STRUCTS[NSTRUCTS++];
+    Tok id = pexp(T_IDENT, "struct name");
+    sd->name = id.s;
+    pexp(T_LB, "'{'");
+    Param* fs = xmalloc(sizeof(Param) * 16);
+    int nf = 0;
+    while (!pchk(T_RB)) {
+        if (pchk(T_EOF)) die("%s: unexpected EOF in struct '%s'", FILENAME, sd->name);
+        if (nf >= 16) die("%s: too many fields in struct '%s'", FILENAME, sd->name);
+        Tok f = pexp(T_IDENT, "field name");
+        pexp(T_COLON, "':' after field name");
+        fs[nf].name = f.s;
+        fs[nf].ty = parse_type();
+        nf++;
+        if (!pacc(T_COMMA)) break;
+    }
+    pexp(T_RB, "'}' closing struct");
+    sd->fs = fs;
+    sd->nf = nf;
+    if (nf == 0) die("%s: struct '%s' has no fields", FILENAME, sd->name);
+}
+
 static void parse_program(void) {
     for (;;) {
         if (pchk(T_EOF)) return;
         if (pacc(T_KW_EXTERN)) { parse_extern_block(); continue; }
         if (pacc(T_KW_FN))     { parse_fn(); continue; }
-        die("%s:%d: expected 'extern' or 'fn' at top level", FILENAME, CUR.line);
+        if (pacc(T_KW_STRUCT)) { parse_struct(); continue; }
+        die("%s:%d: expected 'extern', 'fn' or 'struct' at top level", FILENAME, CUR.line);
     }
 }
 
@@ -759,8 +835,15 @@ static Ty infer_type(Expr* e) {
                 if (!strcmp(e->field, "ptr")) return ty_ptr_u8();
                 if (!strcmp(e->field, "len")) return ty_named("u64");
             }
+            if (b.name && b.ptrs == 0) {        /* struct field access */
+                StructDef* sd = struct_lookup(b.name);
+                if (sd)
+                    for (int i = 0; i < sd->nf; i++)
+                        if (!strcmp(sd->fs[i].name, e->field)) return sd->fs[i].ty;
+            }
             return ty_named("i64");
         }
+        case E_SLIT: return ty_named(e->name);
         case E_UN:
             if (e->op[0] == '!') return ty_named("bool");
             return infer_type(e->r);
@@ -844,8 +927,63 @@ static void check_expr(Expr* e) {
             }
             break;
         }
-        case E_FIELD:  check_expr(e->base); break;
-        case E_UN:     check_expr(e->r); break;
+        case E_FIELD: {
+            check_expr(e->base);
+            Ty b = infer_type(e->base);
+            if (ty_is(b, "str")) {
+                if (strcmp(e->field, "ptr") != 0 && strcmp(e->field, "len") != 0)
+                    die("%s:%d: str has no field '%s' (only .ptr and .len)",
+                        FILENAME, e->line, e->field);
+            } else if (b.name && b.ptrs == 0 && struct_lookup(b.name)) {
+                StructDef* sd = struct_lookup(b.name);
+                int ok = 0;
+                for (int i = 0; i < sd->nf; i++)
+                    if (!strcmp(sd->fs[i].name, e->field)) ok = 1;
+                if (!ok)
+                    die("%s:%d: struct '%s' has no field '%s'",
+                        FILENAME, e->line, b.name, e->field);
+            } else {
+                die("%s:%d: %s has no fields", FILENAME, e->line, ty_str(b));
+            }
+            break;
+        }
+        case E_SLIT: {
+            StructDef* sd = struct_lookup(e->name);
+            if (!sd)
+                die("%s:%d: unknown struct '%s'", FILENAME, e->line, e->name);
+            /* every declared field exactly once; every value type-compatible */
+            for (int i = 0; i < sd->nf; i++) {
+                int seen = 0;
+                for (int j = 0; j < e->nargs; j++)
+                    if (!strcmp(e->snames[j], sd->fs[i].name)) seen++;
+                if (seen != 1)
+                    die("%s:%d: literal for '%s' must initialize field '%s' exactly once",
+                        FILENAME, e->line, e->name, sd->fs[i].name);
+            }
+            if (e->nargs != sd->nf)
+                die("%s:%d: literal for '%s' names a field it does not have",
+                    FILENAME, e->line, e->name);
+            for (int j = 0; j < e->nargs; j++) {
+                check_expr(e->args[j]);
+                Ty ft = ty_named("i64");
+                for (int i = 0; i < sd->nf; i++)
+                    if (!strcmp(sd->fs[i].name, e->snames[j])) ft = sd->fs[i].ty;
+                Ty at = infer_type(e->args[j]);
+                if (!ty_compat(at, ft))
+                    die("%s:%d: field '%s' of '%s': expected %s, got %s",
+                        FILENAME, e->line, e->snames[j], e->name,
+                        ty_str(ft), ty_str(at));
+            }
+            break;
+        }
+        case E_UN: {
+            check_expr(e->r);
+            Ty rt = infer_type(e->r);
+            if (!ty_is_int(rt))
+                die("%s:%d: unary '%s' expects an integer operand (got %s)",
+                    FILENAME, e->line, e->op, ty_str(rt));
+            break;
+        }
         case E_BIN: {
             check_expr(e->l);
             check_expr(e->r);
@@ -873,7 +1011,13 @@ static void check_expr(Expr* e) {
         case E_CAST:   check_expr(e->l); break;
         case E_INTERP:
             for (int i = 0; i < e->nfrags; i++)
-                if (e->frags[i].e) check_expr(e->frags[i].e);
+                if (e->frags[i].e) {
+                    check_expr(e->frags[i].e);
+                    Ty ft = infer_type(e->frags[i].e);
+                    if (!ty_is(ft, "str") && !ty_is_int(ft))
+                        die("%s:%d: cannot interpolate a %s value (only str and integers)",
+                            FILENAME, e->line, ty_str(ft));
+                }
             break;
         default: break;
     }
@@ -942,6 +1086,15 @@ static void gen_expr(Expr* e) {
             fputs(")(", OUT);
             gen_expr(e->l);
             fputc(')', OUT);
+            break;
+        case E_SLIT:                    /* C99 compound literal, designated */
+            fprintf(OUT, "((%s){", e->name);
+            for (int i = 0; i < e->nargs; i++) {
+                if (i) fputs(", ", OUT);
+                fprintf(OUT, ".%s = ", e->snames[i]);
+                gen_expr(e->args[i]);
+            }
+            fputs("})", OUT);
             break;
     }
 }
@@ -1014,11 +1167,16 @@ static void gen_stmt(Stmt* s, int ind) {
         case S_ASSIGN: {
             check_expr(s->lhs);
             check_expr(s->e);
-            if (s->lhs->k == E_PATH) {          /* mut enforcement (spec 5.1) */
-                VarInfo* v = vars_find(s->lhs->name);
-                if (v && !v->is_mut)
-                    die("%s:%d: cannot assign to immutable '%s' (declare it with 'mut')",
-                        FILENAME, s->line, s->lhs->name);
+            {                                   /* mut enforcement (spec 5.1) —
+                                                 * field writes mutate the root binding */
+                Expr* root = s->lhs;
+                while (root->k == E_FIELD) root = root->base;
+                if (root->k == E_PATH) {
+                    VarInfo* v = vars_find(root->name);
+                    if (v && !v->is_mut)
+                        die("%s:%d: cannot assign to immutable '%s' (declare it with 'mut')",
+                            FILENAME, s->line, root->name);
+                }
             }
             {                                    /* value/target type check (v0.4) */
                 Ty lt = infer_type(s->lhs);
@@ -1163,8 +1321,38 @@ static void gen_fn_sig(Fn* f) {
     fputc(')', OUT);
 }
 
+/* Every non-primitive type name in a signature or struct field must be a
+ * declared struct — catches typos before they become C errors. */
+static void validate_ty(Ty t, const char* where) {
+    if (!t.name) return;
+    if (strcmp(base_ctype(t.name), t.name) != 0) return;   /* mapped: primitive */
+    if (!struct_lookup(t.name))
+        die("%s: unknown type '%s' in %s", FILENAME, t.name, where);
+}
+
 static void gen_program(const char* srcname) {
+    for (int i = 0; i < NSTRUCTS; i++)
+        for (int f = 0; f < STRUCTS[i].nf; f++)
+            validate_ty(STRUCTS[i].fs[f].ty, STRUCTS[i].name);
+    for (int i = 0; i < NXFN; i++) {
+        validate_ty(XFNS[i].ret, XFNS[i].name);
+        for (int p = 0; p < XFNS[i].np; p++) validate_ty(XFNS[i].ps[p].ty, XFNS[i].name);
+    }
+    for (int i = 0; i < NFN; i++) {
+        validate_ty(FNS[i].ret, FNS[i].name);
+        for (int p = 0; p < FNS[i].np; p++) validate_ty(FNS[i].ps[p].ty, FNS[i].name);
+    }
+
     fprintf(OUT, "/* Generated by ncc from %s */\n#include \"nyxrt.h\"\n\n", srcname);
+    for (int i = 0; i < NSTRUCTS; i++) {        /* struct layouts first */
+        fprintf(OUT, "typedef struct {\n");
+        for (int f = 0; f < STRUCTS[i].nf; f++) {
+            fputs("    ", OUT);
+            emit_type(STRUCTS[i].fs[f].ty);
+            fprintf(OUT, " %s;\n", STRUCTS[i].fs[f].name);
+        }
+        fprintf(OUT, "} %s;\n\n", STRUCTS[i].name);
+    }
     gen_extern_fns();
     for (int i = 0; i < NFN; i++) { gen_fn_sig(&FNS[i]); fputs(";\n", OUT); }
     if (NFN) fputs("\n", OUT);

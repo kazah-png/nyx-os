@@ -1,0 +1,29 @@
+// structs.n — N v0.5 struct declarations (the first N++ P2 construct):
+//   - a struct is a named field record with C layout
+//   - construct with a literal naming every field: Rect{ w: 6, h: 7 }
+//   - fields read with `.`; writing a field requires the binding to be mut
+//   - structs pass and return by value
+
+extern syscall {
+    fn write(fd: i32, buf: *u8, len: isize) -> i64 = 1
+}
+
+struct Rect {
+    w: i64,
+    h: i64,
+}
+
+fn put(s: str) {
+    write(1, s.ptr as *u8, s.len as isize);
+}
+
+fn area(r: Rect) -> i64 {
+    r.w * r.h
+}
+
+fn main() -> i64 {
+    mut r := Rect{ w: 6, h: 7 };
+    r.h = r.h + 1;
+    put("rect {r.w}x{r.h} area={area(r)}\n");
+    0
+}

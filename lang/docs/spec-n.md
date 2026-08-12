@@ -1,6 +1,6 @@
 # The N Language — Specification
 
-**Version:** v0.4 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
+**Version:** v0.5 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
 
 This document specifies N exactly as implemented by the bootstrap compiler
 `ncc`. It is a *descriptive* spec: everything here compiles today. Planned
@@ -48,7 +48,7 @@ Identifiers match `[A-Za-z_][A-Za-z0-9_]*`. The following are reserved:
 
 ```
 as break continue else extern false fn if mut raw return
-syscall true while
+struct syscall true while
 ```
 
 ### 2.4 Integer literals
@@ -168,6 +168,40 @@ fn add(a: i64, b: i64) -> i64 {
 Parameters are `name: type`, comma-separated. The return type follows `->` and
 may be omitted for `void`. `fn main() -> i64` is the program entry point; its
 return value becomes the process exit status (via `crt0` → `SYS_EXIT`).
+
+### 4.3 `struct` declarations (since v0.5)
+
+```n
+struct Rect {
+    w: i64,
+    h: i64,
+}
+
+fn area(r: Rect) -> i64 {
+    r.w * r.h
+}
+
+mut r := Rect{ w: 6, h: 7 };    // literal: every field, named, exactly once
+r.h = r.h + 1;                  // field write — requires a `mut` binding
+```
+
+A `struct` is a named field record with C layout (it lowers to a C `typedef
+struct`, so N structs are directly ABI-compatible with kernel and libc
+structures). Rules:
+
+- **Construction is total**: a literal `Name{ field: value, ... }` must
+  initialize every declared field, each exactly once, in any order.
+- **Field access** uses `.`; reading needs nothing special, writing any field
+  requires the *root binding* to be `mut` (mutating a field mutates the
+  whole value).
+- Structs are **values**: they pass to and return from functions by copy,
+  and assignment copies. Field types may be any N type, including `str` and
+  other structs.
+- In an `if`/`while` condition, `{` always opens the body — write
+  `x := Rect{ ... };` on its own line first if you need a literal there
+  (the same disambiguation rule Rust uses).
+- The struct name space is checked: using an undeclared struct, an unknown
+  field, or an incomplete literal is a compile error (§6.5).
 
 ## 5. Statements
 
@@ -326,6 +360,11 @@ The compiler rejects the following, each with a `file:line` diagnostic:
   that value must be compatible with it.
 - **Assignment values** (v0.4): the assigned value must be compatible with
   the target's type, and `+=`/`-=` require an integer target.
+- **Struct correctness** (v0.5): struct names in literals and signatures must
+  be declared; field access must name a real field (`str` exposes only
+  `.ptr`/`.len`; integers have no fields); literals must initialize every
+  field exactly once with compatible values; interpolation accepts only
+  `str` and integer values; unary operators require integer operands.
 
 Remaining outside the bootstrap's scope: *missing*-return flow analysis (a
 typed function whose control flow can fall off the end is caught by the C
@@ -387,7 +426,7 @@ is valid until the end of the enclosing block.
 Condensed EBNF of the implemented language:
 
 ```ebnf
-program      = { extern_block | fn_decl } ;
+program      = { extern_block | fn_decl | struct_decl } ;
 
 extern_block = "extern" "syscall" "{" { extern_fn } "}" ;
 extern_fn    = "fn" ident params [ "->" type ] "=" int_lit [ ";" ] ;
@@ -395,6 +434,9 @@ extern_fn    = "fn" ident params [ "->" type ] "=" int_lit [ ";" ] ;
 fn_decl      = "fn" ident params [ "->" type ] block ;
 params       = "(" [ param { "," param } ] ")" ;
 param        = ident ":" type ;
+
+struct_decl  = "struct" ident "{" field { "," field } [ "," ] "}" ;
+field        = ident ":" type ;
 
 type         = [ "raw" ] { "*" } ident ;
 
@@ -421,7 +463,10 @@ cast         = unary { "as" type } ;
 unary        = ( "-" | "!" ) unary | postfix ;
 postfix      = primary { "." ident | "(" [ expr { "," expr } ] ")" } ;
 primary      = int_lit | "true" | "false" | string | interp_string
-             | ident | "(" expr ")" ;
+             | struct_lit | ident | "(" expr ")" ;
+struct_lit   = ident "{" [ finit { "," finit } [ "," ] ] "}" ;
+             (* not permitted directly in an if/while condition *)
+finit        = ident ":" expr ;
 ```
 
 String interpolation is handled lexically: the lexer emits
@@ -438,9 +483,9 @@ N++/type-checker phase:
    the C compiler on the generated file.
 2. **Interpolation is text-or-decimal only.** `str` inserts text, everything
    else formats as signed decimal; there are no hex/width format controls yet.
-3. **Missing constructs:** `struct`/`enum` definitions, `match`, `for`,
-   closures, methods, modules/`use`, `defer`, `Result`/`?` — all specified in
-   the N++ design document.
+3. **Missing constructs:** `enum` definitions, `match`, `for`, closures,
+   methods, modules/`use`, `defer`, `Result`/`?` — all specified in the N++
+   design document. (`struct` landed in v0.5.)
 4. Fixed implementation caps (per file: 64 functions, 64 syscalls; per call:
    16 arguments; per function: 256 live locals) — generous for the bootstrap,
    diagnosed clearly when exceeded.
