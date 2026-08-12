@@ -3680,6 +3680,7 @@ extern int csprng_selftest(void);
 extern int aes_gcm_selftest(void);
 extern int curve25519_selftest(void);
 extern int ed25519_selftest(void);
+extern int ed25519_verify_selftest(void);
 extern int tls_prf_selftest(void);
 extern int tls_keyschedule_selftest(void);
 extern int tls_record_selftest(void);
@@ -3835,6 +3836,7 @@ static void run_selftests(void) {
         {"sha1",         sha1_selftest},           {"md5",           md5_selftest},
         {"csprng",       csprng_selftest},        {"aes_gcm",       aes_gcm_selftest},
         {"curve25519",   curve25519_selftest},     {"ed25519pub",    ed25519_selftest},
+        {"ed25519vfy",   ed25519_verify_selftest},
         {"tls_prf",      tls_prf_selftest},       {"tls_keysched",  tls_keyschedule_selftest},
         {"tls_record",   tls_record_selftest},    {"tls_ske_p384",  tls_ske_p384_selftest},
         {"der",          der_selftest},           {"base64",        base64_selftest},
