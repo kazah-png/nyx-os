@@ -11,6 +11,7 @@
 #include "../net/tcp.h"
 #include "../drivers/audio/sb16.h"
 #include "../fs/ext2.h"
+#include "../fs/tar.h"
 #include "../net/dns.h"
 #include "../net/http.h"
 #include "../crypto/tls/tls.h"
@@ -105,6 +106,7 @@ static void cmd_basename(int argc, char** argv);
 static void cmd_dirname(int argc, char** argv);
 static void cmd_head(int argc, char** argv);
 static void cmd_file(int argc, char** argv);
+static void cmd_tar(int argc, char** argv);
 static void cmd_rev(int argc, char** argv);
 static void cmd_tr(int argc, char** argv);
 static void cmd_fold(int argc, char** argv);
@@ -241,6 +243,7 @@ static const command_t commands[] = {
     {"dirname",   cmd_dirname,   "Strip the last component from a path: dirname <path>", false},
     {"head",      cmd_head,      "Show first lines of a file: head <file> [lines]", false},
     {"file",      cmd_file,      "Identify a file's type: file <file>...", false},
+    {"tar",       cmd_tar,       "List a tar archive: tar t[v] <file.tar>", false},
     {"tree",      cmd_tree,      "Show filesystem tree: tree [path]", false},
     {"env",       cmd_env,       "Show environment variables", false},
     {"export",    cmd_export,    "Set env variable: export <name>=<value>", false},
@@ -505,7 +508,7 @@ void execute_command(const char* cmd_line) {
 // ever dropped even if a new command isn't categorised here yet.
 typedef struct { const char* title; const char* const* names; } help_cat_t;
 static const char* const HC_shell[] = {"help","man","version","clear","history","exec","spawn","jobs","wait","nice","renice",0};
-static const char* const HC_files[] = {"ls","cd","pwd","cat","file","open","touch","mkdir","rm","cp","mv","tree","find","which","basename","dirname","files","df","mount","ext2ls","ext2cat",0};
+static const char* const HC_files[] = {"ls","cd","pwd","cat","file","tar","open","touch","mkdir","rm","cp","mv","tree","find","which","basename","dirname","files","df","mount","ext2ls","ext2cat",0};
 static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tr","fold","nl","expand","unexpand","printf","wc","write","hexdump",0};
 static const char* const HC_sys[]   = {"ps","kill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch",0};
 static const char* const HC_user[]  = {"useradd","users",0};
@@ -580,6 +583,7 @@ static const man_page_t man_pages[] = {
     {"pwd",      "Print the full path of the current working directory."},
     {"cat",      "Write the contents of <file> to standard output. The usual way to view a text file."},
     {"file",     "Identify the type of each <file> from its leading bytes (magic numbers: ELF, PNG, GIF, JPEG, PDF, Zip, gzip, WAV, BMP, tar, #! scripts) and, for text, whether it is ASCII or UTF-8 (with a source-extension hint like `C source`). Prints `<file>: <type>`."},
+    {"tar",      "List the members of a POSIX ustar (.tar) archive: `tar t <file.tar>` prints each member's path, and `tar tv` also prints its type flag and byte size. Listing only — extraction is not yet supported."},
     {"cp",       "Copy the file <src> to <dst>, replacing <dst> if it already exists."},
     {"mv",       "Move or rename <src> to <dst>. Within one filesystem this only rewrites the directory entry."},
     {"rm",       "Remove <path>. There is no recycle bin, so a removed file is gone for good."},
@@ -913,6 +917,33 @@ static void cmd_file(int argc, char** argv) {
         if (n < 0) n = 0;
         printf("%s: %s\n", argv[a], filetype_identify(argv[a], buf, (uint32_t)n));
     }
+}
+
+// tar t[v] <file.tar> — list the members of a POSIX ustar archive (v also shows the
+// type + size). Listing only. Uses the whole in-memory file (vfs_fdata), like the ELF
+// loader, and the hardened tar_next() walker (kernel/fs/tar.c).
+static void cmd_tar(int argc, char** argv) {
+    if (argc < 3 || argv[1][0] != 't') {
+        printf("Usage: tar t[v] <file.tar>   (list an archive; extraction not supported)\n");
+        return;
+    }
+    int verbose = 0;
+    for (int i = 0; argv[1][i]; i++) if (argv[1][i] == 'v') verbose = 1;
+    int fd = vfs_open(argv[2], 0, 0);
+    if (fd < 0) { printf("tar: cannot open '%s'\n", argv[2]); return; }
+    uint32_t size = vfs_fsize(fd);
+    uint8_t* data = vfs_fdata(fd);
+    if (!data || size < 512) { vfs_close(fd); printf("tar: not a tar archive\n"); return; }
+    tar_entry_t e;
+    uint32_t off = 0;
+    int n = 0;
+    while (n < 4096 && tar_next(data, size, &off, &e)) {
+        if (verbose) printf("%c %10u  %s\n", e.type ? e.type : '0', e.size, e.name);
+        else         printf("%s\n", e.name);
+        n++;
+    }
+    vfs_close(fd);
+    if (n == 0) printf("tar: not a ustar archive\n");
 }
 
 // rev <file> — print each line with its characters in reverse order (the classic
@@ -3701,6 +3732,7 @@ extern int curve25519_selftest(void);
 extern int ed25519_selftest(void);
 extern int ed25519_verify_selftest(void);
 extern int filetype_selftest(void);
+extern int tar_selftest(void);
 extern int tls_prf_selftest(void);
 extern int tls_keyschedule_selftest(void);
 extern int tls_record_selftest(void);
@@ -3857,6 +3889,7 @@ static void run_selftests(void) {
         {"csprng",       csprng_selftest},        {"aes_gcm",       aes_gcm_selftest},
         {"curve25519",   curve25519_selftest},     {"ed25519pub",    ed25519_selftest},
         {"ed25519vfy",   ed25519_verify_selftest}, {"filetype",      filetype_selftest},
+        {"tar",          tar_selftest},
         {"tls_prf",      tls_prf_selftest},       {"tls_keysched",  tls_keyschedule_selftest},
         {"tls_record",   tls_record_selftest},    {"tls_ske_p384",  tls_ske_p384_selftest},
         {"der",          der_selftest},           {"base64",        base64_selftest},
