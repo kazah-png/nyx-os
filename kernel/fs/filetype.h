@@ -9,6 +9,11 @@
 // Reuses utf8_validate() to tell ASCII text from UTF-8 text and both from binary "data".
 const char* filetype_identify(const char* name, const uint8_t* data, uint32_t len);
 
+// Short human-readable type label for a directory listing, from the NAME/extension
+// only (no content read — cheap to call once per entry). is_dir != 0 -> "Folder".
+// Used by the File Manager's Type column.
+const char* filetype_label(const char* name, int is_dir);
+
 int filetype_selftest(void);
 
 #endif // FILETYPE_H

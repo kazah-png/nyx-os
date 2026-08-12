@@ -444,6 +444,9 @@ static void fm_draw_sort_arrow(int x, int y, int up, uint32_t col) {
     }
 }
 
+// Type-column labels come from the shared kernel classifier (kernel/fs/filetype.c).
+extern const char* filetype_label(const char* name, int is_dir);
+
 void fileman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     fileman_win_t* fm = (fileman_win_t*)win->reserved;
     if (!fm) return;
@@ -499,11 +502,21 @@ void fileman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     uint32_t hdr_bg = fb_rgb(50,55,65);
     uint32_t hdr_active = fb_rgb(200,180,255);   // Nyx purple accent
     fb_fill_rect(cx, list_header_y, cw, char_h + 2, hdr_bg);
+    // Type column: a name-based type label between Name and Size (Windows-Explorer
+    // style). Fixed widths are reserved on the right; Name takes the remaining space
+    // and is truncated to fit. Hidden on a very narrow window.
+    int fm_list_w   = (int)cw - SCROLL_W;
+    int fm_size_w   = 72, fm_type_w = 100;
+    int fm_type_x   = cx + fm_list_w - fm_size_w - fm_type_w;
+    int fm_name_x   = cx + 4 + 16;
+    int fm_show_type = (fm_type_x > fm_name_x + 40);
     uint32_t name_col = (fm->sort_key == FM_SORT_NAME) ? hdr_active : fb_rgb(255,255,255);
     uint32_t size_col = (fm->sort_key == FM_SORT_SIZE) ? hdr_active : fb_rgb(255,255,255);
     font_draw_string(cx + 4, list_header_y + 1, "Name", name_col, hdr_bg);
     if (fm->sort_key == FM_SORT_NAME)
         fm_draw_sort_arrow(cx + 4 + (int)strlen("Name") * FONT_WIDTH + 4, list_header_y + 7, !fm->sort_desc, name_col);
+    if (fm_show_type)
+        font_draw_string(fm_type_x, list_header_y + 1, "Type", fb_rgb(255,255,255), hdr_bg);
     {
         const char* size_hdr = "Size";
         int shx = cx + ((int)cw - SCROLL_W) - 8 - (int)strlen(size_hdr) * FONT_WIDTH;
@@ -530,7 +543,23 @@ void fileman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
         if (fm->entry_types[ei]) fm_draw_folder_icon(cx + 4, ey, (int)char_h);
         else                     fm_draw_file_icon(cx + 4, ey, (int)char_h, fm_file_accent(fm->entries[ei]));
         uint32_t fg = fm->entry_types[ei] ? fb_rgb(100,200,255) : THEME_TEXT;
-        font_draw_string(cx + 4 + 16, ey, fm->entries[ei], fg, bg);
+        const char* nm = fm->entries[ei];
+        char nmbuf[80];
+        if (fm_show_type) {                                  // truncate the name to leave room for Type
+            int maxch = (fm_type_x - 6 - fm_name_x) / FONT_WIDTH;
+            if (maxch < 3) maxch = 3;
+            if ((int)strlen(nm) > maxch) {
+                int k = maxch - 1;
+                if (k > (int)sizeof(nmbuf) - 2) k = (int)sizeof(nmbuf) - 2;
+                for (int j = 0; j < k; j++) nmbuf[j] = nm[j];
+                nmbuf[k] = '~'; nmbuf[k + 1] = '\0';
+                nm = nmbuf;
+            }
+        }
+        font_draw_string(fm_name_x, ey, nm, fg, bg);
+        if (fm_show_type)
+            font_draw_string(fm_type_x, ey, filetype_label(fm->entries[ei], fm->entry_types[ei]),
+                             fb_rgb(150,155,170), bg);
         // Right-aligned Size column: byte count for files, "<DIR>" for folders.
         char szbuf[16];
         if (fm->entry_types[ei]) snprintf(szbuf, sizeof(szbuf), "<DIR>");

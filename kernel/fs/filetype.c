@@ -75,6 +75,39 @@ const char* filetype_identify(const char* name, const uint8_t* data, uint32_t le
     return has_high ? "UTF-8 Unicode text" : "ASCII text";
 }
 
+// Cheap NAME-only label for a directory listing (no content read). is_dir -> "Folder".
+const char* filetype_label(const char* name, int is_dir) {
+    if (is_dir) return "Folder";
+    if (ft_ext(name, ".c"))                            return "C source";
+    if (ft_ext(name, ".h"))                            return "C header";
+    if (ft_ext(name, ".asm") || ft_ext(name, ".s"))    return "Assembly";
+    if (ft_ext(name, ".py"))                           return "Python";
+    if (ft_ext(name, ".sh"))                           return "Shell";
+    if (ft_ext(name, ".n") || ft_ext(name, ".nyx"))    return "N source";
+    if (ft_ext(name, ".md"))                           return "Markdown";
+    if (ft_ext(name, ".txt"))                          return "Text";
+    if (ft_ext(name, ".json"))                         return "JSON";
+    if (ft_ext(name, ".html") || ft_ext(name, ".htm")) return "HTML";
+    if (ft_ext(name, ".css"))                          return "CSS";
+    if (ft_ext(name, ".png"))                          return "PNG image";
+    if (ft_ext(name, ".jpg") || ft_ext(name, ".jpeg")) return "JPEG image";
+    if (ft_ext(name, ".gif"))                          return "GIF image";
+    if (ft_ext(name, ".bmp"))                          return "Bitmap";
+    if (ft_ext(name, ".ppm"))                          return "PPM image";
+    if (ft_ext(name, ".wav"))                          return "WAV audio";
+    if (ft_ext(name, ".zip"))                          return "ZIP";
+    if (ft_ext(name, ".gz"))                           return "Gzip";
+    if (ft_ext(name, ".tar"))                          return "Tar";
+    if (ft_ext(name, ".iso") || ft_ext(name, ".img"))  return "Disk image";
+    if (ft_ext(name, ".pdf"))                          return "PDF";
+    if (ft_ext(name, ".elf"))                          return "Program";
+    if (ft_ext(name, ".o"))                            return "Object";
+    if (ft_ext(name, ".a"))                            return "Library";
+    if (ft_ext(name, ".bin"))                          return "Binary";
+    if (ft_ext(name, ".log"))                          return "Log";
+    return "File";
+}
+
 // ---- known-answer self-test (`filetype`) ----
 int filetype_selftest(void) {
     struct { const char* name; const char* data; uint32_t len; const char* want; } t[] = {
@@ -101,6 +134,23 @@ int filetype_selftest(void) {
         int j = 0;
         while (got[j] && w[j] && got[j] == w[j]) j++;
         if (got[j] != w[j]) return (int)(i + 1);
+    }
+    // name-only labels for the File Manager Type column
+    struct { const char* name; int dir; const char* want; } L[] = {
+        { "docs",      1, "Folder" },
+        { "main.c",    0, "C source" },
+        { "photo.PNG", 0, "PNG image" },     // case-insensitive extension
+        { "run.sh",    0, "Shell" },
+        { "pkg.zip",   0, "ZIP" },
+        { "readme.md", 0, "Markdown" },
+        { "a.out",     0, "File" },          // no known extension
+    };
+    for (unsigned i = 0; i < sizeof(L)/sizeof(L[0]); i++) {
+        const char* got = filetype_label(L[i].name, L[i].dir);
+        const char* w = L[i].want;
+        int j = 0;
+        while (got[j] && w[j] && got[j] == w[j]) j++;
+        if (got[j] != w[j]) return (int)(100 + i);
     }
     return 0;
 }
