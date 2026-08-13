@@ -17,6 +17,7 @@
 #include "numparse.h"
 #include "factor.h"
 #include "semver.h"
+#include "comm.h"
 #include "../net/dns.h"
 #include "../net/http.h"
 #include "../crypto/tls/tls.h"
@@ -115,6 +116,7 @@ static void cmd_tar(int argc, char** argv);
 static void cmd_iniget(int argc, char** argv);
 static void cmd_factor(int argc, char** argv);
 static void cmd_semver(int argc, char** argv);
+static void cmd_comm(int argc, char** argv);
 static void cmd_rev(int argc, char** argv);
 static void cmd_tr(int argc, char** argv);
 static void cmd_fold(int argc, char** argv);
@@ -265,6 +267,7 @@ static const command_t commands[] = {
     {"fold",      cmd_fold,      "Wrap long lines to a width: fold [-w width] <file>", false},
     {"nl",        cmd_nl,        "Number lines: nl [-b a|t|n] [-w N] [-s SEP] <file>", false},
     {"factor",    cmd_factor,    "Prime factorization: factor N [N ...]", false},
+    {"comm",      cmd_comm,      "Compare two sorted files: comm [-123] <f1> <f2>", false},
     {"semver",    cmd_semver,    "Validate/compare SemVer 2.0.0: semver <ver> [<ver2>]", false},
     {"printf",    cmd_printf,    "Format and print: printf FORMAT [ARG...]", false},
     {"expand",    cmd_expand,    "Convert tabs to spaces: expand [-t N] <file>", false},
@@ -520,7 +523,7 @@ void execute_command(const char* cmd_line) {
 typedef struct { const char* title; const char* const* names; } help_cat_t;
 static const char* const HC_shell[] = {"help","man","version","clear","history","exec","spawn","jobs","wait","nice","renice",0};
 static const char* const HC_files[] = {"ls","cd","pwd","cat","file","tar","iniget","open","touch","mkdir","rm","cp","mv","tree","find","which","basename","dirname","files","df","mount","ext2ls","ext2cat",0};
-static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tr","fold","nl","expand","unexpand","factor","printf","wc","write","hexdump",0};
+static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tr","fold","nl","expand","unexpand","factor","comm","printf","wc","write","hexdump",0};
 static const char* const HC_sys[]   = {"ps","kill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch",0};
 static const char* const HC_user[]  = {"useradd","users",0};
 static const char* const HC_net[]   = {"ifconfig","dhcp","dns","ping","setip","httpget","tls",0};
@@ -608,6 +611,7 @@ static const man_page_t man_pages[] = {
     {"fold",     "Wrap the lines of <file> so no output line is longer than the given width (80 by default, or -w width). A line longer than the width is broken with a hard newline at exactly that many characters; shorter lines and existing line breaks are left alone."},
     {"nl",       "Number the lines of <file>. By default only non-empty lines are numbered (-b t); -b a numbers every line and -b n numbers none. Each line number is right-justified in a field N columns wide (6 by default, or -w N) and followed by a separator (a tab by default, or -s SEP), then the line text."},
     {"factor",   "Print the prime factorization of each integer argument, one per line, as `N: p1 p2 ...` with factors ascending and repeated by multiplicity (e.g. `factor 90` prints `90: 2 3 3 5`). 0 and 1 print just `N:`. Accepts any 64-bit unsigned value; a non-numeric or negative argument is reported and skipped."},
+    {"comm",     "Compare two files that are each already sorted, line by line, in three columns: lines only in <file1> (column 1), lines only in <file2> (column 2, indented one tab), and lines common to both (column 3, indented two tabs). `-1`/`-2`/`-3` suppress the respective column (and drop its indentation from the later columns), so e.g. `comm -12 a b` prints just the lines common to both. Input is assumed sorted in byte order."},
     {"semver",   "Parse and compare Semantic Versioning 2.0.0 strings (MAJOR.MINOR.PATCH[-prerelease][+build]). With one argument, validate it and print the parsed fields. With two, print their precedence relation (`A < B`, `A = B`, or `A > B`) per the semver spec: core numbers compared numerically, a prerelease ranks below the same version without one, and build metadata is ignored. Useful for comparing package versions."},
     {"printf",   "Print ARGs under the control of FORMAT (like the C/coreutil printf). FORMAT is reused as needed to consume all ARGs. It interprets backslash escapes (\\n \\t \\r \\a \\b \\f \\v \\\\) and the conversions %s %d %i %u %x %X %c %% with optional flags and field width (e.g. %-10s, %05d). Numeric ARGs are read as decimal. Unlike echo, printf never appends a trailing newline unless FORMAT contains one."},
     {"expand",   "Convert the tabs in <file> to spaces. Each tab advances to the next tab stop, which are spaced N columns apart (8 by default, or -t N), so columns stay aligned instead of a fixed number of spaces per tab. Non-tab characters and newlines pass through unchanged (a newline resets the column count)."},
@@ -1026,6 +1030,43 @@ static void cmd_semver(int argc, char** argv) {
         return;
     }
     printf("Usage: semver <version> [<version2>]   (validate, or compare precedence)\n");
+}
+
+// comm output callback: `tabs` tab stops, then the raw line bytes, then a newline.
+static void comm_emit_print(int tabs, const char* line, int len, void* ctx) {
+    (void)ctx;
+    for (int i = 0; i < tabs; i++) putchar('\t');
+    for (int i = 0; i < len; i++) putchar(line[i]);
+    putchar('\n');
+}
+
+// comm [-123] <file1> <file2> — read two SORTED files and print, in three tab-offset
+// columns, the lines unique to file1, unique to file2, and common to both. -1/-2/-3
+// suppress the respective column. Uses the whole in-memory files + comm_run().
+static void cmd_comm(int argc, char** argv) {
+    int s1 = 1, s2 = 1, s3 = 1, ai = 1;
+    while (ai < argc && argv[ai][0] == '-' && argv[ai][1]) {
+        for (int k = 1; argv[ai][k]; k++) {
+            if      (argv[ai][k] == '1') s1 = 0;
+            else if (argv[ai][k] == '2') s2 = 0;
+            else if (argv[ai][k] == '3') s3 = 0;
+            else { printf("comm: invalid option -- '%c'\n", argv[ai][k]); return; }
+        }
+        ai++;
+    }
+    if (argc - ai != 2) { printf("Usage: comm [-123] <file1> <file2>\n"); return; }
+
+    int fa = vfs_open(argv[ai], 0, 0);
+    if (fa < 0) { printf("comm: cannot open '%s'\n", argv[ai]); return; }
+    int fb = vfs_open(argv[ai + 1], 0, 0);
+    if (fb < 0) { vfs_close(fa); printf("comm: cannot open '%s'\n", argv[ai + 1]); return; }
+    uint32_t na = vfs_fsize(fa), nb = vfs_fsize(fb);
+    uint8_t* da = vfs_fdata(fa);
+    uint8_t* db = vfs_fdata(fb);
+    if ((na && !da) || (nb && !db)) { vfs_close(fa); vfs_close(fb); printf("comm: read error\n"); return; }
+    comm_run((const char*)da, (int)na, (const char*)db, (int)nb, s1, s2, s3, comm_emit_print, 0);
+    vfs_close(fa);
+    vfs_close(fb);
 }
 
 // rev <file> — print each line with its characters in reverse order (the classic
