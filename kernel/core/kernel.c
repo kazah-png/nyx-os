@@ -3825,6 +3825,7 @@ extern int datefmt_selftest(void);
 extern int ini_selftest(void);
 extern int factor_selftest(void);
 extern int semver_selftest(void);
+extern int base85_selftest(void);
 extern int tls_prf_selftest(void);
 extern int tls_keyschedule_selftest(void);
 extern int tls_record_selftest(void);
@@ -3989,6 +3990,7 @@ static void run_selftests(void) {
         {"tls_record",   tls_record_selftest},    {"tls_ske_p384",  tls_ske_p384_selftest},
         {"der",          der_selftest},           {"base64",        base64_selftest},
         {"base32",       base32_selftest},        {"base16",        base16_selftest},
+        {"base85",       base85_selftest},
         {"utf8",          utf8_selftest},
         {"p256",          p256_selftest},
         {"p384",         p384_selftest},          {"rsa",           rsa_selftest},
