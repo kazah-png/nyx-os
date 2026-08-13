@@ -2,7 +2,9 @@
 #include "ext2.h"
 #include "../core/spinlock.h"
 
-#define MAX_INODES    256   // total node pool (was 128 — root alone holds ~58)
+#define MAX_INODES    512   // total node pool (256->512: headroom for sustained in-OS
+                            // compile sessions — mitigation for the #66 exhaustion. Was
+                            // 128, then 256; root alone holds ~58. See vfs_pool_report.)
 #define MAX_NAME      64
 #define MAX_CHILDREN  128   // per-directory child cap (was 64 — root `/` needs headroom)
 #define BLOCK_SIZE    512
@@ -165,6 +167,27 @@ static void release_node(vfs_node_t* n) {
     n->size = 0;
     n->child_count = 0;
     free_node(n);
+}
+
+// Read-only census of the node pool, for diagnosing #66-style exhaustion (`vfsstat`).
+// Splits the transient mount-backed (ext2 mirror) nodes into those still held by an
+// open fd (open_refs>0) versus idle-but-not-freed (open_refs==0, off the free list) —
+// which distinguishes an fd leak (held keeps climbing) from a free-list drop (idle).
+void vfs_pool_report(uint32_t* total, uint32_t* high_water, uint32_t* freelist,
+                     uint32_t* mount_held, uint32_t* mount_idle) {
+    uint64_t fl = spin_lock_irqsave(&node_pool_lock);
+    if (total)      *total = MAX_INODES;
+    if (high_water) *high_water = node_count;
+    if (freelist)   *freelist = (uint32_t)free_node_count;
+    uint32_t held = 0, idle = 0;
+    for (uint32_t i = 0; i < node_count; i++) {
+        if (!nodes[i].mount_backed) continue;
+        if (nodes[i].open_refs > 0)      held++;
+        else if (!nodes[i].on_free_list) idle++;
+    }
+    if (mount_held) *mount_held = held;
+    if (mount_idle) *mount_idle = idle;
+    spin_unlock_irqrestore(&node_pool_lock, fl);
 }
 
 // Append `child` to directory `parent`; returns 0, or -1 if `parent` already holds
