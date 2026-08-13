@@ -1,0 +1,65 @@
+// results.n — N v0.10 error propagation with `?` (N++ P3):
+//   - a "result enum" is any enum shaped exactly { Ok, Err }, each variant
+//     carrying at most one payload field — N's Result convention (no
+//     generics yet, so the shape is structural, not a type former)
+//   - `x := e?;` binds the Ok payload, or returns the Err from the caller
+//   - propagation rewraps the Err payload when the caller returns a
+//     DIFFERENT result enum (payload types must be compatible)
+//   - defers run before the propagating return, like any other return
+
+extern syscall {
+    fn write(fd: i32, buf: *u8, len: isize) -> i64 = 1
+}
+
+fn put(s: str) {
+    write(1, s.ptr as *u8, s.len as isize);
+}
+
+enum DivResult  { Ok(q: i64),   Err(code: i64) }
+enum CalcResult { Ok(sum: i64), Err(code: i64) }
+
+fn checked_div(a: i64, b: i64) -> DivResult {
+    if b == 0 {
+        return DivResult.Err{ code: -1 };
+    }
+    DivResult.Ok{ q: a / b }
+}
+
+// Same result type: on Err, `?` returns the DivResult unchanged.
+fn tenfold_quotient(a: i64, b: i64) -> DivResult {
+    q := checked_div(a, b)?;
+    DivResult.Ok{ q: q * 10 }
+}
+
+// Different result type: on Err, `?` rewraps the code into CalcResult.Err.
+// The defer runs on the propagation path too — watch the output order.
+fn sum_of_quotients(a: i64, b: i64, d: i64) -> CalcResult {
+    defer put("sum_of_quotients: done\n");
+    checked_div(a, 1)?;             // statement form: check, discard the Ok
+    mut acc := 0;
+    acc = checked_div(a, d)?;       // assign form
+    acc += checked_div(b, d)?;      // compound-assign form
+    CalcResult.Ok{ sum: acc }
+}
+
+fn show_div(label: str, r: DivResult) {
+    match r {
+        Ok(q)     => { put("{label} = {q}\n"); },
+        Err(code) => { put("{label} failed (code {code})\n"); },
+    }
+}
+
+fn show_calc(label: str, r: CalcResult) {
+    match r {
+        Ok(sum)   => { put("{label} = {sum}\n"); },
+        Err(code) => { put("{label} failed (code {code})\n"); },
+    }
+}
+
+fn main() -> i64 {
+    show_div("10 * (84/2)", tenfold_quotient(84, 2));
+    show_div("10 * (84/0)", tenfold_quotient(84, 0));
+    show_calc("60/6 + 30/6", sum_of_quotients(60, 30, 6));
+    show_calc("60/0 + 30/0", sum_of_quotients(60, 30, 0));
+    0
+}

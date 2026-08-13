@@ -3,7 +3,7 @@
  * Hosted tool (runs on the dev machine); single file, no dependencies.
  * See lang/docs/spec-n.md for the language specification this implements.
  *
- * Supported subset (currently N v0.9):
+ * Supported subset (currently N v0.10):
  *   - extern syscall { fn name(params) [-> T] = N }
  *   - fn decls with block bodies, params, return types
  *   - statements: let (:=, mut), assignment (= += -=), return, while,
@@ -40,7 +40,12 @@
  *     single expressions (`Variant(binds) => expr`), all arms must agree
  *     on one result type, and exhaustiveness is enforced as in the
  *     statement form. This is the shape `Result`/`?` will lower through.
- * Not yet (N++ territory): for, closures, Result/?, modules/use.
+ *   - the `?` operator (v0.10, N++ P3): `x := e?;` / `x = e?;` / `e?;`
+ *     over "result enums" — any enum shaped exactly { Ok, Err } with at
+ *     most one payload field each. On Err the function returns the error
+ *     (rewrapped if the return type is a different result enum, defers
+ *     honored); on Ok the payload is bound/assigned/discarded.
+ * Not yet (N++ territory): for, closures, generic Result<T,E>, modules/use.
  */
 /* Platform includes. In-OS builds (milestone M2) compile this file with
  * NyxOS's ported TinyCC, whose libc surface is the single header libc.h
@@ -366,6 +371,7 @@ struct Stmt {
     Expr* cond; Block* body; Block* els;
     MatchArm* arms; int narms;              /* S_MATCH (subject in e) */
     int mtarget;                            /* S_MATCH: an MTarget value */
+    int is_try;                             /* v0.10: statement value ends in `?` */
 };
 struct Block { Stmt** st; int n; Expr* tail; };
 
@@ -401,6 +407,15 @@ static int variant_index(EnumDef* ed, const char* v) {
     for (int i = 0; i < ed->nv; i++)
         if (!strcmp(ed->vs[i].name, v)) return i;
     return -1;
+}
+/* A "result enum" (v0.10, spec 5.9) is the structural shape `?` operates
+ * on: exactly the two variants Ok and Err, each carrying zero or one
+ * payload field. Any enum matching the shape qualifies — N has no
+ * generics yet, so Result<T, E> is a convention, not a type former. */
+static int enum_is_result(EnumDef* ed) {
+    if (ed->nv != 2) return 0;
+    if (variant_index(ed, "Ok") < 0 || variant_index(ed, "Err") < 0) return 0;
+    return ed->vs[0].nf <= 1 && ed->vs[1].nf <= 1;
 }
 /* Is this expression a payload-less variant reference (`Shape.Empty`)?
  * Returns the enum and sets *idx, or NULL. */
@@ -781,6 +796,7 @@ static Block* parse_block(void) {
             s->is_mut = is_mut;
             s->name = id.s;
             s->e = parse_expr();
+            s->is_try = pacc(T_QUESTION);     /* v0.10: x := e?; */
             pexp(T_SEMI, "';'");
             st[n++] = s;
             continue;
@@ -843,6 +859,15 @@ static Block* parse_block(void) {
             }
             Stmt* s = news(S_ASSIGN);
             s->lhs = e; s->aop = op; s->e = parse_expr();
+            s->is_try = pacc(T_QUESTION);     /* v0.10: x = e?; */
+            pexp(T_SEMI, "';'");
+            st[n++] = s;
+            continue;
+        }
+        if (pacc(T_QUESTION)) {               /* v0.10: e?; — propagate only */
+            Stmt* s = news(S_EXPR);
+            s->e = e;
+            s->is_try = 1;
             pexp(T_SEMI, "';'");
             st[n++] = s;
             continue;
@@ -1577,7 +1602,108 @@ static void emit_zero(Ty t) {
         fputs("0", OUT);
 }
 
+/* v0.10 error propagation — lower `x := e?;`, `x = e?;`, and `e?;`.
+ * The operand and the enclosing function's return type must both be
+ * result enums (enum_is_result). On Err the function returns at once:
+ * the same value when the two types are identical, otherwise the Err
+ * payload rewrapped into the return type — and the defers run before
+ * the return, exactly like any other return (spec 5.7). On Ok the
+ * statement consumes the payload (bind/assign) or discards it (`e?;`). */
+static void gen_try(Stmt* s, int ind) {
+    check_expr(s->e);
+    Ty ot = infer_type(s->e);
+    EnumDef* oe = (ot.name && ot.ptrs == 0) ? enum_lookup(ot.name) : NULL;
+    if (!oe || !enum_is_result(oe))
+        die("%s:%d: operand of '?' must be a result enum (exactly the variants Ok and Err), got %s",
+            FILENAME, s->line, ty_str(ot));
+    EnumDef* re = (CUR_RET.name && CUR_RET.ptrs == 0) ? enum_lookup(CUR_RET.name) : NULL;
+    if (!re || !enum_is_result(re))
+        die("%s:%d: '?' propagates by returning, so the function must return a result enum (it returns %s)",
+            FILENAME, s->line, ty_str(CUR_RET));
+    VariantDef* ov_ok  = &oe->vs[variant_index(oe, "Ok")];
+    VariantDef* ov_err = &oe->vs[variant_index(oe, "Err")];
+    VariantDef* rv_err = &re->vs[variant_index(re, "Err")];
+    int same = !strcmp(oe->name, re->name);
+    if (!same) {
+        if (ov_err->nf != rv_err->nf)
+            die("%s:%d: cannot propagate: %s.Err and %s.Err disagree on carrying a payload",
+                FILENAME, s->line, oe->name, re->name);
+        if (ov_err->nf == 1 && !ty_compat(ov_err->fs[0].ty, rv_err->fs[0].ty))
+            die("%s:%d: cannot propagate %s.Err (%s) as %s.Err (%s)",
+                FILENAME, s->line, oe->name, ty_str(ov_err->fs[0].ty),
+                re->name, ty_str(rv_err->fs[0].ty));
+    }
+    if (s->k != S_EXPR && ov_ok->nf != 1)
+        die("%s:%d: %s.Ok carries no payload to bind — use the statement form `expr?;`",
+            FILENAME, s->line, oe->name);
+    Ty okty; okty.name = NULL; okty.ptrs = 0;
+    if (ov_ok->nf == 1) okty = ov_ok->fs[0].ty;
+    if (s->k == S_ASSIGN) {                  /* same checks as plain S_ASSIGN */
+        check_expr(s->lhs);
+        Expr* root = s->lhs;
+        while (root->k == E_FIELD) root = root->base;
+        if (root->k == E_PATH) {
+            VarInfo* v = vars_find(root->name);
+            if (v && !v->is_mut)
+                die("%s:%d: cannot assign to immutable '%s' (declare it with 'mut')",
+                    FILENAME, s->line, root->name);
+        }
+        Ty lt = infer_type(s->lhs);
+        if (!ty_compat(okty, lt))
+            die("%s:%d: cannot assign %s to a %s target",
+                FILENAME, s->line, ty_str(okty), ty_str(lt));
+        if (strcmp(s->aop, "=") != 0 && !ty_is_int(lt))
+            die("%s:%d: '%s' requires an integer target (got %s)",
+                FILENAME, s->line, s->aop, ty_str(lt));
+    }
+    int tid = IID++;
+    if (s->k == S_LET) {                     /* zero init: dead store, the Err
+                                              * branch below always returns */
+        indentf(ind);
+        emit_type(okty);
+        fprintf(OUT, " %s = ", s->name);
+        emit_zero(okty);
+        fputs(";\n", OUT);
+    }
+    indentf(ind); fputs("{\n", OUT);
+    gen_preludes(s->e, ind + 1);
+    indentf(ind + 1);
+    fprintf(OUT, "%s __t%d = ", oe->name, tid);
+    gen_expr(s->e);
+    fputs(";\n", OUT);
+    indentf(ind + 1);
+    fprintf(OUT, "if (__t%d.tag == %d) {\n", tid, variant_index(oe, "Err"));
+    if (same) {
+        gen_defers(ind + 2);
+        indentf(ind + 2); fprintf(OUT, "return __t%d;\n", tid);
+    } else {
+        indentf(ind + 2);
+        fprintf(OUT, "%s __e%d = {0};\n", re->name, tid);
+        indentf(ind + 2);
+        fprintf(OUT, "__e%d.tag = %d;\n", tid, variant_index(re, "Err"));
+        if (rv_err->nf == 1) {
+            indentf(ind + 2);
+            fprintf(OUT, "__e%d.u.Err.%s = __t%d.u.Err.%s;\n",
+                    tid, rv_err->fs[0].name, tid, ov_err->fs[0].name);
+        }
+        gen_defers(ind + 2);
+        indentf(ind + 2); fprintf(OUT, "return __e%d;\n", tid);
+    }
+    indentf(ind + 1); fputs("}\n", OUT);
+    if (s->k == S_LET) {
+        indentf(ind + 1);
+        fprintf(OUT, "%s = __t%d.u.Ok.%s;\n", s->name, tid, ov_ok->fs[0].name);
+    } else if (s->k == S_ASSIGN) {
+        indentf(ind + 1);
+        gen_expr(s->lhs);
+        fprintf(OUT, " %s __t%d.u.Ok.%s;\n", s->aop, tid, ov_ok->fs[0].name);
+    }
+    indentf(ind); fputs("}\n", OUT);
+    if (s->k == S_LET) vars_add(s->name, okty, s->is_mut);
+}
+
 static void gen_stmt(Stmt* s, int ind) {
+    if (s->is_try) { gen_try(s, ind); return; }
     switch (s->k) {
         case S_LET: {
             check_expr(s->e);

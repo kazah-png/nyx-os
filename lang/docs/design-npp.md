@@ -131,7 +131,7 @@ feature is debuggable by reading the generated C.
 |---|---|---|
 | P1 | ✅ shipped in `ncc` v0.2–v0.4: inference (`i64` literals, typed interpolation, `mut`) + the expression-level checker (names, arity, argument/operand/return/assignment types) | all `lang/examples` still compile bit-identically ✅ |
 | P2 | ✅ **complete**: `struct` (v0.5) · `defer` (v0.6) · `enum` + `match` (v0.7) · `impl` methods (v0.8, static dispatch) | structs.n, defer.n, enums.n, methods.n |
-| P3 | 🔨 **started**: match-as-expression shipped (v0.9 — bind/assign/return positions, the shape `?` lowers through); remaining: `Result<T, E>`, `?`, standard bindings (`fs`, `proc`) over the syscall table | rewrite `countdown.n` idiomatically as `.npp` |
+| P3 | 🔨 **nearly done**: match-as-expression (v0.9) + `?` over structural Ok/Err result enums (v0.10 — same-type pass-through, cross-type Err rewrap, defers honored); remaining: standard bindings (`fs`, `proc`) over the syscall table, generic `Result<T, E>` (an `n++` front-end item) | rewrite `countdown.n` idiomatically as `.npp` |
 | P4 | `#[user]` pointers, `PageFlags`, capabilities | a kernel-module example checked at `ring0` |
 | P5 | `own` types, GUI bindings | a windowed N++ app on the NyxOS desktop |
 

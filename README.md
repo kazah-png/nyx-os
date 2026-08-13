@@ -7,13 +7,13 @@
 <p align="center">
   <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.9.0-LTS"><img src="https://img.shields.io/badge/release-v5.9.0--LTS-825AD2?style=flat" /></a>
   &nbsp;
-  <img src="https://img.shields.io/badge/version-v6.4.193-825AD2?style=flat" />
+  <img src="https://img.shields.io/badge/version-v6.4.194-825AD2?style=flat" />
   &nbsp;
   <img src="https://img.shields.io/badge/arch-x86__64-825AD2?style=flat" />
   &nbsp;
   <img src="https://img.shields.io/badge/license-GPL--2.0+-825AD2?style=flat" />
   &nbsp;
-  <a href="lang/README.md"><img src="https://img.shields.io/badge/N-v0.9-825AD2?style=flat" /></a>
+  <a href="lang/README.md"><img src="https://img.shields.io/badge/N-v0.10-825AD2?style=flat" /></a>
   &nbsp;
   <a href="lang/README.md"><img src="https://img.shields.io/badge/N%2B%2B-design-825AD2?style=flat" /></a>
 </p>
@@ -66,7 +66,7 @@ nyx:root$ nyxfetch
        .:::o:o#:.           nyx@nyxos
     .:oo.. :o.              -----------------
   :oo:.oo.o:                OS:         NyxOS x86_64
- .#o:.   :.                 Kernel:     NyxOS 6.4.193
+ .#o:.   :.                 Kernel:     NyxOS 6.4.194
  #:::....:                  Uptime:     00:00:11
 o#::. . o.                  Resolution: 1024 x 768
 o#.o:   :o                  CPU:        QEMU Virtual CPU (1)

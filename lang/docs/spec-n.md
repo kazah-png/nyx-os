@@ -1,6 +1,6 @@
 # The N Language — Specification
 
-**Version:** v0.9 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
+**Version:** v0.10 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
 
 This document specifies N exactly as implemented by the bootstrap compiler
 `ncc`. It is a *descriptive* spec: everything here compiles today. Planned
@@ -92,7 +92,7 @@ never overflowed. Use `\{` and `\}` for literal braces.
 == != < <= > >=
 ! && ||
 & | ^ << >>
-as ?     (reserved: ? currently lexed but unused)
+as ?     (? = error propagation on result enums, §5.9)
 ```
 
 ## 3. Types
@@ -426,7 +426,53 @@ block (not inside `if`/`while` bodies). This keeps the static lowering exact
 — defers cannot be conditionally registered, so no runtime defer stack is
 needed. Registering conditionally is a compile error, not a silent surprise.
 
-### 5.8 Block tail value
+### 5.9 Error propagation — `?` (since v0.10)
+
+```n
+enum DivResult { Ok(q: i64), Err(code: i64) }
+
+fn tenfold_quotient(a: i64, b: i64) -> DivResult {
+    q := checked_div(a, b)?;     // Ok: q is bound · Err: returned to caller
+    DivResult.Ok{ q: q * 10 }
+}
+```
+
+**Result enums.** N has no generics yet, so `Result<T, E>` is a *structural
+convention*: any enum with exactly the two variants `Ok` and `Err`, each
+carrying zero or one payload field, is a **result enum**, and `?` operates
+on every enum of that shape. (The generic type former arrives with the
+`n++` front-end; code written against the convention will migrate as-is.)
+
+**What `?` does.** `expr?` evaluates a result-enum value once. On `Ok` the
+statement consumes the payload; on `Err` the enclosing function **returns
+immediately**, propagating the error. Three statement positions carry it
+(the same restriction discipline as §5.6.1):
+
+| Form | On `Ok(v)` |
+|---|---|
+| `x := expr?;` | binds `x` to `v` (requires `Ok` to carry a payload) |
+| `x = expr?;` / `x += expr?;` | assigns/updates the `mut` target with `v` |
+| `expr?;` | discards the payload — check-and-continue |
+
+**Propagation rules.**
+
+- The enclosing function's return type must itself be a result enum —
+  using `?` in `main() -> i64` is a compile error naming the actual
+  return type.
+- If the operand and return types are the **same** enum, the `Err` value
+  is returned unchanged.
+- If they **differ**, the `Err` payload is rewrapped into the return
+  type's `Err` variant: both `Err`s must agree on carrying a payload, and
+  the payload types must be compatible (§6.5) — checked at compile time.
+- `defer`s run **before** the propagating return, exactly as for any
+  other `return` (§5.7).
+
+**Lowering** (§7.1): the operand lands in a `__t` temp; `if (__t.tag ==
+Err)` returns (rewrapping into an `__e` temp when needed); the `Ok`
+payload is then consumed from `__t.u.Ok`. No hidden control flow beyond
+the visible early return.
+
+### 5.10 Block tail value
 
 The final expression of a function body, written **without** a trailing `;`,
 is the function's return value:
@@ -556,6 +602,7 @@ This section specifies what C the compiler is *required* to emit, because N's
 | `never` return | `void` fn + `for (;;) {}` after the syscall |
 | `x := match s { … }` (§5.6.1) | `T x = 0;` + `{ E __m = s'; T __mres = 0; switch (__m.tag) { … __mres = arm'; … } x = __mres; }` — the zero init is a dead store (the switch is exhaustive) kept so the C is warning-free |
 | `return match s { … }` | same switch shape; defers run after `__mres` is computed, then `return __mres;` |
+| `x := e?;` (§5.9) | `T x = 0;` + `{ R __t = e'; if (__t.tag == Err) { defers; return __t-or-rewrap; } x = __t.u.Ok.f; }` |
 
 ### 7.2 The runtime
 
@@ -608,8 +655,9 @@ field        = ident ":" type ;
 type         = [ "raw" ] { "*" } ident ;
 
 block        = "{" { stmt } [ expr ] "}" ;          (* trailing expr = tail *)
-stmt         = [ "mut" ] ident ":=" ( expr | match_val ) ";"
-             | expr ( "=" | "+=" | "-=" ) ( expr | match_val ) ";"
+stmt         = [ "mut" ] ident ":=" ( expr [ "?" ] | match_val ) ";"
+             | expr ( "=" | "+=" | "-=" ) ( expr [ "?" ] | match_val ) ";"
+             | expr "?" ";"                 (* v0.10: check-and-propagate *)
              | "return" [ expr | match_val ] ";"
              | "break" ";" | "continue" ";"
              | "defer" expr ";"          (* outermost function block only *)
@@ -661,13 +709,13 @@ N++/type-checker phase:
    the C compiler on the generated file.
 2. **Interpolation is text-or-decimal only.** `str` inserts text, everything
    else formats as signed decimal; there are no hex/width format controls yet.
-3. **Missing constructs:** `for`, closures, modules/`use`, `Result`/`?` —
-   all specified in the N++ design document. (`struct` landed in v0.5,
-   `defer` in v0.6, `enum` + `match` in v0.7, `impl` methods in v0.8 —
-   completing the N++ P2 stage — and match-as-expression in v0.9, the
-   P3 groundwork.)
-4. **Match-expression positions are limited** (§5.6.1): binding,
-   assignment, and return values only — no general expression nesting
+3. **Missing constructs:** `for`, closures, modules/`use`, generic
+   `Result<T, E>` — all specified in the N++ design document. (`struct`
+   landed in v0.5, `defer` in v0.6, `enum` + `match` in v0.7, `impl`
+   methods in v0.8 — completing the N++ P2 stage — match-as-expression
+   in v0.9, and `?` over structural result enums in v0.10.)
+4. **Match-expression and `?` positions are limited** (§5.6.1, §5.9):
+   statement value positions only — no general expression nesting
    until the lowering needs it.
 5. Fixed implementation caps (per file: 64 functions, 64 syscalls; per call:
    16 arguments; per function: 256 live locals) — generous for the bootstrap,

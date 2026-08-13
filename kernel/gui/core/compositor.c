@@ -505,6 +505,44 @@ static int start_menu_item_hit(int mx, int my, int* idx) {
     return 1;
 }
 
+// Is any non-loopback interface configured with an IP? Drives the tray's live network icon.
+static int systray_online(void) {
+    for (int i = 0; i < 8; i++) {
+        const char* nm = net_interfaces[i].name;
+        if (nm[0] && net_interfaces[i].ip != 0 &&
+            !(nm[0] == 'l' && nm[1] == 'o' && nm[2] == 0))
+            return 1;
+    }
+    return 0;
+}
+
+// A Windows-like taskbar system tray: a grouped status area (network + speaker) that
+// sits just left of the user badge. The network icon is LIVE — four accent signal bars
+// when an interface holds an IP, dim bars with a small red mark when offline.
+#define SYSTRAY_W 48
+static void draw_systray(int x, int tb_y) {
+    int cy = tb_y + TASKBAR_H / 2;
+    fb_fill_rect(x, tb_y + 4, SYSTRAY_W, TASKBAR_H - 8, col_darken(taskbar_bg, 14));  // inset panel
+
+    // network: four ascending signal bars
+    int online = systray_online();
+    uint32_t on_c = fb_rgb(150, 110, 235), off_c = fb_rgb(70, 70, 80);
+    int nx = x + 8, base = cy + 6;
+    for (int b = 0; b < 4; b++) {
+        int bh = 3 + b * 3;                                    // 3,6,9,12
+        fb_fill_rect(nx + b * 4, base - bh, 3, bh, online ? on_c : off_c);
+    }
+    if (!online) fb_fill_rect(nx + 12, base - 12, 3, 3, fb_rgb(210, 80, 80));  // offline mark
+
+    // speaker: a small back + a cone flaring right + two sound waves
+    int sx = x + 27; uint32_t sp = fb_rgb(190, 190, 205);
+    fb_fill_rect(sx, cy - 2, 3, 5, sp);                       // back/body
+    for (int c = 0; c < 5; c++)                               // cone widens to the right
+        fb_fill_rect(sx + 3 + c, cy - (1 + c), 1, 2 + 2 * c, sp);
+    fb_fill_rect(sx + 10, cy - 3, 2, 7, sp);                  // near sound wave
+    fb_fill_rect(sx + 13, cy - 5, 2, 11, sp);                 // far sound wave
+}
+
 static void draw_taskbar(void) {
     uint32_t fw = fb_get_width(), fh = fb_get_height();
     int tb_y = fh - TASKBAR_H;
@@ -520,10 +558,12 @@ static void draw_taskbar(void) {
                      start_menu_open ? THEME_ACCENT : col_darken(THEME_ACCENT, 22),
                      fb_rgb(255, 255, 255), "Menu", 16);
 
-    // Reserve room for the logged-in user badge (avatar + name), left of the clock.
+    // Reserve room for the logged-in user badge (avatar + name), left of the clock,
+    // and the system tray (network + speaker), left of the badge.
     int av_s = TASKBAR_H - 14;
     int ublock_w = av_s + 6 + (int)strlen(g_login_user) * FONT_WIDTH + 10;
-    int right_limit = (int)(fw - CLOCK_W - 8) - ublock_w;
+    int tray_x = (int)(fw - CLOCK_W - 8) - ublock_w - SYSTRAY_W;
+    int right_limit = tray_x - 4;
     if (right_limit < 90) right_limit = 90;
 
     int bx = 90;
@@ -556,6 +596,9 @@ static void draw_taskbar(void) {
         }
         bx += bw + 2;
     }
+
+    // System tray (network + speaker status), just left of the user badge.
+    draw_systray(tray_x, tb_y);
 
     // Logged-in user badge: profile picture + username.
     int ubx = (int)(fw - CLOCK_W - 8) - ublock_w + 4;
