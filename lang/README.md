@@ -77,12 +77,12 @@ three ways:
 
 1. **Real programs run on NyxOS.** The in-OS TinyCC builds the v0.10 `ncc`
    from source inside the running system, and that compiler transpiles,
-   compiles, and runs N programs end-to-end in-OS (hello / countdown /
-   inference verified in one boot; the v0.5 `struct` output was also
-   transpiled in-OS and verified byte-correct on disk). Running the *entire*
-   example suite in a single boot currently trips a kernel VFS node-pool
-   limit ([#66](https://github.com/kazah-png/nyx-os/issues/66)) — the full
-   in-OS suite run resumes when that lands.
+   compiles, and runs the **entire example suite** — all nine programs,
+   v0.1 through v0.10 — in a single boot, with output identical to the
+   host runs. (This workload also uncovered and then confirmed the fix
+   for a kernel VFS node-pool exhaustion,
+   [#66](https://github.com/kazah-png/nyx-os/issues/66) — the language
+   toolchain doubles as a real stress test for the OS.)
 2. **Generated C is clean.** Output compiles warning-free with the OS
    freestanding flags and links with the standard NyxOS `crt0` + `nyxrt`.
 3. **Behavioral tests run on the dev machine.** A host shim maps NyxOS syscall
