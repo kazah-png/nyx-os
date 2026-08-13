@@ -2980,6 +2980,50 @@ static void draw_welcome_windows(void) {
     window_create(x, y, ww, wh, "Welcome to NyxOS", welcome_draw_fn);
 }
 
+// ---- Screensaver: an idle-triggered night scene (Nyx: a crescent moon over a drifting,
+// twinkling starfield with the wall-clock time), dismissed by any key or mouse activity.
+#define SS_IDLE_MS  60000u      // idle time (ms; tick is 1000 Hz) before it kicks in
+static int      screensaver_active = 0;
+static uint32_t ss_last_activity   = 0;
+
+static void draw_screensaver(uint32_t t) {
+    int fw = (int)fb_get_width(), fh = (int)fb_get_height();
+    fb_fill_vgrad(0, 0, fw, fh, fb_rgb(20, 14, 34), fb_rgb(4, 2, 8));   // deep night sky
+
+    // A fixed LCG-seeded starfield (same positions each frame) that drifts slowly right
+    // and twinkles via a per-star phase — pure function of t, so any repaint is coherent.
+    uint32_t s = 0x1234567u;
+    for (int i = 0; i < 150; i++) {
+        s = s * 1103515245u + 12345u; int bx = (int)((s >> 9) % (uint32_t)fw);
+        s = s * 1103515245u + 12345u; int by = (int)((s >> 9) % (uint32_t)fh);
+        int phase = (int)((s >> 3) & 255);
+        int saw   = (int)((t / 8 + (uint32_t)phase) & 255);
+        int b     = 80 + (saw < 128 ? saw : 255 - saw) / 2;             // 80..143 triangle
+        int px    = (bx + (int)(t / 60)) % fw;                          // gentle drift
+        uint8_t c = (uint8_t)b, cb = (uint8_t)(b + 40 > 255 ? 255 : b + 40);
+        int big   = (b > 130);
+        fb_fill_rect(px, by, big ? 2 : 1, big ? 2 : 1, fb_rgb(c, c, cb));
+    }
+
+    // A crescent moon (a lilac disc with a sky-coloured disc offset to carve it), bobbing.
+    int r = 46, mcx = fw * 3 / 4, mcy = fh / 4 + (int)((t / 24) % 44) - 22;
+    for (int dy = -r; dy <= r; dy++)
+        for (int dx = -r; dx <= r; dx++) {
+            if (dx * dx + dy * dy > r * r) continue;                    // outside the disc
+            int sdx = dx - 22, sdy = dy - 8;
+            if (sdx * sdx + sdy * sdy <= r * r) continue;               // inside the shadow disc
+            int px = mcx + dx, py = mcy + dy;
+            if (px < 0 || px >= fw || py < 0 || py >= fh) continue;
+            fb_fill_rect(px, py, 1, 1, fb_rgb(228, 224, 248));
+        }
+
+    // The wall-clock time, centred and dim (reuses date_format from the taskbar clock).
+    rtc_time_t rt; rtc_read_time(&rt);
+    char tb[16]; date_format(tb, sizeof(tb), "%H:%M", &rt);
+    int tw = (int)strlen(tb) * FONT_WIDTH;
+    font_draw_string_trans((fw - tw) / 2, fh * 5 / 8, tb, fb_rgb(165, 155, 200));
+}
+
 void compositor_run(void) {
     compositor_active = 1;
     // Double buffering: compose each frame off-screen and blit it in one shot
@@ -2991,6 +3035,7 @@ void compositor_run(void) {
     mouse_x = fw / 2; mouse_y = fh / 2;
     mouse_set_pos(mouse_x, mouse_y);
     uint8_t prev_btns = 0;
+    ss_last_activity = get_ticks(); screensaver_active = 0;   // start the idle timer fresh
 
     draw_welcome_windows();
     redraw_all();
@@ -3024,6 +3069,31 @@ void compositor_run(void) {
         int mx = mouse_get_x();
         int my = mouse_get_y();
         uint8_t btns = mouse_get_buttons();
+
+        // Screensaver: after SS_IDLE_MS of no input it takes over the screen with the night
+        // scene; any key or mouse activity wakes it + restores the desktop (that input is
+        // swallowed — it only dismisses). It owns the frame either way, so it `continue`s.
+        {
+            uint32_t ss_now = get_ticks();
+            int ss_input = (k > 0) || (mx != mouse_x) || (my != mouse_y) ||
+                           (btns != prev_btns) || (mouse_get_z() != mouse_z);
+            if (ss_input) ss_last_activity = ss_now;
+            if (screensaver_active) {
+                if (ss_input) {                        // wake: repaint the desktop, swallow input
+                    screensaver_active = 0;
+                    mouse_x = mx; mouse_y = my; mouse_z = mouse_get_z(); prev_btns = btns;
+                    redraw_all();
+                    save_cursor_bg(mouse_x, mouse_y);
+                    draw_cursor(mouse_x, mouse_y);
+                    fb_present();
+                } else {                               // still idle: animate one frame
+                    draw_screensaver(ss_now);
+                    fb_present();
+                }
+                continue;
+            }
+            if ((ss_now - ss_last_activity) > SS_IDLE_MS) { screensaver_active = 1; continue; }
+        }
 
         restore_cursor_bg(mouse_x, mouse_y);
 
