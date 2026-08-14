@@ -25,6 +25,7 @@
 #include "csv.h"
 #include "tsort.h"
 #include "base58.h"
+#include "cut.h"
 #include "../net/dns.h"
 #include "../net/http.h"
 #include "../crypto/tls/tls.h"
@@ -128,6 +129,7 @@ static void cmd_fnv(int argc, char** argv);
 static void cmd_seq(int argc, char** argv);
 static void cmd_urlcode(int argc, char** argv);
 static void cmd_paste(int argc, char** argv);
+static void cmd_cut(int argc, char** argv);
 static void cmd_tac(int argc, char** argv);
 static void cmd_csv(int argc, char** argv);
 static void cmd_tsort(int argc, char** argv);
@@ -288,6 +290,7 @@ static const command_t commands[] = {
     {"factor",    cmd_factor,    "Prime factorization: factor N [N ...]", false},
     {"seq",       cmd_seq,       "Integer sequence: seq [FIRST [STEP]] LAST", false},
     {"paste",     cmd_paste,     "Merge lines of files: paste [-s] [-d LIST] <file ...>", false},
+    {"cut",       cmd_cut,       "Select fields/chars of each line: cut -f|-c|-b LIST [-d C] [-s] <file>", false},
     {"tac",       cmd_tac,       "Print a file's lines in reverse order: tac [-s SEP] <file>", false},
     {"csv",       cmd_csv,       "View a CSV file as an aligned table: csv [-d DELIM] <file>", false},
     {"tsort",     cmd_tsort,     "Topological sort of a dependency list: tsort <file>", false},
@@ -552,7 +555,7 @@ void execute_command(const char* cmd_line) {
 typedef struct { const char* title; const char* const* names; } help_cat_t;
 static const char* const HC_shell[] = {"help","man","version","clear","history","exec","spawn","jobs","wait","nice","renice",0};
 static const char* const HC_files[] = {"ls","cd","pwd","cat","file","tar","iniget","open","touch","mkdir","rm","cp","mv","tree","find","which","basename","dirname","files","df","mount","ext2ls","ext2cat",0};
-static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","fold","nl","expand","unexpand","factor","seq","paste","comm","printf","wc","write","hexdump",0};
+static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","fold","nl","expand","unexpand","factor","seq","paste","cut","comm","printf","wc","write","hexdump",0};
 static const char* const HC_sys[]   = {"ps","kill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat",0};
 static const char* const HC_user[]  = {"useradd","users",0};
 static const char* const HC_net[]   = {"ifconfig","dhcp","dns","ping","setip","httpget","tls",0};
@@ -645,6 +648,7 @@ static const man_page_t man_pages[] = {
     {"semver",   "Parse and compare Semantic Versioning 2.0.0 strings (MAJOR.MINOR.PATCH[-prerelease][+build]). With one argument, validate it and print the parsed fields. With two, print their precedence relation (`A < B`, `A = B`, or `A > B`) per the semver spec: core numbers compared numerically, a prerelease ranks below the same version without one, and build metadata is ignored. Useful for comparing package versions."},
     {"seq",      "Print an inclusive sequence of integers, one per line. `seq LAST` counts 1..LAST; `seq FIRST LAST` counts FIRST..LAST; `seq FIRST STEP LAST` advances by STEP (which may be negative). A range that starts on the wrong side of LAST prints nothing, and a zero STEP is an error. Integer-only (64-bit signed), matching GNU seq for integer arguments."},
     {"paste",    "Merge corresponding lines of files. By default the i-th line of each file is printed on one row, separated by a tab, continuing until every file runs out (a spent file leaves its column empty). -s writes each file's lines onto a single line instead. -d LIST replaces the tab with the characters of LIST used in turn (\\t, \\n, \\\\ escapes recognised). Reads each whole file; up to 16 files. Matches GNU paste for newline-delimited text."},
+    {"cut",      "Print selected parts of each line of <file>. Choose one mode: -f LIST cuts fields (a field is text between delimiters; the delimiter is a TAB by default, or the single character given by -d C), -c LIST cuts characters, -b LIST cuts bytes. A LIST is a comma-separated set of 1-based ranges: 'N' one position, 'N-M' the inclusive range, 'N-' from N to the end, '-M' the same as '1-M'. Selected parts are always emitted in increasing position order, never duplicated, so the order the ranges are written in does not matter. In field mode a line that contains no delimiter is printed unchanged, unless -s suppresses such lines; selected fields are re-joined with the delimiter. Matches GNU cut byte-for-byte for newline-delimited text (chars and bytes coincide for ASCII). Reads a bounded chunk of each file; several files may be given."},
     {"tac",      "Print the lines of <file> in reverse order — the last line first, the first line last (the line-order companion to rev, which reverses characters within a line). The newline stays attached to its line, so a file without a trailing newline joins its last two lines when reversed, exactly like GNU tac. -s SEP uses SEP (one or more characters) as the record separator instead of newline. Reads a bounded chunk of the file."},
     {"tsort",    "Topologically sort a dependency list. The file holds whitespace-separated tokens in pairs; each pair 'A B' means A must come before B. Prints one item per line in an order that respects every dependency (Kahn's algorithm), matching GNU tsort byte-for-byte including its tie-break (roots emitted in sorted order). If the pairs contain a cycle the order is impossible, so the acyclic part is printed and a loop is reported; an odd number of tokens is a malformed input. Useful for build/order-of-operations problems."},
     {"csv",      "View a comma-separated-values file as an aligned table. Parses RFC 4180 CSV: fields are separated by commas; a field may be wrapped in double quotes to protect embedded commas, newlines, and quotes (a doubled \"\" inside a quoted field is one literal \"). Columns are padded so they line up, and embedded control characters are shown as spaces. -d DELIM uses DELIM as the field separator instead of a comma (e.g. -d ';' or a tab). Reads a bounded chunk of the file. The same hardened parser backs a self-test (csv) in the boot battery."},
@@ -1374,6 +1378,73 @@ static void cmd_csv(int argc, char** argv) {
     for (int i = 0; i < CSV_MAXCOLS; i++) v.colw[i] = 0;
     csv_parse(buf, (uint32_t)bytes, delim, field, sizeof(field), csv_width_emit, &v);  // widths
     csv_parse(buf, (uint32_t)bytes, delim, field, sizeof(field), csv_print_emit, &v);  // render
+}
+
+// cut -f|-c|-b LIST [-d C] [-s] <file ...> — print selected fields, characters, or bytes of
+// each line, byte-for-byte with GNU cut. The pure LIST parse + per-line filter live in cut.c
+// (host-diff-verified against GNU cut); this wrapper does the argv parsing and file I/O, then
+// splits each file into newline-delimited lines. Every emitted line is newline-terminated,
+// even a final unterminated one, matching GNU. Reads a bounded chunk of each file.
+static void cmd_cut(int argc, char** argv) {
+    cut_spec_t spec;
+    spec.mode = CUT_FIELDS; spec.suppress = 0; spec.any = 0; spec.open_from = 0;
+    for (uint32_t z = 0; z <= CUT_MAXPOS; z++) spec.sel[z] = 0;
+    spec.delim = '\t';                                   // GNU cut's default field delimiter
+    int mode_set = 0; const char* list = 0; int ai = 1;
+    while (ai < argc && argv[ai][0] == '-' && argv[ai][1]) {
+        const char* a = argv[ai];
+        if (strcmp(a, "-s") == 0) { spec.suppress = 1; ai++; continue; }
+        char opt = a[1];
+        if (opt == 'f' || opt == 'c' || opt == 'b') {
+            spec.mode = (opt == 'f') ? CUT_FIELDS : (opt == 'c') ? CUT_CHARS : CUT_BYTES;
+            mode_set = 1;
+            list = a[2] ? a + 2 : (ai + 1 < argc ? argv[++ai] : 0);
+            ai++; continue;
+        }
+        if (opt == 'd') {
+            const char* dl = a[2] ? a + 2 : (ai + 1 < argc ? argv[++ai] : "");
+            char d = dl[0];
+            if (d == '\\' && dl[1]) {                    // accept \t \n \0 \\ escapes for -d
+                char nx = dl[1];
+                d = (nx == 't') ? '\t' : (nx == 'n') ? '\n' : (nx == '0') ? '\0' :
+                    (nx == '\\') ? '\\' : nx;
+            }
+            spec.delim = d ? d : '\t';
+            ai++; continue;
+        }
+        printf("cut: invalid option '%s'\n", a); return;
+    }
+    if (!mode_set || !list) {
+        printf("Usage: cut -f LIST [-d C] [-s] <file>   (fields)\n");
+        printf("       cut -c LIST <file>                (characters)\n");
+        printf("       cut -b LIST <file>                (bytes)\n");
+        return;
+    }
+    spec.odelim = spec.delim;
+    if (cut_parse_list(list, &spec) != 0) { printf("cut: invalid list '%s'\n", list); return; }
+    if (ai >= argc) { printf("cut: no input file\n"); return; }
+    static char buf[4096];
+    static char out[4096];
+    for (int fi = ai; fi < argc; fi++) {
+        int fd = vfs_open(argv[fi], 0, 0);
+        if (fd < 0) { printf("cut: cannot open '%s'\n", argv[fi]); continue; }
+        int bytes = vfs_read(fd, buf, sizeof(buf));
+        vfs_close(fd);
+        if (bytes <= 0) continue;
+        uint32_t i = 0, n = (uint32_t)bytes;
+        while (i < n) {
+            uint32_t start = i;
+            while (i < n && buf[i] != '\n') i++;
+            uint32_t linelen = i - start;
+            int had_nl = (i < n);
+            uint32_t r = cut_line(&spec, buf + start, linelen, out, sizeof(out));
+            if (r != CUT_SKIP) {
+                for (uint32_t k = 0; k < r; k++) putchar(out[k]);
+                putchar('\n');
+            }
+            if (had_nl) i++;
+        }
+    }
 }
 
 // tsort output callback: one node per line.
