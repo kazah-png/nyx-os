@@ -18,7 +18,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.4.211"
+#define KERNEL_VERSION "6.4.212"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -968,26 +968,9 @@ int  spawn_user_path(const char* path);
 int  spawn_user_path_args(const char* path, char* const* argv, int argc); // spawn + forward argv
 void gui_launch_elf(const char* path);  // desktop-icon launch: foreground-run an ELF (kernel.c)
 int  doom_window_present(const uint32_t* src, uint32_t w, uint32_t h); // reroute DOOM's frame into its window (compositor.c)
-void launch_doom_windowed(void);        // run DOOM inside a compositor window (compositor.c)
-void launch_pong(void);                 // open a Pong game window (compositor.c)
-void launch_snake(void);                // open a Snake game window (compositor.c)
-void launch_tetris(void);               // open a Tetris game window (compositor.c)
-void launch_minesweeper(void);          // open the Minesweeper window (compositor.c)
-void launch_games_folder(void);         // open the "Games" desktop folder (compositor.c)
-void launch_selene(void);               // open Selene, the web browser (compositor.c)
-void launch_voxel(void);                // open Nyx Voxels, the voxel-scene window (compositor.c)
-void launch_fire(void);                 // open Nyx Fire, the animated doom-fire window (compositor.c)
-void launch_matrix(void);               // open Nyx Matrix, the green code-rain window (compositor.c)
-void launch_lava(void);                 // open Nyx Lava, the animated plasma window (compositor.c)
-void launch_mandel(void);               // open Nyx Fractal, the Mandelbrot perf-demo window (compositor.c)
-void launch_julia(void);                // open Nyx Julia, the Julia-set perf-demo window (compositor.c)
-void launch_particles(void);            // open Nyx Particles, the particle-fountain perf-demo window (compositor.c)
-void launch_rotor(void);                // open Nyx Rotor, the spinning-3D-lattice perf-demo window (compositor.c)
-void launch_fill(void);                 // open Nyx Fill, the 2D fill-rate/overdraw perf-demo window (compositor.c)
-void launch_life(void);                 // open Nyx Life, the Game-of-Life compute/render perf-demo window (compositor.c)
-void launch_blobs(void);                // open Nyx Blobs, the metaballs render-perf-demo window (compositor.c)
-void launch_imageview(const char* path);// open the Image Viewer, optionally on a file (compositor.c)
-void launch_fileman(const char* path);  // open the File Manager, optionally at a directory (compositor.c)
+// Desktop window launchers (games / apps / P4 perf-demos, all in compositor.c) live in
+// their own focused header now; kernel.h re-includes it so every includer is unaffected.
+#include "../gui/core/launchers.h"
 void reap_zombies(void);
 int do_clone(uint64_t fn, uint64_t stack, uint64_t arg, uint64_t flags); // CLONE_VM thread
 int do_futex(uint64_t uaddr, int op, uint32_t val);                     // FUTEX_WAIT/WAKE
