@@ -92,7 +92,12 @@ static void editor_open(editor_win_t* ed, const char* path) {
     }
     if (line < EDITOR_MAX_LINES && (col > 0 || line == 0))
         ed->lines[line][col] = '\0';
-    ed->line_count = line + 1;
+    // A file with >= EDITOR_MAX_LINES newlines makes the load loop stop with line ==
+    // EDITOR_MAX_LINES, so `line + 1` would set line_count one past the lines[] array.
+    // line_count bounds cursor movement and gates editor_insert_char, so that lets the
+    // cursor reach row EDITOR_MAX_LINES and read/write ed->lines[EDITOR_MAX_LINES] — which
+    // aliases line_count and overruns the struct (a heap OOB). Clamp, like editor_newline.
+    ed->line_count = (line < EDITOR_MAX_LINES) ? line + 1 : EDITOR_MAX_LINES;
     vfs_close(fd);
     ed->cursor_x = 0; ed->cursor_y = 0;
     ed->scroll_x = 0; ed->scroll_y = 0;
