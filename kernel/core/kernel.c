@@ -37,6 +37,7 @@
 #include "../gui/apps/selene_win.h"
 #include "../crypto/rsa.h"
 #include "../crypto/sha512.h"
+#include "../crypto/fnv.h"
 #include "smp.h"
 #include "../fs/initramfs.h"
 #include "../gui/core/bootsplash.h"
@@ -116,6 +117,7 @@ static void cmd_tar(int argc, char** argv);
 static void cmd_iniget(int argc, char** argv);
 static void cmd_factor(int argc, char** argv);
 static void cmd_semver(int argc, char** argv);
+static void cmd_fnv(int argc, char** argv);
 static void cmd_comm(int argc, char** argv);
 static void cmd_vfsstat(int argc, char** argv);
 static void cmd_rev(int argc, char** argv);
@@ -271,6 +273,7 @@ static const command_t commands[] = {
     {"comm",      cmd_comm,      "Compare two sorted files: comm [-123] <f1> <f2>", false},
     {"vfsstat",   cmd_vfsstat,   "VFS node-pool usage census (diagnose exhaustion)", false},
     {"semver",    cmd_semver,    "Validate/compare SemVer 2.0.0: semver <ver> [<ver2>]", false},
+    {"fnv",       cmd_fnv,       "FNV-1a hash of text: fnv [-64] <text ...>", false},
     {"printf",    cmd_printf,    "Format and print: printf FORMAT [ARG...]", false},
     {"expand",    cmd_expand,    "Convert tabs to spaces: expand [-t N] <file>", false},
     {"unexpand",  cmd_unexpand,  "Convert spaces to tabs: unexpand [-a] [-t N] <file>", false},
@@ -529,7 +532,7 @@ static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev",
 static const char* const HC_sys[]   = {"ps","kill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat",0};
 static const char* const HC_user[]  = {"useradd","users",0};
 static const char* const HC_net[]   = {"ifconfig","dhcp","dns","ping","setip","httpget","tls",0};
-static const char* const HC_dev[]   = {"cc","xbm","semver",0};
+static const char* const HC_dev[]   = {"cc","xbm","semver","fnv",0};
 static const char* const HC_media[] = {"play","sb16play","imageview","selene",0};
 static const char* const HC_games[] = {"doom","pong","voxel","fire","matrix","lava","fractal","julia","particles","snake","tetris",0};
 static const char* const HC_test[]  = {"mtdemo","smpstress","smpuser","smpthreads","smpbalance","tlbtest","cowtest","crash","usertest","tcptest","tcpdrop","tcploop","tcpserve","posttest","tlsstrict","prftest","gcmtest","dertest","p256test","p384test","x25519test","tlskeytest","tlsrectest","csprngtest","skp384test","deflatetest","sha512test","pngtest","bmptest","giftest","jpegtest","imgreject","httptest","ext2test","rsatest","chaintest","formtest",0};
@@ -616,6 +619,7 @@ static const man_page_t man_pages[] = {
     {"vfsstat",  "Report VFS node-pool usage: how many of the fixed node slots are live, free, and the linear high-water mark, plus a breakdown of the transient mount-backed (ext2 /mnt mirror) nodes into those still held by an open fd versus idle-but-unfreed. A diagnostic for node-pool exhaustion under sustained in-OS file I/O (issue #66): if `mount held` climbs and never falls across a compile session, an fd is leaking; watch it before/after `cc`/`xbm` runs."},
     {"comm",     "Compare two files that are each already sorted, line by line, in three columns: lines only in <file1> (column 1), lines only in <file2> (column 2, indented one tab), and lines common to both (column 3, indented two tabs). `-1`/`-2`/`-3` suppress the respective column (and drop its indentation from the later columns), so e.g. `comm -12 a b` prints just the lines common to both. Input is assumed sorted in byte order."},
     {"semver",   "Parse and compare Semantic Versioning 2.0.0 strings (MAJOR.MINOR.PATCH[-prerelease][+build]). With one argument, validate it and print the parsed fields. With two, print their precedence relation (`A < B`, `A = B`, or `A > B`) per the semver spec: core numbers compared numerically, a prerelease ranks below the same version without one, and build metadata is ignored. Useful for comparing package versions."},
+    {"fnv",      "Print the FNV-1a hash of the argument text (all arguments joined by single spaces) as lowercase hex. FNV-1a is a small, fast NON-cryptographic hash used for hash tables and quick content fingerprints; the 32-bit variant is the default and -64 selects the 64-bit variant. It is not collision-resistant, so do not use it where an adversary controls the input (SipHash is the keyed alternative)."},
     {"printf",   "Print ARGs under the control of FORMAT (like the C/coreutil printf). FORMAT is reused as needed to consume all ARGs. It interprets backslash escapes (\\n \\t \\r \\a \\b \\f \\v \\\\) and the conversions %s %d %i %u %x %X %c %% with optional flags and field width (e.g. %-10s, %05d). Numeric ARGs are read as decimal. Unlike echo, printf never appends a trailing newline unless FORMAT contains one."},
     {"expand",   "Convert the tabs in <file> to spaces. Each tab advances to the next tab stop, which are spaced N columns apart (8 by default, or -t N), so columns stay aligned instead of a fixed number of spaces per tab. Non-tab characters and newlines pass through unchanged (a newline resets the column count)."},
     {"unexpand", "The inverse of expand: convert runs of spaces in <file> back into tabs, collapsing each blank run to the fewest tabs+spaces at N-column tab stops (8 by default, or -t N). A single space is never turned into a tab. By default only the LEADING blanks of each line are converted (matching GNU unexpand); -a converts blank runs everywhere on the line, and -t N implies -a."},
@@ -1033,6 +1037,38 @@ static void cmd_semver(int argc, char** argv) {
         return;
     }
     printf("Usage: semver <version> [<version2>]   (validate, or compare precedence)\n");
+}
+
+// fnv [-64] <text ...> — FNV-1a hash of the argument text (args joined by single
+// spaces), as lowercase hex. 32-bit by default; -64 selects the 64-bit variant. A
+// fast non-crypto fingerprint — see kernel/crypto/fnv.h. Hex is formatted by hand to
+// stay independent of printf width/length support.
+static void cmd_fnv(int argc, char** argv) {
+    static const char* HEX = "0123456789abcdef";
+    int bits = 32, start = 1;
+    if (start < argc && strcmp(argv[start], "-64") == 0) { bits = 64; start++; }
+    if (start >= argc) { printf("Usage: fnv [-64] <text ...>\n"); return; }
+    char out[17];
+    if (bits == 32) {
+        uint32_t h = FNV1A_32_INIT;
+        for (int i = start; i < argc; i++) {
+            if (i > start) h = fnv1a_32_update(h, " ", 1);       // rejoin args with spaces
+            uint32_t n = 0; while (argv[i][n]) n++;
+            h = fnv1a_32_update(h, argv[i], n);
+        }
+        for (int i = 7; i >= 0; i--) { out[i] = HEX[h & 0xF]; h >>= 4; }
+        out[8] = 0;
+    } else {
+        uint64_t h = FNV1A_64_INIT;
+        for (int i = start; i < argc; i++) {
+            if (i > start) h = fnv1a_64_update(h, " ", 1);
+            uint32_t n = 0; while (argv[i][n]) n++;
+            h = fnv1a_64_update(h, argv[i], n);
+        }
+        for (int i = 15; i >= 0; i--) { out[i] = HEX[h & 0xF]; h >>= 4; }
+        out[16] = 0;
+    }
+    printf("%s\n", out);
 }
 
 // comm output callback: `tabs` tab stops, then the raw line bytes, then a newline.
@@ -3884,6 +3920,7 @@ extern int ini_selftest(void);
 extern int factor_selftest(void);
 extern int semver_selftest(void);
 extern int base85_selftest(void);
+extern int fnv_selftest(void);
 extern int tls_prf_selftest(void);
 extern int tls_keyschedule_selftest(void);
 extern int tls_record_selftest(void);
@@ -4049,6 +4086,7 @@ static void run_selftests(void) {
         {"der",          der_selftest},           {"base64",        base64_selftest},
         {"base32",       base32_selftest},        {"base16",        base16_selftest},
         {"base85",       base85_selftest},
+        {"fnv",          fnv_selftest},
         {"utf8",          utf8_selftest},
         {"p256",          p256_selftest},
         {"p384",         p384_selftest},          {"rsa",           rsa_selftest},
