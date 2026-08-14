@@ -18,6 +18,7 @@
 #include "factor.h"
 #include "semver.h"
 #include "comm.h"
+#include "seq.h"
 #include "../net/dns.h"
 #include "../net/http.h"
 #include "../crypto/tls/tls.h"
@@ -118,6 +119,7 @@ static void cmd_iniget(int argc, char** argv);
 static void cmd_factor(int argc, char** argv);
 static void cmd_semver(int argc, char** argv);
 static void cmd_fnv(int argc, char** argv);
+static void cmd_seq(int argc, char** argv);
 static void cmd_comm(int argc, char** argv);
 static void cmd_vfsstat(int argc, char** argv);
 static void cmd_rev(int argc, char** argv);
@@ -270,6 +272,7 @@ static const command_t commands[] = {
     {"fold",      cmd_fold,      "Wrap long lines to a width: fold [-w width] <file>", false},
     {"nl",        cmd_nl,        "Number lines: nl [-b a|t|n] [-w N] [-s SEP] <file>", false},
     {"factor",    cmd_factor,    "Prime factorization: factor N [N ...]", false},
+    {"seq",       cmd_seq,       "Integer sequence: seq [FIRST [STEP]] LAST", false},
     {"comm",      cmd_comm,      "Compare two sorted files: comm [-123] <f1> <f2>", false},
     {"vfsstat",   cmd_vfsstat,   "VFS node-pool usage census (diagnose exhaustion)", false},
     {"semver",    cmd_semver,    "Validate/compare SemVer 2.0.0: semver <ver> [<ver2>]", false},
@@ -528,7 +531,7 @@ void execute_command(const char* cmd_line) {
 typedef struct { const char* title; const char* const* names; } help_cat_t;
 static const char* const HC_shell[] = {"help","man","version","clear","history","exec","spawn","jobs","wait","nice","renice",0};
 static const char* const HC_files[] = {"ls","cd","pwd","cat","file","tar","iniget","open","touch","mkdir","rm","cp","mv","tree","find","which","basename","dirname","files","df","mount","ext2ls","ext2cat",0};
-static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tr","fold","nl","expand","unexpand","factor","comm","printf","wc","write","hexdump",0};
+static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tr","fold","nl","expand","unexpand","factor","seq","comm","printf","wc","write","hexdump",0};
 static const char* const HC_sys[]   = {"ps","kill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat",0};
 static const char* const HC_user[]  = {"useradd","users",0};
 static const char* const HC_net[]   = {"ifconfig","dhcp","dns","ping","setip","httpget","tls",0};
@@ -619,6 +622,7 @@ static const man_page_t man_pages[] = {
     {"vfsstat",  "Report VFS node-pool usage: how many of the fixed node slots are live, free, and the linear high-water mark, plus a breakdown of the transient mount-backed (ext2 /mnt mirror) nodes into those still held by an open fd versus idle-but-unfreed. A diagnostic for node-pool exhaustion under sustained in-OS file I/O (issue #66): if `mount held` climbs and never falls across a compile session, an fd is leaking; watch it before/after `cc`/`xbm` runs."},
     {"comm",     "Compare two files that are each already sorted, line by line, in three columns: lines only in <file1> (column 1), lines only in <file2> (column 2, indented one tab), and lines common to both (column 3, indented two tabs). `-1`/`-2`/`-3` suppress the respective column (and drop its indentation from the later columns), so e.g. `comm -12 a b` prints just the lines common to both. Input is assumed sorted in byte order."},
     {"semver",   "Parse and compare Semantic Versioning 2.0.0 strings (MAJOR.MINOR.PATCH[-prerelease][+build]). With one argument, validate it and print the parsed fields. With two, print their precedence relation (`A < B`, `A = B`, or `A > B`) per the semver spec: core numbers compared numerically, a prerelease ranks below the same version without one, and build metadata is ignored. Useful for comparing package versions."},
+    {"seq",      "Print an inclusive sequence of integers, one per line. `seq LAST` counts 1..LAST; `seq FIRST LAST` counts FIRST..LAST; `seq FIRST STEP LAST` advances by STEP (which may be negative). A range that starts on the wrong side of LAST prints nothing, and a zero STEP is an error. Integer-only (64-bit signed), matching GNU seq for integer arguments."},
     {"fnv",      "Print the FNV-1a hash of the argument text (all arguments joined by single spaces) as lowercase hex. FNV-1a is a small, fast NON-cryptographic hash used for hash tables and quick content fingerprints; the 32-bit variant is the default and -64 selects the 64-bit variant. It is not collision-resistant, so do not use it where an adversary controls the input (SipHash is the keyed alternative)."},
     {"printf",   "Print ARGs under the control of FORMAT (like the C/coreutil printf). FORMAT is reused as needed to consume all ARGs. It interprets backslash escapes (\\n \\t \\r \\a \\b \\f \\v \\\\) and the conversions %s %d %i %u %x %X %c %% with optional flags and field width (e.g. %-10s, %05d). Numeric ARGs are read as decimal. Unlike echo, printf never appends a trailing newline unless FORMAT contains one."},
     {"expand",   "Convert the tabs in <file> to spaces. Each tab advances to the next tab stop, which are spaced N columns apart (8 by default, or -t N), so columns stay aligned instead of a fixed number of spaces per tab. Non-tab characters and newlines pass through unchanged (a newline resets the column count)."},
@@ -1069,6 +1073,35 @@ static void cmd_fnv(int argc, char** argv) {
         out[16] = 0;
     }
     printf("%s\n", out);
+}
+
+// seq output callback: print each value as a decimal on its own line. The number is
+// formatted by hand (unsigned magnitude, so INT64_MIN is safe) to avoid depending on
+// printf %lld support.
+static void seq_emit_print(long long value, void* ctx) {
+    (void)ctx;
+    char buf[24]; int i = (int)sizeof(buf); buf[--i] = '\0';
+    unsigned long long m = (value < 0) ? (0ULL - (unsigned long long)value) : (unsigned long long)value;
+    if (m == 0) buf[--i] = '0';
+    while (m) { buf[--i] = (char)('0' + (m % 10)); m /= 10; }
+    if (value < 0) buf[--i] = '-';
+    printf("%s\n", &buf[i]);
+}
+
+// seq [FIRST [STEP]] LAST — print an inclusive integer sequence, one per line.
+//   seq L        -> 1..L step 1        seq F L    -> F..L step 1
+//   seq F S L    -> F, F+S, ... bounded by L (STEP may be negative; 0 is an error)
+// Integer-only (64-bit signed), matching GNU seq for integer arguments.
+static void cmd_seq(int argc, char** argv) {
+    long long first = 1, step = 1, last = 0;
+    int ok = 1;
+    if (argc == 2)      ok = (parse_i64(argv[1], &last) == 0);
+    else if (argc == 3) ok = (parse_i64(argv[1], &first) == 0) && (parse_i64(argv[2], &last) == 0);
+    else if (argc == 4) ok = (parse_i64(argv[1], &first) == 0) && (parse_i64(argv[2], &step) == 0) &&
+                             (parse_i64(argv[3], &last) == 0);
+    else { printf("Usage: seq [FIRST [STEP]] LAST\n"); return; }
+    if (!ok) { printf("seq: arguments must be integers\n"); return; }
+    if (seq_run(first, step, last, seq_emit_print, 0) != 0) printf("seq: step must not be zero\n");
 }
 
 // comm output callback: `tabs` tab stops, then the raw line bytes, then a newline.
