@@ -21,6 +21,7 @@
 #include "comm.h"
 #include "seq.h"
 #include "paste.h"
+#include "tac.h"
 #include "../net/dns.h"
 #include "../net/http.h"
 #include "../crypto/tls/tls.h"
@@ -124,6 +125,7 @@ static void cmd_fnv(int argc, char** argv);
 static void cmd_seq(int argc, char** argv);
 static void cmd_urlcode(int argc, char** argv);
 static void cmd_paste(int argc, char** argv);
+static void cmd_tac(int argc, char** argv);
 static void cmd_crc32c(int argc, char** argv);
 uint32_t crc32c_calc(const uint8_t* data, uint32_t len);
 static void cmd_comm(int argc, char** argv);
@@ -280,6 +282,7 @@ static const command_t commands[] = {
     {"factor",    cmd_factor,    "Prime factorization: factor N [N ...]", false},
     {"seq",       cmd_seq,       "Integer sequence: seq [FIRST [STEP]] LAST", false},
     {"paste",     cmd_paste,     "Merge lines of files: paste [-s] [-d LIST] <file ...>", false},
+    {"tac",       cmd_tac,       "Print a file's lines in reverse order: tac [-s SEP] <file>", false},
     {"comm",      cmd_comm,      "Compare two sorted files: comm [-123] <f1> <f2>", false},
     {"vfsstat",   cmd_vfsstat,   "VFS node-pool usage census (diagnose exhaustion)", false},
     {"semver",    cmd_semver,    "Validate/compare SemVer 2.0.0: semver <ver> [<ver2>]", false},
@@ -540,7 +543,7 @@ void execute_command(const char* cmd_line) {
 typedef struct { const char* title; const char* const* names; } help_cat_t;
 static const char* const HC_shell[] = {"help","man","version","clear","history","exec","spawn","jobs","wait","nice","renice",0};
 static const char* const HC_files[] = {"ls","cd","pwd","cat","file","tar","iniget","open","touch","mkdir","rm","cp","mv","tree","find","which","basename","dirname","files","df","mount","ext2ls","ext2cat",0};
-static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tr","fold","nl","expand","unexpand","factor","seq","paste","comm","printf","wc","write","hexdump",0};
+static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","tr","fold","nl","expand","unexpand","factor","seq","paste","comm","printf","wc","write","hexdump",0};
 static const char* const HC_sys[]   = {"ps","kill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat",0};
 static const char* const HC_user[]  = {"useradd","users",0};
 static const char* const HC_net[]   = {"ifconfig","dhcp","dns","ping","setip","httpget","tls",0};
@@ -633,6 +636,7 @@ static const man_page_t man_pages[] = {
     {"semver",   "Parse and compare Semantic Versioning 2.0.0 strings (MAJOR.MINOR.PATCH[-prerelease][+build]). With one argument, validate it and print the parsed fields. With two, print their precedence relation (`A < B`, `A = B`, or `A > B`) per the semver spec: core numbers compared numerically, a prerelease ranks below the same version without one, and build metadata is ignored. Useful for comparing package versions."},
     {"seq",      "Print an inclusive sequence of integers, one per line. `seq LAST` counts 1..LAST; `seq FIRST LAST` counts FIRST..LAST; `seq FIRST STEP LAST` advances by STEP (which may be negative). A range that starts on the wrong side of LAST prints nothing, and a zero STEP is an error. Integer-only (64-bit signed), matching GNU seq for integer arguments."},
     {"paste",    "Merge corresponding lines of files. By default the i-th line of each file is printed on one row, separated by a tab, continuing until every file runs out (a spent file leaves its column empty). -s writes each file's lines onto a single line instead. -d LIST replaces the tab with the characters of LIST used in turn (\\t, \\n, \\\\ escapes recognised). Reads each whole file; up to 16 files. Matches GNU paste for newline-delimited text."},
+    {"tac",      "Print the lines of <file> in reverse order — the last line first, the first line last (the line-order companion to rev, which reverses characters within a line). The newline stays attached to its line, so a file without a trailing newline joins its last two lines when reversed, exactly like GNU tac. -s SEP uses SEP (one or more characters) as the record separator instead of newline. Reads a bounded chunk of the file."},
     {"fnv",      "Print the FNV-1a hash of the argument text (all arguments joined by single spaces) as lowercase hex. FNV-1a is a small, fast NON-cryptographic hash used for hash tables and quick content fingerprints; the 32-bit variant is the default and -64 selects the 64-bit variant. It is not collision-resistant, so do not use it where an adversary controls the input (SipHash is the keyed alternative)."},
     {"urlcode",  "Percent-encode the argument text per RFC 3986 (the unreserved set A-Za-z0-9-._~ passes through, every other byte becomes %XX in uppercase hex), or with -d strict-decode a single percent-encoded token back to its bytes. Arguments are joined with single spaces before encoding. The decoder is strict: a '%' not followed by exactly two hex digits is rejected. Backed by the shared codec used for URL handling."},
     {"crc32c",   "Print the CRC-32C (Castagnoli) checksum of the argument text (all arguments joined by single spaces) as 8-digit lowercase hex. CRC-32C is the data-integrity checksum used by ext4 metadata, Btrfs, iSCSI and SCTP — a different, stronger polynomial (0x1EDC6F41) than the zip/PNG CRC-32, and the one modern CPUs accelerate in hardware. crc32c of `123456789` is e3069283."},
@@ -1242,6 +1246,33 @@ static void cmd_paste(int argc, char** argv) {
     }
     if (ok) paste_run(files, nf, del, nd, serial, paste_emit_putc, 0);
     for (int i = 0; i < opened; i++) vfs_close(fds[i]);
+}
+
+// tac output callback: write a reversed record's bytes.
+static void tac_emit_write(const char* data, uint32_t len, void* ctx) {
+    (void)ctx;
+    for (uint32_t i = 0; i < len; i++) putchar(data[i]);
+}
+
+// tac [-s SEP] <file> — print the file's lines in reverse order (the line-order sibling
+// of rev). -s sets the record separator (default newline). Reads a bounded chunk of the
+// file (like rev/head); the separator travels with its record. Backed by tac_run().
+static void cmd_tac(int argc, char** argv) {
+    const char* sep = "\n"; uint32_t seplen = 1; int ai = 1;
+    if (ai < argc && strcmp(argv[ai], "-s") == 0 && ai + 1 < argc) {
+        sep = argv[ai + 1]; seplen = 0; while (sep[seplen]) seplen++;
+        if (seplen == 0) { sep = "\n"; seplen = 1; }
+        ai += 2;
+    }
+    if (ai >= argc) { printf("Usage: tac [-s SEP] <file>\n"); return; }
+    int fd = vfs_open(argv[ai], 0, 0);
+    if (fd < 0) { printf("tac: cannot open '%s'\n", argv[ai]); return; }
+    static char buf[4096];
+    int bytes = vfs_read(fd, buf, sizeof(buf));
+    vfs_close(fd);
+    if (bytes <= 0) return;
+    static uint32_t starts[4098];                          // >= any record count for a 4096-byte read
+    tac_run(buf, (uint32_t)bytes, sep, seplen, starts, 4098, tac_emit_write, 0);
 }
 
 // vfsstat — census the VFS node pool (diagnostic for the #66 exhaustion). Splits the
