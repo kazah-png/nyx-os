@@ -31,7 +31,7 @@ N++ program, and N++ compiles down through the same pipeline.
 | Memory model | Manual, raw pointers | Ownership/borrowing opt-in, `#[user]` checked pointers |
 | Error handling | Return codes | `Result<T, E>` + `?` propagation |
 | Data types | Primitives, pointers, `str` | + `struct` methods, `enum` sum types, `match`, generics, traits |
-| Status | **v0.10 — working** (see below) | **P1 + P2 complete, P3 nearly done** (match-as-expression + `?` over result enums; standard bindings remain) |
+| Status | **v0.10 — working** (see below) | **P1 + P2 + P3 complete** (match-as-expression, `?` over result enums, fs bindings; generics move to the `n++` front-end) |
 
 Both share the same DNA:
 
@@ -116,7 +116,8 @@ lang/
     ├── enums.n          ← v0.7 enums + match: sum types, exhaustive dispatch
     ├── methods.n        ← v0.8 impl methods: static dispatch, chaining
     ├── matchexpr.n      ← v0.9 match as an expression: bind/assign/return
-    └── results.n        ← v0.10 `?` propagation over Ok/Err result enums
+    ├── results.n        ← v0.10 `?` propagation over Ok/Err result enums
+    └── fsio.n           ← P3 fs bindings: syscall→Result boundary, `?` chains
 ```
 
 The runtime N programs link against lives with the rest of user space:

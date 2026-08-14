@@ -6,10 +6,20 @@
  *   NyxOS SYS_WRITE  = 1  -> Linux write  = 1   (identical number and args)
  *   NyxOS SYS_GETPID = 6  -> Linux getpid = 39
  *   NyxOS SYS_EXIT   = 0  -> Linux exit   = 60
+ *   NyxOS SYS_OPEN   = 3  -> Linux open   = 2   (path, flags, mode)
+ *   NyxOS SYS_READ   = 4  -> Linux read   = 0
+ *   NyxOS SYS_CLOSE  = 5  -> Linux close  = 3
+ *   NyxOS SYS_SBRK   = 7  -> emulated: Linux brk(2) sets an absolute break
+ *                            while NyxOS sbrk(incr) bump-allocates and
+ *                            returns the old break, so the shim serves it
+ *                            from a static 1 MiB arena instead.
  *
  * This works because the x86_64 `syscall` instruction ABI (RAX = number,
  * RDI/RSI/RDX/R10/R8/R9 = args, RAX = return) is the same on both kernels;
- * only the numbers differ. Everything unmapped returns -1.
+ * only the numbers differ. Everything unmapped returns -1. Error returns
+ * differ in DETAIL: NyxOS syscalls report a bare -1, Linux reports -errno —
+ * result-enum bindings capture either, but the numeric error value an N
+ * program prints under this shim is host-specific.
  * TEST HARNESS ONLY — never ships to NyxOS. */
 #ifndef NYXRT_H
 #define NYXRT_H
@@ -34,10 +44,23 @@ typedef struct { nyx_bool is_err; nyx_i64 err; nyx_i64 ok; } nyx_result;
 
 static inline nyx_i64 __nyx_syscall6(nyx_i64 no, nyx_i64 a1, nyx_i64 a2,
                                      nyx_i64 a3, nyx_i64 a4, nyx_i64 a5, nyx_i64 a6) {
+    if (no == 7) {                /* NyxOS sbrk(incr) -> old break: Linux brk
+                                   * has different semantics, so serve it from
+                                   * a static arena (plenty for tests) */
+        static char __shim_heap[1 << 20];
+        static nyx_u64 __shim_brk;
+        if (a1 < 0 || (nyx_u64)a1 > sizeof(__shim_heap) - __shim_brk) return -1;
+        nyx_i64 old = (nyx_i64)(nyx_addr)&__shim_heap[__shim_brk];
+        __shim_brk += (nyx_u64)a1;
+        return old;
+    }
     switch (no) {                 /* NyxOS number -> Linux number */
         case 1: no = 1;  break;   /* write  */
         case 6: no = 39; break;   /* getpid */
         case 0: no = 60; break;   /* exit   */
+        case 3: no = 2;  break;   /* open   */
+        case 4: no = 0;  break;   /* read   */
+        case 5: no = 3;  break;   /* close  */
         default: return -1;
     }
     nyx_i64 ret;
