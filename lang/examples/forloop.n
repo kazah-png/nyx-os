@@ -1,0 +1,51 @@
+// forloop.n — N v0.11 counted `for` loops:
+//   - `for i in a..b { }` counts over the HALF-OPEN range [a, b)
+//   - both bounds are integer expressions, evaluated exactly once
+//   - the loop variable is a fresh immutable i64, scoped to the body
+//     (assigning to it is a compile error; shadowing an outer name is fine)
+//   - break and continue work as in while
+//   - v0.11 scope: no inclusive `..=`, no step, no iterator protocol —
+//     those wait for real use cases (design-npp staging)
+
+extern syscall {
+    fn write(fd: i32, buf: *u8, len: isize) -> i64 = 1
+}
+
+fn put(s: str) {
+    write(1, s.ptr as *u8, s.len as isize);
+}
+
+// Bounds are expressions; here the end is computed from a call.
+// (`double` would be rejected here: C keywords cannot be N names, since
+// the generated C uses names verbatim — the compiler says so up front.)
+fn twice(x: i64) -> i64 { x * 2 }
+
+fn main() -> i64 {
+    // 1..6 → 1 2 3 4 5 (half-open, like Rust)
+    mut sum := 0;
+    for i in 1..6 {
+        sum += i;
+    }
+    put("sum 1..6 = {sum}\n");
+
+    // Nested loops: a tiny multiplication table.
+    for row in 1..4 {
+        for col in 1..4 {
+            put("{row * col} ");
+        }
+        put("\n");
+    }
+
+    // continue skips evens; break stops at 7 — prints 1 3 5.
+    for i in 0..twice(5) {
+        if i % 2 == 0 {
+            continue;
+        }
+        if i == 7 {
+            break;
+        }
+        put("{i} ");
+    }
+    put("\n");
+    0
+}

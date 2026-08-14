@@ -1,6 +1,6 @@
 # The N Language — Specification
 
-**Version:** v0.10 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
+**Version:** v0.11 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
 
 This document specifies N exactly as implemented by the bootstrap compiler
 `ncc`. It is a *descriptive* spec: everything here compiles today. Planned
@@ -47,9 +47,15 @@ uninterpreted). The canonical file extension is `.n`.
 Identifiers match `[A-Za-z_][A-Za-z0-9_]*`. The following are reserved:
 
 ```
-as break continue defer else enum extern false fn if impl match mut
-raw return struct syscall true while
+as break continue defer else enum extern false fn for if impl in match
+mut raw return struct syscall true while
 ```
+
+Additionally, **C keywords that are not N keywords** (`double`, `int`,
+`static`, `typedef`, `goto`, …) are rejected as names at every declaration
+site: the generated C uses N names verbatim (readable output is a design
+goal), so such a name would break the C build downstream with a confusing
+error. The compiler says so up front instead.
 
 (`self` is not reserved: it is the conventional name of a method's receiver
 and an ordinary binding elsewhere.)
@@ -86,7 +92,7 @@ never overflowed. Use `\{` and `\}` for literal braces.
 ### 2.6 Operators and punctuation
 
 ```
-( ) { } , ; : . ->
+( ) { } , ; : . .. ->
 := = += -=
 + - * / %
 == != < <= > >=
@@ -486,6 +492,37 @@ fn main() -> i64 {
 
 This is exactly equivalent to `return 0;`.
 
+### 5.11 `for` — counted loops (since v0.11)
+
+```n
+for i in 1..6 {          // i = 1, 2, 3, 4, 5  (half-open, like Rust)
+    sum += i;
+}
+for i in 0..twice(5) {   // bounds are expressions, evaluated ONCE
+    if i % 2 == 0 { continue; }
+    if i == 7     { break; }
+    put("{i} ");
+}
+```
+
+`for name in start..end block` counts `name` over the **half-open** integer
+range `[start, end)`:
+
+- Both bounds must be integer-typed expressions; each is evaluated
+  **exactly once**, before the loop begins (a bound that calls a function
+  does not re-run per iteration). `start >= end` gives zero iterations.
+- The loop variable is a **fresh immutable `i64`**, scoped to the body.
+  Assigning to it is a compile error; shadowing an outer name is fine.
+- `break` and `continue` behave as in `while`.
+- The range header is parsed like a condition (§4.3): struct/enum literals
+  there need parens.
+- v0.11 scope, deliberately: no inclusive `..=`, no step clause, no
+  iterator protocol — each waits for a real use case rather than
+  speculative syntax.
+
+Lowering (§7.1): both bounds land in temps, then a plain C
+`for (nyx_i64 i = __fs; i < __fe; i++)`.
+
 ## 6. Expressions
 
 ### 6.1 Precedence (highest binds tightest)
@@ -603,6 +640,7 @@ This section specifies what C the compiler is *required* to emit, because N's
 | `x := match s { … }` (§5.6.1) | `T x = 0;` + `{ E __m = s'; T __mres = 0; switch (__m.tag) { … __mres = arm'; … } x = __mres; }` — the zero init is a dead store (the switch is exhaustive) kept so the C is warning-free |
 | `return match s { … }` | same switch shape; defers run after `__mres` is computed, then `return __mres;` |
 | `x := e?;` (§5.9) | `T x = 0;` + `{ R __t = e'; if (__t.tag == Err) { defers; return __t-or-rewrap; } x = __t.u.Ok.f; }` |
+| `for i in a..b { … }` (§5.11) | `{ nyx_i64 __fs = a'; nyx_i64 __fe = b'; for (nyx_i64 i = __fs; i < __fe; i++) { … } }` |
 
 ### 7.2 The runtime
 
@@ -663,6 +701,7 @@ stmt         = [ "mut" ] ident ":=" ( expr [ "?" ] | match_val ) ";"
              | "defer" expr ";"          (* outermost function block only *)
              | "match" expr "{" arm { "," arm } [ "," ] "}"
              | "while" expr block
+             | "for" ident "in" expr ".." expr block   (* v0.11 *)
              | "if" expr block [ "else" ( if_stmt | block ) ]
              | expr ";" ;
 arm          = ident [ "(" ident { "," ident } ")" ] "=>" block ;
@@ -709,11 +748,12 @@ N++/type-checker phase:
    the C compiler on the generated file.
 2. **Interpolation is text-or-decimal only.** `str` inserts text, everything
    else formats as signed decimal; there are no hex/width format controls yet.
-3. **Missing constructs:** `for`, closures, modules/`use`, generic
+3. **Missing constructs:** closures, modules/`use`, generic
    `Result<T, E>` — all specified in the N++ design document. (`struct`
    landed in v0.5, `defer` in v0.6, `enum` + `match` in v0.7, `impl`
    methods in v0.8 — completing the N++ P2 stage — match-as-expression
-   in v0.9, and `?` over structural result enums in v0.10.)
+   in v0.9, `?` over structural result enums in v0.10, and counted `for`
+   loops in v0.11.)
 4. **Match-expression and `?` positions are limited** (§5.6.1, §5.9):
    statement value positions only — no general expression nesting
    until the lowering needs it.

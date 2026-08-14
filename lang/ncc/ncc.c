@@ -3,7 +3,7 @@
  * Hosted tool (runs on the dev machine); single file, no dependencies.
  * See lang/docs/spec-n.md for the language specification this implements.
  *
- * Supported subset (currently N v0.10):
+ * Supported subset (currently N v0.11):
  *   - extern syscall { fn name(params) [-> T] = N }
  *   - fn decls with block bodies, params, return types
  *   - statements: let (:=, mut), assignment (= += -=), return, while,
@@ -45,7 +45,10 @@
  *     most one payload field each. On Err the function returns the error
  *     (rewrapped if the return type is a different result enum, defers
  *     honored); on Ok the payload is bound/assigned/discarded.
- * Not yet (N++ territory): for, closures, generic Result<T,E>, modules/use.
+ *   - counted `for` loops (v0.11): `for i in a..b { }` over the half-open
+ *     range [a, b); bounds are integers evaluated once, the loop variable
+ *     is a fresh immutable i64 scoped to the body; break/continue work.
+ * Not yet (N++ territory): closures, generic Result<T,E>, modules/use.
  */
 /* Platform includes. In-OS builds (milestone M2) compile this file with
  * NyxOS's ported TinyCC, whose libc surface is the single header libc.h
@@ -95,6 +98,7 @@ typedef enum {
     T_KW_IF, T_KW_ELSE, T_KW_WHILE, T_KW_BREAK, T_KW_CONTINUE,
     T_KW_AS, T_KW_RAW, T_KW_TRUE, T_KW_FALSE, T_KW_STRUCT, T_KW_DEFER,
     T_KW_ENUM, T_KW_MATCH, T_FATARROW, T_KW_IMPL,
+    T_KW_FOR, T_KW_IN, T_DOTDOT,
     T_LP, T_RP, T_LB, T_RB, T_COMMA, T_SEMI, T_COLON,
     T_WALRUS, T_ARROW, T_ASSIGN,
     T_PLUS, T_MINUS, T_STAR, T_SLASH, T_PERCENT,
@@ -187,7 +191,7 @@ static TK kwlook(const char* s, int n) {
         {"continue", T_KW_CONTINUE}, {"as", T_KW_AS}, {"raw", T_KW_RAW},
         {"true", T_KW_TRUE}, {"false", T_KW_FALSE}, {"struct", T_KW_STRUCT},
         {"defer", T_KW_DEFER}, {"enum", T_KW_ENUM}, {"match", T_KW_MATCH},
-        {"impl", T_KW_IMPL},
+        {"impl", T_KW_IMPL}, {"for", T_KW_FOR}, {"in", T_KW_IN},
     };
     for (size_t i = 0; i < sizeof(K) / sizeof(K[0]); i++)
         if ((int)strlen(K[i].w) == n && !memcmp(K[i].w, s, (size_t)n)) return K[i].k;
@@ -260,7 +264,8 @@ static Tok next_token(void) {
         case ')': return mk(T_RP, sl);
         case ',': return mk(T_COMMA, sl);
         case ';': return mk(T_SEMI, sl);
-        case '.': return mk(T_DOT, sl);
+        case '.': if (n2 == '.') { POS++; COL++; return mk(T_DOTDOT, sl); }
+                  return mk(T_DOT, sl);
         case '?': return mk(T_QUESTION, sl);
         case '^': return mk(T_CARET, sl);
         case '%': return mk(T_PERCENT, sl);
@@ -315,8 +320,32 @@ static Tok ppeek2(void) {
 }
 static int pchk(TK k) { return CUR.k == k; }
 static int pacc(TK k) { if (pchk(k)) { padv(); return 1; } return 0; }
+
+/* N identifiers lower into the generated C verbatim — readable output is a
+ * design goal — so a name that is a C keyword would compile fine as N and
+ * then break the C build with a confusing downstream error (found the day
+ * an example declared `fn double`). Reject such names at the N level with
+ * a real diagnostic instead. Checked in pexp so every declaration site
+ * (functions, params, bindings, loop vars, types, fields, variants) gets
+ * it for free; C keywords can never be declared, so they can never appear
+ * at a use site either. */
+static const char* const C_KEYWORDS[] = {
+    "auto","case","char","const","default","do","double","float","goto",
+    "inline","int","long","register","restrict","short","signed","sizeof",
+    "static","switch","typedef","union","unsigned","void","volatile",
+    NULL   /* N's own keywords (if, while, return, ...) are lexed as
+            * keywords and can never reach an identifier slot */
+};
+static void check_cname(const char* name, int line, const char* what) {
+    for (int i = 0; C_KEYWORDS[i]; i++)
+        if (!strcmp(name, C_KEYWORDS[i]))
+            die("%s:%d: %s '%s' is a C keyword — generated code uses names verbatim, pick another name",
+                FILENAME, line, what, name);
+}
+
 static Tok pexp(TK k, const char* what) {
     if (!pchk(k)) die("%s:%d: expected %s", FILENAME, CUR.line, what);
+    if (k == T_IDENT) check_cname(CUR.s, CUR.line, what);
     return padv();
 }
 
@@ -347,7 +376,7 @@ struct Expr {
 };
 
 typedef enum { S_LET, S_ASSIGN, S_RET, S_EXPR, S_WHILE, S_IF, S_BREAK, S_CONT,
-               S_DEFER, S_MATCH } SK;
+               S_DEFER, S_MATCH, S_FOR } SK;
 
 typedef struct {
     char* variant;
@@ -372,6 +401,8 @@ struct Stmt {
     MatchArm* arms; int narms;              /* S_MATCH (subject in e) */
     int mtarget;                            /* S_MATCH: an MTarget value */
     int is_try;                             /* v0.10: statement value ends in `?` */
+    /* S_FOR (v0.11): name = loop variable, e = range start, cond = range
+     * end (half-open [start, end)), body = loop body */
 };
 struct Block { Stmt** st; int n; Expr* tail; };
 
@@ -836,6 +867,21 @@ static Block* parse_block(void) {
             continue;
         }
         if (pchk(T_KW_IF)) { st[n++] = parse_if_stmt(); continue; }
+        if (pchk(T_KW_FOR)) {                 /* v0.11: for i in a..b { } */
+            padv();
+            Stmt* s = news(S_FOR);
+            Tok id = pexp(T_IDENT, "loop variable name");
+            s->name = id.s;
+            pexp(T_KW_IN, "'in' after the loop variable");
+            NO_SLIT = 1;                      /* `{` after the range opens the body */
+            s->e = parse_expr();
+            pexp(T_DOTDOT, "'..' in the range");
+            s->cond = parse_expr();
+            NO_SLIT = 0;
+            s->body = parse_block();
+            st[n++] = s;
+            continue;
+        }
         if (pchk(T_KW_MATCH)) {
             padv();
             st[n++] = parse_match(0);     /* statement form (mtarget = MT_STMT) */
@@ -1992,6 +2038,42 @@ static void gen_stmt(Stmt* s, int ind) {
             gen_block(s->body, ind, 0);
             fputs("\n", OUT);
             break;
+        case S_FOR: {
+            /* v0.11 counted loop: both bounds are evaluated ONCE, before
+             * the loop; the loop variable is a fresh immutable i64 scoped
+             * to the body, counting over the half-open range [start, end). */
+            check_expr(s->e);
+            check_expr(s->cond);
+            Ty at = infer_type(s->e);
+            Ty bt = infer_type(s->cond);
+            if (!ty_is_int(at) || !ty_is_int(bt))
+                die("%s:%d: for range bounds must be integers (got %s .. %s)",
+                    FILENAME, s->line, ty_str(at), ty_str(bt));
+            int fid = IID++;
+            indentf(ind); fputs("{\n", OUT);
+            gen_preludes(s->e, ind + 1);
+            gen_preludes(s->cond, ind + 1);
+            indentf(ind + 1);
+            fprintf(OUT, "nyx_i64 __fs%d = ", fid);
+            gen_expr(s->e);
+            fputs(";\n", OUT);
+            indentf(ind + 1);
+            fprintf(OUT, "nyx_i64 __fe%d = ", fid);
+            gen_expr(s->cond);
+            fputs(";\n", OUT);
+            indentf(ind + 1);
+            fprintf(OUT, "for (nyx_i64 %s = __fs%d; %s < __fe%d; %s++) ",
+                    s->name, fid, s->name, fid, s->name);
+            {
+                int vsave = NVARS;
+                vars_add(s->name, ty_named("i64"), 0);
+                gen_block(s->body, ind + 1, 0);
+                NVARS = vsave;
+            }
+            fputs("\n", OUT);
+            indentf(ind); fputs("}\n", OUT);
+            break;
+        }
         case S_IF:
             check_expr(s->cond);
             gen_preludes(s->cond, ind);
