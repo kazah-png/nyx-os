@@ -22,6 +22,7 @@
 #include "seq.h"
 #include "paste.h"
 #include "tac.h"
+#include "csv.h"
 #include "../net/dns.h"
 #include "../net/http.h"
 #include "../crypto/tls/tls.h"
@@ -126,6 +127,7 @@ static void cmd_seq(int argc, char** argv);
 static void cmd_urlcode(int argc, char** argv);
 static void cmd_paste(int argc, char** argv);
 static void cmd_tac(int argc, char** argv);
+static void cmd_csv(int argc, char** argv);
 static void cmd_crc32c(int argc, char** argv);
 uint32_t crc32c_calc(const uint8_t* data, uint32_t len);
 static void cmd_comm(int argc, char** argv);
@@ -283,6 +285,7 @@ static const command_t commands[] = {
     {"seq",       cmd_seq,       "Integer sequence: seq [FIRST [STEP]] LAST", false},
     {"paste",     cmd_paste,     "Merge lines of files: paste [-s] [-d LIST] <file ...>", false},
     {"tac",       cmd_tac,       "Print a file's lines in reverse order: tac [-s SEP] <file>", false},
+    {"csv",       cmd_csv,       "View a CSV file as an aligned table: csv [-d DELIM] <file>", false},
     {"comm",      cmd_comm,      "Compare two sorted files: comm [-123] <f1> <f2>", false},
     {"vfsstat",   cmd_vfsstat,   "VFS node-pool usage census (diagnose exhaustion)", false},
     {"semver",    cmd_semver,    "Validate/compare SemVer 2.0.0: semver <ver> [<ver2>]", false},
@@ -543,7 +546,7 @@ void execute_command(const char* cmd_line) {
 typedef struct { const char* title; const char* const* names; } help_cat_t;
 static const char* const HC_shell[] = {"help","man","version","clear","history","exec","spawn","jobs","wait","nice","renice",0};
 static const char* const HC_files[] = {"ls","cd","pwd","cat","file","tar","iniget","open","touch","mkdir","rm","cp","mv","tree","find","which","basename","dirname","files","df","mount","ext2ls","ext2cat",0};
-static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","tr","fold","nl","expand","unexpand","factor","seq","paste","comm","printf","wc","write","hexdump",0};
+static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tr","fold","nl","expand","unexpand","factor","seq","paste","comm","printf","wc","write","hexdump",0};
 static const char* const HC_sys[]   = {"ps","kill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat",0};
 static const char* const HC_user[]  = {"useradd","users",0};
 static const char* const HC_net[]   = {"ifconfig","dhcp","dns","ping","setip","httpget","tls",0};
@@ -637,6 +640,7 @@ static const man_page_t man_pages[] = {
     {"seq",      "Print an inclusive sequence of integers, one per line. `seq LAST` counts 1..LAST; `seq FIRST LAST` counts FIRST..LAST; `seq FIRST STEP LAST` advances by STEP (which may be negative). A range that starts on the wrong side of LAST prints nothing, and a zero STEP is an error. Integer-only (64-bit signed), matching GNU seq for integer arguments."},
     {"paste",    "Merge corresponding lines of files. By default the i-th line of each file is printed on one row, separated by a tab, continuing until every file runs out (a spent file leaves its column empty). -s writes each file's lines onto a single line instead. -d LIST replaces the tab with the characters of LIST used in turn (\\t, \\n, \\\\ escapes recognised). Reads each whole file; up to 16 files. Matches GNU paste for newline-delimited text."},
     {"tac",      "Print the lines of <file> in reverse order — the last line first, the first line last (the line-order companion to rev, which reverses characters within a line). The newline stays attached to its line, so a file without a trailing newline joins its last two lines when reversed, exactly like GNU tac. -s SEP uses SEP (one or more characters) as the record separator instead of newline. Reads a bounded chunk of the file."},
+    {"csv",      "View a comma-separated-values file as an aligned table. Parses RFC 4180 CSV: fields are separated by commas; a field may be wrapped in double quotes to protect embedded commas, newlines, and quotes (a doubled \"\" inside a quoted field is one literal \"). Columns are padded so they line up, and embedded control characters are shown as spaces. -d DELIM uses DELIM as the field separator instead of a comma (e.g. -d ';' or a tab). Reads a bounded chunk of the file. The same hardened parser backs a self-test (csv) in the boot battery."},
     {"fnv",      "Print the FNV-1a hash of the argument text (all arguments joined by single spaces) as lowercase hex. FNV-1a is a small, fast NON-cryptographic hash used for hash tables and quick content fingerprints; the 32-bit variant is the default and -64 selects the 64-bit variant. It is not collision-resistant, so do not use it where an adversary controls the input (SipHash is the keyed alternative)."},
     {"urlcode",  "Percent-encode the argument text per RFC 3986 (the unreserved set A-Za-z0-9-._~ passes through, every other byte becomes %XX in uppercase hex), or with -d strict-decode a single percent-encoded token back to its bytes. Arguments are joined with single spaces before encoding. The decoder is strict: a '%' not followed by exactly two hex digits is rejected. Backed by the shared codec used for URL handling."},
     {"crc32c",   "Print the CRC-32C (Castagnoli) checksum of the argument text (all arguments joined by single spaces) as 8-digit lowercase hex. CRC-32C is the data-integrity checksum used by ext4 metadata, Btrfs, iSCSI and SCTP — a different, stronger polynomial (0x1EDC6F41) than the zip/PNG CRC-32, and the one modern CPUs accelerate in hardware. crc32c of `123456789` is e3069283."},
@@ -1273,6 +1277,70 @@ static void cmd_tac(int argc, char** argv) {
     if (bytes <= 0) return;
     static uint32_t starts[4098];                          // >= any record count for a 4096-byte read
     tac_run(buf, (uint32_t)bytes, sep, seplen, starts, 4098, tac_emit_write, 0);
+}
+
+// csv [-d DELIM] <file> — view a CSV file as an aligned table. Backed by the hardened
+// RFC 4180 csv_parse(). Two streaming passes over the same in-memory buffer: pass 1 finds
+// each column's display width, pass 2 prints padded cells so the columns line up. No large
+// buffer is stored (only the per-column widths); long cells are truncated to CSV_CELL_MAX
+// and control bytes shown as spaces so an embedded newline can't wreck the layout.
+#define CSV_MAXCOLS   16
+#define CSV_CELL_MAX  18
+struct csv_view { uint8_t colw[CSV_MAXCOLS]; };
+
+// Print up to CSV_CELL_MAX bytes of a cell (control bytes -> space); return the count shown.
+static uint32_t csv_print_cell(const char* f, uint32_t len) {
+    uint32_t shown = len > CSV_CELL_MAX ? CSV_CELL_MAX : len;
+    for (uint32_t i = 0; i < shown; i++) {
+        unsigned char b = (unsigned char)f[i];
+        putchar(b < 0x20 ? ' ' : (char)b);
+    }
+    return shown;
+}
+// Pass 1: widen each column to fit its widest (display-clamped) cell.
+static void csv_width_emit(void* ctx, uint32_t row, uint32_t col,
+                           const char* f, uint32_t len, uint32_t flags) {
+    (void)row; (void)f;
+    struct csv_view* v = (struct csv_view*)ctx;
+    if (flags & CSV_EMPTY_ROW) return;
+    if (col < CSV_MAXCOLS) {
+        uint32_t w = len > CSV_CELL_MAX ? CSV_CELL_MAX : len;
+        if (w > v->colw[col]) v->colw[col] = (uint8_t)w;
+    }
+}
+// Pass 2: print each record, padding interior cells to the column width (the last cell is
+// not padded, to avoid trailing spaces); a blank line prints as a blank line.
+static void csv_print_emit(void* ctx, uint32_t row, uint32_t col,
+                           const char* f, uint32_t len, uint32_t flags) {
+    (void)row;
+    struct csv_view* v = (struct csv_view*)ctx;
+    if (flags & CSV_EMPTY_ROW) { putchar('\n'); return; }
+    if (col > 0) printf(" | ");
+    uint32_t shown = csv_print_cell(f, len);
+    if (!(flags & CSV_LAST_IN_ROW) && col < CSV_MAXCOLS)
+        for (uint32_t k = shown; k < v->colw[col]; k++) putchar(' ');
+    if (flags & CSV_LAST_IN_ROW) putchar('\n');
+}
+static void cmd_csv(int argc, char** argv) {
+    char delim = ',';
+    int ai = 1;
+    if (ai < argc && strcmp(argv[ai], "-d") == 0 && ai + 1 < argc) {
+        delim = argv[ai + 1][0];
+        if (!delim) delim = ',';
+        ai += 2;
+    }
+    if (ai >= argc) { printf("Usage: csv [-d DELIM] <file>\n"); return; }
+    int fd = vfs_open(argv[ai], 0, 0);
+    if (fd < 0) { printf("csv: cannot open '%s'\n", argv[ai]); return; }
+    static char buf[4096];
+    int bytes = vfs_read(fd, buf, sizeof(buf));
+    vfs_close(fd);
+    if (bytes <= 0) return;
+    static char field[256];
+    struct csv_view v;
+    for (int i = 0; i < CSV_MAXCOLS; i++) v.colw[i] = 0;
+    csv_parse(buf, (uint32_t)bytes, delim, field, sizeof(field), csv_width_emit, &v);  // widths
+    csv_parse(buf, (uint32_t)bytes, delim, field, sizeof(field), csv_print_emit, &v);  // render
 }
 
 // vfsstat — census the VFS node pool (diagnostic for the #66 exhaustion). Splits the
@@ -4088,6 +4156,7 @@ extern int factor_selftest(void);
 extern int semver_selftest(void);
 extern int base85_selftest(void);
 extern int fnv_selftest(void);
+extern int csv_selftest(void);
 extern int url_codec_selftest(void);
 extern int tls_prf_selftest(void);
 extern int tls_keyschedule_selftest(void);
@@ -4282,6 +4351,7 @@ static void run_selftests(void) {
         {"base32",       base32_selftest},        {"base16",        base16_selftest},
         {"base85",       base85_selftest},
         {"fnv",          fnv_selftest},
+        {"csv",          csv_selftest},
         {"urlcodec",     url_codec_selftest},
         {"utf8",          utf8_selftest},
         {"p256",          p256_selftest},
