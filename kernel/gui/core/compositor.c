@@ -54,6 +54,9 @@ static int ctx_menu_open = 0;
 static int ctx_menu_x = 0, ctx_menu_y = 0;
 static int cal_popup_open = 0;      // the taskbar clock's calendar popup
 static int net_popup_open = 0;      // the system tray's network-status popup
+static int spk_popup_open = 0;      // the system tray's sound/volume popup
+static int g_volume = 75;           // master volume 0..100 (persisted while running)
+static int g_muted  = 0;            // mute toggle
 static int mouse_x = 0, mouse_y = 0;
 static int mouse_z = 0;          // previous wheel total (see mouse_get_z); delta = new - this
 static uint8_t mouse_btns = 0;
@@ -542,6 +545,8 @@ static void draw_systray(int x, int tb_y) {
         fb_fill_rect(sx + 3 + c, cy - (1 + c), 1, 2 + 2 * c, sp);
     fb_fill_rect(sx + 10, cy - 3, 2, 7, sp);                  // near sound wave
     fb_fill_rect(sx + 13, cy - 5, 2, 11, sp);                 // far sound wave
+    if (g_muted)                                             // a red diagonal slash when muted
+        for (int i = 0; i < 16; i++) fb_fill_rect(sx + i, cy + 7 - i, 2, 2, fb_rgb(215, 80, 80));
 }
 
 // x of the system-tray inset panel — the shared source of truth for both the taskbar
@@ -558,6 +563,22 @@ static int systray_net_hit(int mx, int my) {
     int tb_y = (int)fb_get_height() - TASKBAR_H;
     int sx = systray_x();
     return mx >= sx && mx < sx + 25 && my >= tb_y + 4 && my < tb_y + TASKBAR_H - 4;
+}
+
+// Is (mx,my) on the tray's speaker icon (its right ~half)?
+static int systray_spk_hit(int mx, int my) {
+    int tb_y = (int)fb_get_height() - TASKBAR_H;
+    int sx = systray_x();
+    return mx >= sx + 25 && mx < sx + SYSTRAY_W && my >= tb_y + 4 && my < tb_y + TASKBAR_H - 4;
+}
+
+// Push the current volume/mute to the Sound Blaster master mixer (register 0x22: high
+// nibble = left, low nibble = right, 0..15 each). Harmless port writes if no SB16 exists.
+extern int sb16_set_mixer(uint8_t reg, uint8_t value);
+static void apply_volume(void) {
+    int v = g_muted ? 0 : g_volume;                        // 0..100
+    int nib = v * 15 / 100;                                // 0..15 per channel
+    sb16_set_mixer(0x22, (uint8_t)((nib << 4) | nib));
 }
 
 static void draw_taskbar(void) {
@@ -752,6 +773,68 @@ static void draw_net_popup(void) {
     }
     if (!shown)
         font_draw_string_trans(tx, ty, "Not connected", fb_rgb(210, 120, 120));
+}
+
+// ---- System-tray speaker icon -> sound/volume popup (like Windows' volume flyout) ----
+#define SPK_W       200
+#define SPK_HDR      22
+#define SPK_PAD       8
+#define SPK_TRACK_H  10
+#define SPK_MUTE_W   96
+#define SPK_MUTE_H   20
+#define SPK_H       (SPK_HDR + 66)                     // header + slider + mute button + padding
+
+static int spk_popup_x(void) { return (int)fb_get_width()  - SPK_W - 4; }
+static int spk_popup_y(void) { return (int)fb_get_height() - TASKBAR_H - SPK_H - 4; }
+static int spk_track_x(void) { return spk_popup_x() + SPK_PAD; }
+static int spk_track_y(void) { return spk_popup_y() + SPK_HDR + SPK_PAD + 12; }
+static int spk_track_w(void) { return SPK_W - 2 * SPK_PAD; }
+static int spk_mute_x(void)  { return spk_popup_x() + SPK_PAD; }
+static int spk_mute_y(void)  { return spk_popup_y() + SPK_H - SPK_PAD - SPK_MUTE_H; }
+
+static int spk_popup_hit(int mx, int my) {
+    if (!spk_popup_open) return 0;
+    int x = spk_popup_x(), y = spk_popup_y();
+    return mx >= x && mx < x + SPK_W && my >= y && my < y + SPK_H;
+}
+
+// The sound flyout: a draggable master-volume track (click to set) and a mute toggle.
+static void draw_spk_popup(void) {
+    if (!spk_popup_open) return;
+    int x = spk_popup_x(), y = spk_popup_y();
+
+    fb_fill_rect(x, y, SPK_W, SPK_H, THEME_WINDOW_BG);
+    fb_fill_rect(x, y, SPK_W, 1, THEME_ACCENT);
+    fb_fill_rect(x, y + SPK_H - 1, SPK_W, 1, col_darken(THEME_WINDOW_BG, 30));
+    fb_fill_rect(x, y, 1, SPK_H, col_lighten(THEME_WINDOW_BG, 10));
+    fb_fill_rect(x + SPK_W - 1, y, 1, SPK_H, col_darken(THEME_WINDOW_BG, 30));
+
+    fb_fill_vgrad(x + 1, y + 1, SPK_W - 2, SPK_HDR - 1, THEME_ACCENT, col_darken(THEME_ACCENT, 22));
+    font_draw_string_trans(x + SPK_PAD, y + (SPK_HDR - FONT_HEIGHT) / 2, "Sound", THEME_ON_ACCENT);
+    // volume % (or "muted") on the right of the header
+    char pct[8];
+    if (g_muted) { snprintf(pct, sizeof(pct), "muted"); }
+    else { snprintf(pct, sizeof(pct), "%d", g_volume); uint32_t l = 0; while (pct[l]) l++;
+           if (l < sizeof(pct) - 1) { pct[l] = '%'; pct[l + 1] = 0; } }
+    font_draw_string_trans(x + SPK_W - SPK_PAD - (int)strlen(pct) * FONT_WIDTH,
+                           y + (SPK_HDR - FONT_HEIGHT) / 2, pct, THEME_ON_ACCENT);
+
+    // slider track + accent fill + knob
+    int tx = spk_track_x(), ty = spk_track_y(), tw = spk_track_w();
+    fb_fill_rect(tx, ty, tw, SPK_TRACK_H, col_darken(THEME_WINDOW_BG, 20));
+    int fill = g_muted ? 0 : (g_volume * tw / 100);
+    if (fill > 0) fb_fill_rect(tx, ty, fill, SPK_TRACK_H, THEME_ACCENT);
+    int kx = tx + fill; if (kx > tx + tw - 4) kx = tx + tw - 4; if (kx < tx) kx = tx;
+    fb_fill_rect(kx, ty - 3, 4, SPK_TRACK_H + 6, fb_rgb(222, 222, 236));
+
+    // mute toggle button
+    int bx = spk_mute_x(), by = spk_mute_y();
+    uint32_t bfill = g_muted ? fb_rgb(150, 60, 60) : col_darken(THEME_WINDOW_BG, 12);
+    fb_fill_rect(bx, by, SPK_MUTE_W, SPK_MUTE_H, bfill);
+    fb_fill_rect(bx, by, SPK_MUTE_W, 1, col_lighten(bfill, 24));
+    const char* ml = g_muted ? "Unmute" : "Mute";
+    font_draw_string_trans(bx + (SPK_MUTE_W - (int)strlen(ml) * FONT_WIDTH) / 2,
+                           by + (SPK_MUTE_H - FONT_HEIGHT) / 2, ml, fb_rgb(230, 230, 240));
 }
 
 static void draw_start_menu(void) {
@@ -1612,6 +1695,7 @@ static void redraw_all(void) {
     draw_ctx_menu();
     draw_cal_popup();
     draw_net_popup();
+    draw_spk_popup();
     frame_dirty = 1;      // a fresh frame is in the back buffer, awaiting fb_present()
 }
 
@@ -2093,7 +2177,8 @@ void compositor_init(void) {
         }
     }
     window_count = 0; next_id = 100; focused_id = 0; drag_id = 0; resize_id = 0; quit = 0;
-    current_workspace = 0; start_menu_open = 0; user_menu_open = 0; cal_popup_open = 0; net_popup_open = 0; cursor_saved = 0;
+    current_workspace = 0; start_menu_open = 0; user_menu_open = 0; cal_popup_open = 0; net_popup_open = 0; spk_popup_open = 0; cursor_saved = 0;
+    apply_volume();   // sync the SB16 master mixer to the current volume/mute at startup
 
     taskbar_bg = THEME_TASKBAR_BG;
     taskbar_fg = THEME_TASKBAR_FG;
@@ -3450,10 +3535,36 @@ void compositor_run(void) {
                     goto done_click;
                 }
 
+                if (spk_popup_open) {
+                    if (pressed) {
+                        int tx = spk_track_x(), ty = spk_track_y(), tw = spk_track_w();
+                        int bx = spk_mute_x(), by = spk_mute_y();
+                        if (mx >= tx - 4 && mx <= tx + tw + 4 && my >= ty - 5 && my <= ty + SPK_TRACK_H + 5) {
+                            int v = (mx - tx) * 100 / (tw > 0 ? tw : 1);   // click the track to set volume
+                            if (v < 0) v = 0; if (v > 100) v = 100;
+                            g_volume = v; g_muted = 0; apply_volume(); redraw = 1;
+                        } else if (mx >= bx && mx < bx + SPK_MUTE_W && my >= by && my < by + SPK_MUTE_H) {
+                            g_muted = !g_muted; apply_volume(); redraw = 1;    // toggle mute
+                        } else if (!spk_popup_hit(mx, my)) {
+                            spk_popup_open = 0; redraw = 1;                    // click away closes
+                        }
+                    }
+                    goto done_click;
+                }
+
                 if (systray_net_hit(mx, my)) {
                     if (pressed) {
                         net_popup_open = !net_popup_open;       // click the tray network icon
-                        start_menu_open = 0; user_menu_open = 0; cal_popup_open = 0;
+                        start_menu_open = 0; user_menu_open = 0; cal_popup_open = 0; spk_popup_open = 0;
+                        redraw = 1;
+                    }
+                    goto done_click;
+                }
+
+                if (systray_spk_hit(mx, my)) {
+                    if (pressed) {
+                        spk_popup_open = !spk_popup_open;       // click the tray speaker icon
+                        start_menu_open = 0; user_menu_open = 0; cal_popup_open = 0; net_popup_open = 0;
                         redraw = 1;
                     }
                     goto done_click;
@@ -3498,6 +3609,7 @@ void compositor_run(void) {
                         start_menu_open = 0;
                         user_menu_open = 0;
                         net_popup_open = 0;
+                        spk_popup_open = 0;
                         redraw = 1;
                     }
                     goto done_click;
