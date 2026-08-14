@@ -1,6 +1,6 @@
 # The N Language — Specification
 
-**Version:** v0.12 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
+**Version:** v0.13 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
 
 This document specifies N exactly as implemented by the bootstrap compiler
 `ncc`. It is a *descriptive* spec: everything here compiles today. Planned
@@ -164,6 +164,43 @@ This is the bootstrap slice of the N++ design's §2.3; the compile-time
 *range proof* (that the pointer lies in the canonical user half) arrives
 with the `n++` front-end. `#[user]` is also the only attribute — `#[`
 followed by anything else is a lex error, so the syntax space is reserved.
+
+### 3.3 `pageflags` — W^X page permissions (since v0.13)
+
+```n
+rw := PROT_READ | PROT_WRITE;      // data page
+rx := PROT_READ | PROT_EXEC;       // code page
+wx := PROT_WRITE | PROT_EXEC;      // ← compile error: W^X violation
+sys_mmap(0, 4096, rw as i64, 34, -1, 0);
+```
+
+`pageflags` is a builtin bitset type for page permissions. Its defining
+property: **values can only be built by `|`-composing the predeclared
+constants** `PROT_NONE` / `PROT_READ` / `PROT_WRITE` / `PROT_EXEC`, so
+the compiler knows every value's exact bit set — which turns the W^X
+discipline (a mapping is never writable *and* executable) into a **total
+compile-time proof**, not a lint or a runtime check. In detail:
+
+- The constants carry the kernel's own `mmap`/`mprotect` numbers
+  (`kernel/core/kernel.h`, identical to POSIX: R=1 W=2 X=4), so one N
+  source runs against both the NyxOS kernel and the Linux host shim.
+- `pageflags` composes **only** with `|`, and only with other
+  `pageflags` values; every other operator is a compile error.
+- `flags as i64` (any integer type) extracts the bits for a syscall
+  argument. The reverse — casting an integer *into* `pageflags` — is
+  refused: arbitrary bits would break the proof. There is no escape
+  hatch by design; pass raw integers as plain `i64` if you mean that.
+- A `pageflags` **parameter** is opaque: it can be passed on or cast
+  out, but not extended with `|` — its composition was already checked
+  at every call site, and re-composition against unknown bits would
+  reopen the hole.
+- Bindings (including `mut`, whose tracked set follows reassignment)
+  work normally. Lowered as `nyx_i64` with the literal bit values —
+  zero runtime representation cost.
+
+This is N++ P4's PageFlags (design doc §2.3) in bootstrap form; mapping
+the same discipline onto kernel-side PTE bits (NX inversion included)
+lands with the ring-0 capability work.
 
 ## 4. Items
 

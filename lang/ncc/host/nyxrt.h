@@ -61,6 +61,9 @@ static inline nyx_i64 __nyx_syscall6(nyx_i64 no, nyx_i64 a1, nyx_i64 a2,
         case 3: no = 2;  break;   /* open   */
         case 4: no = 0;  break;   /* read   */
         case 5: no = 3;  break;   /* close  */
+        case 19: no = 9; break;   /* mmap — same arg order; NyxOS uses the
+                                   * POSIX PROT/MAP flag values, so flag
+                                   * words pass through unchanged */
         default: return -1;
     }
     nyx_i64 ret;

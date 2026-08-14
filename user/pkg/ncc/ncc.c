@@ -3,7 +3,7 @@
  * Hosted tool (runs on the dev machine); single file, no dependencies.
  * See lang/docs/spec-n.md for the language specification this implements.
  *
- * Supported subset (currently N v0.12):
+ * Supported subset (currently N v0.13):
  *   - extern syscall { fn name(params) [-> T] = N }
  *   - fn decls with block bodies, params, return types
  *   - statements: let (:=, mut), assignment (= += -=), return, while,
@@ -54,6 +54,11 @@
  *     `expr as #[user] *T` is the audited crossing. Marking user-facing
  *     syscall params makes every user-pointer handoff visible in source.
  *     Erased at codegen — same C type, zero runtime cost.
+ *   - pageflags W^X bitset (v0.13, N++ P4 rung 2): a builtin type whose
+ *     values are |-compositions of the predeclared PROT_* constants (the
+ *     kernel's own mmap/mprotect numbers), so every value's bit set is
+ *     statically known and WRITABLE|EXEC is a TOTAL compile-time error.
+ *     Casts out to integers only (syscall arguments); casts in refused.
  * Not yet (N++ territory): closures, generic Result<T,E>, modules/use.
  */
 /* Platform includes. In-OS builds (milestone M2) compile this file with
@@ -1136,6 +1141,7 @@ static const char* base_ctype(const char* n) {
         {"i32", "nyx_i32"}, {"u32", "nyx_u32"}, {"i64", "nyx_i64"}, {"u64", "nyx_u64"},
         {"isize", "nyx_isize"}, {"usize", "nyx_usize"}, {"addr", "nyx_addr"},
         {"bool", "nyx_bool"}, {"str", "nyx_str"}, {"never", "void"}, {"void", "void"},
+        {"pageflags", "nyx_i64"},   /* W^X-checked at compile time; plain bits in C */
     };
     for (size_t i = 0; i < sizeof(M) / sizeof(M[0]); i++)
         if (!strcmp(n, M[i].a)) return M[i].b;
@@ -1155,7 +1161,9 @@ static int is_never(Ty t) { return t.name && !strcmp(t.name, "never"); }
  * a concrete C type, to dispatch interpolation by type, and to enforce
  * `mut` — the three things codegen cannot do blind. The full checker is
  * N++ P1 (lang/docs/design-npp.md). */
-typedef struct { char* name; Ty ty; int is_mut; } VarInfo;
+/* pmask (v0.13): for a pageflags binding, the statically-known flag-bit
+ * set — what the W^X check reasons about. -1 = unknown (parameters). */
+typedef struct { char* name; Ty ty; int is_mut; long long pmask; } VarInfo;
 static VarInfo VARS[256];
 static int NVARS;
 
@@ -1163,6 +1171,7 @@ static void vars_add(char* name, Ty ty, int is_mut) {
     if (NVARS >= 256) die("ncc: too many locals in one function");
     VARS[NVARS].name = name;
     VARS[NVARS].ty = ty;
+    VARS[NVARS].pmask = -1;
     VARS[NVARS].is_mut = is_mut;
     NVARS++;
 }
@@ -1170,6 +1179,41 @@ static VarInfo* vars_find(const char* name) {
     for (int i = NVARS - 1; i >= 0; i--)        /* innermost shadows */
         if (!strcmp(VARS[i].name, name)) return &VARS[i];
     return NULL;
+}
+
+/* pageflags (v0.13, N++ P4 rung 2): a W^X-checked page-permission bitset.
+ * Values exist only as compositions of the predeclared PROT_* constants
+ * with `|`, so the compiler always knows every value's exact bit set —
+ * which makes the W^X rule (never WRITABLE and EXEC together) a TOTAL
+ * compile-time check, not a lint. The bit values are the kernel's own
+ * mmap/mprotect PROT_* numbers (kernel.h — identical to POSIX/Linux, so
+ * one N source works against both the NyxOS kernel and the host shim).
+ * Casting OUT to an integer (for a syscall argument) is allowed; casting
+ * IN is not — an arbitrary integer would have unknowable bits. */
+static const struct { const char* name; long long bits; } PF_CONSTS[] = {
+    {"PROT_NONE", 0}, {"PROT_READ", 1}, {"PROT_WRITE", 2}, {"PROT_EXEC", 4},
+};
+static int pf_const(const char* n, long long* bits) {
+    for (size_t i = 0; i < sizeof(PF_CONSTS) / sizeof(PF_CONSTS[0]); i++)
+        if (!strcmp(n, PF_CONSTS[i].name)) { if (bits) *bits = PF_CONSTS[i].bits; return 1; }
+    return 0;
+}
+/* The statically-known bit set of a pageflags expression; -1 = unknown
+ * (a parameter, whose flags were fixed — and W^X-proven — at its call
+ * sites). Only constants, |-compositions, and bindings can appear, so
+ * this walk is exhaustive. */
+static long long pf_mask(Expr* e) {
+    long long b;
+    if (e->k == E_PATH) {
+        if (pf_const(e->name, &b)) return b;
+        VarInfo* v = vars_find(e->name);
+        return v ? v->pmask : -1;
+    }
+    if (e->k == E_BIN && !strcmp(e->op, "|")) {
+        long long l = pf_mask(e->l), r = pf_mask(e->r);
+        return (l < 0 || r < 0) ? -1 : (l | r);
+    }
+    return -1;
 }
 
 static Ty ty_named(const char* n) { Ty t; t.name = (char*)n; t.ptrs = 0; t.is_user = 0; return t; }
@@ -1208,6 +1252,7 @@ static Ty infer_type(Expr* e) {
         case E_STR:
         case E_INTERP: return ty_named("str");
         case E_PATH: {
+            if (pf_const(e->name, NULL)) return ty_named("pageflags");
             VarInfo* v = vars_find(e->name);
             return v ? v->ty : ty_named("i64");
         }
@@ -1307,6 +1352,7 @@ static void check_expr(Expr* e) {
     if (!e) return;
     switch (e->k) {
         case E_PATH:
+            if (pf_const(e->name, NULL)) break;   /* predeclared pageflags const */
             if (!vars_find(e->name))
                 die("%s:%d: undeclared variable '%s'", FILENAME, e->line, e->name);
             break;
@@ -1463,6 +1509,22 @@ static void check_expr(Expr* e) {
             const char* o = e->op;
             int is_cmp = !strcmp(o, "==") || !strcmp(o, "!=") || !strcmp(o, "<") ||
                          !strcmp(o, "<=") || !strcmp(o, ">")  || !strcmp(o, ">=");
+            if (ty_is(lt, "pageflags") || ty_is(rt, "pageflags")) {
+                /* v0.13: pageflags compose ONLY with `|` between pageflags
+                 * values, and every composition's bit set must be statically
+                 * known — that is what makes W^X a total proof. */
+                if (!(ty_is(lt, "pageflags") && ty_is(rt, "pageflags")) || strcmp(o, "|") != 0)
+                    die("%s:%d: pageflags compose only with '|' between pageflags values (got %s %s %s)",
+                        FILENAME, e->line, ty_str(lt), o, ty_str(rt));
+                long long m = pf_mask(e);
+                if (m < 0)
+                    die("%s:%d: compose pageflags from the PROT_* constants — a parameter's flags are opaque here (fixed at its call sites)",
+                        FILENAME, e->line);
+                if ((m & 2) && (m & 4))
+                    die("%s:%d: W^X violation: a mapping cannot be both writable and executable",
+                        FILENAME, e->line);
+                break;
+            }
             if (ty_is(lt, "str") || ty_is(rt, "str"))
                 die("%s:%d: operator '%s' cannot be applied to str values "
                     "(build strings with interpolation)", FILENAME, e->line, o);
@@ -1479,7 +1541,17 @@ static void check_expr(Expr* e) {
             }
             break;
         }
-        case E_CAST:   check_expr(e->l); break;
+        case E_CAST: {
+            check_expr(e->l);
+            Ty st = infer_type(e->l);
+            if (ty_is(e->cast_to, "pageflags"))
+                die("%s:%d: cannot cast into pageflags — build it from the PROT_* constants (the W^X proof needs static flag sets)",
+                    FILENAME, e->line);
+            if (ty_is(st, "pageflags") && !ty_is_int(e->cast_to))
+                die("%s:%d: pageflags may only be cast to an integer type (for a syscall argument), got %s",
+                    FILENAME, e->line, ty_str(e->cast_to));
+            break;
+        }
         case E_INTERP:
             for (int i = 0; i < e->nfrags; i++)
                 if (e->frags[i].e) {
@@ -1528,7 +1600,15 @@ static void gen_expr(Expr* e) {
             fprintf(OUT, ", %d})", e->slen);
             break;
         case E_INTERP: fprintf(OUT, "__s%d", e->iid); break;
-        case E_PATH:   fputs(e->name, OUT); break;
+        case E_PATH: {
+            long long pb;
+            if (pf_const(e->name, &pb)) {         /* pageflags constant: its bits */
+                fprintf(OUT, "%ld", (long)pb);
+                break;
+            }
+            fputs(e->name, OUT);
+            break;
+        }
         case E_FIELD: {
             int vi;
             EnumDef* ed = variant_ref(e, &vi);
@@ -1794,6 +1874,8 @@ static void gen_stmt(Stmt* s, int ind) {
             gen_expr(s->e);
             fputs(";\n", OUT);
             vars_add(s->name, t, s->is_mut);
+            if (ty_is(t, "pageflags"))            /* track the static flag set */
+                VARS[NVARS - 1].pmask = pf_mask(s->e);
             break;
         }
         case S_ASSIGN: {
@@ -1819,6 +1901,11 @@ static void gen_stmt(Stmt* s, int ind) {
                 if (strcmp(s->aop, "=") != 0 && !ty_is_int(lt))
                     die("%s:%d: '%s' requires an integer target (got %s)",
                         FILENAME, s->line, s->aop, ty_str(lt));
+            }
+            if (s->lhs->k == E_PATH) {            /* keep a reassigned pageflags
+                                                   * binding's static set current */
+                VarInfo* v = vars_find(s->lhs->name);
+                if (v && ty_is(v->ty, "pageflags")) v->pmask = pf_mask(s->e);
             }
             gen_preludes(s->e, ind);
             indentf(ind);

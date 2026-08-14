@@ -1,0 +1,49 @@
+// pageflags.n — N v0.13 W^X page permissions (N++ P4 rung 2):
+//   - `pageflags` is a builtin bitset type; its only values are
+//     |-compositions of the predeclared constants PROT_NONE / PROT_READ /
+//     PROT_WRITE / PROT_EXEC (the kernel's own mmap/mprotect numbers,
+//     identical to POSIX — one source runs on NyxOS and the host shim)
+//   - because values can ONLY be built that way, the compiler knows every
+//     value's exact bits: W^X (writable AND executable) is a TOTAL
+//     compile-time error, not a runtime check or a lint
+//   - `flags as i64` passes the bits to a syscall; casting an integer
+//     INTO pageflags is refused (unknowable bits would break the proof)
+//   - a pageflags parameter is opaque: pass it through, don't extend it —
+//     its composition was checked where it was built
+
+extern syscall {
+    fn write(fd: i32, buf: #[user] *u8, len: isize) -> i64            = 1
+    fn sys_mmap(addr: i64, len: i64, prot: i64, flags: i64,
+                fd: i64, off: i64) -> i64                             = 19
+}
+
+fn put(s: str) {
+    write(1, s.ptr as #[user] *u8, s.len as isize);
+}
+
+// The boundary pattern: pageflags on the N side, one cast at the syscall.
+fn map_anon(len: i64, prot: pageflags) -> i64 {
+    // 34 = MAP_PRIVATE (0x02) | MAP_ANONYMOUS (0x20) — mapping kind, not
+    // a permission, so it stays a plain integer.
+    sys_mmap(0, len, prot as i64, 34, -1, 0)
+}
+
+fn main() -> i64 {
+    rw := PROT_READ | PROT_WRITE;      // data page: fine
+    rx := PROT_READ | PROT_EXEC;       // code page: fine
+    put("rw bits = {rw as i64}, rx bits = {rx as i64}\n");
+
+    m := map_anon(4096, rw);
+    if m > 0 {
+        put("anonymous rw page mapped: ok\n");
+    }
+    if m < 0 {
+        put("mmap failed\n");
+    }
+
+    // Rejected at compile time (each is a negative test):
+    //   wx := PROT_WRITE | PROT_EXEC;     ← W^X violation
+    //   bad := 7 as pageflags;            ← unknowable bits refused
+    //   sum := PROT_READ + PROT_WRITE;    ← pageflags compose only with |
+    0
+}
