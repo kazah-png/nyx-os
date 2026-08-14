@@ -33,6 +33,20 @@ int url_pct_encode(const uint8_t* src, uint32_t srclen, char* dst, uint32_t dstc
     return (int)o;
 }
 
+int url_form_encode(const uint8_t* src, uint32_t srclen, char* dst, uint32_t dstcap) {
+    static const char H[] = "0123456789ABCDEF";
+    uint32_t o = 0;
+    for (uint32_t i = 0; i < srclen; i++) {
+        uint8_t c = src[i];
+        if (uc_unreserved(c))   { if (o + 1 >= dstcap) return -1; dst[o++] = (char)c; }
+        else if (c == ' ')      { if (o + 1 >= dstcap) return -1; dst[o++] = '+'; }   // form convention
+        else { if (o + 3 >= dstcap) return -1; dst[o++] = '%'; dst[o++] = H[c >> 4]; dst[o++] = H[c & 0x0F]; }
+    }
+    if (o >= dstcap) return -1;
+    dst[o] = '\0';
+    return (int)o;
+}
+
 int url_pct_decode(const char* src, uint32_t srclen, uint8_t* dst, uint32_t dstcap) {
     uint32_t o = 0;
     for (uint32_t i = 0; i < srclen; i++) {
@@ -98,5 +112,18 @@ int url_codec_selftest(void) {
     }
     // A tight output buffer must be reported, not overrun.
     if (url_pct_encode((const uint8_t*)" ", 1, enc, 3) != -1) return 20;  // "%20"+NUL needs 4
+
+    // x-www-form-urlencoded variant: space -> '+', literal '+' -> %2B (matches quote_plus).
+    struct { const char* raw; const char* enc; } fv[] = {
+        { "a b",          "a+b"            },
+        { "hello world!", "hello+world%21" },
+        { "a+b=c&d",      "a%2Bb%3Dc%26d"  },
+        { "Nyx-OS_1.0~",  "Nyx-OS_1.0~"    },   // all unreserved: unchanged
+    };
+    for (int i = 0; i < 4; i++) {
+        uint32_t rl = 0; while (fv[i].raw[rl]) rl++;
+        if (url_form_encode((const uint8_t*)fv[i].raw, rl, enc, sizeof(enc)) < 0) return 30 + i;
+        if (!uc_streq(enc, fv[i].enc)) return 40 + i;
+    }
     return 0;
 }

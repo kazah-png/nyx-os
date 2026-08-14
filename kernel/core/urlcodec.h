@@ -19,5 +19,11 @@ int url_pct_encode(const uint8_t* src, uint32_t srclen, char* dst, uint32_t dstc
 // malformed escape ('%' without two following hex digits) or if dst is too small.
 int url_pct_decode(const char* src, uint32_t srclen, uint8_t* dst, uint32_t dstcap);
 
+// x-www-form-urlencoded variant of url_pct_encode: identical EXCEPT a space becomes '+'
+// (the HTML form-body convention) instead of %20. Byte-for-byte compatible with Python
+// urllib.parse.quote_plus. Same return/bounds contract as url_pct_encode. This is the
+// shared encoder the Selene browser uses to build form-POST bodies.
+int url_form_encode(const uint8_t* src, uint32_t srclen, char* dst, uint32_t dstcap);
+
 int url_codec_selftest(void);
 #endif

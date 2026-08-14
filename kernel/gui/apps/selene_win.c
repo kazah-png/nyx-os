@@ -15,6 +15,7 @@
 // over TLS 1.2 landed at v5.9.56, so Selene now fetches https:// pages too.)
 #include "../../core/kernel.h"
 #include "../../core/urlparse.h"
+#include "../../core/urlcodec.h"
 #include "../core/compositor.h"
 #include "selene_win.h"
 #include "../../net/http.h"
@@ -2467,15 +2468,10 @@ static void selene_back(selene_ctx_t* s) {
 
 // Percent-encode a form value for a URL query (space -> '+', unreserved kept, else %XX).
 static void sel_urlencode(char* dst, uint32_t cap, const char* src) {
-    static const char* hex = "0123456789ABCDEF";
-    uint32_t o = 0;
-    for (const char* p = src; *p && o + 3 < cap; p++) {
-        unsigned char c = (unsigned char)*p;
-        if ((c>='A'&&c<='Z')||(c>='a'&&c<='z')||(c>='0'&&c<='9')||c=='-'||c=='_'||c=='.'||c=='~') dst[o++] = (char)c;
-        else if (c == ' ') dst[o++] = '+';
-        else { dst[o++] = '%'; dst[o++] = hex[c>>4]; dst[o++] = hex[c&0xF]; }
-    }
-    dst[o] = '\0';
+    uint32_t n = 0; while (src[n]) n++;
+    // Route through the shared, KAT'd RFC 3986 form codec (kernel/core/urlcodec.c):
+    // byte-for-byte identical to the old inline version (verified), just de-duplicated.
+    if (url_form_encode((const uint8_t*)src, n, dst, cap) < 0 && cap) dst[0] = '\0';
 }
 
 // Build the URL-encoded "name=value&..." data for the form `form` from its text/hidden fields
