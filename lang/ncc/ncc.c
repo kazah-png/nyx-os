@@ -3,7 +3,7 @@
  * Hosted tool (runs on the dev machine); single file, no dependencies.
  * See lang/docs/spec-n.md for the language specification this implements.
  *
- * Supported subset (currently N v0.13):
+ * Supported subset (currently N v0.14):
  *   - extern syscall { fn name(params) [-> T] = N }
  *   - fn decls with block bodies, params, return types
  *   - statements: let (:=, mut), assignment (= += -=), return, while,
@@ -59,6 +59,11 @@
  *     kernel's own mmap/mprotect numbers), so every value's bit set is
  *     statically known and WRITABLE|EXEC is a TOTAL compile-time error.
  *     Casts out to integers only (syscall arguments); casts in refused.
+ *   - capabilities (v0.14, closing N++ P4): `#[caps(syscall)]` marks an
+ *     extern syscall block as a gated kernel crossing; direct calls to
+ *     its bindings then require the CALLING fn to hold the capability
+ *     (declare it with the same attribute). Opt-in per block; a holding
+ *     wrapper is the audited boundary, like unsafe-fn. Methods hold none.
  * Not yet (N++ territory): closures, generic Result<T,E>, modules/use.
  */
 /* Platform includes. In-OS builds (milestone M2) compile this file with
@@ -109,7 +114,7 @@ typedef enum {
     T_KW_IF, T_KW_ELSE, T_KW_WHILE, T_KW_BREAK, T_KW_CONTINUE,
     T_KW_AS, T_KW_RAW, T_KW_TRUE, T_KW_FALSE, T_KW_STRUCT, T_KW_DEFER,
     T_KW_ENUM, T_KW_MATCH, T_FATARROW, T_KW_IMPL,
-    T_KW_FOR, T_KW_IN, T_DOTDOT, T_ATTR_USER,
+    T_KW_FOR, T_KW_IN, T_DOTDOT, T_ATTR_USER, T_ATTR_CAPS_SYSCALL,
     T_LP, T_RP, T_LB, T_RB, T_COMMA, T_SEMI, T_COLON,
     T_WALRUS, T_ARROW, T_ASSIGN,
     T_PLUS, T_MINUS, T_STAR, T_SLASH, T_PERCENT,
@@ -308,12 +313,17 @@ static Tok next_token(void) {
                   return mk(T_GT, sl);
         case '&': if (n2 == '&') { POS++; COL++; return mk(T_ANDAND, sl); } return mk(T_AMP, sl);
         case '|': if (n2 == '|') { POS++; COL++; return mk(T_OROR, sl); } return mk(T_PIPE, sl);
-        case '#':                 /* attributes: #[user] is the only one (v0.12) */
+        case '#':                 /* attributes: #[user] (v0.12), #[caps(syscall)] (v0.14) */
             if (POS + 6 <= LEN && !strncmp(&SRC[POS], "[user]", 6)) {
                 POS += 6; COL += 6;
                 return mk(T_ATTR_USER, sl);
             }
-            die("%s:%d: unknown attribute — #[user] is the only attribute", FILENAME, sl);
+            if (POS + 15 <= LEN && !strncmp(&SRC[POS], "[caps(syscall)]", 15)) {
+                POS += 15; COL += 15;
+                return mk(T_ATTR_CAPS_SYSCALL, sl);
+            }
+            die("%s:%d: unknown attribute — #[user] and #[caps(syscall)] are the attributes",
+                FILENAME, sl);
     }
     die("%s:%d: unexpected character '%c'", FILENAME, sl, c);
     return mk(T_EOF, sl);
@@ -427,9 +437,14 @@ struct Stmt {
 };
 struct Block { Stmt** st; int n; Expr* tail; };
 
+/* caps (v0.14, closing N++ P4): bit 0 = the `syscall` capability. On an
+ * XFn it means "calling me is a kernel crossing and needs the capability";
+ * on an Fn it means "I hold it". Enforced at direct call sites only —
+ * a capability-holding wrapper is the audited boundary, exactly like
+ * #[user]'s `as` cast and unsafe-fn in other languages. */
 typedef struct { char* name; Ty ty; } Param;
-typedef struct { char* name; Param* ps; int np; Ty ret; long long num; } XFn;
-typedef struct { char* name; Param* ps; int np; Ty ret; Block* body; } Fn;
+typedef struct { char* name; Param* ps; int np; Ty ret; long long num; int caps; } XFn;
+typedef struct { char* name; Param* ps; int np; Ty ret; Block* body; int caps; } Fn;
 
 static XFn XFNS[64]; static int NXFN;
 static Fn  FNS[64];  static int NFN;
@@ -981,12 +996,13 @@ static Param* parse_params(int* out_n) {
     return ps;
 }
 
-static void parse_extern_block(void) {
+static void parse_extern_block(int caps) {
     pexp(T_KW_SYSCALL, "'syscall'");
     pexp(T_LB, "'{'");
     while (pacc(T_KW_FN)) {
         if (NXFN >= 64) die("too many extern syscalls");
         XFn* x = &XFNS[NXFN++];
+        x->caps = caps;                   /* gated block: callers need the cap */
         Tok id = pexp(T_IDENT, "syscall name");
         x->name = id.s;
         x->ps = parse_params(&x->np);
@@ -1000,9 +1016,10 @@ static void parse_extern_block(void) {
     pexp(T_RB, "'}'");
 }
 
-static void parse_fn(void) {
+static void parse_fn(int caps) {
     if (NFN >= 64) die("too many functions");
     Fn* f = &FNS[NFN++];
+    f->caps = caps;                       /* fn declares the capabilities it holds */
     Tok id = pexp(T_IDENT, "function name");
     f->name = id.s;
     f->ps = parse_params(&f->np);
@@ -1109,8 +1126,13 @@ static void parse_impl(void) {
 static void parse_program(void) {
     for (;;) {
         if (pchk(T_EOF)) return;
-        if (pacc(T_KW_EXTERN)) { parse_extern_block(); continue; }
-        if (pacc(T_KW_FN))     { parse_fn(); continue; }
+        int caps = 0;                     /* v0.14: #[caps(syscall)] item attr */
+        if (pacc(T_ATTR_CAPS_SYSCALL)) caps = 1;
+        if (pacc(T_KW_EXTERN)) { parse_extern_block(caps); continue; }
+        if (pacc(T_KW_FN))     { parse_fn(caps); continue; }
+        if (caps)
+            die("%s:%d: #[caps(syscall)] applies to a fn or an extern syscall block",
+                FILENAME, CUR.line);
         if (pacc(T_KW_STRUCT)) { parse_struct(); continue; }
         if (pacc(T_KW_ENUM))   { parse_enum(); continue; }
         if (pacc(T_KW_IMPL))   { parse_impl(); continue; }
@@ -1223,6 +1245,18 @@ static int ty_is(Ty t, const char* n) { return t.name && t.ptrs == 0 && !strcmp(
 /* Look up a named function's signature (extern syscalls and user fns are all
  * parsed before codegen runs, so forward references resolve). Returns 1 and
  * fills the out-params on success, 0 for an unknown name. */
+/* Capability set of the function whose body is being generated (bit 0 =
+ * syscall). Methods hold no capabilities in v0.14 — they call gated
+ * wrappers like everyone else. */
+static int CUR_FN_CAPS;
+
+/* The capability an extern syscall demands of its direct callers, or 0. */
+static int xfn_caps(const char* name) {
+    for (int i = 0; i < NXFN; i++)
+        if (!strcmp(XFNS[i].name, name)) return XFNS[i].caps;
+    return 0;
+}
+
 static int fn_lookup(const char* name, Param** ps, int* np, Ty* ret) {
     for (int i = 0; i < NXFN; i++)
         if (!strcmp(XFNS[i].name, name)) {
@@ -1384,6 +1418,9 @@ static void check_expr(Expr* e) {
             Param* ps; int np; Ty ret;
             if (!fn_lookup(e->callee->name, &ps, &np, &ret))
                 die("%s:%d: unknown function '%s'", FILENAME, e->line, e->callee->name);
+            if ((xfn_caps(e->callee->name) & 1) && !(CUR_FN_CAPS & 1))
+                die("%s:%d: '%s' requires the syscall capability — mark the calling function #[caps(syscall)]",
+                    FILENAME, e->line, e->callee->name);
             if (e->nargs != np)
                 die("%s:%d: '%s' takes %d argument(s), got %d",
                     FILENAME, e->line, e->callee->name, np, e->nargs);
@@ -2383,6 +2420,7 @@ static void gen_program(const char* srcname) {
         Method* m = &METHODS[i];
         IID = 0;
         CUR_RET = m->ret;
+        CUR_FN_CAPS = 0;                  /* methods hold no capabilities (v0.14) */
         NVARS = 0;
         NDEFERS = 0;
         BLOCK_DEPTH = 0;
@@ -2405,6 +2443,7 @@ static void gen_program(const char* srcname) {
         Fn* f = &FNS[i];
         IID = 0;
         CUR_RET = f->ret;
+        CUR_FN_CAPS = f->caps;
         NVARS = 0;                      /* fresh symbol table per function */
         NDEFERS = 0;                    /* defers are function-scoped */
         BLOCK_DEPTH = 0;

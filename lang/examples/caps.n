@@ -1,0 +1,44 @@
+// caps.n — N v0.14 capabilities (closing N++ P4):
+//   - marking an extern syscall block #[caps(syscall)] declares its
+//     bindings to be GATED kernel crossings
+//   - a direct call to a gated binding requires the CALLING function to
+//     hold the capability — declared with the same attribute on the fn
+//   - the pattern this enforces: a small set of capability-holding
+//     wrappers is the audited boundary (exactly like `unsafe fn` in
+//     Rust, or v0.12's `as #[user]` cast); everything above the wrappers
+//     is capability-free application code
+//   - opt-in per extern block: unmarked blocks behave as before, so the
+//     discipline can be adopted binding by binding
+
+#[caps(syscall)]
+extern syscall {
+    fn write(fd: i32, buf: #[user] *u8, len: isize) -> i64 = 1
+    fn getpid() -> i64                                     = 6
+}
+
+// The audited boundary: this wrapper holds the capability, so it may
+// cross into the kernel. Note it composes with #[user] naturally.
+#[caps(syscall)]
+fn put(s: str) {
+    write(1, s.ptr as #[user] *u8, s.len as isize);
+}
+
+#[caps(syscall)]
+fn my_pid() -> i64 {
+    getpid()
+}
+
+// Capability-free application code: it can only reach the kernel through
+// the wrappers above. Calling write() here directly is a compile error.
+fn greet(who: str) {
+    put("hello, {who}! (from pid {my_pid()})\n");
+}
+
+fn main() -> i64 {
+    greet("capability world");
+    // Rejected by the compiler (negative test):
+    //   write(1, "x".ptr as #[user] *u8, 1);
+    //   ← 'write' requires the syscall capability — mark the calling
+    //     function #[caps(syscall)]
+    0
+}

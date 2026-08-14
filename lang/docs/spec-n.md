@@ -1,6 +1,6 @@
 # The N Language — Specification
 
-**Version:** v0.13 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
+**Version:** v0.14 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
 
 This document specifies N exactly as implemented by the bootstrap compiler
 `ncc`. It is a *descriptive* spec: everything here compiles today. Planned
@@ -94,7 +94,8 @@ never overflowed. Use `\{` and `\}` for literal braces.
 ```
 ( ) { } , ; : . .. ->
 := = += -=
-#[user]        (attribute, v0.12 — the only one; see 3.2)
+#[user]           (attribute, v0.12 — see 3.2)
+#[caps(syscall)]  (attribute, v0.14 — see 4.6)
 + - * / %
 == != < <= > >=
 ! && ||
@@ -162,8 +163,9 @@ while leaving `raw *T` unchecked (see the N++ design). Any type name not in
 
 This is the bootstrap slice of the N++ design's §2.3; the compile-time
 *range proof* (that the pointer lies in the canonical user half) arrives
-with the `n++` front-end. `#[user]` is also the only attribute — `#[`
-followed by anything else is a lex error, so the syntax space is reserved.
+with the `n++` front-end. The attribute space is reserved: `#[` followed
+by anything other than a known attribute (`#[user]`, `#[caps(syscall)]`
+— §4.6) is a lex error.
 
 ### 3.3 `pageflags` — W^X page permissions (since v0.13)
 
@@ -397,6 +399,47 @@ enum. Rules:
 - Methods and fields share the `.` syntax; parentheses select the method
   (`r.area` is the field lookup — an error if no such field — and
   `r.area()` is the call).
+
+### 4.6 Capabilities — `#[caps(syscall)]` (since v0.14)
+
+```n
+#[caps(syscall)]
+extern syscall {
+    fn write(fd: i32, buf: #[user] *u8, len: isize) -> i64 = 1
+}
+
+#[caps(syscall)]                 // the audited boundary
+fn put(s: str) {
+    write(1, s.ptr as #[user] *u8, s.len as isize);
+}
+
+fn greet() {
+    put("hi\n");                 // capability-free code uses the wrapper
+    // write(...) here would be a compile error
+}
+```
+
+Capabilities make *who may cross into the kernel* a checked property:
+
+- Marking an `extern syscall` block `#[caps(syscall)]` declares its
+  bindings to be **gated kernel crossings**.
+- A **direct call** to a gated binding requires the *calling function*
+  to hold the capability — declared with the same attribute on the `fn`.
+- Enforcement is deliberately at direct call sites only: a
+  capability-holding wrapper is the audited boundary (the same shape as
+  `unsafe fn`, or §3.2's `as #[user]` cast), and everything above it is
+  ordinary, capability-free application code. Grep for the attribute
+  and you have the complete list of kernel touchpoints.
+- **Opt-in per block**: unmarked `extern syscall` blocks behave exactly
+  as before, so a codebase adopts the discipline binding by binding.
+- `impl` methods hold no capabilities in v0.14 — they call gated
+  wrappers like all other code.
+- `syscall` is the only capability name in the bootstrap; the design
+  document reserves the rest (`mmio`, `ports`, ring heights) for the
+  `n++` front-end and kernel-side modules.
+
+This closes N++ P4's bootstrap staging (design doc §2.3): `#[user]`
+pointers (v0.12) + `pageflags` W^X (v0.13) + capabilities (v0.14).
 
 ### 5.6 `match` (since v0.7)
 
@@ -747,8 +790,9 @@ is valid until the end of the enclosing block.
 Condensed EBNF of the implemented language:
 
 ```ebnf
-program      = { extern_block | fn_decl | struct_decl | enum_decl
-               | impl_block } ;
+program      = { item } ;
+item         = [ "#[caps(syscall)]" ] ( extern_block | fn_decl )
+             | struct_decl | enum_decl | impl_block ;
 impl_block   = "impl" ident "{" { method } "}" ;
 method       = "fn" ident "(" "self" { "," param } ")" [ "->" type ] block ;
 
