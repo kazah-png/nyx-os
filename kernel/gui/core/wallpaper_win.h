@@ -23,6 +23,7 @@ enum {
     WP_STYLE_ONDAS,       // Nightfall scene with slow ANIMATED moonlight ripples from the moon
     WP_STYLE_CONSTELACIONES, // Nightfall scene with a STATIC star map: constellations of stars joined by faint threads
     WP_STYLE_LLUVIA,      // Nightfall scene with an ANIMATED soft rain of falling lilac star-light
+    WP_STYLE_CORDILLERA,  // Nightfall scene with a STATIC layered silhouette of night mountains on the horizon
     WP_STYLE_COUNT
 };
 

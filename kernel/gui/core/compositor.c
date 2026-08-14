@@ -1130,7 +1130,7 @@ static void draw_background(void) {
         style != WP_STYLE_SHOOTINGSTAR && style != WP_STYLE_AURORA &&
         style != WP_STYLE_NEBULA && style != WP_STYLE_LUCES &&
         style != WP_STYLE_ONDAS && style != WP_STYLE_CONSTELACIONES &&
-        style != WP_STYLE_LLUVIA) return;
+        style != WP_STYLE_LLUVIA && style != WP_STYLE_CORDILLERA) return;
 
     // Moon in the upper-right, with a soft halo (concentric rings fading inward).
     int mx = (int)fw - 130, my = 96, mr = 40;
@@ -1405,6 +1405,30 @@ static void draw_background(void) {
                 int bl = skb + (244 - skb) * inten / 100;
                 if (rr > 255) rr = 255; if (gg > 255) gg = 255; if (bl > 255) bl = 255;
                 fb_fill_rect(hx, py, (s < 3) ? 2 : 1, 1, fb_rgb((uint8_t)rr, (uint8_t)gg, (uint8_t)bl));
+            }
+        }
+    }
+
+    // CORDILLERA: a still range of night mountains along the horizon. Three layered
+    // silhouettes — back (highest, lilac-dark) to front (lowest, near-black) — each a
+    // ridge whose crest rides a sum of two STATIC sines (wp_isin) and is filled straight
+    // down to the bottom of the screen, the front layers overpainting the back for depth.
+    // No get_ticks(): a calm landscape under the moon and stars, purple-tinted darks
+    // keeping the Nyx night identity. Some low stars fall behind the ridges (occluded).
+    if (style == WP_STYLE_CORDILLERA) {
+        struct { int basey, a1, f1, a2, f2, ph, r, g, b; } ridge[3] = {
+            { (int)fh * 60 / 100, 30, 3, 13, 7,  40, 60, 48, 92 },   // back: highest, lilac-dark
+            { (int)fh * 70 / 100, 40, 2, 18, 5, 150, 38, 30, 60 },   // mid
+            { (int)fh * 80 / 100, 32, 4, 22, 9, 210, 16, 13, 28 },   // front: lowest, near-black
+        };
+        for (int k = 0; k < 3; k++) {
+            uint32_t col = fb_rgb((uint8_t)ridge[k].r, (uint8_t)ridge[k].g, (uint8_t)ridge[k].b);
+            for (int x = 0; x < (int)fw; x++) {
+                int crest = ridge[k].basey
+                          + ridge[k].a1 * wp_isin((x * ridge[k].f1 + ridge[k].ph) & 255) / 1024
+                          + ridge[k].a2 * wp_isin((x * ridge[k].f2) & 255) / 1024;
+                if (crest < 0) crest = 0;
+                if (crest < (int)fh) fb_fill_rect(x, crest, 1, (int)fh - crest, col);
             }
         }
     }
