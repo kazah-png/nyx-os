@@ -4,6 +4,7 @@
 #include "kernel.h"
 #include "namecheck.h"
 #include "urlparse.h"
+#include "urlcodec.h"
 #include "../gui/core/compositor.h"
 #include "../drivers/misc/apic.h"
 #include "../drivers/misc/rtc.h"
@@ -120,6 +121,7 @@ static void cmd_factor(int argc, char** argv);
 static void cmd_semver(int argc, char** argv);
 static void cmd_fnv(int argc, char** argv);
 static void cmd_seq(int argc, char** argv);
+static void cmd_urlcode(int argc, char** argv);
 static void cmd_comm(int argc, char** argv);
 static void cmd_vfsstat(int argc, char** argv);
 static void cmd_rev(int argc, char** argv);
@@ -277,6 +279,7 @@ static const command_t commands[] = {
     {"vfsstat",   cmd_vfsstat,   "VFS node-pool usage census (diagnose exhaustion)", false},
     {"semver",    cmd_semver,    "Validate/compare SemVer 2.0.0: semver <ver> [<ver2>]", false},
     {"fnv",       cmd_fnv,       "FNV-1a hash of text: fnv [-64] <text ...>", false},
+    {"urlcode",   cmd_urlcode,   "Percent-encode/decode text: urlcode [-d] <text ...>", false},
     {"printf",    cmd_printf,    "Format and print: printf FORMAT [ARG...]", false},
     {"expand",    cmd_expand,    "Convert tabs to spaces: expand [-t N] <file>", false},
     {"unexpand",  cmd_unexpand,  "Convert spaces to tabs: unexpand [-a] [-t N] <file>", false},
@@ -535,7 +538,7 @@ static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev",
 static const char* const HC_sys[]   = {"ps","kill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat",0};
 static const char* const HC_user[]  = {"useradd","users",0};
 static const char* const HC_net[]   = {"ifconfig","dhcp","dns","ping","setip","httpget","tls",0};
-static const char* const HC_dev[]   = {"cc","xbm","semver","fnv",0};
+static const char* const HC_dev[]   = {"cc","xbm","semver","fnv","urlcode",0};
 static const char* const HC_media[] = {"play","sb16play","imageview","selene",0};
 static const char* const HC_games[] = {"doom","pong","voxel","fire","matrix","lava","fractal","julia","particles","snake","tetris",0};
 static const char* const HC_test[]  = {"mtdemo","smpstress","smpuser","smpthreads","smpbalance","tlbtest","cowtest","crash","usertest","tcptest","tcpdrop","tcploop","tcpserve","posttest","tlsstrict","prftest","gcmtest","dertest","p256test","p384test","x25519test","tlskeytest","tlsrectest","csprngtest","skp384test","deflatetest","sha512test","pngtest","bmptest","giftest","jpegtest","imgreject","httptest","ext2test","rsatest","chaintest","formtest",0};
@@ -624,6 +627,7 @@ static const man_page_t man_pages[] = {
     {"semver",   "Parse and compare Semantic Versioning 2.0.0 strings (MAJOR.MINOR.PATCH[-prerelease][+build]). With one argument, validate it and print the parsed fields. With two, print their precedence relation (`A < B`, `A = B`, or `A > B`) per the semver spec: core numbers compared numerically, a prerelease ranks below the same version without one, and build metadata is ignored. Useful for comparing package versions."},
     {"seq",      "Print an inclusive sequence of integers, one per line. `seq LAST` counts 1..LAST; `seq FIRST LAST` counts FIRST..LAST; `seq FIRST STEP LAST` advances by STEP (which may be negative). A range that starts on the wrong side of LAST prints nothing, and a zero STEP is an error. Integer-only (64-bit signed), matching GNU seq for integer arguments."},
     {"fnv",      "Print the FNV-1a hash of the argument text (all arguments joined by single spaces) as lowercase hex. FNV-1a is a small, fast NON-cryptographic hash used for hash tables and quick content fingerprints; the 32-bit variant is the default and -64 selects the 64-bit variant. It is not collision-resistant, so do not use it where an adversary controls the input (SipHash is the keyed alternative)."},
+    {"urlcode",  "Percent-encode the argument text per RFC 3986 (the unreserved set A-Za-z0-9-._~ passes through, every other byte becomes %XX in uppercase hex), or with -d strict-decode a single percent-encoded token back to its bytes. Arguments are joined with single spaces before encoding. The decoder is strict: a '%' not followed by exactly two hex digits is rejected. Backed by the shared codec used for URL handling."},
     {"printf",   "Print ARGs under the control of FORMAT (like the C/coreutil printf). FORMAT is reused as needed to consume all ARGs. It interprets backslash escapes (\\n \\t \\r \\a \\b \\f \\v \\\\) and the conversions %s %d %i %u %x %X %c %% with optional flags and field width (e.g. %-10s, %05d). Numeric ARGs are read as decimal. Unlike echo, printf never appends a trailing newline unless FORMAT contains one."},
     {"expand",   "Convert the tabs in <file> to spaces. Each tab advances to the next tab stop, which are spaced N columns apart (8 by default, or -t N), so columns stay aligned instead of a fixed number of spaces per tab. Non-tab characters and newlines pass through unchanged (a newline resets the column count)."},
     {"unexpand", "The inverse of expand: convert runs of spaces in <file> back into tabs, collapsing each blank run to the fewest tabs+spaces at N-column tab stops (8 by default, or -t N). A single space is never turned into a tab. By default only the LEADING blanks of each line are converted (matching GNU unexpand); -a converts blank runs everywhere on the line, and -t N implies -a."},
@@ -1073,6 +1077,32 @@ static void cmd_fnv(int argc, char** argv) {
         out[16] = 0;
     }
     printf("%s\n", out);
+}
+
+// urlcode [-d] <text ...> — percent-encode the argument text (args joined by single
+// spaces), or with -d strict-decode a single percent-encoded token. Backed by the
+// shared RFC 3986 codec in kernel/core/urlcodec.c.
+static void cmd_urlcode(int argc, char** argv) {
+    int dec = 0, start = 1;
+    if (start < argc && strcmp(argv[start], "-d") == 0) { dec = 1; start++; }
+    if (start >= argc) { printf("Usage: urlcode [-d] <text ...>\n"); return; }
+    if (dec) {
+        uint32_t n = 0; while (argv[start][n]) n++;           // a %XX token has no spaces
+        uint8_t out[256];
+        int dl = url_pct_decode(argv[start], n, out, sizeof(out));
+        if (dl < 0) { printf("urlcode: malformed percent-encoding\n"); return; }
+        for (int i = 0; i < dl; i++) putchar((char)out[i]);
+        putchar('\n');
+    } else {
+        char in[256]; uint32_t o = 0;
+        for (int i = start; i < argc; i++) {                  // rejoin args with spaces
+            if (i > start && o < sizeof(in)) in[o++] = ' ';
+            for (uint32_t k = 0; argv[i][k] && o < sizeof(in); k++) in[o++] = argv[i][k];
+        }
+        char out[768];
+        if (url_pct_encode((const uint8_t*)in, o, out, sizeof(out)) < 0) { printf("urlcode: input too long\n"); return; }
+        printf("%s\n", out);
+    }
 }
 
 // seq output callback: print each value as a decimal on its own line. The number is
@@ -3954,6 +3984,7 @@ extern int factor_selftest(void);
 extern int semver_selftest(void);
 extern int base85_selftest(void);
 extern int fnv_selftest(void);
+extern int url_codec_selftest(void);
 extern int tls_prf_selftest(void);
 extern int tls_keyschedule_selftest(void);
 extern int tls_record_selftest(void);
@@ -4120,6 +4151,7 @@ static void run_selftests(void) {
         {"base32",       base32_selftest},        {"base16",        base16_selftest},
         {"base85",       base85_selftest},
         {"fnv",          fnv_selftest},
+        {"urlcodec",     url_codec_selftest},
         {"utf8",          utf8_selftest},
         {"p256",          p256_selftest},
         {"p384",         p384_selftest},          {"rsa",           rsa_selftest},
