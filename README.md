@@ -192,7 +192,7 @@ command, a render demo, a wallpaper, or a CI self-test — see
 ## Support
 
 NyxOS is GPL-2.0 and stays free — funding buys speed, never access. It covers the `nyxos.cc`
-domain, second-hand x86 boxes to test on real metal, and the development budget.
+domain and second-hand x86 boxes to test on real metal.
 
 [GitHub Sponsors](https://github.com/sponsors/kazah-png) · [Ko-fi](https://ko-fi.com/nyxos) · [Open Collective](https://opencollective.com/NyxOSdev) (public ledger) — details at **[nyxos.cc/support](https://nyxos.cc/support.html)**.
 
