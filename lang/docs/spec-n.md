@@ -1,6 +1,6 @@
 # The N Language — Specification
 
-**Version:** v0.14 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
+**Version:** v0.15 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
 
 This document specifies N exactly as implemented by the bootstrap compiler
 `ncc`. It is a *descriptive* spec: everything here compiles today. Planned
@@ -92,7 +92,7 @@ never overflowed. Use `\{` and `\}` for literal braces.
 ### 2.6 Operators and punctuation
 
 ```
-( ) { } , ; : . .. ->
+( ) { } [ ] , ; : . .. ->
 := = += -=
 #[user]           (attribute, v0.12 — see 3.2)
 #[caps(syscall)]  (attribute, v0.14 — see 4.6)
@@ -730,7 +730,38 @@ Remaining outside the bootstrap's scope: *missing*-return flow analysis (a
 typed function whose control flow can fall off the end is caught by the C
 compiler on the generated file, not by `ncc`).
 
-### 6.6 Calls and fields
+### 6.6 Indexing — `e[i]` (since v0.15)
+
+```n
+b := s[i];              // byte i of a str, as u8
+q := p[i];              // element i of a *T, as T
+h = (h ^ s[i] as i64) * 16777619;   // composes like any expression
+```
+
+Indexing is a postfix expression (same precedence tier as calls and
+fields). Rules:
+
+- The base must be a **pointer** (result: the pointed-to type, one level
+  down; the `#[user]` flavor does not transfer — the element is a plain
+  value) or a **str** (result: `u8`, the byte of the backing text).
+- The index must be an integer.
+- **Read-only in v0.15**: an index expression is not an assignment
+  target — `p[i] = x` is a compile error. Writes arrive with the buffer
+  story (an allocator-backed, length-carrying slice), where they can be
+  more than a raw store.
+- **Bounds are the programmer's contract**, as in C. `str` carries
+  `len`, so bound your loops with it (`for i in 0..s.len as i64`); a
+  checked access variant is n++ territory.
+- This is the reason N has indexing but still no pointer arithmetic:
+  `p[i]` names an element; `p + i` names an address. The first is what
+  a self-hosted `ncc` needs to read its own source bytes (M5); the
+  second stays behind the explicit `as addr` cast.
+
+Note on `str.ptr`: the language types it `*u8`, and since v0.15 the
+generated C agrees (the read site casts the backing `const char*`), so
+binding it without a cast — `p := s.ptr;` — is well-formed.
+
+### 6.7 Calls and fields
 
 Function calls take positional arguments. Field access uses `.` and applies to
 `str` values today (`.ptr`, `.len`); it generalizes to user types in N++.
@@ -840,7 +871,9 @@ add          = mul  { ("+"|"-") mul } ;
 mul          = cast { ("*"|"/"|"%") cast } ;
 cast         = unary { "as" type } ;
 unary        = ( "-" | "!" ) unary | postfix ;
-postfix      = primary { "." ident | "(" [ expr { "," expr } ] ")" } ;
+postfix      = primary { "." ident
+                       | "(" [ expr { "," expr } ] ")"
+                       | "[" expr "]" } ;      (* indexing: v0.15, read-only *)
 primary      = int_lit | "true" | "false" | string | interp_string
              | struct_lit | ident | "(" expr ")" ;
 struct_lit   = ident "{" [ finit { "," finit } [ "," ] ] "}" ;
@@ -874,7 +907,9 @@ N++/type-checker phase:
 4. **Match-expression and `?` positions are limited** (§5.6.1, §5.9):
    statement value positions only — no general expression nesting
    until the lowering needs it.
-5. Fixed implementation caps (per file: 64 functions, 64 syscalls; per call:
+5. **Indexing is read-only** (§6.6): writes through `e[i]` wait for the
+   allocator-backed buffer story.
+6. Fixed implementation caps (per file: 64 functions, 64 syscalls; per call:
    16 arguments; per function: 256 live locals) — generous for the bootstrap,
    diagnosed clearly when exceeded.
 

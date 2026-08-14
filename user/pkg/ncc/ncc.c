@@ -3,7 +3,7 @@
  * Hosted tool (runs on the dev machine); single file, no dependencies.
  * See lang/docs/spec-n.md for the language specification this implements.
  *
- * Supported subset (currently N v0.14):
+ * Supported subset (currently N v0.15):
  *   - extern syscall { fn name(params) [-> T] = N }
  *   - fn decls with block bodies, params, return types
  *   - statements: let (:=, mut), assignment (= += -=), return, while,
@@ -64,6 +64,10 @@
  *     its bindings then require the CALLING fn to hold the capability
  *     (declare it with the same attribute). Opt-in per block; a holding
  *     wrapper is the audited boundary, like unsafe-fn. Methods hold none.
+ *   - indexing (v0.15, the M5 enabler): `p[i]` reads element i of a
+ *     pointer (type = one level down), `s[i]` reads byte i of a str as
+ *     u8. Read-only — assignment through an index is refused (writes
+ *     come later); bounds are the programmer's contract, as in C.
  * Not yet (N++ territory): closures, generic Result<T,E>, modules/use.
  */
 /* Platform includes. In-OS builds (milestone M2) compile this file with
@@ -115,6 +119,7 @@ typedef enum {
     T_KW_AS, T_KW_RAW, T_KW_TRUE, T_KW_FALSE, T_KW_STRUCT, T_KW_DEFER,
     T_KW_ENUM, T_KW_MATCH, T_FATARROW, T_KW_IMPL,
     T_KW_FOR, T_KW_IN, T_DOTDOT, T_ATTR_USER, T_ATTR_CAPS_SYSCALL,
+    T_LBRACK, T_RBRACK,
     T_LP, T_RP, T_LB, T_RB, T_COMMA, T_SEMI, T_COLON,
     T_WALRUS, T_ARROW, T_ASSIGN,
     T_PLUS, T_MINUS, T_STAR, T_SLASH, T_PERCENT,
@@ -282,6 +287,8 @@ static Tok next_token(void) {
         case ';': return mk(T_SEMI, sl);
         case '.': if (n2 == '.') { POS++; COL++; return mk(T_DOTDOT, sl); }
                   return mk(T_DOT, sl);
+        case '[': return mk(T_LBRACK, sl);
+        case ']': return mk(T_RBRACK, sl);
         case '?': return mk(T_QUESTION, sl);
         case '^': return mk(T_CARET, sl);
         case '%': return mk(T_PERCENT, sl);
@@ -388,7 +395,8 @@ typedef struct Stmt Stmt;
 typedef struct Block Block;
 
 typedef enum { E_INT, E_BOOL, E_STR, E_INTERP, E_PATH, E_CALL, E_FIELD,
-               E_UN, E_BIN, E_CAST, E_SLIT, E_ELIT } EK;
+               E_UN, E_BIN, E_CAST, E_SLIT, E_ELIT,
+               E_INDEX } EK;               /* v0.15: e[i] byte/element read */
 
 typedef struct { char* text; int tlen; Expr* e; } Frag;
 
@@ -681,6 +689,15 @@ static Expr* parse_postfix(void) {
             pexp(T_RP, "')'");
             c->args = as; c->nargs = na;
             e = c;
+            continue;
+        }
+        if (pchk(T_LBRACK)) {               /* v0.15: e[i] indexing (read) */
+            padv();
+            Expr* ix = newe(E_INDEX);
+            ix->l = e;
+            ix->r = parse_expr();
+            pexp(T_RBRACK, "']' closing the index");
+            e = ix;
             continue;
         }
         break;
@@ -1319,6 +1336,17 @@ static Ty infer_type(Expr* e) {
         }
         case E_SLIT: return ty_named(e->name);
         case E_ELIT: return ty_named(e->name);
+        case E_INDEX: {                     /* v0.15: p[i] -> element, s[i] -> u8 */
+            Ty bt = infer_type(e->l);
+            if (bt.ptrs > 0) {
+                Ty el = bt;
+                el.ptrs--;
+                el.is_user = 0;             /* the element is a plain value */
+                return el;
+            }
+            if (ty_is(bt, "str")) return ty_named("u8");
+            return ty_named("i64");
+        }
         case E_UN:
             if (e->op[0] == '!') return ty_named("bool");
             return infer_type(e->r);
@@ -1589,6 +1617,19 @@ static void check_expr(Expr* e) {
                     FILENAME, e->line, ty_str(e->cast_to));
             break;
         }
+        case E_INDEX: {
+            check_expr(e->l);
+            check_expr(e->r);
+            Ty bt = infer_type(e->l);
+            if (bt.ptrs == 0 && !ty_is(bt, "str"))
+                die("%s:%d: cannot index a %s value (only pointers and str)",
+                    FILENAME, e->line, ty_str(bt));
+            Ty it = infer_type(e->r);
+            if (!ty_is_int(it))
+                die("%s:%d: index must be an integer (got %s)",
+                    FILENAME, e->line, ty_str(it));
+            break;
+        }
         case E_INTERP:
             for (int i = 0; i < e->nfrags; i++)
                 if (e->frags[i].e) {
@@ -1646,11 +1687,33 @@ static void gen_expr(Expr* e) {
             fputs(e->name, OUT);
             break;
         }
+        case E_INDEX:
+            if (ty_is(infer_type(e->l), "str")) { /* byte of the backing text */
+                fputs("((nyx_u8)", OUT);
+                gen_expr(e->l);
+                fputs(".ptr[", OUT);
+                gen_expr(e->r);
+                fputs("])", OUT);
+            } else {                              /* pointer element read */
+                gen_expr(e->l);
+                fputs("[", OUT);
+                gen_expr(e->r);
+                fputs("]", OUT);
+            }
+            break;
         case E_FIELD: {
             int vi;
             EnumDef* ed = variant_ref(e, &vi);
             if (ed) {                   /* Shape.Empty -> tag-only value */
                 fprintf(OUT, "((%s){ .tag = %d })", ed->name, vi);
+                break;
+            }
+            if (!strcmp(e->field, "ptr") && ty_is(infer_type(e->base), "str")) {
+                /* The language says str.ptr : *u8; make the C agree (the
+                 * backing storage is const char*, so cast at the read). */
+                fputs("((nyx_u8*)", OUT);
+                gen_expr(e->base);
+                fputs(".ptr)", OUT);
                 break;
             }
             gen_expr(e->base);
@@ -1763,6 +1826,7 @@ static void gen_preludes(Expr* e, int ind) {
             for (int i = 0; i < e->nargs; i++) gen_preludes(e->args[i], ind);
             break;
         case E_FIELD: gen_preludes(e->base, ind); break;
+        case E_INDEX: gen_preludes(e->l, ind); gen_preludes(e->r, ind); break;
         case E_UN:    gen_preludes(e->r, ind); break;
         case E_BIN:   gen_preludes(e->l, ind); gen_preludes(e->r, ind); break;
         case E_CAST:  gen_preludes(e->l, ind); break;
@@ -1835,6 +1899,9 @@ static void gen_try(Stmt* s, int ind) {
         check_expr(s->lhs);
         Expr* root = s->lhs;
         while (root->k == E_FIELD) root = root->base;
+        if (root->k == E_INDEX)
+            die("%s:%d: indexing is read-only in v0.15 — assignment through e[i] is not supported yet",
+                FILENAME, s->line);
         if (root->k == E_PATH) {
             VarInfo* v = vars_find(root->name);
             if (v && !v->is_mut)
@@ -1922,6 +1989,9 @@ static void gen_stmt(Stmt* s, int ind) {
                                                  * field writes mutate the root binding */
                 Expr* root = s->lhs;
                 while (root->k == E_FIELD) root = root->base;
+                if (root->k == E_INDEX)
+                    die("%s:%d: indexing is read-only in v0.15 — assignment through e[i] is not supported yet",
+                        FILENAME, s->line);
                 if (root->k == E_PATH) {
                     VarInfo* v = vars_find(root->name);
                     if (v && !v->is_mut)
@@ -2061,6 +2131,9 @@ static void gen_stmt(Stmt* s, int ind) {
                     check_expr(s->lhs);
                     Expr* root = s->lhs;
                     while (root->k == E_FIELD) root = root->base;
+                    if (root->k == E_INDEX)
+                        die("%s:%d: indexing is read-only in v0.15 — assignment through e[i] is not supported yet",
+                            FILENAME, s->line);
                     if (root->k == E_PATH) {
                         VarInfo* v = vars_find(root->name);
                         if (v && !v->is_mut)

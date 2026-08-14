@@ -1,7 +1,7 @@
 # N & N++ — the native languages of NyxOS
 
 <p align="center">
-  <img src="https://img.shields.io/badge/N-v0.14-825AD2?style=flat" />
+  <img src="https://img.shields.io/badge/N-v0.15-825AD2?style=flat" />
   &nbsp;
   <img src="https://img.shields.io/badge/N%2B%2B-design-825AD2?style=flat" />
   &nbsp;
@@ -31,7 +31,7 @@ N++ program, and N++ compiles down through the same pipeline.
 | Memory model | Manual, raw pointers | Ownership/borrowing opt-in, `#[user]` checked pointers |
 | Error handling | Return codes | `Result<T, E>` + `?` propagation |
 | Data types | Primitives, pointers, `str` | + `struct` methods, `enum` sum types, `match`, generics, traits |
-| Status | **v0.14 — working** (see below) | **P1–P4 complete** (`#[user]` pointers, `pageflags` W^X, `#[caps]` capabilities; P5 next: `own` types + GUI) |
+| Status | **v0.15 — working** (see below) | **P1–P4 complete** (`#[user]` pointers, `pageflags` W^X, `#[caps]` capabilities; P5 next: `own` types + GUI) |
 
 Both share the same DNA:
 
@@ -64,7 +64,7 @@ Both share the same DNA:
 ## Status — what works today
 
 The bootstrap compiler `ncc` ([ncc/ncc.c](ncc/ncc.c), single-file C, no
-dependencies) implements N v0.14 — type inference (typed `:=` bindings with an
+dependencies) implements N v0.15 — type inference (typed `:=` bindings with an
 `i64` default, interpolation that inserts `str` values as text, enforced
 `mut`), a complete expression-level checker (undeclared names, unknown
 callees, arity, argument/operand/return/assignment types — all compile errors
@@ -76,6 +76,7 @@ propagation over Ok/Err result enums, counted `for` loops over half-open
 ranges, `#[user]` checked-pointer flavors with explicit `as` crossings,
 `pageflags` page permissions with a total compile-time W^X proof,
 `#[caps(syscall)]`-gated kernel crossings with audited wrapper boundaries,
+byte-level indexing into str and pointers (the self-hosting enabler),
 strict-C99 output — and is verified three ways:
 
 1. **Real programs run on NyxOS.** The in-OS TinyCC builds the current
@@ -126,7 +127,8 @@ lang/
     ├── forloop.n        ← v0.11 counted for: half-open ranges, break/continue
     ├── userptr.n        ← v0.12 #[user] pointers: the audited syscall boundary
     ├── pageflags.n      ← v0.13 pageflags: W^X proven at compile time, live mmap
-    └── caps.n           ← v0.14 capabilities: #[caps(syscall)]-gated crossings
+    ├── caps.n           ← v0.14 capabilities: #[caps(syscall)]-gated crossings
+    └── bytes.n          ← v0.15 indexing: s[i]/p[i] reads, FNV-1a in pure N
 ```
 
 The runtime N programs link against lives with the rest of user space:

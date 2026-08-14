@@ -1,0 +1,52 @@
+// bytes.n — N v0.15 indexing (the road to self-hosting):
+//   - `s[i]` reads byte i of a str as u8; `p[i]` reads element i of a
+//     pointer (one level down) — a compiler that will one day compile
+//     itself has to be able to look at its own source bytes
+//   - READ-ONLY in v0.15: `p[i] = x` is a compile error (writes come
+//     with the buffer story); bounds are the programmer's contract
+//   - works with everything shipped so far: for-ranges drive the index,
+//     s.len bounds it, and the result is an ordinary integer
+
+#[caps(syscall)]
+extern syscall {
+    fn write(fd: i32, buf: #[user] *u8, len: isize) -> i64 = 1
+}
+
+#[caps(syscall)]
+fn put(s: str) {
+    write(1, s.ptr as #[user] *u8, s.len as isize);
+}
+
+// Classic FNV-1a over the bytes of a str — indexing + for in ten lines.
+fn fnv1a(s: str) -> i64 {
+    mut h := 2166136261;
+    for i in 0..s.len as i64 {
+        h = (h ^ s[i] as i64) * 16777619;
+        h = h & 0xFFFFFFFF;
+    }
+    h
+}
+
+fn count_vowels(s: str) -> i64 {
+    mut n := 0;
+    for i in 0..s.len as i64 {
+        b := s[i] as i64;
+        // 'a' 'e' 'i' 'o' 'u' in ASCII
+        if b == 97 || b == 101 || b == 105 || b == 111 || b == 117 {
+            n += 1;
+        }
+    }
+    n
+}
+
+fn main() -> i64 {
+    name := "NyxOS";
+    first := name[0] as i64;
+    p := name.ptr;
+    same := p[0] as i64;
+    put("first byte of {name}: {first} (via ptr: {same})\n");
+    phrase := "night goddess";
+    put("vowels in the phrase: {count_vowels(phrase)}\n");
+    put("fnv1a of {name} = {fnv1a(name)}\n");
+    0
+}
