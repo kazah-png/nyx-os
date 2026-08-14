@@ -1,0 +1,44 @@
+// userptr.n — N v0.12 #[user] checked pointers (opening N++ P4):
+//   - `#[user] *T` is a DISTINCT pointer flavor: it never converts
+//     implicitly to or from a plain *T — not even through the *u8/*void
+//     byte-pointer wildcards
+//   - `expr as #[user] *T` is the one audited crossing point, so every
+//     user-pointer handoff is visible (and greppable) in the source
+//   - marking syscall params #[user] documents which arguments the kernel
+//     will range-check with user_ptr_ok(); the flavor is erased at
+//     codegen — same C type, zero runtime cost
+//   - #[user] and raw are mutually exclusive: raw is the explicit opt-out
+//
+// This is the bootstrap slice of design-npp §2.3; the compile-time range
+// PROOF (canonical-half analysis) arrives with the n++ front-end.
+
+extern syscall {
+    // write's buffer crosses into the kernel, which validates it as a
+    // user pointer — the signature now says so.
+    fn write(fd: i32, buf: #[user] *u8, len: isize) -> i64 = 1
+    fn getpid() -> i64                                     = 6
+}
+
+// The wrapper is the boundary: one explicit cast, then everything above
+// it passes checked #[user] pointers around.
+fn put(s: str) {
+    write(1, s.ptr as #[user] *u8, s.len as isize);
+}
+
+// #[user] pointers flow through signatures like any other type —
+// no re-casting once inside the checked world.
+fn put_n(buf: #[user] *u8, len: i64) -> i64 {
+    write(1, buf, len as isize)
+}
+
+fn main() -> i64 {
+    put("checked user pointers, pid {getpid()}\n");
+    msg := "boundary crossed once\n";
+    ubuf := msg.ptr as #[user] *u8;      // the audited crossing
+    put_n(ubuf, msg.len as i64);
+    // Rejected by the compiler (each is a negative test):
+    //   write(1, msg.ptr as *u8, 1);    ← plain *u8 into #[user] *u8
+    //   x: #[user] i64                  ← #[user] on a non-pointer
+    //   #[user] raw *u8                 ← contradictory flavors
+    0
+}

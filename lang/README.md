@@ -1,7 +1,7 @@
 # N & N++ — the native languages of NyxOS
 
 <p align="center">
-  <img src="https://img.shields.io/badge/N-v0.11-825AD2?style=flat" />
+  <img src="https://img.shields.io/badge/N-v0.12-825AD2?style=flat" />
   &nbsp;
   <img src="https://img.shields.io/badge/N%2B%2B-design-825AD2?style=flat" />
   &nbsp;
@@ -31,7 +31,7 @@ N++ program, and N++ compiles down through the same pipeline.
 | Memory model | Manual, raw pointers | Ownership/borrowing opt-in, `#[user]` checked pointers |
 | Error handling | Return codes | `Result<T, E>` + `?` propagation |
 | Data types | Primitives, pointers, `str` | + `struct` methods, `enum` sum types, `match`, generics, traits |
-| Status | **v0.11 — working** (see below) | **P1 + P2 + P3 complete** (match-as-expression, `?` over result enums, fs bindings; generics move to the `n++` front-end) |
+| Status | **v0.12 — working** (see below) | **P1–P3 complete, P4 started** (`#[user]` pointer flavor shipped; PageFlags + capabilities next) |
 
 Both share the same DNA:
 
@@ -64,7 +64,7 @@ Both share the same DNA:
 ## Status — what works today
 
 The bootstrap compiler `ncc` ([ncc/ncc.c](ncc/ncc.c), single-file C, no
-dependencies) implements N v0.11 — type inference (typed `:=` bindings with an
+dependencies) implements N v0.12 — type inference (typed `:=` bindings with an
 `i64` default, interpolation that inserts `str` values as text, enforced
 `mut`), a complete expression-level checker (undeclared names, unknown
 callees, arity, argument/operand/return/assignment types — all compile errors
@@ -73,7 +73,8 @@ field access, Go-style function-scoped `defer`, `enum` tagged unions with an
 exhaustive `match` usable as a statement or as the value of a
 binding/assignment/return, statically-dispatched `impl` methods, `?` error
 propagation over Ok/Err result enums, counted `for` loops over half-open
-ranges, strict-C99 output — and is verified three ways:
+ranges, `#[user]` checked-pointer flavors with explicit `as` crossings,
+strict-C99 output — and is verified three ways:
 
 1. **Real programs run on NyxOS.** The in-OS TinyCC builds the v0.10 `ncc`
    from source inside the running system, and that compiler transpiles,
@@ -118,7 +119,8 @@ lang/
     ├── matchexpr.n      ← v0.9 match as an expression: bind/assign/return
     ├── results.n        ← v0.10 `?` propagation over Ok/Err result enums
     ├── fsio.n           ← P3 fs bindings: syscall→Result boundary, `?` chains
-    └── forloop.n        ← v0.11 counted for: half-open ranges, break/continue
+    ├── forloop.n        ← v0.11 counted for: half-open ranges, break/continue
+    └── userptr.n        ← v0.12 #[user] pointers: the audited syscall boundary
 ```
 
 The runtime N programs link against lives with the rest of user space:

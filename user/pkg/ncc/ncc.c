@@ -3,7 +3,7 @@
  * Hosted tool (runs on the dev machine); single file, no dependencies.
  * See lang/docs/spec-n.md for the language specification this implements.
  *
- * Supported subset (currently N v0.11):
+ * Supported subset (currently N v0.12):
  *   - extern syscall { fn name(params) [-> T] = N }
  *   - fn decls with block bodies, params, return types
  *   - statements: let (:=, mut), assignment (= += -=), return, while,
@@ -48,6 +48,12 @@
  *   - counted `for` loops (v0.11): `for i in a..b { }` over the half-open
  *     range [a, b); bounds are integers evaluated once, the loop variable
  *     is a fresh immutable i64 scoped to the body; break/continue work.
+ *   - #[user] checked pointers (v0.12, opening N++ P4): `#[user] *T` is a
+ *     distinct pointer flavor that never converts implicitly to or from
+ *     plain pointers (the byte-pointer wildcards don't cross it either);
+ *     `expr as #[user] *T` is the audited crossing. Marking user-facing
+ *     syscall params makes every user-pointer handoff visible in source.
+ *     Erased at codegen — same C type, zero runtime cost.
  * Not yet (N++ territory): closures, generic Result<T,E>, modules/use.
  */
 /* Platform includes. In-OS builds (milestone M2) compile this file with
@@ -98,7 +104,7 @@ typedef enum {
     T_KW_IF, T_KW_ELSE, T_KW_WHILE, T_KW_BREAK, T_KW_CONTINUE,
     T_KW_AS, T_KW_RAW, T_KW_TRUE, T_KW_FALSE, T_KW_STRUCT, T_KW_DEFER,
     T_KW_ENUM, T_KW_MATCH, T_FATARROW, T_KW_IMPL,
-    T_KW_FOR, T_KW_IN, T_DOTDOT,
+    T_KW_FOR, T_KW_IN, T_DOTDOT, T_ATTR_USER,
     T_LP, T_RP, T_LB, T_RB, T_COMMA, T_SEMI, T_COLON,
     T_WALRUS, T_ARROW, T_ASSIGN,
     T_PLUS, T_MINUS, T_STAR, T_SLASH, T_PERCENT,
@@ -297,6 +303,12 @@ static Tok next_token(void) {
                   return mk(T_GT, sl);
         case '&': if (n2 == '&') { POS++; COL++; return mk(T_ANDAND, sl); } return mk(T_AMP, sl);
         case '|': if (n2 == '|') { POS++; COL++; return mk(T_OROR, sl); } return mk(T_PIPE, sl);
+        case '#':                 /* attributes: #[user] is the only one (v0.12) */
+            if (POS + 6 <= LEN && !strncmp(&SRC[POS], "[user]", 6)) {
+                POS += 6; COL += 6;
+                return mk(T_ATTR_USER, sl);
+            }
+            die("%s:%d: unknown attribute — #[user] is the only attribute", FILENAME, sl);
     }
     die("%s:%d: unexpected character '%c'", FILENAME, sl, c);
     return mk(T_EOF, sl);
@@ -350,7 +362,11 @@ static Tok pexp(TK k, const char* what) {
 }
 
 /* --- AST --- */
-typedef struct { char* name; int ptrs; } Ty;   /* name==NULL means "no type" (void) */
+/* name==NULL means "no type" (void). is_user (v0.12, N++ P4) marks a
+ * #[user] pointer: a distinct compile-time flavor that never converts
+ * implicitly to or from plain pointers — the `as` cast is the audited
+ * crossing point. Erased at codegen (same C type, zero runtime cost). */
+typedef struct { char* name; int ptrs; int is_user; } Ty;
 
 typedef struct Expr Expr;
 typedef struct Stmt Stmt;
@@ -480,11 +496,19 @@ static Expr* newe(EK k) { Expr* e = xmalloc(sizeof(Expr)); e->k = k; e->line = C
 static Stmt* news(SK k) { Stmt* s = xmalloc(sizeof(Stmt)); s->k = k; s->line = CUR.line; return s; }
 
 static Ty parse_type(void) {
-    Ty t; t.ptrs = 0; t.name = NULL;
-    pacc(T_KW_RAW);                       /* raw *T and *T lower identically in C */
+    Ty t; t.ptrs = 0; t.name = NULL; t.is_user = 0;
+    int line = CUR.line;
+    t.is_user = pacc(T_ATTR_USER);        /* #[user] *T — checked pointer (v0.12) */
+    int got_raw = pacc(T_KW_RAW);         /* raw *T and *T lower identically in C */
+    if (t.is_user && got_raw)
+        die("%s:%d: #[user] and raw are mutually exclusive — raw is the explicit opt-out",
+            FILENAME, line);
     while (pacc(T_STAR)) t.ptrs++;
     Tok id = pexp(T_IDENT, "type name");
     t.name = id.s;
+    if (t.is_user && t.ptrs == 0)
+        die("%s:%d: #[user] applies only to pointer types (got %s)",
+            FILENAME, line, t.name);
     return t;
 }
 
@@ -1148,8 +1172,8 @@ static VarInfo* vars_find(const char* name) {
     return NULL;
 }
 
-static Ty ty_named(const char* n) { Ty t; t.name = (char*)n; t.ptrs = 0; return t; }
-static Ty ty_ptr_u8(void)         { Ty t; t.name = (char*)"u8"; t.ptrs = 1; return t; }
+static Ty ty_named(const char* n) { Ty t; t.name = (char*)n; t.ptrs = 0; t.is_user = 0; return t; }
+static Ty ty_ptr_u8(void)         { Ty t; t.name = (char*)"u8"; t.ptrs = 1; t.is_user = 0; return t; }
 static int ty_is(Ty t, const char* n) { return t.name && t.ptrs == 0 && !strcmp(t.name, n); }
 
 /* Look up a named function's signature (extern syscalls and user fns are all
@@ -1235,13 +1259,14 @@ static Ty infer_type(Expr* e) {
 /* --- static checks (v0.3): the first N++ P1 slice ---------------------- */
 /* Render a type for diagnostics: "i64", "*u8", "raw"-ness is not tracked. */
 static const char* ty_str(Ty t) {
-    static char buf[2][40];
+    static char buf[2][48];
     static int flip;
     char* b = buf[flip ^= 1];
     int n = 0;
-    for (int i = 0; i < t.ptrs && n < 8; i++) b[n++] = '*';
+    if (t.is_user) { memcpy(b, "#[user] ", 8); n = 8; }
+    for (int i = 0; i < t.ptrs && n < 16; i++) b[n++] = '*';
     const char* nm = t.name ? t.name : "void";
-    while (*nm && n < 38) b[n++] = *nm++;
+    while (*nm && n < 46) b[n++] = *nm++;
     b[n] = '\0';
     return b;
 }
@@ -1260,6 +1285,11 @@ static int ty_is_int(Ty t) {
  * that *u8/*void act as byte pointers and match any base. `as` casts are
  * authoritative because they change the inferred type itself. */
 static int ty_compat(Ty a, Ty p) {
+    /* #[user] is a hard boundary (v0.12): a plain pointer never converts
+     * to a #[user] one or back implicitly — the `as` cast is the audited
+     * crossing. Checked before everything else so the byte-pointer
+     * wildcards below cannot smuggle a pointer across the boundary. */
+    if ((a.ptrs || p.ptrs) && a.is_user != p.is_user) return 0;
     if (a.name && p.name && a.ptrs == p.ptrs && !strcmp(a.name, p.name)) return 1;
     if (ty_is_int(a) && ty_is_int(p)) return 1;
     if (a.ptrs && p.ptrs && a.ptrs == p.ptrs) {
@@ -1682,7 +1712,7 @@ static void gen_try(Stmt* s, int ind) {
     if (s->k != S_EXPR && ov_ok->nf != 1)
         die("%s:%d: %s.Ok carries no payload to bind — use the statement form `expr?;`",
             FILENAME, s->line, oe->name);
-    Ty okty; okty.name = NULL; okty.ptrs = 0;
+    Ty okty; okty.name = NULL; okty.ptrs = 0; okty.is_user = 0;
     if (ov_ok->nf == 1) okty = ov_ok->fs[0].ty;
     if (s->k == S_ASSIGN) {                  /* same checks as plain S_ASSIGN */
         check_expr(s->lhs);
@@ -1885,7 +1915,7 @@ static void gen_stmt(Stmt* s, int ind) {
                 /* v0.9 expression form: every arm yields a value. Each arm
                  * is typed with its binds in scope; the first arm fixes the
                  * result type and every later arm must agree with it. */
-                Ty res; res.name = NULL; res.ptrs = 0;
+                Ty res; res.name = NULL; res.ptrs = 0; res.is_user = 0;
                 for (int a = 0; a < s->narms; a++) {
                     int vi = variant_index(ed, s->arms[a].variant);
                     int vsave = NVARS;

@@ -1,6 +1,6 @@
 # The N Language — Specification
 
-**Version:** v0.11 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
+**Version:** v0.12 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
 
 This document specifies N exactly as implemented by the bootstrap compiler
 `ncc`. It is a *descriptive* spec: everything here compiles today. Planned
@@ -94,6 +94,7 @@ never overflowed. Use `\{` and `\}` for literal braces.
 ```
 ( ) { } , ; : . .. ->
 := = += -=
+#[user]        (attribute, v0.12 — the only one; see 3.2)
 + - * / %
 == != < <= > >=
 ! && ||
@@ -123,14 +124,46 @@ authoritative (the runtime does keep buffers NUL-terminated as a convenience).
 ### 3.2 Pointers
 
 ```n
-*T        // pointer to T
-raw *T    // same representation; documents intent to do unchecked arithmetic
+*T              // pointer to T
+raw *T          // same representation; documents intent to do unchecked arithmetic
+#[user] *T      // user-pointer flavor (v0.12): implicit conversions refused
 ```
 
-Both lower to `T*` in C. In N v0.1 they are equivalent; the distinction exists
-so N++ can attach checking to `*T` while leaving `raw *T` unchecked (see the
-N++ design). Any type name not in §3.1 passes through to C unchanged, which is
-the current FFI escape hatch.
+All lower to `T*` in C. `raw` exists so N++ can attach checking to `*T`
+while leaving `raw *T` unchecked (see the N++ design). Any type name not in
+§3.1 passes through to C unchanged, which is the current FFI escape hatch.
+
+#### `#[user]` checked pointers (since v0.12 — opening N++ P4)
+
+`#[user] *T` is a **distinct pointer flavor** in the type system:
+
+- It never converts implicitly to or from a plain `*T` — not even through
+  the `*u8`/`*void` byte-pointer wildcards (§6.5), which are checked
+  *after* the flavor comparison and so cannot smuggle a pointer across.
+- `expr as #[user] *T` (and the reverse cast) is the **one audited
+  crossing point** — every user-pointer handoff is explicit and greppable.
+- Marking a syscall parameter `#[user]` documents in the signature which
+  arguments the kernel range-checks with `user_ptr_ok()`; callers are
+  forced to acknowledge the boundary at the call site:
+
+  ```n
+  extern syscall {
+      fn write(fd: i32, buf: #[user] *u8, len: isize) -> i64 = 1
+  }
+  fn put(s: str) {
+      write(1, s.ptr as #[user] *u8, s.len as isize);
+  }
+  ```
+
+- `#[user]` applies only to pointer types, and is mutually exclusive with
+  `raw` (raw is the explicit opt-out of checking) — both are compile
+  errors.
+- The flavor is **erased at codegen**: same C type, zero runtime cost.
+
+This is the bootstrap slice of the N++ design's §2.3; the compile-time
+*range proof* (that the pointer lies in the canonical user half) arrives
+with the `n++` front-end. `#[user]` is also the only attribute — `#[`
+followed by anything else is a lex error, so the syntax space is reserved.
 
 ## 4. Items
 
@@ -590,7 +623,9 @@ The compiler rejects the following, each with a `file:line` diagnostic:
 - **Wrong argument count** — call arity must match the declaration.
 - **Argument type mismatches**, under these compatibility rules: any two
   integer types are call-compatible (C conversion semantics then apply);
-  `str` matches only `str`; pointers must agree in depth, and base types
+  `str` matches only `str`; pointers must agree in depth and in `#[user]`
+  flavor (§3.2 — the flavor is checked first, so the byte-pointer
+  wildcards cannot cross it), and base types
   must match unless either side is `*u8`/`*void` (byte pointers); an `as`
   cast changes the inferred type and is therefore authoritative.
 - **Assignment to immutable bindings** (§5.1).
@@ -690,7 +725,8 @@ param        = ident ":" type ;
 struct_decl  = "struct" ident "{" field { "," field } [ "," ] "}" ;
 field        = ident ":" type ;
 
-type         = [ "raw" ] { "*" } ident ;
+type         = [ "#[user]" ] [ "raw" ] { "*" } ident ;
+             (* #[user] requires at least one "*", excludes "raw" *)
 
 block        = "{" { stmt } [ expr ] "}" ;          (* trailing expr = tail *)
 stmt         = [ "mut" ] ident ":=" ( expr [ "?" ] | match_val ) ";"
