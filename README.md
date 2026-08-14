@@ -27,9 +27,11 @@
 <p align="center">
   <a href="https://dsc.gg/nyxos"><img src="https://img.shields.io/badge/Discord-NyxOS-5865F2?style=flat&logo=discord&logoColor=white" /></a>
   &nbsp;
-  <a href="https://kazah-png.github.io/nyx-os/"><img src="https://img.shields.io/badge/website-up-825AD2?style=flat&logo=githubpages&logoColor=white" /></a>
+  <a href="https://nyxos.cc"><img src="https://img.shields.io/badge/website-nyxos.cc-825AD2?style=flat&logo=githubpages&logoColor=white" /></a>
   &nbsp;
   <a href="https://github.com/kazah-png/nyx-os/wiki"><img src="https://img.shields.io/badge/wiki-online-800080?style=flat&logo=github&logoColor=white" /></a>
+  &nbsp;
+  <a href="https://nyxos.cc/support.html"><img src="https://img.shields.io/badge/sponsor-%E2%99%A5-EA4AAA?style=flat&logo=githubsponsors&logoColor=white" /></a>
 </p>
 
 ---
@@ -184,6 +186,18 @@ command, a render demo, a wallpaper, or a CI self-test — see
 | **Bug Finder** | [@Voliox86](https://github.com/Voliox86) |
 | **Art & Design** | [@kurawi-debug](https://github.com/kurawi-debug) |
 | **Junior Dev** | [@0plimplim0](https://github.com/0plimplim0) |
+
+---
+
+## Support
+
+NyxOS is GPL-2.0 and stays free — funding buys speed, never access. It covers the `nyxos.cc`
+domain, second-hand x86 boxes to test on real metal, and the development budget.
+
+[GitHub Sponsors](https://github.com/sponsors/kazah-png) · [Ko-fi](https://ko-fi.com/nyxos) · [Open Collective](https://opencollective.com/NyxOSdev) (public ledger) — details at **[nyxos.cc/support](https://nyxos.cc/support.html)**.
+
+The free help is worth more: boot the ISO on a machine you don't care about and
+[open an issue](https://github.com/kazah-png/nyx-os/issues) with the serial log of where it stopped.
 
 ---
 

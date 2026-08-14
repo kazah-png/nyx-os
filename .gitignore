@@ -111,3 +111,11 @@ scratchpad/
 
 # Local-only detailed changelog (kept out of the public repo)
 AGENTS.md
+
+# Generated wallpaper pack (tools/wallgen) - the shipped copy lives in docs/
+dist/
+tools/wallgen/wallgen
+tools/wallgen/bg_extract.inc
+
+# ...but the wallpaper pack IS shipped from the site
+!docs/NyxOS-Wallpaper-Pack.zip
