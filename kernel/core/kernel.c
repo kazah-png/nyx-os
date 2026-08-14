@@ -124,6 +124,8 @@ static void cmd_fnv(int argc, char** argv);
 static void cmd_seq(int argc, char** argv);
 static void cmd_urlcode(int argc, char** argv);
 static void cmd_paste(int argc, char** argv);
+static void cmd_crc32c(int argc, char** argv);
+uint32_t crc32c_calc(const uint8_t* data, uint32_t len);
 static void cmd_comm(int argc, char** argv);
 static void cmd_vfsstat(int argc, char** argv);
 static void cmd_rev(int argc, char** argv);
@@ -283,6 +285,7 @@ static const command_t commands[] = {
     {"semver",    cmd_semver,    "Validate/compare SemVer 2.0.0: semver <ver> [<ver2>]", false},
     {"fnv",       cmd_fnv,       "FNV-1a hash of text: fnv [-64] <text ...>", false},
     {"urlcode",   cmd_urlcode,   "Percent-encode/decode text: urlcode [-d] <text ...>", false},
+    {"crc32c",    cmd_crc32c,    "CRC-32C (Castagnoli) checksum: crc32c <text ...>", false},
     {"printf",    cmd_printf,    "Format and print: printf FORMAT [ARG...]", false},
     {"expand",    cmd_expand,    "Convert tabs to spaces: expand [-t N] <file>", false},
     {"unexpand",  cmd_unexpand,  "Convert spaces to tabs: unexpand [-a] [-t N] <file>", false},
@@ -541,7 +544,7 @@ static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev",
 static const char* const HC_sys[]   = {"ps","kill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat",0};
 static const char* const HC_user[]  = {"useradd","users",0};
 static const char* const HC_net[]   = {"ifconfig","dhcp","dns","ping","setip","httpget","tls",0};
-static const char* const HC_dev[]   = {"cc","xbm","semver","fnv","urlcode",0};
+static const char* const HC_dev[]   = {"cc","xbm","semver","fnv","urlcode","crc32c",0};
 static const char* const HC_media[] = {"play","sb16play","imageview","selene",0};
 static const char* const HC_games[] = {"doom","pong","voxel","fire","matrix","lava","fractal","julia","particles","snake","tetris",0};
 static const char* const HC_test[]  = {"mtdemo","smpstress","smpuser","smpthreads","smpbalance","tlbtest","cowtest","crash","usertest","tcptest","tcpdrop","tcploop","tcpserve","posttest","tlsstrict","prftest","gcmtest","dertest","p256test","p384test","x25519test","tlskeytest","tlsrectest","csprngtest","skp384test","deflatetest","sha512test","pngtest","bmptest","giftest","jpegtest","imgreject","httptest","ext2test","rsatest","chaintest","formtest",0};
@@ -632,6 +635,7 @@ static const man_page_t man_pages[] = {
     {"paste",    "Merge corresponding lines of files. By default the i-th line of each file is printed on one row, separated by a tab, continuing until every file runs out (a spent file leaves its column empty). -s writes each file's lines onto a single line instead. -d LIST replaces the tab with the characters of LIST used in turn (\\t, \\n, \\\\ escapes recognised). Reads each whole file; up to 16 files. Matches GNU paste for newline-delimited text."},
     {"fnv",      "Print the FNV-1a hash of the argument text (all arguments joined by single spaces) as lowercase hex. FNV-1a is a small, fast NON-cryptographic hash used for hash tables and quick content fingerprints; the 32-bit variant is the default and -64 selects the 64-bit variant. It is not collision-resistant, so do not use it where an adversary controls the input (SipHash is the keyed alternative)."},
     {"urlcode",  "Percent-encode the argument text per RFC 3986 (the unreserved set A-Za-z0-9-._~ passes through, every other byte becomes %XX in uppercase hex), or with -d strict-decode a single percent-encoded token back to its bytes. Arguments are joined with single spaces before encoding. The decoder is strict: a '%' not followed by exactly two hex digits is rejected. Backed by the shared codec used for URL handling."},
+    {"crc32c",   "Print the CRC-32C (Castagnoli) checksum of the argument text (all arguments joined by single spaces) as 8-digit lowercase hex. CRC-32C is the data-integrity checksum used by ext4 metadata, Btrfs, iSCSI and SCTP — a different, stronger polynomial (0x1EDC6F41) than the zip/PNG CRC-32, and the one modern CPUs accelerate in hardware. crc32c of `123456789` is e3069283."},
     {"printf",   "Print ARGs under the control of FORMAT (like the C/coreutil printf). FORMAT is reused as needed to consume all ARGs. It interprets backslash escapes (\\n \\t \\r \\a \\b \\f \\v \\\\) and the conversions %s %d %i %u %x %X %c %% with optional flags and field width (e.g. %-10s, %05d). Numeric ARGs are read as decimal. Unlike echo, printf never appends a trailing newline unless FORMAT contains one."},
     {"expand",   "Convert the tabs in <file> to spaces. Each tab advances to the next tab stop, which are spaced N columns apart (8 by default, or -t N), so columns stay aligned instead of a fixed number of spaces per tab. Non-tab characters and newlines pass through unchanged (a newline resets the column count)."},
     {"unexpand", "The inverse of expand: convert runs of spaces in <file> back into tabs, collapsing each blank run to the fewest tabs+spaces at N-column tab stops (8 by default, or -t N). A single space is never turned into a tab. By default only the LEADING blanks of each line are converted (matching GNU unexpand); -a converts blank runs everywhere on the line, and -t N implies -a."},
@@ -1107,6 +1111,24 @@ static void cmd_urlcode(int argc, char** argv) {
         if (url_pct_encode((const uint8_t*)in, o, out, sizeof(out)) < 0) { printf("urlcode: input too long\n"); return; }
         printf("%s\n", out);
     }
+}
+
+// crc32c <text ...> — CRC-32C (Castagnoli) of the argument text (args joined by single
+// spaces), as 8-digit lowercase hex. Backed by crc32c_calc; hex is hand-formatted to
+// stay independent of printf width support.
+static void cmd_crc32c(int argc, char** argv) {
+    static const char* HEX = "0123456789abcdef";
+    if (argc < 2) { printf("Usage: crc32c <text ...>\n"); return; }
+    uint8_t in[256]; uint32_t o = 0;
+    for (int i = 1; i < argc; i++) {
+        if (i > 1 && o < sizeof(in)) in[o++] = ' ';                      // rejoin args with spaces
+        for (uint32_t k = 0; argv[i][k] && o < sizeof(in); k++) in[o++] = (uint8_t)argv[i][k];
+    }
+    uint32_t c = crc32c_calc(in, o);
+    char out[9];
+    for (int i = 7; i >= 0; i--) { out[i] = HEX[c & 0xF]; c >>= 4; }
+    out[8] = 0;
+    printf("%s\n", out);
 }
 
 // seq output callback: print each value as a decimal on its own line. The number is
@@ -4181,6 +4203,33 @@ static int crc32_selftest(void) {
     return 0;
 }
 
+// ---- CRC-32C (Castagnoli) data-integrity checksum ----------------------------
+// The storage-world CRC: ext4 metadata, Btrfs, iSCSI, SCTP — a different, stronger
+// polynomial than the IEEE crc32 above (and the one modern CPUs accelerate with a
+// dedicated instruction). Reflected (poly 0x82F63B78 = bit-reversed 0x1EDC6F41,
+// init/final 0xFFFFFFFF), computed bitwise, no table. crc32c("123456789") == 0xE3069283.
+uint32_t crc32c_calc(const uint8_t* data, uint32_t len) {
+    uint32_t crc = 0xFFFFFFFFu;
+    for (uint32_t i = 0; i < len; i++) {
+        crc ^= data[i];
+        for (int b = 0; b < 8; b++)
+            crc = (crc & 1) ? ((crc >> 1) ^ 0x82F63B78u) : (crc >> 1);
+    }
+    return ~crc;
+}
+// KAT: the canonical check value plus common vectors, a distinctness check, and a
+// cross-check that it differs from the IEEE CRC-32 (proving the polynomial is distinct).
+static int crc32c_selftest(void) {
+    if (crc32c_calc((const uint8_t*)"", 0)          != 0x00000000u) return 1;
+    if (crc32c_calc((const uint8_t*)"123456789", 9) != 0xE3069283u) return 2;  // canonical
+    if (crc32c_calc((const uint8_t*)"abc", 3)       != 0x364B3FB7u) return 3;
+    if (crc32c_calc((const uint8_t*)"The quick brown fox jumps over the lazy dog", 43)
+                                                    != 0x22620404u) return 4;
+    if (crc32c_calc((const uint8_t*)"a", 1) == crc32c_calc((const uint8_t*)"b", 1)) return 5;
+    if (crc32c_calc((const uint8_t*)"123456789", 9) == crc32_calc((const uint8_t*)"123456789", 9)) return 6;
+    return 0;
+}
+
 // Run the whole offline self-test battery, print a machine-readable summary, and
 // halt. Triggered ONLY by the "selftest" multiboot command line (used by CI); a
 // normal boot never calls this, so ordinary startup is unaffected. Each test is a
@@ -4214,6 +4263,7 @@ static void run_selftests(void) {
         {"tcpcksum",     tcp_checksum_selftest},  {"dns",           dns_response_selftest},
         {"dhcpopt",      dhcp_options_selftest},
         {"mathx",        mathx_selftest},         {"crc32",         crc32_selftest},
+        {"crc32c",       crc32c_selftest},
         {"totp",         totp_selftest},          {"ipv4",          ipv4_parse_selftest},
         {"ipv6",         ipv6_parse_selftest},
         {"numparse",     numparse_selftest},        {"hkdf",          hkdf_selftest},
