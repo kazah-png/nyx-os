@@ -20,6 +20,7 @@
 #include "semver.h"
 #include "comm.h"
 #include "seq.h"
+#include "paste.h"
 #include "../net/dns.h"
 #include "../net/http.h"
 #include "../crypto/tls/tls.h"
@@ -122,6 +123,7 @@ static void cmd_semver(int argc, char** argv);
 static void cmd_fnv(int argc, char** argv);
 static void cmd_seq(int argc, char** argv);
 static void cmd_urlcode(int argc, char** argv);
+static void cmd_paste(int argc, char** argv);
 static void cmd_comm(int argc, char** argv);
 static void cmd_vfsstat(int argc, char** argv);
 static void cmd_rev(int argc, char** argv);
@@ -275,6 +277,7 @@ static const command_t commands[] = {
     {"nl",        cmd_nl,        "Number lines: nl [-b a|t|n] [-w N] [-s SEP] <file>", false},
     {"factor",    cmd_factor,    "Prime factorization: factor N [N ...]", false},
     {"seq",       cmd_seq,       "Integer sequence: seq [FIRST [STEP]] LAST", false},
+    {"paste",     cmd_paste,     "Merge lines of files: paste [-s] [-d LIST] <file ...>", false},
     {"comm",      cmd_comm,      "Compare two sorted files: comm [-123] <f1> <f2>", false},
     {"vfsstat",   cmd_vfsstat,   "VFS node-pool usage census (diagnose exhaustion)", false},
     {"semver",    cmd_semver,    "Validate/compare SemVer 2.0.0: semver <ver> [<ver2>]", false},
@@ -534,7 +537,7 @@ void execute_command(const char* cmd_line) {
 typedef struct { const char* title; const char* const* names; } help_cat_t;
 static const char* const HC_shell[] = {"help","man","version","clear","history","exec","spawn","jobs","wait","nice","renice",0};
 static const char* const HC_files[] = {"ls","cd","pwd","cat","file","tar","iniget","open","touch","mkdir","rm","cp","mv","tree","find","which","basename","dirname","files","df","mount","ext2ls","ext2cat",0};
-static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tr","fold","nl","expand","unexpand","factor","seq","comm","printf","wc","write","hexdump",0};
+static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tr","fold","nl","expand","unexpand","factor","seq","paste","comm","printf","wc","write","hexdump",0};
 static const char* const HC_sys[]   = {"ps","kill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat",0};
 static const char* const HC_user[]  = {"useradd","users",0};
 static const char* const HC_net[]   = {"ifconfig","dhcp","dns","ping","setip","httpget","tls",0};
@@ -626,6 +629,7 @@ static const man_page_t man_pages[] = {
     {"comm",     "Compare two files that are each already sorted, line by line, in three columns: lines only in <file1> (column 1), lines only in <file2> (column 2, indented one tab), and lines common to both (column 3, indented two tabs). `-1`/`-2`/`-3` suppress the respective column (and drop its indentation from the later columns), so e.g. `comm -12 a b` prints just the lines common to both. Input is assumed sorted in byte order."},
     {"semver",   "Parse and compare Semantic Versioning 2.0.0 strings (MAJOR.MINOR.PATCH[-prerelease][+build]). With one argument, validate it and print the parsed fields. With two, print their precedence relation (`A < B`, `A = B`, or `A > B`) per the semver spec: core numbers compared numerically, a prerelease ranks below the same version without one, and build metadata is ignored. Useful for comparing package versions."},
     {"seq",      "Print an inclusive sequence of integers, one per line. `seq LAST` counts 1..LAST; `seq FIRST LAST` counts FIRST..LAST; `seq FIRST STEP LAST` advances by STEP (which may be negative). A range that starts on the wrong side of LAST prints nothing, and a zero STEP is an error. Integer-only (64-bit signed), matching GNU seq for integer arguments."},
+    {"paste",    "Merge corresponding lines of files. By default the i-th line of each file is printed on one row, separated by a tab, continuing until every file runs out (a spent file leaves its column empty). -s writes each file's lines onto a single line instead. -d LIST replaces the tab with the characters of LIST used in turn (\\t, \\n, \\\\ escapes recognised). Reads each whole file; up to 16 files. Matches GNU paste for newline-delimited text."},
     {"fnv",      "Print the FNV-1a hash of the argument text (all arguments joined by single spaces) as lowercase hex. FNV-1a is a small, fast NON-cryptographic hash used for hash tables and quick content fingerprints; the 32-bit variant is the default and -64 selects the 64-bit variant. It is not collision-resistant, so do not use it where an adversary controls the input (SipHash is the keyed alternative)."},
     {"urlcode",  "Percent-encode the argument text per RFC 3986 (the unreserved set A-Za-z0-9-._~ passes through, every other byte becomes %XX in uppercase hex), or with -d strict-decode a single percent-encoded token back to its bytes. Arguments are joined with single spaces before encoding. The decoder is strict: a '%' not followed by exactly two hex digits is rejected. Backed by the shared codec used for URL handling."},
     {"printf",   "Print ARGs under the control of FORMAT (like the C/coreutil printf). FORMAT is reused as needed to consume all ARGs. It interprets backslash escapes (\\n \\t \\r \\a \\b \\f \\v \\\\) and the conversions %s %d %i %u %x %X %c %% with optional flags and field width (e.g. %-10s, %05d). Numeric ARGs are read as decimal. Unlike echo, printf never appends a trailing newline unless FORMAT contains one."},
@@ -1169,6 +1173,53 @@ static void cmd_comm(int argc, char** argv) {
     comm_run((const char*)da, (int)na, (const char*)db, (int)nb, s1, s2, s3, comm_emit_print, 0);
     vfs_close(fa);
     vfs_close(fb);
+}
+
+// paste output callback: emit one byte.
+static void paste_emit_putc(char c, void* ctx) { (void)ctx; putchar(c); }
+
+// paste [-s] [-d LIST] <file ...> — merge lines of files. Default: line i of every file
+// side by side, TAB-separated, until all files run out. -s: each file's lines joined
+// onto one line. -d LIST: cycle LIST's chars as delimiters (\t \n \\ escapes). Reads
+// each whole file via vfs (the cmd_comm pattern); up to 16 files. Backed by paste_run().
+static void cmd_paste(int argc, char** argv) {
+    int serial = 0, ai = 1;
+    char del[64]; del[0] = '\t'; int nd = 1;                  // default delimiter: TAB
+    while (ai < argc && argv[ai][0] == '-' && argv[ai][1]) {
+        const char* a = argv[ai];
+        if (strcmp(a, "-s") == 0) { serial = 1; ai++; continue; }
+        if (a[1] == 'd') {
+            const char* list = a[2] ? a + 2 : (ai + 1 < argc ? argv[++ai] : "");
+            nd = 0;
+            for (uint32_t k = 0; list[k] && nd < (int)sizeof(del); k++) {
+                char c = list[k];
+                if (c == '\\' && list[k + 1]) {               // \t \n \\ \r escapes
+                    char n = list[++k];
+                    c = (n == 't') ? '\t' : (n == 'n') ? '\n' : (n == '\\') ? '\\' : (n == 'r') ? '\r' : n;
+                }
+                del[nd++] = c;
+            }
+            if (nd == 0) { del[0] = '\t'; nd = 1; }
+            ai++; continue;
+        }
+        printf("paste: invalid option '%s'\n", a); return;
+    }
+    int nf = argc - ai;
+    if (nf <= 0) { printf("Usage: paste [-s] [-d LIST] <file ...>\n"); return; }
+    if (nf > 16) { printf("paste: too many files (max 16)\n"); return; }
+    int fds[16]; paste_file_t files[16];
+    int opened = 0, ok = 1;
+    for (int i = 0; i < nf; i++) {
+        int fd = vfs_open(argv[ai + i], 0, 0);
+        if (fd < 0) { printf("paste: cannot open '%s'\n", argv[ai + i]); ok = 0; break; }
+        fds[opened++] = fd;
+        uint32_t sz = vfs_fsize(fd);
+        uint8_t* d = vfs_fdata(fd);
+        if (sz && !d) { printf("paste: read error\n"); ok = 0; break; }
+        files[i].text = (const char*)d; files[i].len = sz;
+    }
+    if (ok) paste_run(files, nf, del, nd, serial, paste_emit_putc, 0);
+    for (int i = 0; i < opened; i++) vfs_close(fds[i]);
 }
 
 // vfsstat — census the VFS node pool (diagnostic for the #66 exhaustion). Splits the
