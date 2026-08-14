@@ -24,6 +24,7 @@
 #include "tac.h"
 #include "csv.h"
 #include "tsort.h"
+#include "base58.h"
 #include "../net/dns.h"
 #include "../net/http.h"
 #include "../crypto/tls/tls.h"
@@ -130,6 +131,7 @@ static void cmd_paste(int argc, char** argv);
 static void cmd_tac(int argc, char** argv);
 static void cmd_csv(int argc, char** argv);
 static void cmd_tsort(int argc, char** argv);
+static void cmd_base58(int argc, char** argv);
 static void cmd_crc32c(int argc, char** argv);
 uint32_t crc32c_calc(const uint8_t* data, uint32_t len);
 static void cmd_comm(int argc, char** argv);
@@ -295,6 +297,7 @@ static const command_t commands[] = {
     {"fnv",       cmd_fnv,       "FNV-1a hash of text: fnv [-64] <text ...>", false},
     {"urlcode",   cmd_urlcode,   "Percent-encode/decode text: urlcode [-d] <text ...>", false},
     {"crc32c",    cmd_crc32c,    "CRC-32C (Castagnoli) checksum: crc32c <text ...>", false},
+    {"base58",    cmd_base58,    "Base58 (Bitcoin) encode/decode text: base58 [-d] <text ...>", false},
     {"printf",    cmd_printf,    "Format and print: printf FORMAT [ARG...]", false},
     {"expand",    cmd_expand,    "Convert tabs to spaces: expand [-t N] <file>", false},
     {"unexpand",  cmd_unexpand,  "Convert spaces to tabs: unexpand [-a] [-t N] <file>", false},
@@ -553,7 +556,7 @@ static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev",
 static const char* const HC_sys[]   = {"ps","kill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat",0};
 static const char* const HC_user[]  = {"useradd","users",0};
 static const char* const HC_net[]   = {"ifconfig","dhcp","dns","ping","setip","httpget","tls",0};
-static const char* const HC_dev[]   = {"cc","xbm","semver","fnv","urlcode","crc32c",0};
+static const char* const HC_dev[]   = {"cc","xbm","semver","fnv","urlcode","crc32c","base58",0};
 static const char* const HC_media[] = {"play","sb16play","imageview","selene",0};
 static const char* const HC_games[] = {"doom","pong","voxel","fire","matrix","lava","fractal","julia","particles","snake","tetris",0};
 static const char* const HC_test[]  = {"mtdemo","smpstress","smpuser","smpthreads","smpbalance","tlbtest","cowtest","crash","usertest","tcptest","tcpdrop","tcploop","tcpserve","posttest","tlsstrict","prftest","gcmtest","dertest","p256test","p384test","x25519test","tlskeytest","tlsrectest","csprngtest","skp384test","deflatetest","sha512test","pngtest","bmptest","giftest","jpegtest","imgreject","httptest","ext2test","rsatest","chaintest","formtest",0};
@@ -648,6 +651,7 @@ static const man_page_t man_pages[] = {
     {"fnv",      "Print the FNV-1a hash of the argument text (all arguments joined by single spaces) as lowercase hex. FNV-1a is a small, fast NON-cryptographic hash used for hash tables and quick content fingerprints; the 32-bit variant is the default and -64 selects the 64-bit variant. It is not collision-resistant, so do not use it where an adversary controls the input (SipHash is the keyed alternative)."},
     {"urlcode",  "Percent-encode the argument text per RFC 3986 (the unreserved set A-Za-z0-9-._~ passes through, every other byte becomes %XX in uppercase hex), or with -d strict-decode a single percent-encoded token back to its bytes. Arguments are joined with single spaces before encoding. The decoder is strict: a '%' not followed by exactly two hex digits is rejected. Backed by the shared codec used for URL handling."},
     {"crc32c",   "Print the CRC-32C (Castagnoli) checksum of the argument text (all arguments joined by single spaces) as 8-digit lowercase hex. CRC-32C is the data-integrity checksum used by ext4 metadata, Btrfs, iSCSI and SCTP — a different, stronger polynomial (0x1EDC6F41) than the zip/PNG CRC-32, and the one modern CPUs accelerate in hardware. crc32c of `123456789` is e3069283."},
+    {"base58",   "Base58-encode the argument text (Bitcoin alphabet — the digits and letters minus 0, O, I and l, which are easy to confuse), or with -d decode a base58 string back to its bytes. Base58 writes a byte string as one big-endian base-58 number and renders each leading zero byte as a leading '1', so it is the compact, ambiguity-free encoding used for crypto addresses. Arguments are joined with single spaces before encoding; an out-of-alphabet character is rejected on decode. Verified by the boot self-test battery against the canonical Bitcoin vectors."},
     {"printf",   "Print ARGs under the control of FORMAT (like the C/coreutil printf). FORMAT is reused as needed to consume all ARGs. It interprets backslash escapes (\\n \\t \\r \\a \\b \\f \\v \\\\) and the conversions %s %d %i %u %x %X %c %% with optional flags and field width (e.g. %-10s, %05d). Numeric ARGs are read as decimal. Unlike echo, printf never appends a trailing newline unless FORMAT contains one."},
     {"expand",   "Convert the tabs in <file> to spaces. Each tab advances to the next tab stop, which are spaced N columns apart (8 by default, or -t N), so columns stay aligned instead of a fixed number of spaces per tab. Non-tab characters and newlines pass through unchanged (a newline resets the column count)."},
     {"unexpand", "The inverse of expand: convert runs of spaces in <file> back into tabs, collapsing each blank run to the fewest tabs+spaces at N-column tab stops (8 by default, or -t N). A single space is never turned into a tab. By default only the LEADING blanks of each line are converted (matching GNU unexpand); -a converts blank runs everywhere on the line, and -t N implies -a."},
@@ -1141,6 +1145,31 @@ static void cmd_crc32c(int argc, char** argv) {
     for (int i = 7; i >= 0; i--) { out[i] = HEX[c & 0xF]; c >>= 4; }
     out[8] = 0;
     printf("%s\n", out);
+}
+
+// base58 [-d] <text ...> — Base58 (Bitcoin) encode the argument text, or -d decode a
+// base58 string back to its raw bytes. Backed by the hardened, KAT'd base58 codec.
+static void cmd_base58(int argc, char** argv) {
+    int dec = 0, start = 1;
+    if (start < argc && strcmp(argv[start], "-d") == 0) { dec = 1; start++; }
+    if (start >= argc) { printf("Usage: base58 [-d] <text ...>\n"); return; }
+    if (dec) {
+        uint32_t n = 0; while (argv[start][n]) n++;           // a base58 token has no spaces
+        uint8_t out[BASE58_MAX];
+        int dl = base58_decode(argv[start], n, out, sizeof(out));
+        if (dl < 0) { printf("base58: invalid base58 input\n"); return; }
+        for (int i = 0; i < dl; i++) putchar((char)out[i]);
+        putchar('\n');
+    } else {
+        uint8_t in[BASE58_MAX]; uint32_t o = 0;
+        for (int i = start; i < argc; i++) {                  // rejoin args with spaces
+            if (i > start && o < sizeof(in)) in[o++] = ' ';
+            for (uint32_t k = 0; argv[i][k] && o < sizeof(in); k++) in[o++] = (uint8_t)argv[i][k];
+        }
+        char out[BASE58_MAX * 2];
+        if (base58_encode(in, o, out, sizeof(out)) < 0) { printf("base58: input too long\n"); return; }
+        printf("%s\n", out);
+    }
 }
 
 // seq output callback: print each value as a decimal on its own line. The number is
@@ -4182,6 +4211,7 @@ extern int semver_selftest(void);
 extern int base85_selftest(void);
 extern int fnv_selftest(void);
 extern int csv_selftest(void);
+extern int base58_selftest(void);
 extern int url_codec_selftest(void);
 extern int tls_prf_selftest(void);
 extern int tls_keyschedule_selftest(void);
@@ -4377,6 +4407,7 @@ static void run_selftests(void) {
         {"base85",       base85_selftest},
         {"fnv",          fnv_selftest},
         {"csv",          csv_selftest},
+        {"base58",       base58_selftest},
         {"urlcodec",     url_codec_selftest},
         {"utf8",          utf8_selftest},
         {"p256",          p256_selftest},
