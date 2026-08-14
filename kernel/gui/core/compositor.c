@@ -53,6 +53,7 @@ int compositor_logout_requested = 0; // set by the user menu; boot loop re-shows
 static int ctx_menu_open = 0;
 static int ctx_menu_x = 0, ctx_menu_y = 0;
 static int cal_popup_open = 0;      // the taskbar clock's calendar popup
+static int net_popup_open = 0;      // the system tray's network-status popup
 static int mouse_x = 0, mouse_y = 0;
 static int mouse_z = 0;          // previous wheel total (see mouse_get_z); delta = new - this
 static uint8_t mouse_btns = 0;
@@ -543,6 +544,22 @@ static void draw_systray(int x, int tb_y) {
     fb_fill_rect(sx + 13, cy - 5, 2, 11, sp);                 // far sound wave
 }
 
+// x of the system-tray inset panel — the shared source of truth for both the taskbar
+// layout and the tray's click hit-testing (they must not drift).
+static int systray_x(void) {
+    uint32_t fw = fb_get_width();
+    int av_s = TASKBAR_H - 14;
+    int ublock_w = av_s + 6 + (int)strlen(g_login_user) * FONT_WIDTH + 10;
+    return (int)(fw - CLOCK_W - 8) - ublock_w - SYSTRAY_W;
+}
+
+// Is (mx,my) on the tray's network icon (its left ~half, the four signal bars)?
+static int systray_net_hit(int mx, int my) {
+    int tb_y = (int)fb_get_height() - TASKBAR_H;
+    int sx = systray_x();
+    return mx >= sx && mx < sx + 25 && my >= tb_y + 4 && my < tb_y + TASKBAR_H - 4;
+}
+
 static void draw_taskbar(void) {
     uint32_t fw = fb_get_width(), fh = fb_get_height();
     int tb_y = fh - TASKBAR_H;
@@ -562,7 +579,7 @@ static void draw_taskbar(void) {
     // and the system tray (network + speaker), left of the badge.
     int av_s = TASKBAR_H - 14;
     int ublock_w = av_s + 6 + (int)strlen(g_login_user) * FONT_WIDTH + 10;
-    int tray_x = (int)(fw - CLOCK_W - 8) - ublock_w - SYSTRAY_W;
+    int tray_x = systray_x();
     int right_limit = tray_x - 4;
     if (right_limit < 90) right_limit = 90;
 
@@ -685,6 +702,56 @@ static void draw_cal_popup(void) {
                                celly + (CAL_CELL_H - FONT_HEIGHT) / 2, db, fg);
         if (++col > 6) { col = 0; row++; }
     }
+}
+
+// ---- System-tray network icon -> network-status popup (like Windows' network flyout) ----
+#define NET_W   200
+#define NET_HDR  22
+#define NET_ROW  16
+#define NET_PAD   8
+#define NET_H   (NET_HDR + 4 * NET_ROW + 2 * NET_PAD)     // header + up to 4 info lines
+
+static int net_popup_x(void) { return (int)fb_get_width()  - NET_W - 4; }
+static int net_popup_y(void) { return (int)fb_get_height() - TASKBAR_H - NET_H - 4; }
+
+static int net_popup_hit(int mx, int my) {
+    if (!net_popup_open) return 0;
+    int x = net_popup_x(), y = net_popup_y();
+    return mx >= x && mx < x + NET_W && my >= y && my < y + NET_H;
+}
+
+// A small flyout showing the first live (non-loopback) interface's IP / mask / gateway,
+// or "Not connected" when the machine is offline. Same panel styling as the calendar.
+static void draw_net_popup(void) {
+    if (!net_popup_open) return;
+    int x = net_popup_x(), y = net_popup_y();
+
+    fb_fill_rect(x, y, NET_W, NET_H, THEME_WINDOW_BG);
+    fb_fill_rect(x, y, NET_W, 1, THEME_ACCENT);
+    fb_fill_rect(x, y + NET_H - 1, NET_W, 1, col_darken(THEME_WINDOW_BG, 30));
+    fb_fill_rect(x, y, 1, NET_H, col_lighten(THEME_WINDOW_BG, 10));
+    fb_fill_rect(x + NET_W - 1, y, 1, NET_H, col_darken(THEME_WINDOW_BG, 30));
+
+    fb_fill_vgrad(x + 1, y + 1, NET_W - 2, NET_HDR - 1, THEME_ACCENT, col_darken(THEME_ACCENT, 22));
+    font_draw_string_trans(x + NET_PAD, y + (NET_HDR - FONT_HEIGHT) / 2, "Network", THEME_ON_ACCENT);
+
+    int tx = x + NET_PAD, ty = y + NET_HDR + NET_PAD, line = 0, shown = 0;
+    char buf[48];
+    for (int i = 0; i < 8 && !shown; i++) {
+        net_iface_t* nf = &net_interfaces[i];
+        if (!nf->name[0] || nf->ip == 0) continue;
+        if (nf->name[0] == 'l' && nf->name[1] == 'o' && nf->name[2] == 0) continue;   // skip loopback
+        font_draw_string_trans(tx, ty + line++ * NET_ROW, nf->name, fb_rgb(150, 110, 235));
+        snprintf(buf, sizeof(buf), "IP    %d.%d.%d.%d", IP4_OCTETS(nf->ip));
+        font_draw_string_trans(tx, ty + line++ * NET_ROW, buf, fb_rgb(215, 215, 225));
+        snprintf(buf, sizeof(buf), "Mask  %d.%d.%d.%d", IP4_OCTETS(nf->netmask));
+        font_draw_string_trans(tx, ty + line++ * NET_ROW, buf, fb_rgb(215, 215, 225));
+        snprintf(buf, sizeof(buf), "GW    %d.%d.%d.%d", IP4_OCTETS(nf->gateway));
+        font_draw_string_trans(tx, ty + line++ * NET_ROW, buf, fb_rgb(215, 215, 225));
+        shown = 1;
+    }
+    if (!shown)
+        font_draw_string_trans(tx, ty, "Not connected", fb_rgb(210, 120, 120));
 }
 
 static void draw_start_menu(void) {
@@ -1544,6 +1611,7 @@ static void redraw_all(void) {
     draw_user_menu();
     draw_ctx_menu();
     draw_cal_popup();
+    draw_net_popup();
     frame_dirty = 1;      // a fresh frame is in the back buffer, awaiting fb_present()
 }
 
@@ -2025,7 +2093,7 @@ void compositor_init(void) {
         }
     }
     window_count = 0; next_id = 100; focused_id = 0; drag_id = 0; resize_id = 0; quit = 0;
-    current_workspace = 0; start_menu_open = 0; user_menu_open = 0; cal_popup_open = 0; cursor_saved = 0;
+    current_workspace = 0; start_menu_open = 0; user_menu_open = 0; cal_popup_open = 0; net_popup_open = 0; cursor_saved = 0;
 
     taskbar_bg = THEME_TASKBAR_BG;
     taskbar_fg = THEME_TASKBAR_FG;
@@ -3374,6 +3442,23 @@ void compositor_run(void) {
                     goto done_click;
                 }
 
+                if (net_popup_open) {
+                    if (pressed && !net_popup_hit(mx, my)) {   // click away closes the network flyout
+                        net_popup_open = 0;
+                        redraw = 1;
+                    }
+                    goto done_click;
+                }
+
+                if (systray_net_hit(mx, my)) {
+                    if (pressed) {
+                        net_popup_open = !net_popup_open;       // click the tray network icon
+                        start_menu_open = 0; user_menu_open = 0; cal_popup_open = 0;
+                        redraw = 1;
+                    }
+                    goto done_click;
+                }
+
                 if (badge_hit(mx, my)) {
                     if (pressed) {
                         user_menu_open = !user_menu_open;
@@ -3412,6 +3497,7 @@ void compositor_run(void) {
                         cal_popup_open = !cal_popup_open;      // click the clock to open the calendar
                         start_menu_open = 0;
                         user_menu_open = 0;
+                        net_popup_open = 0;
                         redraw = 1;
                     }
                     goto done_click;
