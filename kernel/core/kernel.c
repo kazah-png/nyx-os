@@ -26,6 +26,7 @@
 #include "tsort.h"
 #include "base58.h"
 #include "cut.h"
+#include "uniq.h"
 #include "../crypto/bech32.h"
 #include "../net/dns.h"
 #include "../net/http.h"
@@ -131,6 +132,7 @@ static void cmd_seq(int argc, char** argv);
 static void cmd_urlcode(int argc, char** argv);
 static void cmd_paste(int argc, char** argv);
 static void cmd_cut(int argc, char** argv);
+static void cmd_uniq(int argc, char** argv);
 static void cmd_tac(int argc, char** argv);
 static void cmd_csv(int argc, char** argv);
 static void cmd_tsort(int argc, char** argv);
@@ -293,6 +295,7 @@ static const command_t commands[] = {
     {"seq",       cmd_seq,       "Integer sequence: seq [FIRST [STEP]] LAST", false},
     {"paste",     cmd_paste,     "Merge lines of files: paste [-s] [-d LIST] <file ...>", false},
     {"cut",       cmd_cut,       "Select fields/chars of each line: cut -f|-c|-b LIST [-d C] [-s] <file>", false},
+    {"uniq",      cmd_uniq,      "Collapse adjacent equal lines: uniq [-c|-d|-u|-i|-f N|-s N|-w N] <file>", false},
     {"tac",       cmd_tac,       "Print a file's lines in reverse order: tac [-s SEP] <file>", false},
     {"csv",       cmd_csv,       "View a CSV file as an aligned table: csv [-d DELIM] <file>", false},
     {"tsort",     cmd_tsort,     "Topological sort of a dependency list: tsort <file>", false},
@@ -558,7 +561,7 @@ void execute_command(const char* cmd_line) {
 typedef struct { const char* title; const char* const* names; } help_cat_t;
 static const char* const HC_shell[] = {"help","man","version","clear","history","exec","spawn","jobs","wait","nice","renice",0};
 static const char* const HC_files[] = {"ls","cd","pwd","cat","file","tar","iniget","open","touch","mkdir","rm","cp","mv","tree","find","which","basename","dirname","files","df","mount","ext2ls","ext2cat",0};
-static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","fold","nl","expand","unexpand","factor","seq","paste","cut","comm","printf","wc","write","hexdump",0};
+static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","fold","nl","expand","unexpand","factor","seq","paste","cut","uniq","comm","printf","wc","write","hexdump",0};
 static const char* const HC_sys[]   = {"ps","kill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat",0};
 static const char* const HC_user[]  = {"useradd","users",0};
 static const char* const HC_net[]   = {"ifconfig","dhcp","dns","ping","setip","httpget","tls",0};
@@ -652,6 +655,7 @@ static const man_page_t man_pages[] = {
     {"seq",      "Print an inclusive sequence of integers, one per line. `seq LAST` counts 1..LAST; `seq FIRST LAST` counts FIRST..LAST; `seq FIRST STEP LAST` advances by STEP (which may be negative). A range that starts on the wrong side of LAST prints nothing, and a zero STEP is an error. Integer-only (64-bit signed), matching GNU seq for integer arguments."},
     {"paste",    "Merge corresponding lines of files. By default the i-th line of each file is printed on one row, separated by a tab, continuing until every file runs out (a spent file leaves its column empty). -s writes each file's lines onto a single line instead. -d LIST replaces the tab with the characters of LIST used in turn (\\t, \\n, \\\\ escapes recognised). Reads each whole file; up to 16 files. Matches GNU paste for newline-delimited text."},
     {"cut",      "Print selected parts of each line of <file>. Choose one mode: -f LIST cuts fields (a field is text between delimiters; the delimiter is a TAB by default, or the single character given by -d C), -c LIST cuts characters, -b LIST cuts bytes. A LIST is a comma-separated set of 1-based ranges: 'N' one position, 'N-M' the inclusive range, 'N-' from N to the end, '-M' the same as '1-M'. Selected parts are always emitted in increasing position order, never duplicated, so the order the ranges are written in does not matter. In field mode a line that contains no delimiter is printed unchanged, unless -s suppresses such lines; selected fields are re-joined with the delimiter. Matches GNU cut byte-for-byte for newline-delimited text (chars and bytes coincide for ASCII). Reads a bounded chunk of each file; several files may be given."},
+    {"uniq",     "Collapse ADJACENT equal lines of <file> into one — the classic companion to sort (uniq does not sort; it only folds neighbouring duplicates, so run `sort` first to remove all duplicates). Prints the first line of each run. -c prefixes each line with the number of times it occurred (a 7-wide count, then a space). -d prints only lines that repeat (runs of 2+); -u prints only lines that occur exactly once. -i compares case-insensitively. -f N ignores the first N blank-separated fields when comparing, -s N then ignores the next N characters, and -w N compares at most N characters of what remains — the whole (unmodified) line is still what gets printed. Matches GNU uniq byte-for-byte. Reads a bounded chunk of the file."},
     {"tac",      "Print the lines of <file> in reverse order — the last line first, the first line last (the line-order companion to rev, which reverses characters within a line). The newline stays attached to its line, so a file without a trailing newline joins its last two lines when reversed, exactly like GNU tac. -s SEP uses SEP (one or more characters) as the record separator instead of newline. Reads a bounded chunk of the file."},
     {"tsort",    "Topologically sort a dependency list. The file holds whitespace-separated tokens in pairs; each pair 'A B' means A must come before B. Prints one item per line in an order that respects every dependency (Kahn's algorithm), matching GNU tsort byte-for-byte including its tie-break (roots emitted in sorted order). If the pairs contain a cycle the order is impossible, so the acyclic part is printed and a loop is reported; an odd number of tokens is a malformed input. Useful for build/order-of-operations problems."},
     {"csv",      "View a comma-separated-values file as an aligned table. Parses RFC 4180 CSV: fields are separated by commas; a field may be wrapped in double quotes to protect embedded commas, newlines, and quotes (a doubled \"\" inside a quoted field is one literal \"). Columns are padded so they line up, and embedded control characters are shown as spaces. -d DELIM uses DELIM as the field separator instead of a comma (e.g. -d ';' or a tab). Reads a bounded chunk of the file. The same hardened parser backs a self-test (csv) in the boot battery."},
@@ -1471,6 +1475,52 @@ static void cmd_cut(int argc, char** argv) {
             if (had_nl) i++;
         }
     }
+}
+
+// uniq output callback: write one collapsed record followed by a newline.
+static void uniq_emit_puts(void* ctx, const char* out, uint32_t len) {
+    (void)ctx;
+    for (uint32_t i = 0; i < len; i++) putchar(out[i]);
+    putchar('\n');
+}
+
+// uniq [-c|-d|-u|-i|-f N|-s N|-w N] <file> — collapse ADJACENT equal lines, byte-for-byte with
+// GNU uniq (the pure logic is in uniq.c, host-diff-verified). Flags may bundle (-cd, -cf N). The
+// comparison key skips -f fields then -s chars and is capped at -w chars, optionally case-fold
+// (-i); the whole first line of each run is printed, prefixed with a 7-wide count under -c.
+static void cmd_uniq(int argc, char** argv) {
+    uniq_opts_t o;
+    o.count = 0; o.only_dup = 0; o.only_uniq = 0; o.ignore_case = 0;
+    o.skip_fields = 0; o.skip_chars = 0; o.check_chars = 0; o.check_chars_set = 0;
+    int ai = 1;
+    while (ai < argc && argv[ai][0] == '-' && argv[ai][1]) {
+        const char* a = argv[ai];
+        for (int k = 1; a[k]; k++) {
+            char c = a[k];
+            if (c == 'c') o.count = 1;
+            else if (c == 'd') o.only_dup = 1;
+            else if (c == 'u') o.only_uniq = 1;
+            else if (c == 'i') o.ignore_case = 1;
+            else if (c == 'f' || c == 's' || c == 'w') {
+                const char* numstr = a[k + 1] ? &a[k + 1] : (ai + 1 < argc ? argv[++ai] : "");
+                uint32_t v = 0;
+                for (uint32_t t = 0; numstr[t] >= '0' && numstr[t] <= '9'; t++) v = v * 10 + (uint32_t)(numstr[t] - '0');
+                if (c == 'f') o.skip_fields = v;
+                else if (c == 's') o.skip_chars = v;
+                else { o.check_chars = v; o.check_chars_set = 1; }
+                break;                                   // the rest of this arg was the number
+            } else { printf("uniq: invalid option -- '%c'\n", c); return; }
+        }
+        ai++;
+    }
+    if (ai >= argc) { printf("Usage: uniq [-c|-d|-u|-i|-f N|-s N|-w N] <file>\n"); return; }
+    int fd = vfs_open(argv[ai], 0, 0);
+    if (fd < 0) { printf("uniq: cannot open '%s'\n", argv[ai]); return; }
+    static char buf[4096];
+    int bytes = vfs_read(fd, buf, sizeof(buf));
+    vfs_close(fd);
+    if (bytes <= 0) return;
+    uniq_run(&o, buf, (uint32_t)bytes, uniq_emit_puts, 0);
 }
 
 // tsort output callback: one node per line.
