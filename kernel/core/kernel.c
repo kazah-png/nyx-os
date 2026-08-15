@@ -2148,6 +2148,7 @@ static void cmd_wc(int argc, char** argv) {
 
 static void cmd_write(int argc, char** argv) {
     if (argc < 3) { printf("Usage: write <file> <text>\n"); return; }
+    if (!path_last_component_ok(argv[1])) { printf("write: invalid file name '%s'\n", argv[1]); return; }
     // Build the full content
     char content[1024];
     int pos = 0;
@@ -4044,11 +4045,13 @@ static void cmd_rm(int argc, char** argv) {
 
 static void cmd_cp(int argc, char** argv) {
     if (argc < 3) { printf("Usage: cp <src> <dst>\n"); return; }
+    if (!path_last_component_ok(argv[2])) { printf("cp: invalid destination name '%s'\n", argv[2]); return; }
     if (vfs_cp(argv[1], argv[2]) < 0) printf("cp: failed to copy %s to %s\n", argv[1], argv[2]);
 }
 
 static void cmd_mv(int argc, char** argv) {
     if (argc < 3) { printf("Usage: mv <src> <dst>\n"); return; }
+    if (!path_last_component_ok(argv[2])) { printf("mv: invalid destination name '%s'\n", argv[2]); return; }
     vfs_rename(argv[1], argv[2]);
 }
 

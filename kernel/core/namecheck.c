@@ -1,9 +1,9 @@
 // ============================================================
 // namecheck.c - filename / path-component naming policy
 // ============================================================
-// User-supplied names (touch/mkdir arguments, and any future create path) should not be
-// able to smuggle a control character, a malformed byte sequence, a path separator, or a
-// "."/".." into the filesystem as a single component. name_is_valid() enforces one clean
+// User-supplied names (the touch/mkdir/cp/mv/write create paths, and any future one) should
+// not be able to smuggle a control character, a malformed byte sequence, a path separator, or
+// a "."/".." into the filesystem as a single component. name_is_valid() enforces one clean
 // policy for that, and in doing so becomes the first real caller of the strict UTF-8
 // decoder (utf8.c): every code point of the name is decoded and range-checked, so an
 // overlong form, a lone surrogate, a truncated sequence, or a stray 0xFF is rejected the
