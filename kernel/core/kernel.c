@@ -26,6 +26,7 @@
 #include "tsort.h"
 #include "base58.h"
 #include "cut.h"
+#include "../crypto/bech32.h"
 #include "../net/dns.h"
 #include "../net/http.h"
 #include "../crypto/tls/tls.h"
@@ -134,6 +135,7 @@ static void cmd_tac(int argc, char** argv);
 static void cmd_csv(int argc, char** argv);
 static void cmd_tsort(int argc, char** argv);
 static void cmd_base58(int argc, char** argv);
+static void cmd_bech32(int argc, char** argv);
 static void cmd_crc32c(int argc, char** argv);
 uint32_t crc32c_calc(const uint8_t* data, uint32_t len);
 static void cmd_comm(int argc, char** argv);
@@ -301,6 +303,7 @@ static const command_t commands[] = {
     {"urlcode",   cmd_urlcode,   "Percent-encode/decode text: urlcode [-d] <text ...>", false},
     {"crc32c",    cmd_crc32c,    "CRC-32C (Castagnoli) checksum: crc32c <text ...>", false},
     {"base58",    cmd_base58,    "Base58 (Bitcoin) encode/decode text: base58 [-d] <text ...>", false},
+    {"bech32",    cmd_bech32,    "Verify/decode a Bech32 (BIP-173) checksummed string: bech32 <string>", false},
     {"printf",    cmd_printf,    "Format and print: printf FORMAT [ARG...]", false},
     {"expand",    cmd_expand,    "Convert tabs to spaces: expand [-t N] <file>", false},
     {"unexpand",  cmd_unexpand,  "Convert spaces to tabs: unexpand [-a] [-t N] <file>", false},
@@ -559,7 +562,7 @@ static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev",
 static const char* const HC_sys[]   = {"ps","kill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat",0};
 static const char* const HC_user[]  = {"useradd","users",0};
 static const char* const HC_net[]   = {"ifconfig","dhcp","dns","ping","setip","httpget","tls",0};
-static const char* const HC_dev[]   = {"cc","xbm","semver","fnv","urlcode","crc32c","base58",0};
+static const char* const HC_dev[]   = {"cc","xbm","semver","fnv","urlcode","crc32c","base58","bech32",0};
 static const char* const HC_media[] = {"play","sb16play","imageview","selene",0};
 static const char* const HC_games[] = {"doom","pong","voxel","fire","matrix","lava","fractal","julia","particles","snake","tetris",0};
 static const char* const HC_test[]  = {"mtdemo","smpstress","smpuser","smpthreads","smpbalance","tlbtest","cowtest","crash","usertest","tcptest","tcpdrop","tcploop","tcpserve","posttest","tlsstrict","prftest","gcmtest","dertest","p256test","p384test","x25519test","tlskeytest","tlsrectest","csprngtest","skp384test","deflatetest","sha512test","pngtest","bmptest","giftest","jpegtest","imgreject","httptest","ext2test","rsatest","chaintest","formtest",0};
@@ -655,6 +658,7 @@ static const man_page_t man_pages[] = {
     {"fnv",      "Print the FNV-1a hash of the argument text (all arguments joined by single spaces) as lowercase hex. FNV-1a is a small, fast NON-cryptographic hash used for hash tables and quick content fingerprints; the 32-bit variant is the default and -64 selects the 64-bit variant. It is not collision-resistant, so do not use it where an adversary controls the input (SipHash is the keyed alternative)."},
     {"urlcode",  "Percent-encode the argument text per RFC 3986 (the unreserved set A-Za-z0-9-._~ passes through, every other byte becomes %XX in uppercase hex), or with -d strict-decode a single percent-encoded token back to its bytes. Arguments are joined with single spaces before encoding. The decoder is strict: a '%' not followed by exactly two hex digits is rejected. Backed by the shared codec used for URL handling."},
     {"crc32c",   "Print the CRC-32C (Castagnoli) checksum of the argument text (all arguments joined by single spaces) as 8-digit lowercase hex. CRC-32C is the data-integrity checksum used by ext4 metadata, Btrfs, iSCSI and SCTP — a different, stronger polynomial (0x1EDC6F41) than the zip/PNG CRC-32, and the one modern CPUs accelerate in hardware. crc32c of `123456789` is e3069283."},
+    {"bech32",   "Verify and decode a Bech32 (BIP-173) string. Bech32 is the checksummed base-32 encoding used by Bitcoin SegWit and Lightning identifiers: a human-readable prefix (HRP), a '1' separator, the base-32 data symbols, and a 6-symbol checksum computed by a BCH code over GF(32) so that a small number of altered or transposed characters is provably detected — the reason it is safer to transcribe than plain base58. `bech32 <string>` prints the decoded HRP and the data symbols (as hex) when the checksum verifies, or reports the string invalid. Rejects exactly what BIP-173 rejects: mixed upper/lower case, any byte outside printable ASCII, a missing or misplaced separator, an empty HRP, an out-of-charset symbol, a length above 90, or a bad checksum. Verified by the boot self-test battery against the canonical BIP-173 vectors. Pairs with base58, the other Bitcoin encoding."},
     {"base58",   "Base58-encode the argument text (Bitcoin alphabet — the digits and letters minus 0, O, I and l, which are easy to confuse), or with -d decode a base58 string back to its bytes. Base58 writes a byte string as one big-endian base-58 number and renders each leading zero byte as a leading '1', so it is the compact, ambiguity-free encoding used for crypto addresses. Arguments are joined with single spaces before encoding; an out-of-alphabet character is rejected on decode. Verified by the boot self-test battery against the canonical Bitcoin vectors."},
     {"printf",   "Print ARGs under the control of FORMAT (like the C/coreutil printf). FORMAT is reused as needed to consume all ARGs. It interprets backslash escapes (\\n \\t \\r \\a \\b \\f \\v \\\\) and the conversions %s %d %i %u %x %X %c %% with optional flags and field width (e.g. %-10s, %05d). Numeric ARGs are read as decimal. Unlike echo, printf never appends a trailing newline unless FORMAT contains one."},
     {"expand",   "Convert the tabs in <file> to spaces. Each tab advances to the next tab stop, which are spaced N columns apart (8 by default, or -t N), so columns stay aligned instead of a fixed number of spaces per tab. Non-tab characters and newlines pass through unchanged (a newline resets the column count)."},
@@ -1174,6 +1178,28 @@ static void cmd_base58(int argc, char** argv) {
         if (base58_encode(in, o, out, sizeof(out)) < 0) { printf("base58: input too long\n"); return; }
         printf("%s\n", out);
     }
+}
+
+// bech32 <string> — verify and decode a Bech32 (BIP-173) string, printing the human-readable
+// prefix and the data symbols as hex when the checksum is valid. The 6-symbol BCH checksum
+// detects a handful of altered/transposed characters, which is why crypto addresses use it.
+// Backed by the KAT'd bech32_decode(); operates on the 5-bit-symbol layer (no convertbits).
+static void cmd_bech32(int argc, char** argv) {
+    if (argc < 2) { printf("Usage: bech32 <string>\n"); return; }
+    char hrp[BECH32_MAX_HRP + 1];
+    uint8_t data[BECH32_MAX_DATA];
+    uint32_t dlen;
+    if (bech32_decode(argv[1], hrp, sizeof(hrp), data, sizeof(data), &dlen) != 0) {
+        printf("bech32: invalid (bad checksum, character, case, or length)\n");
+        return;
+    }
+    static const char hexd[] = "0123456789abcdef";
+    printf("valid  hrp=\"%s\"  data=%u symbol%s: ", hrp, dlen, dlen == 1 ? "" : "s");
+    for (uint32_t i = 0; i < dlen; i++) {
+        putchar(hexd[(data[i] >> 4) & 0xf]);
+        putchar(hexd[data[i] & 0xf]);
+    }
+    putchar('\n');
 }
 
 // seq output callback: print each value as a decimal on its own line. The number is
@@ -4479,6 +4505,7 @@ static void run_selftests(void) {
         {"fnv",          fnv_selftest},
         {"csv",          csv_selftest},
         {"base58",       base58_selftest},
+        {"bech32",       bech32_selftest},
         {"urlcodec",     url_codec_selftest},
         {"utf8",          utf8_selftest},
         {"p256",          p256_selftest},
