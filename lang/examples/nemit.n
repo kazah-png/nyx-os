@@ -1,0 +1,105 @@
+// nemit.n — a code EMITTER written in N (M5, link 3):
+//   ntokens.n read N source; ncalc.n parsed and evaluated it; this one
+//   COMPILES it — the same recursive descent, but each rule emits a
+//   stack-machine instruction as it walks, so postfix code falls out of
+//   the parse order naturally. That is exactly how ncc's own gen_expr
+//   works on the C side; the pattern now exists in N itself.
+//   The PR result still carries the direct-eval value, so every listing
+//   is checked against what it must compute.
+//
+//   EXECUTING the emitted program needs a writable stack in memory —
+//   which is precisely what v0.15's read-only indexing does not give
+//   yet. That gap is the motivating use case for the buffer story
+//   (index writes); when it lands, this file grows an interpreter.
+
+#[caps(syscall)]
+extern syscall {
+    fn write(fd: i32, buf: #[user] *u8, len: isize) -> i64 = 1
+}
+
+#[caps(syscall)]
+fn put(s: str) {
+    write(1, s.ptr as #[user] *u8, s.len as isize);
+}
+
+struct PR { val: i64, pos: i64 }
+
+fn is_digit(b: i64) -> bool { b >= 48 && b <= 57 }
+
+fn skip(s: str, p: i64) -> i64 {
+    mut q := p;
+    while q < s.len as i64 && s[q] as i64 == 32 {
+        q += 1;
+    }
+    q
+}
+
+fn parse_num(s: str, p: i64) -> PR {
+    mut q := p;
+    mut v := 0;
+    while q < s.len as i64 && is_digit(s[q] as i64) {
+        v = v * 10 + (s[q] as i64 - 48);
+        q += 1;
+    }
+    put("  PUSH {v}\n");
+    PR{ val: v, pos: q }
+}
+
+fn parse_factor(s: str, p: i64) -> PR {
+    q := skip(s, p);
+    if q >= s.len as i64 {
+        return PR{ val: 0, pos: q };
+    }
+    b := s[q] as i64;
+    if b == 40 {                          // '(' expr ')'
+        inner := parse_expr(s, q + 1);
+        r := skip(s, inner.pos);
+        return PR{ val: inner.val, pos: r + 1 };
+    }
+    if b == 45 {                          // unary minus -> NEG
+        f := parse_factor(s, q + 1);
+        put("  NEG\n");
+        return PR{ val: -f.val, pos: f.pos };
+    }
+    parse_num(s, q)
+}
+
+fn parse_term(s: str, p: i64) -> PR {
+    mut cur := parse_factor(s, p);
+    mut q := skip(s, cur.pos);
+    while q < s.len as i64 && (s[q] as i64 == 42 || s[q] as i64 == 47 || s[q] as i64 == 37) {
+        op := s[q] as i64;
+        rhs := parse_factor(s, q + 1);
+        if op == 42 { put("  MUL\n"); cur = PR{ val: cur.val * rhs.val, pos: rhs.pos }; }
+        if op == 47 { put("  DIV\n"); cur = PR{ val: cur.val / rhs.val, pos: rhs.pos }; }
+        if op == 37 { put("  MOD\n"); cur = PR{ val: cur.val % rhs.val, pos: rhs.pos }; }
+        q = skip(s, cur.pos);
+    }
+    PR{ val: cur.val, pos: q }
+}
+
+fn parse_expr(s: str, p: i64) -> PR {
+    mut cur := parse_term(s, p);
+    mut q := skip(s, cur.pos);
+    while q < s.len as i64 && (s[q] as i64 == 43 || s[q] as i64 == 45) {
+        op := s[q] as i64;
+        rhs := parse_term(s, q + 1);
+        if op == 43 { put("  ADD\n"); cur = PR{ val: cur.val + rhs.val, pos: rhs.pos }; }
+        if op == 45 { put("  SUB\n"); cur = PR{ val: cur.val - rhs.val, pos: rhs.pos }; }
+        q = skip(s, cur.pos);
+    }
+    PR{ val: cur.val, pos: q }
+}
+
+fn compile(src: str) {
+    put("compile: {src}\n");
+    r := parse_expr(src, 0);
+    put("  ; computes {r.val}\n");
+}
+
+fn main() -> i64 {
+    compile("2 + 3 * 4");
+    compile("(2 + 3) * 4");
+    compile("-5 + 20 / 4");
+    0
+}

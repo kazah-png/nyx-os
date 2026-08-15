@@ -132,7 +132,8 @@ lang/
     ├── caps.n           ← v0.14 capabilities: #[caps(syscall)]-gated crossings
     ├── bytes.n          ← v0.15 indexing: s[i]/p[i] reads, FNV-1a in pure N
     ├── ntokens.n        ← M5 link 1: an N tokenizer written in N
-    └── ncalc.n          ← M5 link 2: precedence parser + evaluator in N
+    ├── ncalc.n          ← M5 link 2: precedence parser + evaluator in N
+    └── nemit.n          ← M5 link 3: stack-code emitter in N (read→parse→emit)
 ```
 
 The runtime N programs link against lives with the rest of user space:
@@ -151,7 +152,7 @@ compiles packages from source on the machine itself). N rides that ladder:
 | M2 | `ncc` compiles *inside* NyxOS with the in-OS `cc` (tcc) | ✅ done |
 | M3 | `ncc hello.n` → running binary, entirely in-OS (the HolyC moment) | ✅ done |
 | M4 | N++ front-end: type checker, structs/enums/match, `Result`/`?` | design ready |
-| M5 | Self-hosting: `ncc` rewritten in N | **started** — link 1: an N-in-N tokenizer ([ntokens.n](examples/ntokens.n)) · link 2: a recursive-descent parser + evaluator ([ncalc.n](examples/ncalc.n)) |
+| M5 | Self-hosting: `ncc` rewritten in N | **started** — the toy triangle is closed: tokenizer ([ntokens.n](examples/ntokens.n)) · parser + evaluator ([ncalc.n](examples/ncalc.n)) · code emitter ([nemit.n](examples/nemit.n)); next: writable buffers, then scale |
 
 M2 and M3 were reached with zero changes to the compiler's design: `ncc.c` is
 plain C99 in one file, so the in-OS tcc builds it directly, and the same
