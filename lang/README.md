@@ -128,7 +128,8 @@ lang/
     ├── userptr.n        ← v0.12 #[user] pointers: the audited syscall boundary
     ├── pageflags.n      ← v0.13 pageflags: W^X proven at compile time, live mmap
     ├── caps.n           ← v0.14 capabilities: #[caps(syscall)]-gated crossings
-    └── bytes.n          ← v0.15 indexing: s[i]/p[i] reads, FNV-1a in pure N
+    ├── bytes.n          ← v0.15 indexing: s[i]/p[i] reads, FNV-1a in pure N
+    └── ntokens.n        ← M5's first link: an N tokenizer written in N
 ```
 
 The runtime N programs link against lives with the rest of user space:
@@ -147,7 +148,7 @@ compiles packages from source on the machine itself). N rides that ladder:
 | M2 | `ncc` compiles *inside* NyxOS with the in-OS `cc` (tcc) | ✅ done |
 | M3 | `ncc hello.n` → running binary, entirely in-OS (the HolyC moment) | ✅ done |
 | M4 | N++ front-end: type checker, structs/enums/match, `Result`/`?` | design ready |
-| M5 | Self-hosting: `ncc` rewritten in N | horizon |
+| M5 | Self-hosting: `ncc` rewritten in N | **started** — first link: an N-in-N tokenizer ([examples/ntokens.n](examples/ntokens.n)) |
 
 M2 and M3 were reached with zero changes to the compiler's design: `ncc.c` is
 plain C99 in one file, so the in-OS tcc builds it directly, and the same

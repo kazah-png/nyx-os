@@ -1,0 +1,113 @@
+// ntokens.n — an N tokenizer written in N (the first link of M5):
+//   a program in the language reads a snippet OF the language and emits
+//   its token stream. Everything it needs shipped in the last few
+//   versions: s[i] byte reads (v0.15), for-ranges (v0.11), enums + match
+//   as an expression (v0.7/v0.9), #[caps]/#[user] boundaries (v0.12-14),
+//   and addr casts for the one place a sub-span must become a pointer.
+//   When this scanner grows a parser and a C emitter, ncc self-hosts.
+
+#[caps(syscall)]
+extern syscall {
+    fn write(fd: i32, buf: #[user] *u8, len: isize) -> i64 = 1
+}
+
+#[caps(syscall)]
+fn put(s: str) {
+    write(1, s.ptr as #[user] *u8, s.len as isize);
+}
+
+// Write s[start .. start+len): the explicit addr cast is N's only pointer
+// arithmetic, and #[user] marks the kernel handoff — both boundaries visible.
+#[caps(syscall)]
+fn put_span(s: str, start: i64, len: i64) {
+    write(1, (s.ptr as addr + start as addr) as #[user] *u8, len as isize);
+}
+
+enum Kind { Kw, Ident, Num, Punct }
+
+fn label(k: Kind) -> str {
+    return match k {
+        Kw    => "kw    ",
+        Ident => "ident ",
+        Num   => "num   ",
+        Punct => "punct ",
+    };
+}
+
+fn emit(k: Kind, s: str, start: i64, len: i64) {
+    put(label(k));
+    put_span(s, start, len);
+    put("\n");
+}
+
+fn is_space(b: i64) -> bool { b == 32 || b == 9 || b == 10 }
+fn is_digit(b: i64) -> bool { b >= 48 && b <= 57 }
+fn is_alpha(b: i64) -> bool {
+    (b >= 97 && b <= 122) || (b >= 65 && b <= 90) || b == 95
+}
+fn is_alnum(b: i64) -> bool { is_alpha(b) || is_digit(b) }
+
+// Byte-wise comparison of s[start .. start+len) against a keyword.
+fn span_is(s: str, start: i64, len: i64, kw: str) -> bool {
+    if len != kw.len as i64 {
+        return false;
+    }
+    for k in 0..len {
+        if s[start + k] as i64 != kw[k] as i64 {
+            return false;
+        }
+    }
+    true
+}
+
+fn is_kw(s: str, start: i64, len: i64) -> bool {
+    if span_is(s, start, len, "fn")     { return true; }
+    if span_is(s, start, len, "mut")    { return true; }
+    if span_is(s, start, len, "return") { return true; }
+    if span_is(s, start, len, "if")     { return true; }
+    if span_is(s, start, len, "while")  { return true; }
+    if span_is(s, start, len, "for")    { return true; }
+    false
+}
+
+fn main() -> i64 {
+    // Braces are escaped so they read as text, not interpolation (§2.5).
+    src := "fn twice(x: i64) -> i64 \{ return x * 2 \}";
+    put("tokens of: ");
+    put(src);
+    put("\n");
+    n := src.len as i64;
+    mut i := 0;
+    while i < n {
+        b := src[i] as i64;
+        if is_space(b) {
+            i += 1;
+            continue;
+        }
+        if is_digit(b) {
+            mut j := i;
+            while j < n && is_digit(src[j] as i64) {
+                j += 1;
+            }
+            emit(Kind.Num, src, i, j - i);
+            i = j;
+            continue;
+        }
+        if is_alpha(b) {
+            mut j := i;
+            while j < n && is_alnum(src[j] as i64) {
+                j += 1;
+            }
+            if is_kw(src, i, j - i) {
+                emit(Kind.Kw, src, i, j - i);
+            } else {
+                emit(Kind.Ident, src, i, j - i);
+            }
+            i = j;
+            continue;
+        }
+        emit(Kind.Punct, src, i, 1);      // single-char punctuation
+        i += 1;
+    }
+    0
+}
