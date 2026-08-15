@@ -1,0 +1,104 @@
+// ncalc.n — an expression parser + evaluator written in N (M5, link 2):
+//   after ntokens.n proved N can READ its own tokens, this proves N can
+//   PARSE with precedence and EVALUATE — the second self-host artery.
+//   The techniques are the interesting part:
+//   - recursive descent with MUTUAL RECURSION (parse_factor calls
+//     parse_expr for parentheses): ncc emits forward prototypes for
+//     every function, so order does not matter
+//   - N has no globals and no out-params, so the parser threads its
+//     state FUNCTIONALLY: every rule takes (source, position) and
+//     returns a PR { val, pos } struct by value
+//   - grammar: expr = term {(+|-) term} · term = factor {(*|/|%) factor}
+//     · factor = number | '(' expr ')' | '-' factor
+
+#[caps(syscall)]
+extern syscall {
+    fn write(fd: i32, buf: #[user] *u8, len: isize) -> i64 = 1
+}
+
+#[caps(syscall)]
+fn put(s: str) {
+    write(1, s.ptr as #[user] *u8, s.len as isize);
+}
+
+// Parse result: the value computed so far and the next unread position.
+struct PR { val: i64, pos: i64 }
+
+fn is_digit(b: i64) -> bool { b >= 48 && b <= 57 }
+
+fn skip(s: str, p: i64) -> i64 {
+    mut q := p;
+    while q < s.len as i64 && s[q] as i64 == 32 {
+        q += 1;
+    }
+    q
+}
+
+fn parse_num(s: str, p: i64) -> PR {
+    mut q := p;
+    mut v := 0;
+    while q < s.len as i64 && is_digit(s[q] as i64) {
+        v = v * 10 + (s[q] as i64 - 48);
+        q += 1;
+    }
+    PR{ val: v, pos: q }
+}
+
+fn parse_factor(s: str, p: i64) -> PR {
+    q := skip(s, p);
+    if q >= s.len as i64 {
+        return PR{ val: 0, pos: q };
+    }
+    b := s[q] as i64;
+    if b == 40 {                          // '(' expr ')'
+        inner := parse_expr(s, q + 1);
+        r := skip(s, inner.pos);
+        return PR{ val: inner.val, pos: r + 1 };
+    }
+    if b == 45 {                          // unary minus
+        f := parse_factor(s, q + 1);
+        return PR{ val: -f.val, pos: f.pos };
+    }
+    parse_num(s, q)
+}
+
+fn parse_term(s: str, p: i64) -> PR {
+    mut cur := parse_factor(s, p);
+    mut q := skip(s, cur.pos);
+    while q < s.len as i64 && (s[q] as i64 == 42 || s[q] as i64 == 47 || s[q] as i64 == 37) {
+        op := s[q] as i64;
+        rhs := parse_factor(s, q + 1);
+        if op == 42 { cur = PR{ val: cur.val * rhs.val, pos: rhs.pos }; }
+        if op == 47 { cur = PR{ val: cur.val / rhs.val, pos: rhs.pos }; }
+        if op == 37 { cur = PR{ val: cur.val % rhs.val, pos: rhs.pos }; }
+        q = skip(s, cur.pos);
+    }
+    PR{ val: cur.val, pos: q }
+}
+
+fn parse_expr(s: str, p: i64) -> PR {
+    mut cur := parse_term(s, p);
+    mut q := skip(s, cur.pos);
+    while q < s.len as i64 && (s[q] as i64 == 43 || s[q] as i64 == 45) {
+        op := s[q] as i64;
+        rhs := parse_term(s, q + 1);
+        if op == 43 { cur = PR{ val: cur.val + rhs.val, pos: rhs.pos }; }
+        if op == 45 { cur = PR{ val: cur.val - rhs.val, pos: rhs.pos }; }
+        q = skip(s, cur.pos);
+    }
+    PR{ val: cur.val, pos: q }
+}
+
+fn show(src: str) {
+    r := parse_expr(src, 0);
+    put("{src} = {r.val}\n");
+}
+
+fn main() -> i64 {
+    show("2 + 3 * 4");
+    show("(2 + 3) * 4");
+    show("100 - 7 * (9 - 2)");
+    show("-5 + 20 / 4");
+    show("(1 + 2 + 3 + 4) % 5");
+    0
+}
