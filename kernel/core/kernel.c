@@ -30,6 +30,7 @@
 #include "join.h"
 #include "fletcher.h"
 #include "../crypto/bech32.h"
+#include "../crypto/murmur3.h"
 #include "../net/dns.h"
 #include "../net/http.h"
 #include "../crypto/tls/tls.h"
@@ -143,6 +144,7 @@ static void cmd_base58(int argc, char** argv);
 static void cmd_bech32(int argc, char** argv);
 static void cmd_crc32c(int argc, char** argv);
 static void cmd_fletcher(int argc, char** argv);
+static void cmd_murmur(int argc, char** argv);
 uint32_t crc32c_calc(const uint8_t* data, uint32_t len);
 static void cmd_comm(int argc, char** argv);
 static void cmd_vfsstat(int argc, char** argv);
@@ -311,6 +313,7 @@ static const command_t commands[] = {
     {"urlcode",   cmd_urlcode,   "Percent-encode/decode text: urlcode [-d] <text ...>", false},
     {"crc32c",    cmd_crc32c,    "CRC-32C (Castagnoli) checksum: crc32c <text ...>", false},
     {"fletcher",  cmd_fletcher,  "Fletcher-16/32 checksum: fletcher [-32] <text ...>", false},
+    {"murmur",    cmd_murmur,    "MurmurHash3-32 (non-crypto hash): murmur [-s SEED] <text ...>", false},
     {"base58",    cmd_base58,    "Base58 (Bitcoin) encode/decode text: base58 [-d] <text ...>", false},
     {"bech32",    cmd_bech32,    "Verify/decode a Bech32 (BIP-173) checksummed string: bech32 <string>", false},
     {"printf",    cmd_printf,    "Format and print: printf FORMAT [ARG...]", false},
@@ -571,7 +574,7 @@ static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev",
 static const char* const HC_sys[]   = {"ps","kill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat",0};
 static const char* const HC_user[]  = {"useradd","users",0};
 static const char* const HC_net[]   = {"ifconfig","dhcp","dns","ping","setip","httpget","tls",0};
-static const char* const HC_dev[]   = {"cc","xbm","semver","fnv","urlcode","crc32c","fletcher","base58","bech32",0};
+static const char* const HC_dev[]   = {"cc","xbm","semver","fnv","urlcode","crc32c","fletcher","murmur","base58","bech32",0};
 static const char* const HC_media[] = {"play","sb16play","imageview","selene",0};
 static const char* const HC_games[] = {"doom","pong","voxel","fire","matrix","lava","fractal","julia","particles","snake","tetris",0};
 static const char* const HC_test[]  = {"mtdemo","smpstress","smpuser","smpthreads","smpbalance","tlbtest","cowtest","crash","usertest","tcptest","tcpdrop","tcploop","tcpserve","posttest","tlsstrict","prftest","gcmtest","dertest","p256test","p384test","x25519test","tlskeytest","tlsrectest","csprngtest","skp384test","deflatetest","sha512test","pngtest","bmptest","giftest","jpegtest","imgreject","httptest","ext2test","rsatest","chaintest","formtest",0};
@@ -669,6 +672,7 @@ static const man_page_t man_pages[] = {
     {"fnv",      "Print the FNV-1a hash of the argument text (all arguments joined by single spaces) as lowercase hex. FNV-1a is a small, fast NON-cryptographic hash used for hash tables and quick content fingerprints; the 32-bit variant is the default and -64 selects the 64-bit variant. It is not collision-resistant, so do not use it where an adversary controls the input (SipHash is the keyed alternative)."},
     {"urlcode",  "Percent-encode the argument text per RFC 3986 (the unreserved set A-Za-z0-9-._~ passes through, every other byte becomes %XX in uppercase hex), or with -d strict-decode a single percent-encoded token back to its bytes. Arguments are joined with single spaces before encoding. The decoder is strict: a '%' not followed by exactly two hex digits is rejected. Backed by the shared codec used for URL handling."},
     {"crc32c",   "Print the CRC-32C (Castagnoli) checksum of the argument text (all arguments joined by single spaces) as 8-digit lowercase hex. CRC-32C is the data-integrity checksum used by ext4 metadata, Btrfs, iSCSI and SCTP — a different, stronger polynomial (0x1EDC6F41) than the zip/PNG CRC-32, and the one modern CPUs accelerate in hardware. crc32c of `123456789` is e3069283."},
+    {"murmur",   "Print the MurmurHash3 (x86 32-bit) hash of the argument text (all arguments joined by single spaces) as 8-digit lowercase hex. -s SEED sets the 32-bit seed (decimal, or 0x-prefixed hex). MurmurHash3 is a fast NON-cryptographic hash — the workhorse behind hash tables, bloom filters and content sharding — with excellent avalanche and spread, but it is NOT secure against an adversary choosing inputs (use a keyed hash like SipHash for that). It is a distinct algorithm from FNV-1a, the CRC/Fletcher checksums and the cryptographic hashes. murmur of `test` is ba6bd213 (seed 0); the empty string with seed 1 is 514e28b7. Verified by the boot self-test battery against the canonical vectors."},
     {"fletcher", "Print the Fletcher checksum of the argument text (all arguments joined by single spaces): Fletcher-16 by default as 4-digit hex, or Fletcher-32 with -32 as 8-digit hex. Fletcher's checksum keeps two running modular sums (the second accumulates the first), so its result depends on byte ORDER — it detects most transpositions that a plain sum misses, at a fraction of a CRC's cost. Fletcher-16 folds bytes mod 255; Fletcher-32 folds 16-bit little-endian words mod 65535 (a trailing odd byte is zero-padded). Used by ZFS and several transport/routing protocols. fletcher of `abcde` is c8f0 (and -32 f04fc729). Verified by the boot self-test battery against the canonical vectors."},
     {"bech32",   "Verify and decode a Bech32 (BIP-173) string. Bech32 is the checksummed base-32 encoding used by Bitcoin SegWit and Lightning identifiers: a human-readable prefix (HRP), a '1' separator, the base-32 data symbols, and a 6-symbol checksum computed by a BCH code over GF(32) so that a small number of altered or transposed characters is provably detected — the reason it is safer to transcribe than plain base58. `bech32 <string>` prints the decoded HRP and the data symbols (as hex) when the checksum verifies, or reports the string invalid. Rejects exactly what BIP-173 rejects: mixed upper/lower case, any byte outside printable ASCII, a missing or misplaced separator, an empty HRP, an out-of-charset symbol, a length above 90, or a bad checksum. Verified by the boot self-test battery against the canonical BIP-173 vectors. Pairs with base58, the other Bitcoin encoding."},
     {"base58",   "Base58-encode the argument text (Bitcoin alphabet — the digits and letters minus 0, O, I and l, which are easy to confuse), or with -d decode a base58 string back to its bytes. Base58 writes a byte string as one big-endian base-58 number and renders each leading zero byte as a leading '1', so it is the compact, ambiguity-free encoding used for crypto addresses. Arguments are joined with single spaces before encoding; an out-of-alphabet character is rejected on decode. Verified by the boot self-test battery against the canonical Bitcoin vectors."},
@@ -1190,6 +1194,38 @@ static void cmd_fletcher(int argc, char** argv) {
         for (int i = 3; i >= 0; i--) { out[i] = HEX[c & 0xF]; c >>= 4; }
         out[4] = 0; printf("%s\n", out);
     }
+}
+
+// murmur [-s SEED] <text ...> — MurmurHash3-32 of the joined args, printed as 8-digit lowercase
+// hex. SEED is decimal or 0x-hex (default 0). Backed by the KAT'd murmur3_32.
+static void cmd_murmur(int argc, char** argv) {
+    static const char* HEX = "0123456789abcdef";
+    uint32_t seed = 0; int start = 1;
+    if (start + 1 < argc && strcmp(argv[start], "-s") == 0) {
+        const char* s = argv[start + 1];
+        if (s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) {
+            for (s += 2; *s; s++) {
+                char c = *s;
+                uint32_t d = (c >= '0' && c <= '9') ? (uint32_t)(c - '0')
+                           : (c >= 'a' && c <= 'f') ? (uint32_t)(c - 'a' + 10)
+                           : (c >= 'A' && c <= 'F') ? (uint32_t)(c - 'A' + 10) : 0;
+                seed = seed * 16 + d;
+            }
+        } else {
+            for (; *s >= '0' && *s <= '9'; s++) seed = seed * 10 + (uint32_t)(*s - '0');
+        }
+        start += 2;
+    }
+    if (start >= argc) { printf("Usage: murmur [-s SEED] <text ...>\n"); return; }
+    uint8_t in[512]; uint32_t o = 0;
+    for (int i = start; i < argc; i++) {
+        if (i > start && o < sizeof(in)) in[o++] = ' ';                 // rejoin args with spaces
+        for (uint32_t k = 0; argv[i][k] && o < sizeof(in); k++) in[o++] = (uint8_t)argv[i][k];
+    }
+    uint32_t h = murmur3_32(in, o, seed);
+    char out[9];
+    for (int i = 7; i >= 0; i--) { out[i] = HEX[h & 0xF]; h >>= 4; }
+    out[8] = 0; printf("%s\n", out);
 }
 
 // base58 [-d] <text ...> — Base58 (Bitcoin) encode the argument text, or -d decode a
@@ -4647,6 +4683,7 @@ static void run_selftests(void) {
         {"mathx",        mathx_selftest},         {"crc32",         crc32_selftest},
         {"crc32c",       crc32c_selftest},
         {"fletcher",     fletcher_selftest},
+        {"murmur",       murmur3_selftest},
         {"totp",         totp_selftest},          {"ipv4",          ipv4_parse_selftest},
         {"ipv6",         ipv6_parse_selftest},
         {"numparse",     numparse_selftest},        {"hkdf",          hkdf_selftest},
