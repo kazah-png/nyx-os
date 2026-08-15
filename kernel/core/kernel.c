@@ -27,6 +27,7 @@
 #include "base58.h"
 #include "cut.h"
 #include "uniq.h"
+#include "join.h"
 #include "fletcher.h"
 #include "../crypto/bech32.h"
 #include "../net/dns.h"
@@ -134,6 +135,7 @@ static void cmd_urlcode(int argc, char** argv);
 static void cmd_paste(int argc, char** argv);
 static void cmd_cut(int argc, char** argv);
 static void cmd_uniq(int argc, char** argv);
+static void cmd_join(int argc, char** argv);
 static void cmd_tac(int argc, char** argv);
 static void cmd_csv(int argc, char** argv);
 static void cmd_tsort(int argc, char** argv);
@@ -298,6 +300,7 @@ static const command_t commands[] = {
     {"paste",     cmd_paste,     "Merge lines of files: paste [-s] [-d LIST] <file ...>", false},
     {"cut",       cmd_cut,       "Select fields/chars of each line: cut -f|-c|-b LIST [-d C] [-s] <file>", false},
     {"uniq",      cmd_uniq,      "Collapse adjacent equal lines: uniq [-c|-d|-u|-i|-f N|-s N|-w N] <file>", false},
+    {"join",      cmd_join,      "Join two sorted files on a field: join [-t C] [-1/-2/-j N] [-a 1|2] <f1> <f2>", false},
     {"tac",       cmd_tac,       "Print a file's lines in reverse order: tac [-s SEP] <file>", false},
     {"csv",       cmd_csv,       "View a CSV file as an aligned table: csv [-d DELIM] <file>", false},
     {"tsort",     cmd_tsort,     "Topological sort of a dependency list: tsort <file>", false},
@@ -564,7 +567,7 @@ void execute_command(const char* cmd_line) {
 typedef struct { const char* title; const char* const* names; } help_cat_t;
 static const char* const HC_shell[] = {"help","man","version","clear","history","exec","spawn","jobs","wait","nice","renice",0};
 static const char* const HC_files[] = {"ls","cd","pwd","cat","file","tar","iniget","open","touch","mkdir","rm","cp","mv","tree","find","which","basename","dirname","files","df","mount","ext2ls","ext2cat",0};
-static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","fold","nl","expand","unexpand","factor","seq","paste","cut","uniq","comm","printf","wc","write","hexdump",0};
+static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","fold","nl","expand","unexpand","factor","seq","paste","cut","uniq","join","comm","printf","wc","write","hexdump",0};
 static const char* const HC_sys[]   = {"ps","kill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat",0};
 static const char* const HC_user[]  = {"useradd","users",0};
 static const char* const HC_net[]   = {"ifconfig","dhcp","dns","ping","setip","httpget","tls",0};
@@ -658,6 +661,7 @@ static const man_page_t man_pages[] = {
     {"seq",      "Print an inclusive sequence of integers, one per line. `seq LAST` counts 1..LAST; `seq FIRST LAST` counts FIRST..LAST; `seq FIRST STEP LAST` advances by STEP (which may be negative). A range that starts on the wrong side of LAST prints nothing, and a zero STEP is an error. Integer-only (64-bit signed), matching GNU seq for integer arguments."},
     {"paste",    "Merge corresponding lines of files. By default the i-th line of each file is printed on one row, separated by a tab, continuing until every file runs out (a spent file leaves its column empty). -s writes each file's lines onto a single line instead. -d LIST replaces the tab with the characters of LIST used in turn (\\t, \\n, \\\\ escapes recognised). Reads each whole file; up to 16 files. Matches GNU paste for newline-delimited text."},
     {"cut",      "Print selected parts of each line of <file>. Choose one mode: -f LIST cuts fields (a field is text between delimiters; the delimiter is a TAB by default, or the single character given by -d C), -c LIST cuts characters, -b LIST cuts bytes. A LIST is a comma-separated set of 1-based ranges: 'N' one position, 'N-M' the inclusive range, 'N-' from N to the end, '-M' the same as '1-M'. Selected parts are always emitted in increasing position order, never duplicated, so the order the ranges are written in does not matter. In field mode a line that contains no delimiter is printed unchanged, unless -s suppresses such lines; selected fields are re-joined with the delimiter. Matches GNU cut byte-for-byte for newline-delimited text (chars and bytes coincide for ASCII). Reads a bounded chunk of each file; several files may be given."},
+    {"join",     "Join two files, <f1> and <f2>, on a common field — the relational join of the shell. Both files must already be SORTED on their join field (join is a merge join; sort first). For every pair of lines whose join fields match it prints the join field, then the other fields of <f1>, then the other fields of <f2>; a repeated key prints the full cartesian product of the matching lines. By default the join field is field 1 and fields are separated by runs of blanks (collapsed to a single space on output). -t C uses the single character C as the field separator on input and output. -1 N / -2 N set the join field for file 1 / file 2 (or -j N for both). -a 1 or -a 2 additionally prints the unpaired lines of that file (reformatted). Matches GNU join byte-for-byte under the C locale (byte-ordered keys). Reads a bounded chunk of each file."},
     {"uniq",     "Collapse ADJACENT equal lines of <file> into one — the classic companion to sort (uniq does not sort; it only folds neighbouring duplicates, so run `sort` first to remove all duplicates). Prints the first line of each run. -c prefixes each line with the number of times it occurred (a 7-wide count, then a space). -d prints only lines that repeat (runs of 2+); -u prints only lines that occur exactly once. -i compares case-insensitively. -f N ignores the first N blank-separated fields when comparing, -s N then ignores the next N characters, and -w N compares at most N characters of what remains — the whole (unmodified) line is still what gets printed. Matches GNU uniq byte-for-byte. Reads a bounded chunk of the file."},
     {"tac",      "Print the lines of <file> in reverse order — the last line first, the first line last (the line-order companion to rev, which reverses characters within a line). The newline stays attached to its line, so a file without a trailing newline joins its last two lines when reversed, exactly like GNU tac. -s SEP uses SEP (one or more characters) as the record separator instead of newline. Reads a bounded chunk of the file."},
     {"tsort",    "Topologically sort a dependency list. The file holds whitespace-separated tokens in pairs; each pair 'A B' means A must come before B. Prints one item per line in an order that respects every dependency (Kahn's algorithm), matching GNU tsort byte-for-byte including its tie-break (roots emitted in sorted order). If the pairs contain a cycle the order is impossible, so the acyclic part is printed and a loop is reported; an odd number of tokens is a malformed input. Useful for build/order-of-operations problems."},
@@ -1550,6 +1554,47 @@ static void cmd_uniq(int argc, char** argv) {
     vfs_close(fd);
     if (bytes <= 0) return;
     uniq_run(&o, buf, (uint32_t)bytes, uniq_emit_puts, 0);
+}
+
+// join output callback: write one joined record followed by a newline.
+static void join_emit_puts(void* ctx, const char* out, uint32_t len) {
+    (void)ctx;
+    for (uint32_t i = 0; i < len; i++) putchar(out[i]);
+    putchar('\n');
+}
+
+// join [-t C] [-1 N|-2 N|-j N] [-a 1|2] <f1> <f2> — relational join of two sorted files on a
+// common field, byte-for-byte with GNU join (pure logic in join.c, host-diff-verified). Keys
+// are byte-ordered (the C-locale merge join); both files must already be sorted on the field.
+static void cmd_join(int argc, char** argv) {
+    join_opts_t o;
+    o.delim = 0; o.jf1 = 1; o.jf2 = 1; o.a1 = 0; o.a2 = 0;
+    int ai = 1;
+    while (ai < argc && argv[ai][0] == '-' && argv[ai][1]) {
+        const char* a = argv[ai];
+        char opt = a[1];
+        const char* val = a[2] ? &a[2] : (ai + 1 < argc ? argv[++ai] : "");
+        uint32_t n = 0; for (uint32_t k = 0; val[k] >= '0' && val[k] <= '9'; k++) n = n * 10 + (uint32_t)(val[k] - '0');
+        if (opt == 't') o.delim = val[0];
+        else if (opt == '1') o.jf1 = n ? n : 1;
+        else if (opt == '2') o.jf2 = n ? n : 1;
+        else if (opt == 'j') { o.jf1 = o.jf2 = (n ? n : 1); }
+        else if (opt == 'a') { if (n == 1) o.a1 = 1; else if (n == 2) o.a2 = 1; }
+        else { printf("join: invalid option '%s'\n", a); return; }
+        ai++;
+    }
+    if (ai + 1 >= argc) { printf("Usage: join [-t C] [-1/-2/-j N] [-a 1|2] <f1> <f2>\n"); return; }
+    int fd1 = vfs_open(argv[ai], 0, 0);
+    if (fd1 < 0) { printf("join: cannot open '%s'\n", argv[ai]); return; }
+    static char b1[4096];
+    int n1 = vfs_read(fd1, b1, sizeof(b1));
+    vfs_close(fd1);
+    int fd2 = vfs_open(argv[ai + 1], 0, 0);
+    if (fd2 < 0) { printf("join: cannot open '%s'\n", argv[ai + 1]); return; }
+    static char b2[4096];
+    int n2 = vfs_read(fd2, b2, sizeof(b2));
+    vfs_close(fd2);
+    join_run(b1, n1 > 0 ? (uint32_t)n1 : 0, b2, n2 > 0 ? (uint32_t)n2 : 0, &o, join_emit_puts, 0);
 }
 
 // tsort output callback: one node per line.
