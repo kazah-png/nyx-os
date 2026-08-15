@@ -82,11 +82,13 @@ strict-C99 output — and is verified three ways:
 1. **Real programs run on NyxOS.** The in-OS TinyCC builds the current
    `ncc` from source inside the running system, and that compiler
    transpiles, compiles, and runs the **entire example suite** — all
-   thirteen programs, v0.1 through v0.13 — in a single boot, with output
+   sixteen programs, v0.1 through v0.15 — in a single boot, with output
    identical to the host runs: the fs bindings exercise real kernel
-   `open`/`read`/`close`, and the `pageflags` demo performs a live
-   anonymous `mmap` through the W^X-typed flags. (This workload also
-   uncovered — and keeps profiling — a kernel VFS node-pool exhaustion,
+   `open`/`read`/`close`, the `pageflags` demo performs a live anonymous
+   `mmap` through the W^X-typed flags, and the M5 opener — an N
+   tokenizer written in N — **tokenizes N source inside NyxOS**. (This
+   workload also uncovered — and keeps profiling — a kernel VFS
+   node-pool exhaustion,
    [#66](https://github.com/kazah-png/nyx-os/issues/66) — the language
    toolchain doubles as a real stress test for the OS.)
 2. **Generated C is clean.** Output compiles warning-free with the OS
