@@ -11,21 +11,33 @@ static int mouse_has_wheel = 0;              // 1 = IntelliMouse: 4-byte packets
 static volatile uint8_t packet[4];
 static volatile int packet_idx = 0;
 
-static void ps2_wait_write(void) {
-    while (inb(0x64) & 2);
+// Every wait is BOUNDED: on real hardware whose i8042 has no auxiliary (mouse) device —
+// common on modern laptops/UMPCs where the touchpad is USB-HID — the status bit we poll
+// never changes, so an unbounded `while` here hangs the whole boot. ~100k port reads is
+// far longer than a present mouse ever needs to answer, yet still bails on a dead port.
+#define PS2_TIMEOUT 100000
+
+// Wait for the input buffer to drain (bit 1 clear) before writing. Returns 0, or -1 on timeout.
+static int ps2_wait_write(void) {
+    for (int i = 0; i < PS2_TIMEOUT; i++)
+        if (!(inb(0x64) & 2)) return 0;
+    return -1;
 }
 
-static void ps2_wait_read(void) {
-    while (!(inb(0x64) & 1));
+// Wait for the output buffer to fill (bit 0 set) before reading. Returns 0, or -1 on timeout.
+static int ps2_wait_read(void) {
+    for (int i = 0; i < PS2_TIMEOUT; i++)
+        if (inb(0x64) & 1) return 0;
+    return -1;
 }
 
 static uint8_t ps2_read(void) {
-    ps2_wait_read();
+    if (ps2_wait_read() != 0) return 0xFF;   // timeout -> no data; 0xFF != 0xFA ACK, so callers bail
     return inb(0x60);
 }
 
 static void ps2_write(uint16_t port, uint8_t val) {
-    ps2_wait_write();
+    ps2_wait_write();                        // best-effort; write anyway on timeout
     outb(port, val);
 }
 
@@ -51,10 +63,9 @@ static int mouse_enable_wheel(void) {
 }
 
 int mouse_init(void) {
-    // Flush any stale data from PS/2 controller
-    while (inb(0x64) & 1) inb(0x60);
-    uint8_t st;
-    while ((st = inb(0x64)) & 2);  // wait for input buffer empty
+    // Flush any stale data from PS/2 controller (bounded — see PS2_TIMEOUT above)
+    for (int i = 0; i < PS2_TIMEOUT && (inb(0x64) & 1); i++) inb(0x60);
+    for (int i = 0; i < PS2_TIMEOUT && (inb(0x64) & 2); i++);  // wait for input buffer empty
 
     // Enable auxiliary device
     ps2_write(0x64, 0xA8);

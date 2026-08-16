@@ -99,8 +99,9 @@ static char us_shift[0x80] = {
 // Inicialización
 // ============================================================
 void init_keyboard(void) {
-    // Vaciar buffer de entrada
-    while (inb(0x64) & 0x01) {
+    // Vaciar buffer de entrada (acotado: en hardware real sin i8042 funcional el bit de
+    // estado podria no limpiarse nunca y colgar el arranque; ~100k lecturas es de sobra).
+    for (int i = 0; i < 100000 && (inb(0x64) & 0x01); i++) {
         inb(0x60);
     }
     shift_pressed = 0;
