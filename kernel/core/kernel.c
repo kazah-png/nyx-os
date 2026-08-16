@@ -43,6 +43,7 @@
 #include "../crypto/p384.h"
 #include "../crypto/x509.h"
 #include "../image/inflate.h"
+#include "../image/deflate.h"
 #include "../image/png.h"
 #include "../image/bmp.h"
 #include "../image/gif.h"
@@ -155,6 +156,7 @@ static void cmd_nl(int argc, char** argv);
 static void cmd_printf(int argc, char** argv);
 static void cmd_expand(int argc, char** argv);
 static void cmd_unexpand(int argc, char** argv);
+static void cmd_deflate(int argc, char** argv);
 static void cmd_tree(int argc, char** argv);
 static void cmd_env(int argc, char** argv);
 static void cmd_export(int argc, char** argv);
@@ -319,6 +321,7 @@ static const command_t commands[] = {
     {"printf",    cmd_printf,    "Format and print: printf FORMAT [ARG...]", false},
     {"expand",    cmd_expand,    "Convert tabs to spaces: expand [-t N] <file>", false},
     {"unexpand",  cmd_unexpand,  "Convert spaces to tabs: unexpand [-a] [-t N] <file>", false},
+    {"deflate",   cmd_deflate,   "Compress a file (zlib/DEFLATE): deflate <in> <out>", false},
     {"wc",        cmd_wc,        "Count lines/words/chars: wc <file>", false},
     {"write",     cmd_write,     "Write text to file: write <file> <text>", false},
     {"dhcp",      cmd_dhcp,      "Request IP via DHCP", false},
@@ -574,7 +577,7 @@ static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev",
 static const char* const HC_sys[]   = {"ps","kill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat",0};
 static const char* const HC_user[]  = {"useradd","users",0};
 static const char* const HC_net[]   = {"ifconfig","dhcp","dns","ping","setip","httpget","tls",0};
-static const char* const HC_dev[]   = {"cc","xbm","semver","fnv","urlcode","crc32c","fletcher","murmur","base58","bech32",0};
+static const char* const HC_dev[]   = {"cc","xbm","semver","fnv","urlcode","crc32c","fletcher","murmur","base58","bech32","deflate",0};
 static const char* const HC_media[] = {"play","sb16play","imageview","selene",0};
 static const char* const HC_games[] = {"doom","pong","voxel","fire","matrix","lava","fractal","julia","particles","snake","tetris",0};
 static const char* const HC_test[]  = {"mtdemo","smpstress","smpuser","smpthreads","smpbalance","tlbtest","cowtest","crash","usertest","tcptest","tcpdrop","tcploop","tcpserve","posttest","tlsstrict","prftest","gcmtest","dertest","p256test","p384test","x25519test","tlskeytest","tlsrectest","csprngtest","skp384test","deflatetest","sha512test","pngtest","bmptest","giftest","jpegtest","imgreject","httptest","ext2test","rsatest","chaintest","formtest",0};
@@ -682,6 +685,7 @@ static const man_page_t man_pages[] = {
     {"wc",       "Count the lines, words and characters in <file>. -l, -w or -c limit the output to just one of those counts."},
     {"basename", "Strip the directory prefix (and, if given, a trailing suffix) from <path>, printing only the final component."},
     {"dirname",  "Strip the final component from <path>, printing the directory portion that remains."},
+    {"deflate",  "Compress <in> into <out> using DEFLATE with a zlib wrapper (RFC 1950) - the format stock zlib and Python zlib.decompress read. Fixed-Huffman + LZ77; the output is verified to inflate back byte-for-byte, so it can be decompressed anywhere."},
     {"xbm",      "The NyxOS package manager. `xbm install <name>` compiles a package from its recipe with the in-OS C compiler and installs it; `xbm remove <name>` uninstalls it; `xbm search <str>` and `xbm list` browse the available and installed packages. A recipe may carry a `url:` line pointing at a remote http:// source; xbm then downloads that source into the package before building it, the pacman/apt \"fetch source, then compile in-OS\" model."},
     {"cc",       "Compile and link C source into an ELF program with the in-OS TinyCC toolchain. -c stops after producing an object file."},
     {"fire",     "Open Nyx Fire, an animated doom-fire effect window. It is also a visual performance demo, re-filling the whole framebuffer region each frame."},
@@ -2004,6 +2008,27 @@ static void cmd_unexpand(int argc, char** argv) {
         }
     }
     if (run > 0) unexpand_flush(runstart, col, tabw);
+}
+
+// deflate <in> <out> — zlib-compress a file (RFC 1950). The output round-trips through NyxOS's
+// own inflate and stock zlib; handy for shrinking in-OS data. See image/deflate.c.
+static void cmd_deflate(int argc, char** argv) {
+    if (argc < 3) { printf("Usage: deflate <in> <out>\n"); return; }
+    int fd = vfs_open(argv[1], 0, 0);
+    if (fd < 0) { printf("deflate: cannot open '%s'\n", argv[1]); return; }
+    static uint8_t inbuf[65536];
+    int bytes = vfs_read(fd, inbuf, sizeof(inbuf));
+    vfs_close(fd);
+    if (bytes < 0) { printf("deflate: read error\n"); return; }
+    static uint8_t outbuf[65536 + 4096];
+    uint32_t olen = 0;
+    if (zlib_deflate(inbuf, (uint32_t)bytes, outbuf, sizeof(outbuf), &olen) != 0) {
+        printf("deflate: input too large (max %u bytes)\n", (unsigned)sizeof(inbuf)); return;
+    }
+    if (vfs_write_file(argv[2], outbuf, olen) < 0) { printf("deflate: cannot write '%s'\n", argv[2]); return; }
+    uint32_t pct10 = bytes ? (uint32_t)(((uint64_t)olen * 1000) / (uint32_t)bytes) : 0;
+    printf("deflate: %d -> %u bytes (%u.%u%% of original) -> %s\n",
+           bytes, olen, pct10 / 10, pct10 % 10, argv[2]);
 }
 
 static void cmd_tree(int argc, char** argv) {
@@ -4526,6 +4551,7 @@ extern int p384_selftest(void);
 extern int rsa_selftest(void);
 extern int x509_selftest(void);
 extern int inflate_selftest(void);
+extern int deflate_selftest(void);
 extern int png_selftest(void);
 extern int bmp_selftest(void);
 extern int gif_selftest(void);
@@ -4691,6 +4717,7 @@ static void run_selftests(void) {
         {"p384",         p384_selftest},          {"rsa",           rsa_selftest},
         {"x509",         x509_selftest},
         {"inflate",      inflate_selftest},       {"png",           png_selftest},
+        {"deflate",      deflate_selftest},
         {"bmp",          bmp_selftest},           {"gif",           gif_selftest},
         {"jpeg",         jpeg_selftest},          {"imgreject",     image_reject_selftest},
         {"httpparse",    http_parse_selftest},    {"ext2dir",       ext2_dir_selftest},
