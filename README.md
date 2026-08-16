@@ -83,6 +83,19 @@ o###o   o#                  Memory:     255 MiB
 
 ---
 
+## Running on real hardware 🌙
+
+NyxOS isn't only a QEMU target — it boots on a **physical UEFI machine**, all the way to the desktop.
+
+<div align="center">
+  <img src="docs/real-hardware.jpg" alt="NyxOS running on a physical Intel Core i5-1035G7 handheld" width="620" />
+  <p><em>NyxOS on an 8" Intel Core i5-1035G7 handheld — <code>nyxfetch</code> in the terminal, booted from USB and running entirely from RAM</em></p>
+</div>
+
+The **`NyxOS-uefi.iso`** release image boots via GRUB-EFI into a GOP framebuffer. Flash it with **Rufus in DD mode**, turn **Secure Boot off** in firmware, and pick a rotation at the boot menu if your panel is portrait. Full checklist in [docs/REAL_HARDWARE.md](docs/REAL_HARDWARE.md).
+
+---
+
 ## Features
 
 **Kernel & memory**
