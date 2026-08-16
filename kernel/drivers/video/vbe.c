@@ -19,7 +19,7 @@
 #define VBE_DISPI_ID4  0xB0C4
 
 #define LFB_VIRT_BASE 0xE0000000UL
-#define MAX_FB_PAGES  2048   /* 8 MB LFB window — covers up to 1920x1080x32 */
+#define MAX_FB_PAGES  4096   /* 16 MB LFB window — covers a padded 1920x1080x32 and beyond */
 
 static int vbe_initialized = 0;
 uint32_t vbe_width = 0;
@@ -114,6 +114,26 @@ int vbe_set_mode(uint32_t width, uint32_t height, uint32_t bpp) {
     serial_puts(" pages)\n");
 
     return 0;
+}
+
+// Map a bootloader-provided linear framebuffer (multiboot2 type-8 / UEFI GOP) — whose physical
+// address is typically high (outside the identity-mapped low RAM) — into the kernel LFB window
+// at LFB_VIRT_BASE, and return that virtual pointer. This is the real-hardware/UEFI counterpart
+// of vbe_set_mode()'s Bochs path: same paging window, same downstream fb_* stack, but the mode
+// was set by GRUB (via GOP) instead of by poking the QEMU-only Bochs dispi ports. `bytes` should
+// be pitch*height (rounded up to pages).
+void* vbe_map_lfb(uint64_t phys, uint32_t bytes) {
+    uint32_t pages = (bytes + 0xFFF) / 0x1000;
+    if (pages > MAX_FB_PAGES) pages = MAX_FB_PAGES;
+    if (vbe_lfb) {                                   // drop any previous mapping first
+        for (uint32_t i = 0; i < MAX_FB_PAGES; i++)
+            unmap_page((void*)(LFB_VIRT_BASE + i * 0x1000));
+    }
+    for (uint32_t i = 0; i < pages; i++)
+        map_page((void*)(uintptr_t)(phys + (uint64_t)i * 0x1000),
+                 (void*)(LFB_VIRT_BASE + (uint64_t)i * 0x1000), 3 | PAGE_NX);
+    vbe_lfb = (void*)LFB_VIRT_BASE;
+    return vbe_lfb;
 }
 
 uint32_t vbe_get_width(void) { return vbe_width; }

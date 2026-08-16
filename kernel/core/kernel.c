@@ -4392,6 +4392,13 @@ static void* saved_mboot_ptr = NULL;
 static mb_mmap_entry_t g_mmap[MAX_MMAP];
 static int g_mmap_count = 0;
 
+// The linear framebuffer GRUB set up for us (multiboot2 type-8 tag, filled in by the boot-info
+// parse in kernel_main). grub_fb_addr != 0 means the bootloader handed us a real LFB — the path
+// that works on physical hardware / UEFI-GOP, where the QEMU-only Bochs-VBE ports are absent.
+static uint64_t grub_fb_addr  = 0;
+static uint32_t grub_fb_pitch = 0, grub_fb_w = 0, grub_fb_h = 0;
+static uint8_t  grub_fb_bpp = 0, grub_fb_type = 0;
+
 // Enable the CPU's Supervisor Mode Execution/Access Prevention (SMEP/SMAP), if the
 // processor advertises them (CPUID.(EAX=7,ECX=0):EBX bit 7 = SMEP, bit 20 = SMAP).
 //  - SMEP (CR4.SMEP, bit 20): a #GP if ring 0 tries to EXECUTE a user (U=1) page.
@@ -4762,6 +4769,17 @@ void kernel_main(uint64_t magic, void* mboot_ptr) {
                         g_mmap_count++;
                         e += entry_size;
                     }
+                } else if (type == 8) {
+                    // Framebuffer info tag: the LINEAR framebuffer the bootloader (GRUB)
+                    // set up in response to our type-5 request — this is how graphics works
+                    // on real hardware / UEFI (GOP), where the QEMU Bochs-VBE ports don't
+                    // exist. u64 addr, u32 pitch, u32 width, u32 height, u8 bpp, u8 fb_type.
+                    grub_fb_addr  = *(uint64_t*)(tag + 8);
+                    grub_fb_pitch = *(uint32_t*)(tag + 16);
+                    grub_fb_w     = *(uint32_t*)(tag + 20);
+                    grub_fb_h     = *(uint32_t*)(tag + 24);
+                    grub_fb_bpp   = *(uint8_t*)(tag + 28);
+                    grub_fb_type  = *(uint8_t*)(tag + 29);
                 }
 
                 tag += (size + 7) & ~7;
@@ -4787,15 +4805,35 @@ void kernel_main(uint64_t magic, void* mboot_ptr) {
     printf("[INIT] Kernel Heap...\n"); init_heap();
     printf("[INIT] Slab Allocator...\n"); slab_init_all();
     printf("[INIT] SMP...\n"); smp_init();
-    printf("[INIT] VBE (Bochs)...\n"); vbe_init();
-    printf("[INIT] VBE mode 1024x768x32...\n");
-    if (vbe_set_mode(1024, 768, 32) == 0) {
-        fb_init(vbe_get_width(), vbe_get_height(), vbe_get_bpp(), vbe_get_lfb());
+    if (grub_fb_addr && grub_fb_type == 1 && grub_fb_bpp == 32) {
+        // REAL-HARDWARE / UEFI path: GRUB (via GOP, or VBE under BIOS) already set a linear
+        // framebuffer and handed it to us in the multiboot2 type-8 tag. Map it and use it
+        // directly — no QEMU-only Bochs-VBE poking. (QEMU also fills this tag now, so this same
+        // path is what the headless tests exercise.)
+        printf("[INIT] GRUB framebuffer %ux%ux%u pitch=%u at 0x%llx\n",
+               grub_fb_w, grub_fb_h, grub_fb_bpp, grub_fb_pitch, grub_fb_addr);
+        void* lfb = vbe_map_lfb(grub_fb_addr, grub_fb_pitch * grub_fb_h);
+        fb_init_ex(grub_fb_w, grub_fb_h, grub_fb_bpp, lfb, grub_fb_pitch / 4);
+        fb_debug_banner();                 // paint a Nyx bar NOW — real-HW proof of life
+        // + an audible "graphics up" chirp for blind bringup. Interrupts are still OFF here, so
+        // this must NOT use sleep()/the timer (which would hang forever) — a raw busy-loop blip.
+        speaker_on(880);
+        for (volatile long i = 0; i < 20000000; i++) { }
+        speaker_off();
         bootsplash_init();
-        printf("[INIT] Framebuffer: %dx%dx%d at 0x%llx\n",
-               vbe_get_width(), vbe_get_height(), vbe_get_bpp(), vbe_get_lfb());
+        printf("[INIT] Framebuffer (GRUB): %ux%ux%u at 0x%llx\n",
+               grub_fb_w, grub_fb_h, grub_fb_bpp, (uint64_t)(uintptr_t)lfb);
     } else {
-        printf("[INIT] VBE mode set failed, staying in text mode\n");
+        printf("[INIT] VBE (Bochs)...\n"); vbe_init();
+        printf("[INIT] VBE mode 1024x768x32...\n");
+        if (vbe_set_mode(1024, 768, 32) == 0) {
+            fb_init(vbe_get_width(), vbe_get_height(), vbe_get_bpp(), vbe_get_lfb());
+            bootsplash_init();
+            printf("[INIT] Framebuffer: %dx%dx%d at 0x%llx\n",
+                   vbe_get_width(), vbe_get_height(), vbe_get_bpp(), vbe_get_lfb());
+        } else {
+            printf("[INIT] VBE mode set failed, staying in text mode\n");
+        }
     }
     bootsplash_update(1, 23, "Setting up exception stacks...");
     printf("[INIT] IST stacks (per-CPU)...\n");

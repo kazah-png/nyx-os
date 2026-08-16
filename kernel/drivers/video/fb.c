@@ -3,6 +3,11 @@
 static uint32_t fb_width = 0;
 static uint32_t fb_height = 0;
 static uint32_t fb_bpp = 0;
+// Hardware row stride in PIXELS. Equals fb_width for the QEMU Bochs LFB (pitch = width*4), but a
+// bootloader/GOP framebuffer on real hardware can have a PADDED pitch (pitch > width*4), so the
+// blit to fb_hw must step rows by this, not by fb_width. Internal drawing + the back buffer stay
+// width-contiguous; only the fb_hw boundary (fb_present, the debug banner) uses fb_hw_stride.
+static uint32_t fb_hw_stride = 0;
 // fb_addr is the CURRENT draw target that every fb_* primitive (and the
 // compositor's cursor code, via fb_get_addr) writes to. By default it is the
 // hardware LFB (fb_hw) so early, one-shot rendering — bootsplash, the login
@@ -34,11 +39,33 @@ void fb_init(uint32_t width, uint32_t height, uint32_t bpp, void* addr) {
     fb_width = width;
     fb_height = height;
     fb_bpp = bpp;
+    fb_hw_stride = width;                   // Bochs LFB: pitch == width*4 (no padding)
     fb_hw = addr;
     // A mode change invalidates any back buffer sized for the old resolution.
     if (fb_back) { kfree(fb_back); fb_back = NULL; }
     fb_addr = addr;                        // default: draw straight to the LFB
     if (fb_back_wanted) fb_enable_backbuffer();   // resize the back buffer to match
+}
+
+// Like fb_init, but for a bootloader/GOP framebuffer whose hardware row stride (pitch) may be
+// wider than width*4 — the real-hardware / UEFI path. `stride_px` = pitch / 4.
+void fb_init_ex(uint32_t width, uint32_t height, uint32_t bpp, void* addr, uint32_t stride_px) {
+    fb_init(width, height, bpp, addr);
+    fb_hw_stride = stride_px ? stride_px : width;
+}
+
+// Early "we have the framebuffer" signal, painted STRAIGHT to the hardware LFB before any
+// compositor exists: a Nyx-purple bar with a white border across the top. On a real machine it
+// proves graphics came up the instant they do — and because it steps rows by fb_hw_stride, a
+// WRONG pitch shows as a visible diagonal/skew, which is itself the diagnostic.
+void fb_debug_banner(void) {
+    if (!fb_hw) return;
+    uint32_t bar = fb_height < 48 ? fb_height : 48;
+    for (uint32_t y = 0; y < bar; y++) {
+        uint32_t* row = (uint32_t*)fb_hw + (size_t)y * fb_hw_stride;
+        uint32_t col = (y < 6 || y >= bar - 6) ? 0x00FFFFFF : 0x00825AD2;  // white border / Nyx purple
+        for (uint32_t x = 0; x < fb_width; x++) row[x] = col;
+    }
 }
 
 // Turn on double buffering: allocate a back buffer the size of the framebuffer
@@ -85,7 +112,14 @@ void fb_present(void) {
     // login screen or the panic report. Tie the publish to the invariant that
     // makes it meaningful rather than trusting every caller to know.
     if (fb_addr != fb_back) return;
-    memcpy_asm(fb_hw, fb_back, (size_t)fb_width * fb_height * 4);
+    if (fb_hw_stride == fb_width) {
+        memcpy_asm(fb_hw, fb_back, (size_t)fb_width * fb_height * 4);   // contiguous fast path
+    } else {
+        // padded hardware rows (GOP pitch > width): publish row by row
+        for (uint32_t y = 0; y < fb_height; y++)
+            memcpy_asm((uint8_t*)fb_hw + (size_t)y * fb_hw_stride * 4,
+                       (uint32_t*)fb_back + (size_t)y * fb_width, (size_t)fb_width * 4);
+    }
 }
 
 // SYS_FBINFO: hand the screen geometry to a userspace program so it can size its

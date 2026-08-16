@@ -44,6 +44,7 @@ Write-Host "[*] Creating bootable ISO..." -ForegroundColor Yellow
 wsl bash -c "cd $wslRoot && mkdir -p iso/boot/grub && cat > iso/boot/grub/grub.cfg << 'EOF'
 set timeout=5
 set default=0
+insmod all_video
 menuentry 'NyxOS' {
     multiboot2 /boot/nyx-kernel.bin
     boot

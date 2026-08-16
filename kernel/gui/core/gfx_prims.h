@@ -18,8 +18,11 @@ uint32_t vbe_get_width(void);
 uint32_t vbe_get_height(void);
 uint32_t vbe_get_bpp(void);
 void* vbe_get_lfb(void);
+void* vbe_map_lfb(uint64_t phys, uint32_t bytes);   // map a bootloader/GOP LFB into the kernel window
 
 void fb_init(uint32_t width, uint32_t height, uint32_t bpp, void* addr);
+void fb_init_ex(uint32_t width, uint32_t height, uint32_t bpp, void* addr, uint32_t stride_px);  // + hw pitch
+void fb_debug_banner(void);   // early real-HW "framebuffer is live" signal (Nyx-purple top bar)
 void fb_put_pixel(uint32_t x, uint32_t y, uint32_t color);
 void fb_fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color);
 void fb_darken_rect(int x, int y, int w, int h, uint8_t shade);  // mix rect toward black (drop shadows)

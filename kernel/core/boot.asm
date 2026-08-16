@@ -17,7 +17,19 @@ mb2_start:
     dd 0                   ; architecture (0 = i386)
     dd mb2_end - mb2_start ; header length
     dd -(0xE85250D6 + 0 + (mb2_end - mb2_start)) ; checksum
+    ; Framebuffer request tag (type 5) — asks the bootloader (GRUB) to set a linear
+    ; graphics mode and pass its address/pitch back via the type-8 tag. This is what
+    ; makes NyxOS work on REAL hardware + UEFI (GOP): no more poking the QEMU-only
+    ; Bochs VBE. 1024x768x32 has a clean pitch (4096 = width*4) on essentially all HW.
+    align 8
+    dw 5                   ; type = framebuffer
+    dw 0                   ; flags (0 = required)
+    dd 20                  ; size
+    dd 1024                ; width
+    dd 768                 ; height
+    dd 32                  ; depth
     ; End tag
+    align 8
     dw 0                   ; type
     dw 0                   ; flags
     dd 8                   ; size
