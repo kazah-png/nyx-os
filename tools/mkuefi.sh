@@ -40,19 +40,19 @@ cat > "$STAGE/boot/grub/grub.cfg" <<'CFG'
 set timeout=10
 set default=0
 insmod all_video
-# Portrait/rotated panels (e.g. an 8" UMPC) scan out a landscape LFB, so an unrotated
-# desktop looks sideways. Pick the entry that comes up upright on your screen; "rotate="
-# is read by the kernel (0/90/180/270 clockwise). Landscape machines: use "no rotation".
+# Default is landscape (correct for most PCs). Portrait/rotated panels (e.g. an 8" UMPC)
+# scan out a landscape LFB, so an unrotated desktop looks sideways there — pick a "rotate"
+# entry that comes up upright ("rotate=" is read by the kernel; 0/90/180/270 clockwise).
+menuentry 'NyxOS (landscape)' {
+    multiboot2 /boot/nyx-kernel.bin
+    boot
+}
 menuentry 'NyxOS (rotate 90 - portrait)' {
     multiboot2 /boot/nyx-kernel.bin rotate=90
     boot
 }
 menuentry 'NyxOS (rotate 270 - portrait, other way)' {
     multiboot2 /boot/nyx-kernel.bin rotate=270
-    boot
-}
-menuentry 'NyxOS (no rotation - landscape)' {
-    multiboot2 /boot/nyx-kernel.bin
     boot
 }
 menuentry 'NyxOS (rotate 180)' {
