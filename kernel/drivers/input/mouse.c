@@ -11,6 +11,15 @@ static int mouse_has_wheel = 0;              // 1 = IntelliMouse: 4-byte packets
 static volatile uint8_t packet[4];
 static volatile int packet_idx = 0;
 
+// Save RFLAGS + disable interrupts / restore. Lets mouse_poll() drain the i8042 without the
+// mouse IRQ re-entering the packet parser, and safely from any context (restores prior IF).
+static inline uint64_t mouse_irq_save(void) {
+    uint64_t f; __asm__ volatile("pushfq; pop %0; cli" : "=r"(f) :: "memory"); return f;
+}
+static inline void mouse_irq_restore(uint64_t f) {
+    __asm__ volatile("push %0; popfq" :: "r"(f) : "memory", "cc");
+}
+
 // Every wait is BOUNDED: on real hardware whose i8042 has no auxiliary (mouse) device —
 // common on modern laptops/UMPCs where the touchpad is USB-HID — the status bit we poll
 // never changes, so an unbounded `while` here hangs the whole boot. ~100k port reads is
@@ -97,12 +106,10 @@ int mouse_init(void) {
     return 0;
 }
 
-void mouse_irq_handler(void* unused) {
-    (void)unused;
-    uint8_t st = inb(0x64);
-    if ((st & 0x21) != 0x21) return;  // OBF=1, mouse bit=1 → mouse data
-    uint8_t data = inb(0x60);
-
+// Parse one byte of the PS/2 packet stream. Called both from the IRQ handler and from
+// mouse_poll() (the polling fallback for machines where IRQ12 is never delivered); the
+// callers serialise access so packet_idx/packet[] are never touched re-entrantly.
+static void mouse_process_byte(uint8_t data) {
     int last = mouse_has_wheel ? 3 : 2;      // index of the final byte in a packet
 
     if (packet_idx == 0) {
@@ -141,8 +148,32 @@ void mouse_irq_handler(void* unused) {
     }
 }
 
-int mouse_get_x(void) { return mouse_x; }
-int mouse_get_y(void) { return mouse_y; }
-int mouse_get_buttons(void) { return mouse_buttons; }
-int mouse_get_z(void) { return mouse_z; }
+// IRQ12 path (works under QEMU / when the firmware routes the legacy mouse IRQ).
+void mouse_irq_handler(void* unused) {
+    (void)unused;
+    uint8_t st = inb(0x64);
+    if ((st & 0x21) != 0x21) return;   // OBF=1 AND aux bit=1 → a mouse byte is waiting
+    mouse_process_byte(inb(0x60));
+}
+
+// Polling fallback: drain any pending aux (mouse) bytes from the i8042 right now. Some real
+// firmware/APIC routings never deliver IRQ12 even though a USB mouse is emulated on the aux
+// port (the keyboard, IRQ1, still works) — the cursor then appears but never moves. Calling
+// this from every mouse getter makes the pointer live regardless of IRQ delivery. Runs with
+// interrupts off so it never races the IRQ handler over packet_idx/packet[]; keyboard bytes
+// (aux bit clear) are left untouched for the keyboard IRQ.
+void mouse_poll(void) {
+    uint64_t f = mouse_irq_save();
+    for (int guard = 0; guard < 64; guard++) {     // bounded burst so a stuck OBF can't spin
+        uint8_t st = inb(0x64);
+        if ((st & 0x21) != 0x21) break;            // no aux byte pending
+        mouse_process_byte(inb(0x60));
+    }
+    mouse_irq_restore(f);
+}
+
+int mouse_get_x(void) { mouse_poll(); return mouse_x; }
+int mouse_get_y(void) { mouse_poll(); return mouse_y; }
+int mouse_get_buttons(void) { mouse_poll(); return mouse_buttons; }
+int mouse_get_z(void) { mouse_poll(); return mouse_z; }
 void mouse_set_pos(int x, int y) { mouse_x = x; mouse_y = y; }
