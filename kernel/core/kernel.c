@@ -4385,6 +4385,7 @@ void kernel_panic(const char* msg, ...) {
 // kernel_main
 // ============================================================
 static void* saved_mboot_ptr = NULL;
+static uint64_t saved_mboot_magic = 0;   // 0x2BADB002 = multiboot1, 0x36d76289 = multiboot2
 
 // Firmware physical-memory map, parsed from the multiboot2 type-6 tag and handed to
 // init_memory so the allocator frees ONLY available RAM (every reserved hole stays out).
@@ -4727,6 +4728,7 @@ static void run_selftests(void) {
 void kernel_main(uint64_t magic, void* mboot_ptr) {
     (void)magic;
     saved_mboot_ptr = mboot_ptr;
+    saved_mboot_magic = magic;
     int selftest_mode = 0;   // set from the "selftest" multiboot command line (CI)
     init_screen();
     clear_screen();
@@ -5565,28 +5567,58 @@ char *strstr(const char *haystack, const char *needle) {
     return NULL;
 }
 
+// The boot.asm identity map covers the low 128 MB of physical RAM (64 * 2 MB pages); a
+// bootloader buffer above that can't be reached via its physical address without a fault.
+// Real UEFI firmware places GRUB modules high in RAM (GBs), unlike QEMU which packs
+// everything low — so every bootloader-provided module pointer must be bounds-checked.
+#define MB_IDMAP_LIMIT 0x08000000ULL   // 128 MB
+
+static void module_register(uint32_t mod_start, uint32_t mod_end, const char* name, uint32_t idx) {
+    if (mod_end < mod_start) return;
+    if ((uint64_t)mod_start >= MB_IDMAP_LIMIT || (uint64_t)mod_end > MB_IDMAP_LIMIT) {
+        printf("[MODULES] skip module%u at 0x%x (above the 128 MB identity map)\n", idx, mod_start);
+        return;
+    }
+    char path[64];
+    if (name && (uintptr_t)name < MB_IDMAP_LIMIT && *name)
+        snprintf(path, sizeof(path), "/%s", name);
+    else
+        snprintf(path, sizeof(path), "/boot/module%u", idx);
+    vfs_create_from_mem(path, (uint8_t*)(uintptr_t)mod_start, mod_end - mod_start);
+}
+
 void init_load_modules(void) {
     if (!saved_mboot_ptr) return;
-    uint32_t* mb = (uint32_t*)saved_mboot_ptr;
-    if (!(mb[0] & 8)) return;
-    uint32_t mods_count = mb[5];
-    uint32_t mods_addr = mb[6];
-    printf("[MODULES] %d module(s) at 0x%x\n", mods_count, mods_addr);
-    uint32_t* mod_entry = (uint32_t*)(uintptr_t)mods_addr;
-    for (uint32_t i = 0; i < mods_count; i++) {
-        uint32_t mod_start = mod_entry[0];
-        uint32_t mod_end = mod_entry[1];
-        uint32_t mod_str = mod_entry[2];
-        uint32_t mod_size = mod_end - mod_start;
-        const char* name = (const char*)(uintptr_t)mod_str;
-        char path[64];
-        if (name && *name) {
-            snprintf(path, sizeof(path), "/%s", name);
-        } else {
-            snprintf(path, sizeof(path), "/boot/module%d", i);
+    if (saved_mboot_magic == 0x36d76289) {
+        // Multiboot2: walk the tag list for MODULE tags (type 3):
+        //   u32 type=3, u32 size, u32 mod_start, u32 mod_end, char string[] (inline).
+        // The old code read this mb2 struct as if it were multiboot1 (mods at mb[5]/mb[6],
+        // which are garbage here) and on real UEFI hardware dereferenced a bogus ~1.7 GB
+        // module pointer — a #PF panic. QEMU only escaped it because mb2 total_size & 8 == 0.
+        uint8_t* tag = (uint8_t*)saved_mboot_ptr + 8;
+        uint32_t idx = 0;
+        for (;;) {
+            uint32_t type = *(uint32_t*)tag;
+            uint32_t size = *(uint32_t*)(tag + 4);
+            if (type == 0 || size < 8) break;
+            if (type == 3 && size >= 16)
+                module_register(*(uint32_t*)(tag + 8), *(uint32_t*)(tag + 12),
+                                (const char*)(tag + 16), idx++);
+            tag += (size + 7) & ~7u;
         }
-        vfs_create_from_mem(path, (uint8_t*)(uintptr_t)mod_start, mod_size);
-        mod_entry += 4;
+    } else if (saved_mboot_magic == 0x2BADB002) {
+        // Multiboot1: flags bit 3 -> mods_count @ mb[5], mods_addr @ mb[6]; each entry is
+        // { u32 mod_start, u32 mod_end, u32 string_ptr, u32 reserved }.
+        uint32_t* mb = (uint32_t*)saved_mboot_ptr;
+        if (!(mb[0] & 8)) return;
+        uint32_t mods_count = mb[5];
+        uint32_t mods_addr  = mb[6];
+        if ((uint64_t)mods_addr >= MB_IDMAP_LIMIT) return;
+        uint32_t* mod_entry = (uint32_t*)(uintptr_t)mods_addr;
+        for (uint32_t i = 0; i < mods_count && i < 256; i++) {
+            module_register(mod_entry[0], mod_entry[1], (const char*)(uintptr_t)mod_entry[2], i);
+            mod_entry += 4;
+        }
     }
 }
 
