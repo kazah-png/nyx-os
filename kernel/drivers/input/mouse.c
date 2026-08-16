@@ -172,8 +172,25 @@ void mouse_poll(void) {
     mouse_irq_restore(f);
 }
 
+// MouseKeys: a keyboard-driven synthetic left/right click, held ~60 ms so the compositor's
+// press→release edge detection registers it as a real click. Lets the desktop be driven with
+// no pointing device at all (the compositor moves the cursor via mouse_set_pos on Alt+WASD).
+static volatile uint32_t synth_lclick_until = 0;
+static volatile uint32_t synth_rclick_until = 0;
+void mouse_kbd_click(int right) {
+    uint32_t until = get_ticks() + 60;   // ms
+    if (right) synth_rclick_until = until; else synth_lclick_until = until;
+}
+
 int mouse_get_x(void) { mouse_poll(); return mouse_x; }
 int mouse_get_y(void) { mouse_poll(); return mouse_y; }
-int mouse_get_buttons(void) { mouse_poll(); return mouse_buttons; }
+int mouse_get_buttons(void) {
+    mouse_poll();
+    uint8_t b = mouse_buttons;
+    uint32_t now = get_ticks();
+    if (synth_lclick_until && now < synth_lclick_until) b |= 0x01;   // synthetic left
+    if (synth_rclick_until && now < synth_rclick_until) b |= 0x02;   // synthetic right
+    return b;
+}
 int mouse_get_z(void) { mouse_poll(); return mouse_z; }
 void mouse_set_pos(int x, int y) { mouse_x = x; mouse_y = y; }

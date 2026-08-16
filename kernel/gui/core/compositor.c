@@ -3243,6 +3243,28 @@ void compositor_run(void) {
 
         int k = getkey_poll();
 
+        // MouseKeys — drive the pointer from the keyboard, essential on hardware with no
+        // working mouse/touchpad (e.g. an 8" UMPC with one USB port). Hold Alt: W/A/S/D move
+        // the cursor, Space left-clicks, C right-clicks. The key is consumed so it never leaks
+        // to a focused app; movement clamps to the (possibly rotated) logical screen.
+        if (k && is_alt_pressed()) {
+            int nx = mouse_get_x(), ny = mouse_get_y(), hit = 1;
+            const int STEP = 16;
+            if      (k == 'w' || k == 'W') ny -= STEP;
+            else if (k == 's' || k == 'S') ny += STEP;
+            else if (k == 'a' || k == 'A') nx -= STEP;
+            else if (k == 'd' || k == 'D') nx += STEP;
+            else if (k == ' ' || k == 'q' || k == 'Q') mouse_kbd_click(0);
+            else if (k == 'e' || k == 'E' || k == 'c' || k == 'C') mouse_kbd_click(1);
+            else hit = 0;
+            if (hit) {
+                if (nx < 0) nx = 0; else if (nx >= (int)fw) nx = (int)fw - 1;
+                if (ny < 0) ny = 0; else if (ny >= (int)fh) ny = (int)fh - 1;
+                mouse_set_pos(nx, ny);
+                k = 0;
+            }
+        }
+
         int mx = mouse_get_x();
         int my = mouse_get_y();
         uint8_t btns = mouse_get_buttons();

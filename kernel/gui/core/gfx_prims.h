@@ -54,6 +54,7 @@ int mouse_get_y(void);
 int mouse_get_buttons(void);
 int mouse_get_z(void);          // accumulated wheel notches (IntelliMouse); +up / -down
 void mouse_set_pos(int x, int y);
+void mouse_kbd_click(int right);   // MouseKeys: synthesize a left(0)/right(1) click at the cursor
 
 void font_draw_char(uint32_t x, uint32_t y, unsigned char c, uint32_t fg, uint32_t bg);
 void font_draw_string(uint32_t x, uint32_t y, const char* str, uint32_t fg, uint32_t bg);
