@@ -1,0 +1,72 @@
+// nstack.n — v0.16 index writes: the code nemit.n emits, this VM RUNS.
+//   nemit.n compiles "2 + 3 * 4" to  PUSH 2 / PUSH 3 / PUSH 4 / MUL /
+//   ADD  but could not execute it — running stack code needs writable
+//   memory, and v0.15 indexing was read-only. v0.16 closes that:
+//   - `p[i] = x` stores through a pointer element (+= -= too)
+//   - the pointer BINDING is not mutated by the store, so it needs no
+//     `mut` — N's mut is a binding property, the pointee is C territory
+//   - writing through a str index stays a compile error (immutable view)
+//   Program and stack live in sbrk'd i64 arrays; emit → run is closed.
+
+#[caps(syscall)]
+extern syscall {
+    fn write(fd: i32, buf: #[user] *u8, len: isize) -> i64 = 1
+    fn sys_sbrk(incr: i64) -> i64                          = 7
+}
+
+#[caps(syscall)]
+fn put(s: str) {
+    write(1, s.ptr as #[user] *u8, s.len as isize);
+}
+
+// The capability gate caught main() calling sys_sbrk directly — which is
+// the system working as designed: allocation is a kernel crossing, so it
+// gets its own audited wrapper.
+#[caps(syscall)]
+fn alloc_words(n: i64) -> *i64 {
+    sys_sbrk(n * 8) as *i64
+}
+
+// Opcodes: 0 HALT · 1 PUSH arg · 2 ADD · 3 SUB · 4 MUL · 5 DIV · 6 MOD · 7 NEG
+fn run(prog: *i64, stk: *i64) -> i64 {
+    mut pc := 0;
+    mut sp := 0;
+    mut running := true;
+    while running {
+        op := prog[pc];
+        if op == 0 { running = false; }
+        if op == 1 { stk[sp] = prog[pc + 1]; sp += 1; pc += 2; }
+        if op == 2 { stk[sp - 2] = stk[sp - 2] + stk[sp - 1]; sp -= 1; pc += 1; }
+        if op == 3 { stk[sp - 2] = stk[sp - 2] - stk[sp - 1]; sp -= 1; pc += 1; }
+        if op == 4 { stk[sp - 2] = stk[sp - 2] * stk[sp - 1]; sp -= 1; pc += 1; }
+        if op == 5 { stk[sp - 2] = stk[sp - 2] / stk[sp - 1]; sp -= 1; pc += 1; }
+        if op == 6 { stk[sp - 2] = stk[sp - 2] % stk[sp - 1]; sp -= 1; pc += 1; }
+        if op == 7 { stk[sp - 1] = -stk[sp - 1]; pc += 1; }
+    }
+    stk[0]
+}
+
+fn main() -> i64 {
+    prog := alloc_words(32);
+    stk  := alloc_words(32);
+
+    // nemit.n's listing for "2 + 3 * 4":
+    prog[0] = 1; prog[1] = 2;     // PUSH 2
+    prog[2] = 1; prog[3] = 3;     // PUSH 3
+    prog[4] = 1; prog[5] = 4;     // PUSH 4
+    prog[6] = 4;                  // MUL
+    prog[7] = 2;                  // ADD
+    prog[8] = 0;                  // HALT
+    put("run [2 + 3 * 4]      -> {run(prog, stk)}\n");
+
+    // nemit.n's listing for "-5 + 20 / 4":
+    prog[0] = 1; prog[1] = 5;     // PUSH 5
+    prog[2] = 7;                  // NEG
+    prog[3] = 1; prog[4] = 20;    // PUSH 20
+    prog[5] = 1; prog[6] = 4;     // PUSH 4
+    prog[7] = 5;                  // DIV
+    prog[8] = 2;                  // ADD
+    prog[9] = 0;                  // HALT
+    put("run [-5 + 20 / 4]    -> {run(prog, stk)}\n");
+    0
+}

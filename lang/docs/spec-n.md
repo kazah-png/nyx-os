@@ -1,6 +1,6 @@
 # The N Language — Specification
 
-**Version:** v0.15 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
+**Version:** v0.16 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
 
 This document specifies N exactly as implemented by the bootstrap compiler
 `ncc`. It is a *descriptive* spec: everything here compiles today. Planned
@@ -745,10 +745,16 @@ fields). Rules:
   down; the `#[user]` flavor does not transfer — the element is a plain
   value) or a **str** (result: `u8`, the byte of the backing text).
 - The index must be an integer.
-- **Read-only in v0.15**: an index expression is not an assignment
-  target — `p[i] = x` is a compile error. Writes arrive with the buffer
-  story (an allocator-backed, length-carrying slice), where they can be
-  more than a raw store.
+- **Writes (since v0.16)**: `p[i] = x` (and `+=`/`-=`) stores through a
+  **pointer** element; the value must be compatible with the element
+  type. Two deliberate rules:
+  - The pointer **binding** is not mutated by an element store, so it
+    does not need `mut` — N's `mut` is a property of bindings; what the
+    pointee holds is the program's contract, as in C.
+  - Writing through a **str** index stays a compile error: `str` is an
+    immutable view of its backing text, which is often a literal in
+    read-only storage. (`s.ptr` remains the explicit raw escape — what
+    you do through it is on you.)
 - **Bounds are the programmer's contract**, as in C. `str` carries
   `len`, so bound your loops with it (`for i in 0..s.len as i64`); a
   checked access variant is n++ territory.
@@ -873,7 +879,7 @@ cast         = unary { "as" type } ;
 unary        = ( "-" | "!" ) unary | postfix ;
 postfix      = primary { "." ident
                        | "(" [ expr { "," expr } ] ")"
-                       | "[" expr "]" } ;      (* indexing: v0.15, read-only *)
+                       | "[" expr "]" } ;      (* indexing: reads v0.15, writes v0.16 *)
 primary      = int_lit | "true" | "false" | string | interp_string
              | struct_lit | ident | "(" expr ")" ;
 struct_lit   = ident "{" [ finit { "," finit } [ "," ] ] "}" ;
@@ -907,8 +913,10 @@ N++/type-checker phase:
 4. **Match-expression and `?` positions are limited** (§5.6.1, §5.9):
    statement value positions only — no general expression nesting
    until the lowering needs it.
-5. **Indexing is read-only** (§6.6): writes through `e[i]` wait for the
-   allocator-backed buffer story.
+5. **No allocator-backed slice type yet** (§6.6): buffers are raw
+   `sbrk`/`mmap` pointers with programmer-contract bounds; a
+   length-carrying checked slice is n++ territory. (Raw index *writes*
+   landed in v0.16.)
 6. Fixed implementation caps (per file: 64 functions, 64 syscalls; per call:
    16 arguments; per function: 256 live locals) — generous for the bootstrap,
    diagnosed clearly when exceeded.

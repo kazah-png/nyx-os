@@ -1,7 +1,7 @@
 # N & N++ — the native languages of NyxOS
 
 <p align="center">
-  <img src="https://img.shields.io/badge/N-v0.15-825AD2?style=flat" />
+  <img src="https://img.shields.io/badge/N-v0.16-825AD2?style=flat" />
   &nbsp;
   <img src="https://img.shields.io/badge/N%2B%2B-design-825AD2?style=flat" />
   &nbsp;
@@ -31,7 +31,7 @@ N++ program, and N++ compiles down through the same pipeline.
 | Memory model | Manual, raw pointers | Ownership/borrowing opt-in, `#[user]` checked pointers |
 | Error handling | Return codes | `Result<T, E>` + `?` propagation |
 | Data types | Primitives, pointers, `str` | + `struct` methods, `enum` sum types, `match`, generics, traits |
-| Status | **v0.15 — working** (see below) | **P1–P4 complete** (`#[user]` pointers, `pageflags` W^X, `#[caps]` capabilities; P5 next: `own` types + GUI) |
+| Status | **v0.16 — working** (see below) | **P1–P4 complete** (`#[user]` pointers, `pageflags` W^X, `#[caps]` capabilities; P5 next: `own` types + GUI) |
 
 Both share the same DNA:
 
@@ -64,7 +64,7 @@ Both share the same DNA:
 ## Status — what works today
 
 The bootstrap compiler `ncc` ([ncc/ncc.c](ncc/ncc.c), single-file C, no
-dependencies) implements N v0.15 — type inference (typed `:=` bindings with an
+dependencies) implements N v0.16 — type inference (typed `:=` bindings with an
 `i64` default, interpolation that inserts `str` values as text, enforced
 `mut`), a complete expression-level checker (undeclared names, unknown
 callees, arity, argument/operand/return/assignment types — all compile errors
@@ -76,7 +76,8 @@ propagation over Ok/Err result enums, counted `for` loops over half-open
 ranges, `#[user]` checked-pointer flavors with explicit `as` crossings,
 `pageflags` page permissions with a total compile-time W^X proof,
 `#[caps(syscall)]`-gated kernel crossings with audited wrapper boundaries,
-byte-level indexing into str and pointers (the self-hosting enabler),
+byte-level indexing into str and pointers with element writes (real
+buffers and stacks — the self-hosting enabler),
 strict-C99 output — and is verified three ways:
 
 1. **Real programs run on NyxOS.** The in-OS TinyCC builds the current
@@ -133,7 +134,8 @@ lang/
     ├── bytes.n          ← v0.15 indexing: s[i]/p[i] reads, FNV-1a in pure N
     ├── ntokens.n        ← M5 link 1: an N tokenizer written in N
     ├── ncalc.n          ← M5 link 2: precedence parser + evaluator in N
-    └── nemit.n          ← M5 link 3: stack-code emitter in N (read→parse→emit)
+    ├── nemit.n          ← M5 link 3: stack-code emitter in N (read→parse→emit)
+    └── nstack.n         ← v0.16 index writes: a VM in N runs nemit's code
 ```
 
 The runtime N programs link against lives with the rest of user space:
@@ -152,7 +154,7 @@ compiles packages from source on the machine itself). N rides that ladder:
 | M2 | `ncc` compiles *inside* NyxOS with the in-OS `cc` (tcc) | ✅ done |
 | M3 | `ncc hello.n` → running binary, entirely in-OS (the HolyC moment) | ✅ done |
 | M4 | N++ front-end: type checker, structs/enums/match, `Result`/`?` | design ready |
-| M5 | Self-hosting: `ncc` rewritten in N | **started** — the toy triangle is closed: tokenizer ([ntokens.n](examples/ntokens.n)) · parser + evaluator ([ncalc.n](examples/ncalc.n)) · code emitter ([nemit.n](examples/nemit.n)); next: writable buffers, then scale |
+| M5 | Self-hosting: `ncc` rewritten in N | **started** — the full toy loop runs: tokenizer ([ntokens.n](examples/ntokens.n)) · parser + evaluator ([ncalc.n](examples/ncalc.n)) · code emitter ([nemit.n](examples/nemit.n)) · a VM that executes the emitted code ([nstack.n](examples/nstack.n), on v0.16 index writes); next: scale |
 
 M2 and M3 were reached with zero changes to the compiler's design: `ncc.c` is
 plain C99 in one file, so the in-OS tcc builds it directly, and the same

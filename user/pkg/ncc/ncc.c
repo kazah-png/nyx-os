@@ -3,7 +3,7 @@
  * Hosted tool (runs on the dev machine); single file, no dependencies.
  * See lang/docs/spec-n.md for the language specification this implements.
  *
- * Supported subset (currently N v0.15):
+ * Supported subset (currently N v0.16):
  *   - extern syscall { fn name(params) [-> T] = N }
  *   - fn decls with block bodies, params, return types
  *   - statements: let (:=, mut), assignment (= += -=), return, while,
@@ -66,8 +66,12 @@
  *     wrapper is the audited boundary, like unsafe-fn. Methods hold none.
  *   - indexing (v0.15, the M5 enabler): `p[i]` reads element i of a
  *     pointer (type = one level down), `s[i]` reads byte i of a str as
- *     u8. Read-only — assignment through an index is refused (writes
- *     come later); bounds are the programmer's contract, as in C.
+ *     u8. Bounds are the programmer's contract, as in C.
+ *   - index writes (v0.16): `p[i] = x` (and += -=) stores through a
+ *     POINTER element — the binding is not mutated, so `mut` is not
+ *     required on the pointer. Writing through a str index stays
+ *     refused: str is an immutable view (often read-only storage).
+ *     Unlocks real buffers and stacks — the M5 arc's motivating case.
  * Not yet (N++ territory): closures, generic Result<T,E>, modules/use.
  */
 /* Platform includes. In-OS builds (milestone M2) compile this file with
@@ -1899,9 +1903,17 @@ static void gen_try(Stmt* s, int ind) {
         check_expr(s->lhs);
         Expr* root = s->lhs;
         while (root->k == E_FIELD) root = root->base;
-        if (root->k == E_INDEX)
-            die("%s:%d: indexing is read-only in v0.15 — assignment through e[i] is not supported yet",
-                FILENAME, s->line);
+        if (root->k == E_INDEX) {
+            /* v0.16: element writes through a POINTER are allowed — the
+             * pointer binding itself is not mutated, so `mut` is not
+             * required on it. Writing through a str index stays refused:
+             * str is an immutable view of its backing text (often a
+             * literal in read-only storage). */
+            Ty ibt = infer_type(root->l);
+            if (ty_is(ibt, "str"))
+                die("%s:%d: cannot write through a str index — str is an immutable view of its text",
+                    FILENAME, s->line);
+        }
         if (root->k == E_PATH) {
             VarInfo* v = vars_find(root->name);
             if (v && !v->is_mut)
@@ -1989,9 +2001,17 @@ static void gen_stmt(Stmt* s, int ind) {
                                                  * field writes mutate the root binding */
                 Expr* root = s->lhs;
                 while (root->k == E_FIELD) root = root->base;
-                if (root->k == E_INDEX)
-                    die("%s:%d: indexing is read-only in v0.15 — assignment through e[i] is not supported yet",
-                        FILENAME, s->line);
+                if (root->k == E_INDEX) {
+                    /* v0.16: element writes through a POINTER are allowed — the
+                     * pointer binding itself is not mutated, so `mut` is not
+                     * required on it. Writing through a str index stays refused:
+                     * str is an immutable view of its backing text (often a
+                     * literal in read-only storage). */
+                    Ty ibt = infer_type(root->l);
+                    if (ty_is(ibt, "str"))
+                        die("%s:%d: cannot write through a str index — str is an immutable view of its text",
+                            FILENAME, s->line);
+                }
                 if (root->k == E_PATH) {
                     VarInfo* v = vars_find(root->name);
                     if (v && !v->is_mut)
@@ -2131,9 +2151,17 @@ static void gen_stmt(Stmt* s, int ind) {
                     check_expr(s->lhs);
                     Expr* root = s->lhs;
                     while (root->k == E_FIELD) root = root->base;
-                    if (root->k == E_INDEX)
-                        die("%s:%d: indexing is read-only in v0.15 — assignment through e[i] is not supported yet",
-                            FILENAME, s->line);
+                    if (root->k == E_INDEX) {
+                        /* v0.16: element writes through a POINTER are allowed — the
+                         * pointer binding itself is not mutated, so `mut` is not
+                         * required on it. Writing through a str index stays refused:
+                         * str is an immutable view of its backing text (often a
+                         * literal in read-only storage). */
+                        Ty ibt = infer_type(root->l);
+                        if (ty_is(ibt, "str"))
+                            die("%s:%d: cannot write through a str index — str is an immutable view of its text",
+                                FILENAME, s->line);
+                    }
                     if (root->k == E_PATH) {
                         VarInfo* v = vars_find(root->name);
                         if (v && !v->is_mut)
