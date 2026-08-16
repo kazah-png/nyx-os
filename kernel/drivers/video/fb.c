@@ -23,6 +23,21 @@ static int   fb_back_wanted = 0;   // re-establish the back buffer after a mode 
 
 int  fb_enable_backbuffer(void);   // fwd
 
+// Display rotation (0/90/180/270 degrees clockwise), for panels physically mounted
+// rotated — e.g. a portrait 8" UMPC panel that scans out a landscape LFB, so an
+// unrotated desktop appears sideways. When nonzero, the WHOLE GUI renders into fb_back
+// at the swapped logical size (fb_width/fb_height) and fb_present() is the single point
+// that rotates it onto the hardware LFB (fb_hw_w x fb_hw_h). Enabled via the "rotate=" boot
+// cmdline. Default 0 → every path below stays byte-identical to an unrotated build.
+static int      fb_rot  = 0;
+static uint32_t fb_hw_w = 0;   // hardware framebuffer dims (== fb_width/height when unrotated)
+static uint32_t fb_hw_h = 0;
+
+void fb_set_rotation(int deg) {
+    int d = ((deg % 360) + 360) % 360;
+    fb_rot = (d / 90) * 90;    // snap to 0/90/180/270
+}
+
 // Fullscreen userspace ownership (v5.9.29 — the DOOM-milestone graphics enabler).
 // A program that calls SYS_FBPRESENT is driving the whole screen; while it keeps
 // presenting, the compositor's fb_present() yields so the desktop doesn't overwrite
@@ -36,15 +51,29 @@ int fb_fullscreen_active(void) {
 }
 
 void fb_init(uint32_t width, uint32_t height, uint32_t bpp, void* addr) {
-    fb_width = width;
-    fb_height = height;
+    fb_hw_w = width;                        // remember the true hardware dimensions
+    fb_hw_h = height;
     fb_bpp = bpp;
     fb_hw_stride = width;                   // Bochs LFB: pitch == width*4 (no padding)
     fb_hw = addr;
+    if (fb_rot == 90 || fb_rot == 270) {    // logical screen = the panel's upright (swapped) size
+        fb_width = height; fb_height = width;
+    } else {
+        fb_width = width;  fb_height = height;
+    }
     // A mode change invalidates any back buffer sized for the old resolution.
     if (fb_back) { kfree(fb_back); fb_back = NULL; }
-    fb_addr = addr;                        // default: draw straight to the LFB
-    if (fb_back_wanted) fb_enable_backbuffer();   // resize the back buffer to match
+    if (fb_rot != 0) {
+        // Rotation REQUIRES the back buffer: all drawing goes to logical-space fb_back and
+        // fb_present() rotates it. Drawing straight to fb_hw would be unrotated wrong-stride
+        // garbage, so force it on (and keep it on — fb_use_lfb_direct becomes a no-op).
+        fb_back_wanted = 1;
+        fb_addr = addr;
+        fb_enable_backbuffer();             // repoints fb_addr -> fb_back
+    } else {
+        fb_addr = addr;                     // default: draw straight to the LFB
+        if (fb_back_wanted) fb_enable_backbuffer();   // resize the back buffer to match
+    }
 }
 
 // Like fb_init, but for a bootloader/GOP framebuffer whose hardware row stride (pitch) may be
@@ -60,11 +89,13 @@ void fb_init_ex(uint32_t width, uint32_t height, uint32_t bpp, void* addr, uint3
 // WRONG pitch shows as a visible diagonal/skew, which is itself the diagnostic.
 void fb_debug_banner(void) {
     if (!fb_hw) return;
-    uint32_t bar = fb_height < 48 ? fb_height : 48;
+    uint32_t W = fb_hw_w ? fb_hw_w : fb_width;    // hardware space (== fb_width/height unrotated)
+    uint32_t H = fb_hw_h ? fb_hw_h : fb_height;
+    uint32_t bar = H < 48 ? H : 48;
     for (uint32_t y = 0; y < bar; y++) {
         uint32_t* row = (uint32_t*)fb_hw + (size_t)y * fb_hw_stride;
         uint32_t col = (y < 6 || y >= bar - 6) ? 0x00FFFFFF : 0x00825AD2;  // white border / Nyx purple
-        for (uint32_t x = 0; x < fb_width; x++) row[x] = col;
+        for (uint32_t x = 0; x < W; x++) row[x] = col;
     }
 }
 
@@ -112,13 +143,31 @@ void fb_present(void) {
     // login screen or the panic report. Tie the publish to the invariant that
     // makes it meaningful rather than trusting every caller to know.
     if (fb_addr != fb_back) return;
-    if (fb_hw_stride == fb_width) {
-        memcpy_asm(fb_hw, fb_back, (size_t)fb_width * fb_height * 4);   // contiguous fast path
-    } else {
-        // padded hardware rows (GOP pitch > width): publish row by row
-        for (uint32_t y = 0; y < fb_height; y++)
-            memcpy_asm((uint8_t*)fb_hw + (size_t)y * fb_hw_stride * 4,
-                       (uint32_t*)fb_back + (size_t)y * fb_width, (size_t)fb_width * 4);
+    if (fb_rot == 0) {
+        if (fb_hw_stride == fb_width) {
+            memcpy_asm(fb_hw, fb_back, (size_t)fb_width * fb_height * 4);   // contiguous fast path
+        } else {
+            // padded hardware rows (GOP pitch > width): publish row by row
+            for (uint32_t y = 0; y < fb_height; y++)
+                memcpy_asm((uint8_t*)fb_hw + (size_t)y * fb_hw_stride * 4,
+                           (uint32_t*)fb_back + (size_t)y * fb_width, (size_t)fb_width * 4);
+        }
+        return;
+    }
+    // Rotated publish: scatter each logical back-buffer pixel to its hardware position.
+    // fb_back is fb_width x fb_height (logical/upright); fb_hw is fb_hw_w x fb_hw_h (stride
+    // fb_hw_stride). 90 = clockwise, 270 = counter-clockwise, 180 = flip.
+    const uint32_t* src = (const uint32_t*)fb_back;
+    uint32_t* hw = (uint32_t*)fb_hw;
+    for (uint32_t ly = 0; ly < fb_height; ly++) {
+        const uint32_t* srow = src + (size_t)ly * fb_width;
+        for (uint32_t lx = 0; lx < fb_width; lx++) {
+            uint32_t hx, hy;
+            if (fb_rot == 90)       { hx = fb_hw_w - 1 - ly; hy = lx; }
+            else if (fb_rot == 270) { hx = ly;               hy = fb_hw_h - 1 - lx; }
+            else /* 180 */          { hx = fb_hw_w - 1 - lx; hy = fb_hw_h - 1 - ly; }
+            hw[(size_t)hy * fb_hw_stride + hx] = srow[lx];
+        }
     }
 }
 
@@ -158,6 +207,7 @@ void fb_present_kbuf(const uint32_t* src, uint32_t sw, uint32_t sh) {
 // anything drawn to the back buffer would never be published — draw direct so
 // it's on the visible screen immediately (no fb_present needed).
 void fb_use_lfb_direct(void) {
+    if (fb_rot != 0) return;   // rotated: keep drawing to fb_back; fb_present does the rotation
     if (fb_hw) fb_addr = fb_hw;
 }
 

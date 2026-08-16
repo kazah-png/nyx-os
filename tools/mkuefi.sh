@@ -37,11 +37,26 @@ STAGE="$(mktemp -d)"; trap 'rm -rf "$STAGE"' EXIT
 mkdir -p "$STAGE/boot/grub"
 cp "$KERNEL" "$STAGE/boot/nyx-kernel.bin"
 cat > "$STAGE/boot/grub/grub.cfg" <<'CFG'
-set timeout=3
+set timeout=10
 set default=0
 insmod all_video
-menuentry 'NyxOS' {
+# Portrait/rotated panels (e.g. an 8" UMPC) scan out a landscape LFB, so an unrotated
+# desktop looks sideways. Pick the entry that comes up upright on your screen; "rotate="
+# is read by the kernel (0/90/180/270 clockwise). Landscape machines: use "no rotation".
+menuentry 'NyxOS (rotate 90 - portrait)' {
+    multiboot2 /boot/nyx-kernel.bin rotate=90
+    boot
+}
+menuentry 'NyxOS (rotate 270 - portrait, other way)' {
+    multiboot2 /boot/nyx-kernel.bin rotate=270
+    boot
+}
+menuentry 'NyxOS (no rotation - landscape)' {
     multiboot2 /boot/nyx-kernel.bin
+    boot
+}
+menuentry 'NyxOS (rotate 180)' {
+    multiboot2 /boot/nyx-kernel.bin rotate=180
     boot
 }
 CFG

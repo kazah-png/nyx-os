@@ -4353,6 +4353,7 @@ static void panic_screen(const char* msg, uint64_t cr0, uint64_t cr2,
         font_draw_string(moon_x, moon_y + i * (int)font_get_height(), NYX_LOGO[i], moon, bg);
     font_draw_string_scaled(moon_x + (moon_w - 5 * (int)font_get_width()) / 2,
                             moon_y + NYX_LOGO_ROWS * (int)font_get_height() + 6, "NyxOS", dim, bg, 1);
+    fb_present();   // no-op unless rotated (then publishes the rotated panic frame)
 }
 
 void kernel_panic(const char* msg, ...) {
@@ -4730,6 +4731,7 @@ void kernel_main(uint64_t magic, void* mboot_ptr) {
     saved_mboot_ptr = mboot_ptr;
     saved_mboot_magic = magic;
     int selftest_mode = 0;   // set from the "selftest" multiboot command line (CI)
+    int rotate_deg = 0;      // set from a "rotate=90|180|270" cmdline (portrait-mounted panels)
     init_screen();
     clear_screen();
 
@@ -4760,6 +4762,8 @@ void kernel_main(uint64_t magic, void* mboot_ptr) {
                     // after the 8-byte tag header. A "selftest" token runs the offline
                     // self-test battery before login (CI); normal boots pass no cmdline.
                     if (strstr((const char*)(tag + 8), "selftest")) selftest_mode = 1;
+                    const char* rp = strstr((const char*)(tag + 8), "rotate=");
+                    if (rp) rotate_deg = atoi(rp + 7);
                 } else if (type == 4) {
                     uint32_t mem_lower = *(uint32_t*)(tag + 8);
                     uint32_t mem_upper = *(uint32_t*)(tag + 12);
@@ -4827,6 +4831,7 @@ void kernel_main(uint64_t magic, void* mboot_ptr) {
     printf("[INIT] Kernel Heap...\n"); init_heap();
     printf("[INIT] Slab Allocator...\n"); slab_init_all();
     printf("[INIT] SMP...\n"); smp_init();
+    fb_set_rotation(rotate_deg);   // portrait-panel display rotation (0 unless "rotate=" on the cmdline)
     if (grub_fb_addr && grub_fb_type == 1 && grub_fb_bpp == 32) {
         // REAL-HARDWARE / UEFI path: GRUB (via GOP, or VBE under BIOS) already set a linear
         // framebuffer and handed it to us in the multiboot2 type-8 tag. Map it and use it

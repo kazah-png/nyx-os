@@ -23,6 +23,7 @@ void* vbe_map_lfb(uint64_t phys, uint32_t bytes);   // map a bootloader/GOP LFB 
 void fb_init(uint32_t width, uint32_t height, uint32_t bpp, void* addr);
 void fb_init_ex(uint32_t width, uint32_t height, uint32_t bpp, void* addr, uint32_t stride_px);  // + hw pitch
 void fb_debug_banner(void);   // early real-HW "framebuffer is live" signal (Nyx-purple top bar)
+void fb_set_rotation(int deg); // 0/90/180/270 CW display rotation (portrait panels); set before fb_init
 void fb_put_pixel(uint32_t x, uint32_t y, uint32_t color);
 void fb_fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color);
 void fb_darken_rect(int x, int y, int w, int h, uint8_t shade);  // mix rect toward black (drop shadows)

@@ -213,6 +213,7 @@ static void draw_panel(int px, int py, int mode, int field, int avatar,
     font_draw_string(px + (BOX_W - (int)strlen(hint) * 8) / 2, py + BOX_H - 20, hint, fb_rgb(130, 120, 160), bg);
 
     fb_stroke_round_rect(px, py, BOX_W, BOX_H, R, fb_rgb(100, 82, 150));   // rounded brand-purple border
+    fb_present();   // no-op unless the display is rotated (then this publishes the rotated frame)
 }
 
 // Redraw ONLY the field currently being typed into. Typing changes just the field
@@ -222,6 +223,7 @@ static void draw_panel(int px, int py, int mode, int field, int avatar,
 static void draw_active_field(int px, int py, int field, const char* user, const char* pass) {
     if (field == 0)      draw_field(px + 20, py + 62,  BOX_W - 40, 1, user, 0);
     else if (field == 1) draw_field(px + 20, py + 114, BOX_W - 40, 1, pass, 1);
+    fb_present();   // no-op unless rotated
 }
 
 int login_screen(void) {

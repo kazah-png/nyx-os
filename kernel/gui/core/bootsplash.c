@@ -152,6 +152,7 @@ void bootsplash_init(void) {
         erase_spinner();
         draw_spinner(f);
         twinkle_stars();
+        fb_present();       // no-op unless rotated (then publishes each rotated splash frame)
         delay_ms(50);
     }
 }
@@ -182,6 +183,7 @@ void bootsplash_update(int step, int total, const char* status) {
     erase_spinner();
     draw_spinner(step);
     twinkle_stars();
+    fb_present();       // no-op unless rotated
 
     uint32_t now = current_ms();
     if (now > 0 && start_ms > 0) {
