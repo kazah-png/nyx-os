@@ -4398,6 +4398,13 @@ static int g_mmap_count = 0;
 static uint64_t grub_fb_addr  = 0;
 static uint32_t grub_fb_pitch = 0, grub_fb_w = 0, grub_fb_h = 0;
 static uint8_t  grub_fb_bpp = 0, grub_fb_type = 0;
+// The pixel's RGB channel layout, from the type-8 tag's color_info (RGB framebuffers only).
+// NyxOS's renderer writes 0x00RRGGBB into 32-bit little-endian memory, i.e. it assumes
+// blue@0, green@8, red@16 (BGRX). Intel GOP / QEMU stdvga report exactly that; we log the
+// real numbers so a physical-hardware bringup can spot a swapped-channel display immediately.
+static uint8_t  grub_fb_red_pos = 0, grub_fb_red_sz = 0;
+static uint8_t  grub_fb_green_pos = 0, grub_fb_green_sz = 0;
+static uint8_t  grub_fb_blue_pos = 0, grub_fb_blue_sz = 0;
 
 // Enable the CPU's Supervisor Mode Execution/Access Prevention (SMEP/SMAP), if the
 // processor advertises them (CPUID.(EAX=7,ECX=0):EBX bit 7 = SMEP, bit 20 = SMAP).
@@ -4780,6 +4787,19 @@ void kernel_main(uint64_t magic, void* mboot_ptr) {
                     grub_fb_h     = *(uint32_t*)(tag + 24);
                     grub_fb_bpp   = *(uint8_t*)(tag + 28);
                     grub_fb_type  = *(uint8_t*)(tag + 29);
+                    // For a direct-RGB framebuffer (fb_type==1) the color_info follows the common
+                    // header. NOTE: the field after framebuffer_type is a u16 `reserved` (offset
+                    // 30-31), so color_info starts at +32, not +31:
+                    // { u8 red_pos, u8 red_size, u8 green_pos, u8 green_size, u8 blue_pos,
+                    //   u8 blue_size }. Guarded on the tag being big enough to hold it.
+                    if (grub_fb_type == 1 && size >= 38) {
+                        grub_fb_red_pos   = *(uint8_t*)(tag + 32);
+                        grub_fb_red_sz    = *(uint8_t*)(tag + 33);
+                        grub_fb_green_pos = *(uint8_t*)(tag + 34);
+                        grub_fb_green_sz  = *(uint8_t*)(tag + 35);
+                        grub_fb_blue_pos  = *(uint8_t*)(tag + 36);
+                        grub_fb_blue_sz   = *(uint8_t*)(tag + 37);
+                    }
                 }
 
                 tag += (size + 7) & ~7;
@@ -4812,6 +4832,14 @@ void kernel_main(uint64_t magic, void* mboot_ptr) {
         // path is what the headless tests exercise.)
         printf("[INIT] GRUB framebuffer %ux%ux%u pitch=%u at 0x%llx\n",
                grub_fb_w, grub_fb_h, grub_fb_bpp, grub_fb_pitch, grub_fb_addr);
+        printf("[INIT] GRUB fb pixel format: R@%u/%u G@%u/%u B@%u/%u\n",
+               grub_fb_red_pos, grub_fb_red_sz, grub_fb_green_pos, grub_fb_green_sz,
+               grub_fb_blue_pos, grub_fb_blue_sz);
+        // NyxOS renders as BGRX (blue@0, green@8, red@16). If the display reports anything else
+        // (some non-Intel GOPs are RGBX), on-screen reds and blues will be swapped — flag it so a
+        // blind physical bringup knows why, without changing the render path (untested on real HW).
+        if (!(grub_fb_red_pos == 16 && grub_fb_green_pos == 8 && grub_fb_blue_pos == 0))
+            printf("[WARN] fb is not BGRX(R16/G8/B0); red/blue may be swapped on this panel\n");
         void* lfb = vbe_map_lfb(grub_fb_addr, grub_fb_pitch * grub_fb_h);
         fb_init_ex(grub_fb_w, grub_fb_h, grub_fb_bpp, lfb, grub_fb_pitch / 4);
         fb_debug_banner();                 // paint a Nyx bar NOW — real-HW proof of life
