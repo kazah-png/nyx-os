@@ -150,6 +150,26 @@ int zlib_deflate(const uint8_t* src, uint32_t srclen, uint8_t* dst, uint32_t dst
     return 0;
 }
 
+// gzip framing (RFC 1952) over the raw DEFLATE body: 10-byte header + CRC-32 + ISIZE trailer. The
+// output is exactly what stock `gunzip` / Python gzip.decompress read (host-verified against both).
+// crc32_calc is the standard reflected CRC-32 (poly 0xEDB88320) — the same one PNG uses and the
+// crc32 KAT validates.
+extern uint32_t crc32_calc(const uint8_t* data, uint32_t len);
+int gzip_deflate(const uint8_t* src, uint32_t srclen, uint8_t* dst, uint32_t dstcap, uint32_t* outlen) {
+    if (dstcap < 18) return -1;                                   // 10 header + >=0 body + 8 trailer
+    dst[0] = 0x1f; dst[1] = 0x8b; dst[2] = 8; dst[3] = 0;         // magic, CM=deflate, FLG=0
+    dst[4] = dst[5] = dst[6] = dst[7] = 0;                        // MTIME=0
+    dst[8] = 0; dst[9] = 0xFF;                                    // XFL=0, OS=unknown
+    uint32_t body = 0;
+    int r = deflate_raw(src, srclen, dst + 10, dstcap - 18, &body);
+    if (r != 0) return r;
+    uint32_t crc = crc32_calc(src, srclen), o = 10 + body;
+    dst[o+0] = (uint8_t)crc;    dst[o+1] = (uint8_t)(crc >> 8);    dst[o+2] = (uint8_t)(crc >> 16);    dst[o+3] = (uint8_t)(crc >> 24);
+    dst[o+4] = (uint8_t)srclen; dst[o+5] = (uint8_t)(srclen >> 8); dst[o+6] = (uint8_t)(srclen >> 16); dst[o+7] = (uint8_t)(srclen >> 24);
+    *outlen = o + 8;
+    return 0;
+}
+
 // ---- known-answer self-test: compress, then decompress with NyxOS's own inflate.c ----
 static int d_bytes_equal(const uint8_t* a, const uint8_t* b, uint32_t n) {
     for (uint32_t i = 0; i < n; i++) if (a[i] != b[i]) return 0;
@@ -182,6 +202,32 @@ int deflate_selftest(void) {
 
         // compressible inputs must actually shrink (zlib output smaller than the input)
         if (compressible && clen >= n) return 70 + t;
+    }
+    return 0;
+}
+
+// gzip KAT: build a .gz, check the RFC-1952 framing + CRC-32 + ISIZE trailer, and inflate the
+// DEFLATE body back byte-exact via NyxOS's own inflate_raw. (Host-verified that the same output
+// decompresses under stock gunzip / Python gzip.)
+int gzip_selftest(void) {
+    static uint8_t in[2048], comp[4096], back[2048];
+    for (int t = 0; t < 3; t++) {
+        uint32_t n = 0;
+        if (t == 0) { const char* s = "abc"; while (in[n] = (uint8_t)s[n], s[n]) n++; }
+        else if (t == 1) { n = 1500; for (uint32_t i = 0; i < n; i++) in[i] = (uint8_t)('A' + (i % 3)); }
+        else { const char* s = "the quick brown fox jumps over the lazy dog. ";
+               for (int r = 0; r < 30; r++) for (int k = 0; s[k]; k++) in[n++] = (uint8_t)s[k]; }
+        uint32_t glen = 0;
+        if (gzip_deflate(in, n, comp, sizeof comp, &glen) != 0) return 10 + t;
+        if (glen < 18 || comp[0] != 0x1f || comp[1] != 0x8b || comp[2] != 8) return 20 + t;
+        uint32_t crc = crc32_calc(in, n);
+        uint32_t tc = comp[glen-8] | (comp[glen-7] << 8) | (comp[glen-6] << 16) | ((uint32_t)comp[glen-5] << 24);
+        if (tc != crc) return 30 + t;                                     // CRC-32 trailer (LE)
+        uint32_t is = comp[glen-4] | (comp[glen-3] << 8) | (comp[glen-2] << 16) | ((uint32_t)comp[glen-1] << 24);
+        if (is != n) return 40 + t;                                       // ISIZE trailer (LE)
+        uint32_t blen = 0;
+        if (inflate_raw(comp + 10, glen - 18, back, sizeof back, &blen) != 0) return 50 + t;
+        if (blen != n || !d_bytes_equal(in, back, n)) return 60 + t;       // body round-trips
     }
     return 0;
 }

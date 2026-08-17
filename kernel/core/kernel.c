@@ -161,6 +161,7 @@ static void cmd_printf(int argc, char** argv);
 static void cmd_expand(int argc, char** argv);
 static void cmd_unexpand(int argc, char** argv);
 static void cmd_deflate(int argc, char** argv);
+static void cmd_gzip(int argc, char** argv);
 static void cmd_ipcalc(int argc, char** argv);
 static void cmd_calc(int argc, char** argv);
 static void cmd_json(int argc, char** argv);
@@ -329,6 +330,7 @@ static const command_t commands[] = {
     {"expand",    cmd_expand,    "Convert tabs to spaces: expand [-t N] <file>", false},
     {"unexpand",  cmd_unexpand,  "Convert spaces to tabs: unexpand [-a] [-t N] <file>", false},
     {"deflate",   cmd_deflate,   "Compress a file (zlib/DEFLATE): deflate <in> <out>", false},
+    {"gzip",      cmd_gzip,      "Compress a file to gunzip-readable .gz: gzip <in> <out>", false},
     {"ipcalc",    cmd_ipcalc,    "IPv4 subnet calc: ipcalc <ip>/<prefix> | <ip> <mask>", false},
     {"calc",      cmd_calc,      "Evaluate an integer expression: calc <expr>", false},
     {"json",      cmd_json,      "Validate a JSON file (RFC 8259): json <file>", false},
@@ -587,7 +589,7 @@ static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev",
 static const char* const HC_sys[]   = {"ps","kill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat",0};
 static const char* const HC_user[]  = {"useradd","users",0};
 static const char* const HC_net[]   = {"ifconfig","dhcp","dns","ping","setip","httpget","tls","ipcalc",0};
-static const char* const HC_dev[]   = {"cc","xbm","semver","fnv","urlcode","crc32c","fletcher","murmur","base58","bech32","deflate","calc","json",0};
+static const char* const HC_dev[]   = {"cc","xbm","semver","fnv","urlcode","crc32c","fletcher","murmur","base58","bech32","deflate","gzip","calc","json",0};
 static const char* const HC_media[] = {"play","sb16play","imageview","selene",0};
 static const char* const HC_games[] = {"doom","pong","voxel","fire","matrix","lava","fractal","julia","particles","snake","tetris",0};
 static const char* const HC_test[]  = {"mtdemo","smpstress","smpuser","smpthreads","smpbalance","tlbtest","cowtest","crash","usertest","tcptest","tcpdrop","tcploop","tcpserve","posttest","tlsstrict","prftest","gcmtest","dertest","p256test","p384test","x25519test","tlskeytest","tlsrectest","csprngtest","skp384test","deflatetest","sha512test","pngtest","bmptest","giftest","jpegtest","imgreject","httptest","ext2test","rsatest","chaintest","formtest",0};
@@ -696,6 +698,7 @@ static const man_page_t man_pages[] = {
     {"basename", "Strip the directory prefix (and, if given, a trailing suffix) from <path>, printing only the final component."},
     {"dirname",  "Strip the final component from <path>, printing the directory portion that remains."},
     {"deflate",  "Compress <in> into <out> using DEFLATE with a zlib wrapper (RFC 1950) - the format stock zlib and Python zlib.decompress read. Fixed-Huffman + LZ77; the output is verified to inflate back byte-for-byte, so it can be decompressed anywhere."},
+    {"gzip",     "Compress <in> into <out> as a gzip (.gz) file (RFC 1952) - the format stock gunzip, web browsers, and Python gzip.decompress read. Wraps the DEFLATE compressor with a gzip header and a CRC-32 + uncompressed-size trailer."},
     {"ipcalc",   "IPv4 subnet calculator. Give an address as `ipcalc <ip>/<prefix>`, `ipcalc <ip> <netmask>`, or `ipcalc <ip> <prefix>` and it prints the network and broadcast addresses, the netmask and wildcard, the usable host range (HostMin..HostMax) and the host count. RFC-correct at the edges: a /31 has two usable addresses (RFC 3021) and a /32 is a single host."},
     {"calc",     "Evaluate a 64-bit signed integer expression with C operators and precedence: + - * / %, the bitwise/shift operators | ^ & << >>, unary - + ~, parentheses, and decimal / 0x-hex / 0b-binary literals. Division truncates toward zero. Quote or join the terms, e.g. calc (2 + 3) * 4. Reports divide-by-zero, bad syntax, and unbalanced parentheses."},
     {"json",     "Validate a JSON document (RFC 8259) read from <file>, printing whether it is valid or the byte offset of the first error. Strict: rejects trailing commas, unquoted keys, leading zeros, bad escapes, control characters in strings, and NaN/Infinity. Nesting deeper than 256 levels is rejected as a safety limit. Parsing is iterative, so even hostile deeply-nested input cannot exhaust the kernel stack."},
@@ -2042,6 +2045,25 @@ static void cmd_deflate(int argc, char** argv) {
     uint32_t pct10 = bytes ? (uint32_t)(((uint64_t)olen * 1000) / (uint32_t)bytes) : 0;
     printf("deflate: %d -> %u bytes (%u.%u%% of original) -> %s\n",
            bytes, olen, pct10 / 10, pct10 % 10, argv[2]);
+}
+
+// gzip <in> <out> — compress a file into a .gz that stock gunzip / browsers read (image/deflate.c).
+static void cmd_gzip(int argc, char** argv) {
+    if (argc < 3) { printf("Usage: gzip <in> <out>   (write a .gz that stock gunzip reads)\n"); return; }
+    int fd = vfs_open(argv[1], 0, 0);
+    if (fd < 0) { printf("gzip: cannot open '%s'\n", argv[1]); return; }
+    static uint8_t inbuf[65536];
+    int bytes = vfs_read(fd, inbuf, sizeof(inbuf));
+    vfs_close(fd);
+    if (bytes < 0) { printf("gzip: read error\n"); return; }
+    static uint8_t outbuf[65536 + 4096];
+    uint32_t olen = 0;
+    if (gzip_deflate(inbuf, (uint32_t)bytes, outbuf, sizeof(outbuf), &olen) != 0) {
+        printf("gzip: input too large (max %u bytes)\n", (unsigned)sizeof(inbuf)); return;
+    }
+    if (vfs_write_file(argv[2], outbuf, olen) < 0) { printf("gzip: cannot write '%s'\n", argv[2]); return; }
+    uint32_t pct10 = bytes ? (uint32_t)(((uint64_t)olen * 1000) / (uint32_t)bytes) : 0;
+    printf("gzip: %d -> %u bytes (%u.%u%% of original) -> %s\n", bytes, olen, pct10 / 10, pct10 % 10, argv[2]);
 }
 
 static uint32_t ipc_bswap32(uint32_t x) {
@@ -4825,6 +4847,7 @@ static void run_selftests(void) {
         {"x509",         x509_selftest},
         {"inflate",      inflate_selftest},       {"png",           png_selftest},
         {"deflate",      deflate_selftest},
+        {"gzip",         gzip_selftest},
         {"bmp",          bmp_selftest},           {"gif",           gif_selftest},
         {"jpeg",         jpeg_selftest},          {"imgreject",     image_reject_selftest},
         {"httpparse",    http_parse_selftest},    {"ext2dir",       ext2_dir_selftest},
