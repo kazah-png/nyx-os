@@ -1,7 +1,7 @@
 # N & N++ — the native languages of NyxOS
 
 <p align="center">
-  <img src="https://img.shields.io/badge/N-v0.18-825AD2?style=flat" />
+  <img src="https://img.shields.io/badge/N-v0.19-825AD2?style=flat" />
   &nbsp;
   <img src="https://img.shields.io/badge/N%2B%2B-design-825AD2?style=flat" />
   &nbsp;
@@ -31,7 +31,7 @@ N++ program, and N++ compiles down through the same pipeline.
 | Memory model | Manual, raw pointers | Ownership/borrowing opt-in, `#[user]` checked pointers |
 | Error handling | Return codes | `Result<T, E>` + `?` propagation |
 | Data types | Primitives, pointers, `str` | + `struct` methods, `enum` sum types, `match`, generics, traits |
-| Status | **v0.18 — working** (see below) | **P1–P4 complete, P5 started** (`own` must-consume types + branch-aware moves shipped; GUI bindings wait on kernel window syscalls) |
+| Status | **v0.19 — working** (see below) | **P1–P4 complete, P5 started** (`own` types complete: must-consume, branch-aware moves, `#[drop]` destructors; GUI bindings wait on kernel window syscalls) |
 
 Both share the same DNA:
 
@@ -64,7 +64,7 @@ Both share the same DNA:
 ## Status — what works today
 
 The bootstrap compiler `ncc` ([ncc/ncc.c](ncc/ncc.c), single-file C, no
-dependencies) implements N v0.18 — type inference (typed `:=` bindings with an
+dependencies) implements N v0.19 — type inference (typed `:=` bindings with an
 `i64` default, interpolation that inserts `str` values as text, enforced
 `mut`), a complete expression-level checker (undeclared names, unknown
 callees, arity, argument/operand/return/assignment types — all compile errors
@@ -84,7 +84,7 @@ strict-C99 output — and is verified three ways:
 1. **Real programs run on NyxOS.** The in-OS TinyCC builds the current
    `ncc` from source inside the running system, and that compiler
    transpiles, compiles, and runs the **entire example suite** — all
-   twenty programs, v0.1 through v0.18 — in a single boot, with output
+   twenty programs, v0.1 through v0.18 (v0.19's auto-drops verified on host) — in a single boot, with output
    identical to the host runs: the fs bindings exercise real kernel
    `open`/`read`/`close`, the `pageflags` demo performs a live anonymous
    `mmap` through the W^X-typed flags, the `own`-struct demo moves a
@@ -141,7 +141,7 @@ lang/
     ├── ncalc.n          ← M5 link 2: precedence parser + evaluator in N
     ├── nemit.n          ← M5 link 3: stack-code emitter in N (read→parse→emit)
     ├── nstack.n         ← v0.16 index writes: a VM in N runs nemit's code
-    └── own.n            ← own structs: leaks, double-use, one-branch consumption refused
+    └── own.n            ← own structs: leaks/double-use refused, #[drop] auto-close
 ```
 
 The runtime N programs link against lives with the rest of user space:

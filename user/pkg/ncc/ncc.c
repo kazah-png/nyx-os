@@ -3,7 +3,7 @@
  * Hosted tool (runs on the dev machine); single file, no dependencies.
  * See lang/docs/spec-n.md for the language specification this implements.
  *
- * Supported subset (currently N v0.18):
+ * Supported subset (currently N v0.19):
  *   - extern syscall { fn name(params) [-> T] = N }
  *   - fn decls with block bodies, params, return types
  *   - statements: let (:=, mut), assignment (= += -=), return, while,
@@ -82,7 +82,13 @@
  *     refused in loops (bodies AND while conditions — they re-run) and
  *     match arms; own values cannot nest in structs/enums, alias
  *     through pointers, cross into syscalls, ride match expressions,
- *     or appear in defers. Zero-cost: the C layout is a plain struct.
+ *     or appear in defers. Destructors (v0.19): #[drop(fn)] wires an
+ *     ordinary consuming fn as the type's destructor — a LIVE value
+ *     reaching its scope end auto-drops (defers first, then drops in
+ *     reverse birth order) instead of erroring; held params never
+ *     auto-drop (the sink rule, which also makes drop recursion
+ *     impossible); no drop flags — branch agreement still required.
+ *     Zero-cost: the C layout is a plain struct.
  * Not yet (N++ territory): closures, generic Result<T,E>, modules/use.
  */
 /* Platform includes. In-OS builds (milestone M2) compile this file with
@@ -133,7 +139,7 @@ typedef enum {
     T_KW_IF, T_KW_ELSE, T_KW_WHILE, T_KW_BREAK, T_KW_CONTINUE,
     T_KW_AS, T_KW_RAW, T_KW_TRUE, T_KW_FALSE, T_KW_STRUCT, T_KW_DEFER,
     T_KW_ENUM, T_KW_MATCH, T_FATARROW, T_KW_IMPL,
-    T_KW_FOR, T_KW_IN, T_DOTDOT, T_ATTR_USER, T_ATTR_CAPS_SYSCALL,
+    T_KW_FOR, T_KW_IN, T_DOTDOT, T_ATTR_USER, T_ATTR_CAPS_SYSCALL, T_ATTR_DROP,
     T_LBRACK, T_RBRACK, T_KW_OWN,
     T_LP, T_RP, T_LB, T_RB, T_COMMA, T_SEMI, T_COLON,
     T_WALRUS, T_ARROW, T_ASSIGN,
@@ -336,7 +342,8 @@ static Tok next_token(void) {
                   return mk(T_GT, sl);
         case '&': if (n2 == '&') { POS++; COL++; return mk(T_ANDAND, sl); } return mk(T_AMP, sl);
         case '|': if (n2 == '|') { POS++; COL++; return mk(T_OROR, sl); } return mk(T_PIPE, sl);
-        case '#':                 /* attributes: #[user] (v0.12), #[caps(syscall)] (v0.14) */
+        case '#':                 /* attributes: #[user] (v0.12), #[caps(syscall)]
+                                   * (v0.14), #[drop(fn)] (v0.19) */
             if (POS + 6 <= LEN && !strncmp(&SRC[POS], "[user]", 6)) {
                 POS += 6; COL += 6;
                 return mk(T_ATTR_USER, sl);
@@ -345,7 +352,19 @@ static Tok next_token(void) {
                 POS += 15; COL += 15;
                 return mk(T_ATTR_CAPS_SYSCALL, sl);
             }
-            die("%s:%d: unknown attribute — #[user] and #[caps(syscall)] are the attributes",
+            if (POS + 6 <= LEN && !strncmp(&SRC[POS], "[drop(", 6)) {
+                POS += 6; COL += 6;
+                int st = POS;
+                while (POS < LEN && (is_idc(SRC[POS]) || is_dg(SRC[POS]))) { POS++; COL++; }
+                if (POS == st || POS + 2 > LEN || strncmp(&SRC[POS], ")]", 2) != 0)
+                    die("%s:%d: #[drop(...)] names one function, like #[drop(close_file)]",
+                        FILENAME, sl);
+                Tok t = mk(T_ATTR_DROP, sl);
+                t.s = xstrndup(SRC + st, (size_t)(POS - st));
+                POS += 2; COL += 2;
+                return t;
+            }
+            die("%s:%d: unknown attribute — #[user], #[caps(syscall)] and #[drop(fn)] are the attributes",
                 FILENAME, sl);
     }
     die("%s:%d: unexpected character '%c'", FILENAME, sl, c);
@@ -476,7 +495,7 @@ static Fn  FNS[64];  static int NFN;
 /* struct declarations (v0.5): named field records, C-struct layout.
  * is_own (v0.17, N++ P5): a move-not-copy, must-consume type — the
  * checker tracks each binding's life; the C layout is unchanged. */
-typedef struct { char* name; Param* fs; int nf; int is_own; } StructDef;
+typedef struct { char* name; Param* fs; int nf; int is_own; char* drop_fn; } StructDef;
 static StructDef STRUCTS[32]; static int NSTRUCTS;
 
 static StructDef* struct_lookup(const char* name) {
@@ -1169,6 +1188,14 @@ static void parse_program(void) {
         if (caps)
             die("%s:%d: #[caps(syscall)] applies to a fn or an extern syscall block",
                 FILENAME, CUR.line);
+        if (pchk(T_ATTR_DROP)) {          /* v0.19: #[drop(fn)] own struct */
+            Tok dt = padv();
+            pexp(T_KW_OWN, "'own' after #[drop(...)] — only an own struct has a destructor");
+            pexp(T_KW_STRUCT, "'struct' after 'own'");
+            parse_struct(1);
+            STRUCTS[NSTRUCTS - 1].drop_fn = dt.s;
+            continue;
+        }
         if (pacc(T_KW_OWN)) {             /* v0.17: own struct — must-consume type */
             pexp(T_KW_STRUCT, "'struct' after 'own'");
             parse_struct(1);
@@ -1334,7 +1361,7 @@ static void own_move_expr(Expr* e, int line) {
 static void own_leak_scan(int from, int line, const char* where) {
     for (int i = from; i < NVARS; i++)
         if (VARS[i].own_state == OWN_LIVE)
-            die("%s:%d: unconsumed own value '%s' at %s — return it or pass it on",
+            die("%s:%d: unconsumed own value '%s' at %s — return it, pass it on, or give the type a #[drop] destructor",
                 FILENAME, line, VARS[i].name, where);
 }
 
@@ -1497,7 +1524,7 @@ static int ty_is_int(Ty t) {
 
 /* Argument/parameter compatibility: integers inter-convert (C semantics);
  * `str` only matches `str`; pointers must agree in depth and base, except
- * that *u8/*void act as byte pointers and match any base. `as` casts are
+ * that *u8 / *void act as byte pointers and match any base. `as` casts are
  * authoritative because they change the inferred type itself. */
 static int ty_compat(Ty a, Ty p) {
     /* #[user] is a hard boundary (v0.12): a plain pointer never converts
@@ -2091,6 +2118,64 @@ static int block_returns(Block* b) {
     return b && b->n > 0 && b->st[b->n - 1]->k == S_RET;
 }
 
+/* v0.19: the destructor wired to t's struct via #[drop(fn)], or NULL. */
+static const char* own_drop_fn(Ty t) {
+    if (!t.name || t.ptrs != 0) return NULL;
+    StructDef* sd = struct_lookup(t.name);
+    return (sd && sd->is_own && sd->drop_fn) ? sd->drop_fn : NULL;
+}
+
+/* v0.19 auto-drop: every binding at index >= from still OWN_LIVE whose
+ * type carries a #[drop] gets its destructor call emitted here — in
+ * REVERSE birth order (last born, first dropped, mirroring defer's
+ * LIFO) — and becomes OWN_MOVED, so the leak scan that follows only
+ * reports values with no destructor. Held params never auto-drop: a
+ * callee owns its own parameters manually (the sink pattern), which is
+ * also why the drop function cannot recurse — its parameter arrives
+ * held. */
+static void own_drops_emit(int from, int ind) {
+    for (int i = NVARS - 1; i >= from; i--) {
+        if (VARS[i].own_state != OWN_LIVE) continue;
+        const char* d = own_drop_fn(VARS[i].ty);
+        if (!d) continue;
+        indentf(ind);
+        fprintf(OUT, "%s(%s);\n", d, VARS[i].name);
+        VARS[i].own_state = OWN_MOVED;
+    }
+}
+
+/* Is any live binding waiting on an auto-drop? (Decides whether an exit
+ * path needs the braced __ret form so the calls have somewhere to go.) */
+static int own_drops_pending(int from) {
+    for (int i = from; i < NVARS; i++)
+        if (VARS[i].own_state == OWN_LIVE && own_drop_fn(VARS[i].ty)) return 1;
+    return 0;
+}
+
+/* v0.19: #[drop(fn)] wires an ORDINARY function as an own struct's
+ * destructor. Checked once all declarations are known: the function
+ * must exist, take exactly one parameter of exactly that own type, and
+ * return nothing — i.e. it has the same shape a manual close-function
+ * already has (and it stays callable by hand: explicit consumption and
+ * auto-drop share one implementation). */
+static void validate_drops(void) {
+    for (int i = 0; i < NSTRUCTS; i++) {
+        StructDef* sd = &STRUCTS[i];
+        if (!sd->drop_fn) continue;
+        Param* ps; int np; Ty ret;
+        if (!fn_lookup(sd->drop_fn, &ps, &np, &ret))
+            die("%s: #[drop(%s)] on '%s': unknown function '%s'",
+                FILENAME, sd->drop_fn, sd->name, sd->drop_fn);
+        if (np != 1 || !ps[0].ty.name || ps[0].ty.ptrs != 0 ||
+            strcmp(ps[0].ty.name, sd->name) != 0)
+            die("%s: drop function '%s' must take exactly one %s parameter",
+                FILENAME, sd->drop_fn, sd->name);
+        if (ret.name && !is_never(ret))
+            die("%s: drop function '%s' must not return a value — the value ends there",
+                FILENAME, sd->drop_fn);
+    }
+}
+
 static void gen_stmt(Stmt* s, int ind) {
     if (s->is_try) { gen_try(s, ind); return; }
     switch (s->k) {
@@ -2181,27 +2266,36 @@ static void gen_stmt(Stmt* s, int ind) {
                     FILENAME, s->line, ty_str(CUR_RET));
             }
             own_move_expr(s->e, s->line);         /* v0.17: returning consumes */
+            {
+                int pend = own_drops_pending(0);  /* v0.19: drops need the braced form */
+                if ((NDEFERS || pend) && s->e) {
+                    /* Semantics: the return value is computed BEFORE the defers
+                     * run, so a defer cannot change what gets returned; auto-
+                     * drops run after the defers (v0.19: defer keeps its v0.6
+                     * timing — adding a #[drop] never reorders existing code). */
+                    indentf(ind); fputs("{\n", OUT);
+                    gen_preludes(s->e, ind + 1);
+                    indentf(ind + 1);
+                    emit_type(infer_type(s->e));
+                    fputs(" __ret = ", OUT);
+                    gen_expr(s->e);
+                    fputs(";\n", OUT);
+                    gen_defers(ind + 1);
+                    own_drops_emit(0, ind + 1);
+                    own_leak_scan(0, s->line, "this return");
+                    indentf(ind + 1); fputs("return __ret;\n", OUT);
+                    indentf(ind); fputs("}\n", OUT);
+                    break;
+                }
+                if (NDEFERS || pend) {              /* void return */
+                    gen_defers(ind);
+                    own_drops_emit(0, ind);
+                    own_leak_scan(0, s->line, "this return");
+                    indentf(ind); fputs("return;\n", OUT);
+                    break;
+                }
+            }
             own_leak_scan(0, s->line, "this return");
-            if (NDEFERS && s->e) {
-                /* Semantics: the return value is computed BEFORE the defers
-                 * run, so a defer cannot change what gets returned. */
-                indentf(ind); fputs("{\n", OUT);
-                gen_preludes(s->e, ind + 1);
-                indentf(ind + 1);
-                emit_type(infer_type(s->e));
-                fputs(" __ret = ", OUT);
-                gen_expr(s->e);
-                fputs(";\n", OUT);
-                gen_defers(ind + 1);
-                indentf(ind + 1); fputs("return __ret;\n", OUT);
-                indentf(ind); fputs("}\n", OUT);
-                break;
-            }
-            if (NDEFERS) {                          /* void return */
-                gen_defers(ind);
-                indentf(ind); fputs("return;\n", OUT);
-                break;
-            }
             gen_preludes(s->e, ind);
             indentf(ind);
             if (s->e) { fputs("return ", OUT); gen_expr(s->e); fputs(";\n", OUT); }
@@ -2533,7 +2627,8 @@ static void gen_block(Block* b, int ind, int fn_tail) {
                 die("%s: tail expression type mismatch: expected %s, got %s",
                     FILENAME, ty_str(CUR_RET), ty_str(vt));
         }
-        if (returns && NDEFERS) {                /* tail value, then defers, then return */
+        if (returns && (NDEFERS || own_drops_pending(0))) {
+            /* tail value, then defers, then auto-drops, then return */
             gen_preludes(b->tail, ind + 1);
             indentf(ind + 1);
             emit_type(infer_type(b->tail));
@@ -2541,6 +2636,7 @@ static void gen_block(Block* b, int ind, int fn_tail) {
             gen_expr(b->tail);
             fputs(";\n", OUT);
             gen_defers(ind + 1);
+            own_drops_emit(0, ind + 1);
             indentf(ind + 1); fputs("return __ret;\n", OUT);
         } else {
             gen_preludes(b->tail, ind + 1);
@@ -2553,10 +2649,15 @@ static void gen_block(Block* b, int ind, int fn_tail) {
     } else if (fn_tail && NDEFERS && (!CUR_RET.name || is_never(CUR_RET))) {
         gen_defers(ind + 1);                     /* void fn falling off the end */
     }
+    /* v0.19 auto-drops at the close of this scope, after any defers: the
+     * whole frame when the function ends here, this block's own births
+     * otherwise. (Exit paths that already returned drained their drops
+     * above, so this is a no-op for them.) */
+    own_drops_emit(fn_tail ? 0 : vsave, ind + 1);
     indentf(ind);
     fputs("}", OUT);
     own_leak_scan(vsave, b->n ? b->st[b->n - 1]->line : 0,   /* v0.17: nothing
-        * may leak out of any scope; nested births can never be consumed */
+        * may leak out of any scope — undropped, unconsumed = error */
         BLOCK_DEPTH == 1 ? "the end of the function" : "the end of this block");
     BLOCK_DEPTH--;
     NVARS = vsave;
@@ -2791,6 +2892,7 @@ int main(int argc, char** argv) {
     LEN = (int)sz;
     CUR = next_token();
     parse_program();
+    validate_drops();                     /* v0.19: destructor wiring */
 
     OUT = out ? fopen(out, "w") : stdout;
     if (!OUT) die("ncc: cannot open output '%s'", out);

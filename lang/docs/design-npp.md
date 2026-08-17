@@ -97,7 +97,8 @@ Dropping an unconsumed `own` value is a compile error unless the type
 declares a destructor — enough to make handle leaks (files, windows, sockets)
 unrepresentable, without imposing borrow-checking on all code. This is
 deliberately far short of Rust: ownership is a per-type contract, not a
-global discipline.
+global discipline. (Shipped in the bootstrap: `#[drop(fn)]` wires an
+ordinary consuming function as the destructor — spec §4.6.)
 
 ### 2.5 OS integration: GUI and tasks
 
@@ -133,7 +134,7 @@ feature is debuggable by reading the generated C.
 | P2 | ✅ **complete**: `struct` (v0.5) · `defer` (v0.6) · `enum` + `match` (v0.7) · `impl` methods (v0.8, static dispatch) | structs.n, defer.n, enums.n, methods.n |
 | P3 | ✅ **complete** (bootstrap side): match-as-expression (v0.9) · `?` over structural Ok/Err result enums (v0.10 — same-type pass-through, cross-type Err rewrap, defers honored) · fs bindings sketch (`fsio.n`: the negative-return→Result boundary conversion of §2.2, `?` chains, deferred close). Generic `Result<T, E>` and the idiomatic `.npp` rewrite move to the `n++` front-end (P5 era) | `fsio.n` runs the §2.2 shape end-to-end |
 | P4 | ✅ **complete** (bootstrap side): `#[user]` pointer flavor (v0.12 — hard no-implicit-conversion boundary, `as` as the audited crossing) · `pageflags` W^X bitset (v0.13 — total compile-time W^X proof, live-mmap verified) · capabilities (v0.14 — `#[caps(syscall)]` gates extern blocks, direct callers must hold the cap, wrapper = audited boundary). The canonical-half range proof, further capability names (`mmio`, `ports`), and ring heights move to the `n++` front-end and kernel-side modules | a kernel-module example checked at `ring0` |
-| P5 | 🔨 **started**: `own` structs shipped (v0.17 — move-not-copy, must-consume; leaks/double-use/discards are compile errors) and the tracking is now **branch-aware** (v0.18 — `if`/`else` arms may consume, both exits must agree, a `return`-ending arm is exempt; moves stay refused in loops, `while` conditions, and match arms). Remaining: destructors, GUI bindings (wait on kernel window syscalls) | a windowed N++ app on the NyxOS desktop |
+| P5 | 🔨 **started**: `own` structs shipped (v0.17 — move-not-copy, must-consume; leaks/double-use/discards are compile errors), the tracking is **branch-aware** (v0.18 — `if`/`else` arms may consume, both exits must agree, a `return`-ending arm is exempt; moves stay refused in loops, `while` conditions, and match arms), and **destructors shipped** (v0.19 — `#[drop(fn)]` wires an ordinary consuming fn; live values auto-drop at scope end, defers first then drops LIFO, held params never auto-drop, no drop flags). The own-types contract of §2.4 is complete. Remaining: GUI bindings (wait on kernel window syscalls) | a windowed N++ app on the NyxOS desktop |
 
 P1 is the enabling investment: everything later depends on the checker
 existing. It also immediately improves plain N (better errors from `ncc`).

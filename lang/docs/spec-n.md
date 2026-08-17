@@ -1,6 +1,6 @@
 # The N Language — Specification
 
-**Version:** v0.18 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
+**Version:** v0.19 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
 
 This document specifies N exactly as implemented by the bootstrap compiler
 `ncc`. It is a *descriptive* spec: everything here compiles today. Planned
@@ -96,6 +96,7 @@ never overflowed. Use `\{` and `\}` for literal braces.
 := = += -=
 #[user]           (attribute, v0.12 — see 3.2)
 #[caps(syscall)]  (attribute, v0.14 — see 4.7)
+#[drop(fn)]       (attribute, v0.19 — see 4.6)
 + - * / %
 == != < <= > >=
 ! && ||
@@ -165,7 +166,7 @@ This is the bootstrap slice of the N++ design's §2.3; the compile-time
 *range proof* (that the pointer lies in the canonical user half) arrives
 with the `n++` front-end. The attribute space is reserved: `#[` followed
 by anything other than a known attribute (`#[user]`, `#[caps(syscall)]`
-— §4.7) is a lex error.
+— §4.7, `#[drop(fn)]` — §4.6) is a lex error.
 
 ### 3.3 `pageflags` — W^X page permissions (since v0.13)
 
@@ -475,11 +476,59 @@ confidence — each remaining restriction is a compile error, not a gap:
 - Own values cannot **nest** in structs or enum payloads, be pointed to
   (`*File` is refused everywhere), cross into **syscalls**, flow through
   a **match expression**, or appear in a **defer**.
-- No destructors yet — the design document reserves them; today the
-  consuming sink is an ordinary function.
+
+#### Destructors — `#[drop(fn)]` (since v0.19)
+
+```n
+#[drop(free_page)]
+own struct Page { addr: i64 }
+
+fn free_page(p: Page) { put("freeing {p.addr}\n"); }
+
+fn use_page() {
+    p := get_page();
+    put("using {p.addr}\n");
+}                     // ← the compiler inserts free_page(p); here
+```
+
+`#[drop(fn)]` wires an **ordinary consuming function** as the type's
+destructor — there is no new function form. A value in the LIVE state
+reaching the end of its scope now **auto-drops** (the compiler inserts
+the call) instead of raising the leak error. The rules:
+
+- **Explicit consumption still wins.** A moved value is never dropped —
+  `free_page(q)` by hand and the automatic call share one
+  implementation, and each value is ended exactly once.
+- **Ordering**: at every exit, `defer`s run first (keeping their
+  documented v0.6 timing — adding a `#[drop]` to a type never reorders
+  existing code), then drops, in **reverse birth order** (last born,
+  first dropped — defer's LIFO, applied to values).
+- **Held parameters never auto-drop.** A callee is the manual owner of
+  what it is handed (the v0.17 sink rule, unchanged) — which is also
+  what makes drop recursion impossible: the drop function's own
+  parameter arrives held, so its body cannot re-trigger the drop.
+- **No drop flags.** Every drop call sits at a statically known point
+  in the generated C; there is no runtime "was it moved?" bit. This is
+  why the v0.18 branch-agreement rule still applies to drop-carrying
+  types: consumed in both arms or in neither.
+- **Loops**: a loop body may *birth* a drop-carrying value and let it
+  auto-drop — the call sits at the body's closing brace, so each
+  iteration ends the value it created. (Explicit moves in loops remain
+  refused.)
+- A **discarded** own call result (`get_page();` as a statement) is
+  still an error, drop or no drop — bind it if you mean to keep it for
+  the scope.
+- The wired function is validated: it must exist, take exactly one
+  parameter of exactly this own type, and return nothing.
+
+An own struct *without* `#[drop]` behaves exactly as before: leaking it
+is a compile error. The choice is per-type: **must-consume** (the
+compiler makes you finish the story) or **auto-close** (the compiler
+finishes it for you) — both zero-cost.
 
 Everything above is erased at codegen: an own struct lowers to the same
-plain C struct as any other — the ownership discipline is free.
+plain C struct as any other, and every drop is a visible, statically
+placed call in the generated C — the ownership discipline is free.
 
 ### 4.7 Capabilities — `#[caps(syscall)]` (since v0.14)
 
@@ -910,8 +959,9 @@ Condensed EBNF of the implemented language:
 ```ebnf
 program      = { item } ;
 item         = [ "#[caps(syscall)]" ] ( extern_block | fn_decl )
-             | [ "own" ] struct_decl | enum_decl | impl_block ;
-             (* own: must-consume move semantics, 4.6 *)
+             | [ "#[drop(" ident ")]" ] "own" struct_decl
+             | struct_decl | enum_decl | impl_block ;
+             (* own: must-consume move semantics + destructors, 4.6 *)
 impl_block   = "impl" ident "{" { method } "}" ;
 method       = "fn" ident "(" "self" { "," param } ")" [ "->" type ] block ;
 

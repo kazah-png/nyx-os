@@ -18,7 +18,17 @@
 //   re-evaluate every iteration), and match arms. Own values still
 //   cannot nest in other types, alias through pointers, cross into
 //   syscalls, ride match expressions, or appear in defers.
-//   All of it is erased at codegen: an own struct is a plain C struct.
+//   v0.19 adds DESTRUCTORS: `#[drop(fn)]` wires an ordinary consuming
+//   fn as the type's destructor. A live value reaching its scope end
+//   now auto-drops instead of erroring — the leak error becomes an
+//   auto-close. Explicit consumption still wins (a moved value is never
+//   dropped); defers run first, then drops, in reverse birth order;
+//   held params never auto-drop (the sink rule — which also makes drop
+//   recursion impossible); and there are no drop flags, so both if arms
+//   must still agree. A loop body may birth a drop-carrying value and
+//   let it auto-drop each iteration.
+//   All of it is erased at codegen: an own struct is a plain C struct
+//   and every drop is a visible, statically-placed call.
 
 #[caps(syscall)]
 extern syscall {
@@ -70,6 +80,36 @@ fn shutdown(hurry: i64) -> i64 {
     0
 }
 
+// v0.19 destructors: free_page is an ordinary fn, wired as Page's drop.
+// It stays callable by hand — explicit consumption and auto-drop share
+// one implementation.
+#[drop(free_page)]
+own struct Page { addr: i64 }
+
+fn get_page() -> Page {
+    Page{ addr: 4096 }
+}
+
+fn free_page(p: Page) {
+    put("freed page at {p.addr}\n");
+}
+
+// No explicit consumption anywhere: the auto-drop fires at fn end.
+// Without #[drop] this function would be a compile error (a leak).
+fn use_page() {
+    p := get_page();
+    put("page in use: {p.addr}\n");
+}
+
+// A loop body may birth a drop-carrying value: each iteration ends the
+// value it created (the drop call sits at the body's closing brace).
+fn touch_pages(times: i64) {
+    for i in 0..times {
+        p := get_page();
+        put("iteration {i} holds {p.addr}\n");
+    }
+}
+
 fn main() -> i64 {
     f := open_log();               // f is born live: someone must consume it
     put("using fd {f.fd}\n");      // field reads do not move
@@ -80,6 +120,11 @@ fn main() -> i64 {
     a := shutdown(1);              // early-return path
     b := shutdown(0);              // fall-through path
     put("shutdown codes {a}{b}\n");
+    use_page();                    // auto-drop: "freed page at 4096"
+    touch_pages(2);                // one birth + one drop per iteration
+    q := get_page();
+    free_page(q);                  // explicit consumption wins: exactly
+                                   // one "freed" line, no double drop
     // Each of these is a compile error (negative tests):
     //   put("{f.fd}\n");           ← use of 'f' after move
     //   h := open_log();  0        ← unconsumed own value 'h'
