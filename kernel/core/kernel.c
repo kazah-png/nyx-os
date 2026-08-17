@@ -32,6 +32,7 @@
 #include "json.h"
 #include "fletcher.h"
 #include "../crypto/bech32.h"
+#include "../crypto/sha256.h"
 #include "../crypto/murmur3.h"
 #include "../net/dns.h"
 #include "../net/http.h"
@@ -347,7 +348,7 @@ static const command_t commands[] = {
     {"sb16play",  cmd_sb16play,  "Test SB16 playback: sb16play [freq] [ms]", false},
     {"exec",      cmd_exec,      "Run ELF in foreground (waits): exec <file>", false},
     {"cc",        cmd_cc,        "Compile/link C in-OS: cc [-c] [--self-libc] <in.c/.o ...> [-o out]", false},
-    {"xbm",       cmd_xbm,       "Package manager: xbm install|remove <name> | xbm search <str> | xbm list [--installed]", false},
+    {"xbm",       cmd_xbm,       "Package manager: xbm install|remove|verify <name> | xbm search <str> | xbm list [--installed]", false},
     {"pkg",       cmd_xbm,       "Alias for xbm (package manager)", true},
     {"spawn",     cmd_spawn,     "Run ELF in background: spawn <file>", false},
     {"doom",      cmd_doom,      "Play DOOM in a window (Ctrl-C to quit)", false},
@@ -702,7 +703,7 @@ static const man_page_t man_pages[] = {
     {"ipcalc",   "IPv4 subnet calculator. Give an address as `ipcalc <ip>/<prefix>`, `ipcalc <ip> <netmask>`, or `ipcalc <ip> <prefix>` and it prints the network and broadcast addresses, the netmask and wildcard, the usable host range (HostMin..HostMax) and the host count. RFC-correct at the edges: a /31 has two usable addresses (RFC 3021) and a /32 is a single host."},
     {"calc",     "Evaluate a 64-bit signed integer expression with C operators and precedence: + - * / %, the bitwise/shift operators | ^ & << >>, unary - + ~, parentheses, and decimal / 0x-hex / 0b-binary literals. Division truncates toward zero. Quote or join the terms, e.g. calc (2 + 3) * 4. Reports divide-by-zero, bad syntax, and unbalanced parentheses."},
     {"json",     "Validate or query a JSON document (RFC 8259) read from a file. `json <file>` prints whether it is valid or the byte offset of the first error - strict: rejects trailing commas, unquoted keys, leading zeros, bad escapes, control chars in strings, and NaN/Infinity. `json get <file> <path>` extracts the value at a jq-lite path built from `.name` (object member) and `[N]` (array index) steps, e.g. `json get cfg.json .users[0].name`; `.` selects the whole document; it prints the value's raw JSON (scalar or subtree), or a not-found / type-mismatch / bad-path error. Both parsing and extraction are iterative (O(1) kernel stack), so nesting beyond 256 levels is rejected and even hostile deeply-nested input cannot exhaust the stack."},
-    {"xbm",      "The NyxOS package manager. `xbm install <name>` compiles a package from its recipe with the in-OS C compiler and installs it; `xbm remove <name>` uninstalls it; `xbm search <str>` and `xbm list` browse the available and installed packages. A recipe may carry a `url:` line pointing at a remote http:// source; xbm then downloads that source into the package before building it, the pacman/apt \"fetch source, then compile in-OS\" model."},
+    {"xbm",      "The NyxOS package manager. `xbm install <name>` compiles a package from its recipe with the in-OS C compiler, installs it, and records a SHA-256 integrity manifest; `xbm verify <name>` re-hashes the installed binary and reports OK or MODIFIED against that manifest (apt/pacman-style tamper detection); `xbm remove <name>` uninstalls it; `xbm search <str>` and `xbm list` browse the available and installed packages. A recipe may carry a `url:` line pointing at a remote http:// source; xbm then downloads that source into the package before building it, the pacman/apt \"fetch source, then compile in-OS\" model."},
     {"cc",       "Compile and link C source into an ELF program with the in-OS TinyCC toolchain. -c stops after producing an object file."},
     {"fire",     "Open Nyx Fire, an animated doom-fire effect window. It is also a visual performance demo, re-filling the whole framebuffer region each frame."},
     {"fractal",  "Open Nyx Fractal, a fixed-point Mandelbrot renderer that auto-zooms toward the seahorse valley. A P4 rendering-performance-testing demo: a benchmark HUD shows the measured per-frame render time, the derived render FPS, the current iteration cap, and the zoom factor, so you can watch the software renderer's cost rise and fall with the load. All-integer (Q8.24 fixed point)."},
@@ -2832,9 +2833,51 @@ static int xbm_fetch_url(const char* url, const char* outpath) {
     return rc;
 }
 
+// ---- xbm package integrity: SHA-256 manifests (apt/pacman-style tamper detection) ----------
+static void pkg_hex_encode(const uint8_t* in, int n, char* out) {   // lowercase hex, out[2n]='\0'
+    static const char* H = "0123456789abcdef";
+    for (int i = 0; i < n; i++) { out[2 * i] = H[in[i] >> 4]; out[2 * i + 1] = H[in[i] & 15]; }
+    out[2 * n] = '\0';
+}
+// SHA-256 a whole VFS file into out_hex[65] (64 lowercase-hex + NUL). vfs_read has no per-fd
+// offset (it returns the file from the start), so the file is hashed in one read via a static
+// off-stack buffer — the 4 KB kernel task stack is untouched. 0 = ok, -1 = unreadable/missing,
+// -2 = larger than the hash buffer (refuse rather than hash a truncated prefix).
+static uint8_t pkg_hash_buf[262144];
+static int pkg_sha256_file(const char* path, char out_hex[65]) {
+    int fd = vfs_open(path, 0, 0);
+    if (fd < 0) return -1;
+    int n = vfs_read(fd, pkg_hash_buf, sizeof(pkg_hash_buf));
+    vfs_close(fd);
+    if (n < 0) return -1;
+    if (n >= (int)sizeof(pkg_hash_buf)) return -2;
+    sha256_ctx_t c; sha256_init(&c);
+    sha256_update(&c, pkg_hash_buf, (uint32_t)n);
+    uint8_t dg[32]; sha256_final(&c, dg);
+    pkg_hex_encode(dg, 32, out_hex);
+    return 0;
+}
+// KAT for the integrity feature: hashes real VFS files through the exact path `xbm verify` uses,
+// checking a known SHA-256 answer (validates the hex encoder + digest), that a one-byte change
+// flips the digest (tamper is detectable), and that a missing file reports -1.
+int pkg_hash_selftest(void) {
+    vfs_write_file("/tmp/pkgkat.bin", "NyxOS-pkg", 9);
+    char hex[65];
+    if (pkg_sha256_file("/tmp/pkgkat.bin", hex) != 0) return 1;
+    static const char* want = "980d716507be4aa72aaf3209229103692285a67136626bf8cabad208c6666410";
+    for (int i = 0; i < 64; i++) if (hex[i] != want[i]) return 2;
+    vfs_write_file("/tmp/pkgkat.bin", "NyxOT-pkg", 9);          // flip one byte
+    char hex2[65];
+    if (pkg_sha256_file("/tmp/pkgkat.bin", hex2) != 0) return 3;
+    if (strncmp(hex, hex2, 64) == 0) return 4;                  // digest MUST change
+    char hx[65];
+    if (pkg_sha256_file("/tmp/nope-xyz-404", hx) != -1) return 5;
+    return 0;
+}
+
 static void cmd_xbm(int argc, char** argv) {
     const char* prog = argv[0];   // "xbm" (or the "pkg" alias) — echo whatever was typed
-    if (argc < 2) { printf("Usage: %s install|remove <name> | %s search <str> | %s list [--installed]\n", prog, prog, prog); return; }
+    if (argc < 2) { printf("Usage: %s install|remove|verify <name> | %s search <str> | %s list [--installed]\n", prog, prog, prog); return; }
 
     if (strcmp(argv[1], "list") == 0) {
         // `xbm list` = packages available in the repo; `xbm list --installed` = binaries in /mnt/bin.
@@ -2920,8 +2963,62 @@ static void cmd_xbm(int argc, char** argv) {
         execute_command(cmd);
 
         int ofd = vfs_open(outp, 0, 0);            // did the binary land?
-        if (ofd >= 0) { vfs_close(ofd); printf("%s: installed %s -> %s (run it: %s)\n", prog, name, outp, bin); }
+        if (ofd >= 0) {
+            vfs_close(ofd);
+            // Record a SHA-256 integrity manifest next to the recipe so `xbm verify` can later
+            // detect a tampered/corrupted binary (the apt/pacman "trust on install" model).
+            char hex[65];
+            if (pkg_sha256_file(outp, hex) == 0) {
+                char mpath[160];
+                snprintf(mpath, sizeof(mpath), "/usr/pkg/%s/sha256", name);
+                vfs_write_file(mpath, hex, 64);
+                printf("%s: installed %s -> %s (run it: %s; sha256 %c%c%c%c%c%c%c%c...)\n",
+                       prog, name, outp, bin, hex[0],hex[1],hex[2],hex[3],hex[4],hex[5],hex[6],hex[7]);
+            } else {
+                printf("%s: installed %s -> %s (run it: %s)\n", prog, name, outp, bin);
+            }
+        }
         else            printf("%s: build of '%s' failed\n", prog, name);
+        return;
+    }
+
+    if (strcmp(argv[1], "verify") == 0) {
+        // Re-hash the installed binary and compare against the manifest recorded at install time.
+        if (argc < 3) { printf("Usage: %s verify <name>\n", prog); return; }
+        const char* name = argv[2];
+        if (!pkg_valid_name(name)) { printf("%s: invalid package name '%s'\n", prog, name); return; }
+
+        char bin[64]; bin[0] = '\0';
+        char rpath[128];
+        snprintf(rpath, sizeof(rpath), "/usr/pkg/%s/recipe", name);
+        int rfd = vfs_open(rpath, 0, 0);
+        if (rfd >= 0) {
+            char rbuf[512];
+            int rn = vfs_read(rfd, rbuf, sizeof(rbuf) - 1);
+            vfs_close(rfd);
+            if (rn > 0) { rbuf[rn] = '\0'; pkg_recipe_value(rbuf, "bin", bin, sizeof(bin)); }
+        }
+        if (bin[0] == '\0') { strncpy(bin, name, sizeof(bin) - 1); bin[sizeof(bin) - 1] = '\0'; }
+        if (!pkg_valid_name(bin)) { printf("%s: recipe for '%s' has an unsafe 'bin' name\n", prog, name); return; }
+
+        char mpath[160];
+        snprintf(mpath, sizeof(mpath), "/usr/pkg/%s/sha256", name);
+        int mfd = vfs_open(mpath, 0, 0);
+        if (mfd < 0) { printf("%s: no integrity manifest for '%s' (reinstall to record one)\n", prog, name); return; }
+        char rec[80];
+        int mn = vfs_read(mfd, rec, sizeof(rec) - 1);
+        vfs_close(mfd);
+        if (mn < 64) { printf("%s: corrupt manifest for '%s'\n", prog, name); return; }
+        rec[64] = '\0';
+
+        char outp[128];
+        snprintf(outp, sizeof(outp), "/mnt/bin/%s", bin);
+        char cur[65];
+        int hr = pkg_sha256_file(outp, cur);
+        if (hr == -1) { printf("%s: '%s' is not installed (%s missing)\n", prog, name, outp); return; }
+        if (hr == -2) { printf("%s: '%s' is too large to verify\n", prog, name); return; }
+        if (strncmp(rec, cur, 64) == 0) printf("%s: %s OK - sha256 matches (%s)\n", prog, name, outp);
+        else printf("%s: %s MODIFIED - %s does not match the recorded sha256!\n", prog, name, outp);
         return;
     }
 
@@ -2956,7 +3053,7 @@ static void cmd_xbm(int argc, char** argv) {
         return;
     }
 
-    printf("%s: unknown subcommand '%s' (expected install|remove|search|list)\n", prog, argv[1]);
+    printf("%s: unknown subcommand '%s' (expected install|remove|verify|search|list)\n", prog, argv[1]);
 }
 
 // Run an ELF as a BACKGROUND job: spawn it and return immediately. It runs
@@ -4884,6 +4981,7 @@ static void run_selftests(void) {
         {"calc",         calc_selftest},
         {"json",         json_selftest},
         {"json-query",   json_query_selftest},
+        {"pkg-hash",     pkg_hash_selftest},
         {"numparse",     numparse_selftest},        {"hkdf",          hkdf_selftest},
         {"chacha20",     chacha20_selftest},        {"siphash",       siphash_selftest},
         {"poly1305",     poly1305_selftest},        {"chachapoly",    chacha20poly1305_selftest},
