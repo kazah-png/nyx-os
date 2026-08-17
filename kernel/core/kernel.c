@@ -33,6 +33,8 @@
 #include "../crypto/murmur3.h"
 #include "../net/dns.h"
 #include "../net/http.h"
+#include "../net/ipaddr.h"
+#include "../net/ipcalc.h"
 #include "../crypto/tls/tls.h"
 #include "../crypto/curve25519.h"
 #include "../crypto/tls/tls_prf.h"
@@ -157,6 +159,7 @@ static void cmd_printf(int argc, char** argv);
 static void cmd_expand(int argc, char** argv);
 static void cmd_unexpand(int argc, char** argv);
 static void cmd_deflate(int argc, char** argv);
+static void cmd_ipcalc(int argc, char** argv);
 static void cmd_tree(int argc, char** argv);
 static void cmd_env(int argc, char** argv);
 static void cmd_export(int argc, char** argv);
@@ -322,6 +325,7 @@ static const command_t commands[] = {
     {"expand",    cmd_expand,    "Convert tabs to spaces: expand [-t N] <file>", false},
     {"unexpand",  cmd_unexpand,  "Convert spaces to tabs: unexpand [-a] [-t N] <file>", false},
     {"deflate",   cmd_deflate,   "Compress a file (zlib/DEFLATE): deflate <in> <out>", false},
+    {"ipcalc",    cmd_ipcalc,    "IPv4 subnet calc: ipcalc <ip>/<prefix> | <ip> <mask>", false},
     {"wc",        cmd_wc,        "Count lines/words/chars: wc <file>", false},
     {"write",     cmd_write,     "Write text to file: write <file> <text>", false},
     {"dhcp",      cmd_dhcp,      "Request IP via DHCP", false},
@@ -576,7 +580,7 @@ static const char* const HC_files[] = {"ls","cd","pwd","cat","file","tar","inige
 static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","fold","nl","expand","unexpand","factor","seq","paste","cut","uniq","join","comm","printf","wc","write","hexdump",0};
 static const char* const HC_sys[]   = {"ps","kill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat",0};
 static const char* const HC_user[]  = {"useradd","users",0};
-static const char* const HC_net[]   = {"ifconfig","dhcp","dns","ping","setip","httpget","tls",0};
+static const char* const HC_net[]   = {"ifconfig","dhcp","dns","ping","setip","httpget","tls","ipcalc",0};
 static const char* const HC_dev[]   = {"cc","xbm","semver","fnv","urlcode","crc32c","fletcher","murmur","base58","bech32","deflate",0};
 static const char* const HC_media[] = {"play","sb16play","imageview","selene",0};
 static const char* const HC_games[] = {"doom","pong","voxel","fire","matrix","lava","fractal","julia","particles","snake","tetris",0};
@@ -686,6 +690,7 @@ static const man_page_t man_pages[] = {
     {"basename", "Strip the directory prefix (and, if given, a trailing suffix) from <path>, printing only the final component."},
     {"dirname",  "Strip the final component from <path>, printing the directory portion that remains."},
     {"deflate",  "Compress <in> into <out> using DEFLATE with a zlib wrapper (RFC 1950) - the format stock zlib and Python zlib.decompress read. Fixed-Huffman + LZ77; the output is verified to inflate back byte-for-byte, so it can be decompressed anywhere."},
+    {"ipcalc",   "IPv4 subnet calculator. Give an address as `ipcalc <ip>/<prefix>`, `ipcalc <ip> <netmask>`, or `ipcalc <ip> <prefix>` and it prints the network and broadcast addresses, the netmask and wildcard, the usable host range (HostMin..HostMax) and the host count. RFC-correct at the edges: a /31 has two usable addresses (RFC 3021) and a /32 is a single host."},
     {"xbm",      "The NyxOS package manager. `xbm install <name>` compiles a package from its recipe with the in-OS C compiler and installs it; `xbm remove <name>` uninstalls it; `xbm search <str>` and `xbm list` browse the available and installed packages. A recipe may carry a `url:` line pointing at a remote http:// source; xbm then downloads that source into the package before building it, the pacman/apt \"fetch source, then compile in-OS\" model."},
     {"cc",       "Compile and link C source into an ELF program with the in-OS TinyCC toolchain. -c stops after producing an object file."},
     {"fire",     "Open Nyx Fire, an animated doom-fire effect window. It is also a visual performance demo, re-filling the whole framebuffer region each frame."},
@@ -2029,6 +2034,49 @@ static void cmd_deflate(int argc, char** argv) {
     uint32_t pct10 = bytes ? (uint32_t)(((uint64_t)olen * 1000) / (uint32_t)bytes) : 0;
     printf("deflate: %d -> %u bytes (%u.%u%% of original) -> %s\n",
            bytes, olen, pct10 / 10, pct10 % 10, argv[2]);
+}
+
+static uint32_t ipc_bswap32(uint32_t x) {
+    return ((x & 0xFFu) << 24) | ((x & 0xFF00u) << 8) | ((x >> 8) & 0xFF00u) | ((x >> 24) & 0xFFu);
+}
+
+// ipcalc <ip>/<prefix> | <ip> <netmask> | <ip> <prefix> — IPv4 subnet calculator (net/ipcalc.c).
+// ipv4_parse yields network order (octet1 low); flip to host order for the math + display.
+static void cmd_ipcalc(int argc, char** argv) {
+    if (argc < 2) { printf("Usage: ipcalc <ip>/<prefix> | <ip> <netmask> | <ip> <prefix>\n"); return; }
+    char ipstr[32]; int p = -1, slash = -1;
+    for (int i = 0; argv[1][i]; i++) if (argv[1][i] == '/') { slash = i; break; }
+    if (slash >= 0) {
+        if (slash >= (int)sizeof(ipstr)) { printf("ipcalc: address too long\n"); return; }
+        int k = 0; for (; k < slash; k++) ipstr[k] = argv[1][k]; ipstr[k] = '\0';
+        p = atoi(argv[1] + slash + 1);
+    } else {
+        int k = 0; for (; argv[1][k] && k < (int)sizeof(ipstr) - 1; k++) ipstr[k] = argv[1][k]; ipstr[k] = '\0';
+        if (argc < 3) { printf("ipcalc: need a prefix or netmask (ip/prefix, ip netmask, or ip prefix)\n"); return; }
+        int hasdot = 0; for (int i = 0; argv[2][i]; i++) if (argv[2][i] == '.') { hasdot = 1; break; }
+        if (hasdot) {
+            uint32_t nm_net;
+            if (ipv4_parse(argv[2], &nm_net) != 0) { printf("ipcalc: invalid netmask: %s\n", argv[2]); return; }
+            uint32_t nm = ipc_bswap32(nm_net);
+            for (int q = 0; q <= 32; q++) { uint32_t em = (q == 0) ? 0u : (0xFFFFFFFFu << (32 - q)); if (em == nm) { p = q; break; } }
+            if (p < 0) { printf("ipcalc: not a contiguous netmask: %s\n", argv[2]); return; }
+        } else p = atoi(argv[2]);
+    }
+    if (p < 0 || p > 32) { printf("ipcalc: prefix must be 0..32\n"); return; }
+    uint32_t ip_net;
+    if (ipv4_parse(ipstr, &ip_net) != 0) { printf("ipcalc: invalid address: %s\n", ipstr); return; }
+    uint32_t hip = ipc_bswap32(ip_net);
+    ipcalc_result_t r; ipcalc_compute(hip, p, &r);
+    #define IPC_Q(v) (unsigned)(((v) >> 24) & 0xFF), (unsigned)(((v) >> 16) & 0xFF), (unsigned)(((v) >> 8) & 0xFF), (unsigned)((v) & 0xFF)
+    printf("Address:   %u.%u.%u.%u\n", IPC_Q(hip));
+    printf("Netmask:   %u.%u.%u.%u = %d\n", IPC_Q(r.netmask), r.prefix);
+    printf("Wildcard:  %u.%u.%u.%u\n", IPC_Q(r.hostmask));
+    printf("Network:   %u.%u.%u.%u/%d\n", IPC_Q(r.network), r.prefix);
+    printf("Broadcast: %u.%u.%u.%u\n", IPC_Q(r.broadcast));
+    printf("HostMin:   %u.%u.%u.%u\n", IPC_Q(r.hostmin));
+    printf("HostMax:   %u.%u.%u.%u\n", IPC_Q(r.hostmax));
+    printf("Hosts:     %u\n", r.hosts);
+    #undef IPC_Q
 }
 
 static void cmd_tree(int argc, char** argv) {
@@ -4729,6 +4777,7 @@ static void run_selftests(void) {
         {"murmur",       murmur3_selftest},
         {"totp",         totp_selftest},          {"ipv4",          ipv4_parse_selftest},
         {"ipv6",         ipv6_parse_selftest},
+        {"ipcalc",       ipcalc_selftest},
         {"numparse",     numparse_selftest},        {"hkdf",          hkdf_selftest},
         {"chacha20",     chacha20_selftest},        {"siphash",       siphash_selftest},
         {"poly1305",     poly1305_selftest},        {"chachapoly",    chacha20poly1305_selftest},
