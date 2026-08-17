@@ -1,6 +1,6 @@
 # The N Language — Specification
 
-**Version:** v0.17 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
+**Version:** v0.18 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
 
 This document specifies N exactly as implemented by the bootstrap compiler
 `ncc`. It is a *descriptive* spec: everything here compiles today. Planned
@@ -432,12 +432,44 @@ move, or simply let the value end with its body (that is how a consuming
 sink like `close_log` terminates the chain). A caller that receives an
 own return value gives it a fresh birth, obligation included.
 
-v0.17 keeps the flow tracking **flat and honest**, trading power for
-zero false confidence — each restriction is a compile error, not a gap:
+Since v0.18 the tracking is **branch-aware**: `if`/`else` arms may
+consume an own value, and the checker verifies each arm against the same
+pre-`if` states, then requires the two exits to **agree** on every own
+binding — moved in both arms, or in neither:
 
-- Moves happen only in the function's **outermost block** (the same
-  first rule `defer` had in v0.6); a branch-aware tracker relaxes this
-  later.
+```n
+if noisy > 0 {
+    close_log(f);      // both arms consume f —
+} else {
+    archive_log(f);    // — so the states agree after the if
+}
+```
+
+Moving a value in only one arm (or in a lone `if` with no `else`, whose
+implicit other path moves nothing) is a *consumed in only one branch*
+error. One exemption keeps early exits natural: an arm whose **last
+statement is `return`** leaves through the return, never reaching the
+code after the `if`, so it is excluded from the agreement check — the
+return's own leak scan polices that path instead:
+
+```n
+f := open_log();
+if hurry > 0 {
+    close_log(f);
+    return 1;          // this path never reaches the merge point
+}
+close_log(f);          // only ever entered with f still live
+```
+
+The flow tracking stays **honest**, trading power for zero false
+confidence — each remaining restriction is a compile error, not a gap:
+
+- Moves are refused wherever a statement may run **zero or many
+  times**: loop bodies, **`while` conditions** (the condition
+  re-evaluates every iteration — consuming there would use the value
+  again on the second test), and `match` arms (consume conditionally
+  with `if`/`else`). `for` range **bounds** are exempt: they are
+  hoisted and evaluated exactly once, before the loop.
 - Own bindings are **immutable** (`mut own` is refused); ownership
   changes hands by move, not by overwrite.
 - Own values cannot **nest** in structs or enum payloads, be pointed to

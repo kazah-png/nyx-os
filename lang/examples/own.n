@@ -1,4 +1,4 @@
-// own.n — N v0.17 own structs (opening N++ P5):
+// own.n — N own structs (N++ P5):
 //   an `own struct` is move-not-copy and MUST-CONSUME — the two handle
 //   bugs (leaking one, using one twice) become compile errors:
 //   - construction is a birth: the binding now carries an obligation
@@ -9,10 +9,15 @@
 //     the value arrives held, with no further local obligation
 //   - dropping one on the floor — falling off the function, an early
 //     return, discarding an own call result — is a compile error
-//   v0.17 keeps the tracking flat and honest: moves happen only in the
-//   function's outermost block (the same first rule defer had in v0.6),
-//   and own values cannot nest in other types, alias through pointers,
-//   cross into syscalls, ride match expressions, or appear in defers.
+//   v0.18 makes the tracking BRANCH-AWARE: `if`/`else` arms may consume
+//   an own value, but both exits must AGREE — moved in both arms or in
+//   neither (moved in only one = compile error). An arm whose last
+//   statement is `return` leaves through the return, not the merge
+//   point, so it is exempt. Moves stay refused where a statement may
+//   run zero or many times: loop bodies, `while` conditions (they
+//   re-evaluate every iteration), and match arms. Own values still
+//   cannot nest in other types, alias through pointers, cross into
+//   syscalls, ride match expressions, or appear in defers.
 //   All of it is erased at codegen: an own struct is a plain C struct.
 
 #[caps(syscall)]
@@ -32,9 +37,37 @@ fn open_log() -> File {
     File{ fd: 3 }
 }
 
-// The consuming sink: this fn owns f now, and may let it end here.
+// The consuming sinks: each fn owns f now, and may let it end here.
 fn close_log(f: File) {
     put("closed fd {f.fd}\n");
+}
+
+fn archive_log(f: File) {
+    put("archived fd {f.fd}\n");
+}
+
+// v0.18 branch-aware consumption: BOTH arms move f, so the states
+// agree at the merge point and the obligation is discharged either way.
+// Moving it in only one arm would be a compile error.
+fn finish(noisy: i64, f: File) {
+    if noisy > 0 {
+        close_log(f);
+    } else {
+        archive_log(f);
+    }
+}
+
+// The return-exempt arm: the then-arm consumes f AND returns, so it
+// never reaches the merge point — the code after the if is only ever
+// entered with f still live, and consumes it there.
+fn shutdown(hurry: i64) -> i64 {
+    f := open_log();
+    if hurry > 0 {
+        close_log(f);
+        return 1;
+    }
+    close_log(f);
+    0
 }
 
 fn main() -> i64 {
@@ -42,9 +75,16 @@ fn main() -> i64 {
     put("using fd {f.fd}\n");      // field reads do not move
     g := f;                        // ownership moves to g; f is dead now
     close_log(g);                  // obligation discharged
+    finish(1, open_log());         // then-arm consumes: closed
+    finish(0, open_log());         // else-arm consumes: archived
+    a := shutdown(1);              // early-return path
+    b := shutdown(0);              // fall-through path
+    put("shutdown codes {a}{b}\n");
     // Each of these is a compile error (negative tests):
     //   put("{f.fd}\n");           ← use of 'f' after move
     //   h := open_log();  0        ← unconsumed own value 'h'
     //   open_log();                ← own result discarded
+    //   if c > 0 { close_log(h); } ← consumed in only one branch
+    //   while c > 0 { close_log(h); }  ← move inside a loop
     0
 }

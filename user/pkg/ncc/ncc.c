@@ -3,7 +3,7 @@
  * Hosted tool (runs on the dev machine); single file, no dependencies.
  * See lang/docs/spec-n.md for the language specification this implements.
  *
- * Supported subset (currently N v0.17):
+ * Supported subset (currently N v0.18):
  *   - extern syscall { fn name(params) [-> T] = N }
  *   - fn decls with block bodies, params, return types
  *   - statements: let (:=, mut), assignment (= += -=), return, while,
@@ -76,11 +76,13 @@
  *     is move-not-copy and must-consume. A locally-born own value MUST
  *     be returned or passed on (leak = compile error); using a binding
  *     after its move is an error; field reads peek without moving; own
- *     params arrive held (the callee is the owner of record). Flat flow
- *     tracking, so moves are outermost-block-only (v0.6 defer's rule);
- *     own values cannot nest in structs/enums, alias through pointers,
- *     cross into syscalls, ride match expressions, or appear in defers.
- *     Zero-cost: the C layout is a plain struct.
+ *     params arrive held (the callee is the owner of record). Branch-
+ *     aware moves (v0.18): if/else arms may consume, but both exits
+ *     must agree (an arm ending in `return` is exempt); moves stay
+ *     refused in loops (bodies AND while conditions — they re-run) and
+ *     match arms; own values cannot nest in structs/enums, alias
+ *     through pointers, cross into syscalls, ride match expressions,
+ *     or appear in defers. Zero-cost: the C layout is a plain struct.
  * Not yet (N++ territory): closures, generic Result<T,E>, modules/use.
  */
 /* Platform includes. In-OS builds (milestone M2) compile this file with
@@ -1195,6 +1197,9 @@ static Ty CUR_RET;
 static Expr* FN_DEFERS[16];
 static int   NDEFERS;
 static int   BLOCK_DEPTH;                  /* 1 = the function's own block */
+static int   LOOP_DEPTH;                   /* v0.18: >0 = inside a loop (body OR
+                                            * a while condition — both re-run) */
+static int   MATCH_DEPTH;                  /* v0.18: >0 = inside a match arm body */
 
 static const char* base_ctype(const char* n) {
     static const struct { const char* a; const char* b; } M[] = {
@@ -1298,26 +1303,34 @@ static int ty_is_own(Ty t) {
  * passed, returned, assigned). If it is a bare path naming an own
  * binding, ownership transfers here: the binding becomes OWN_MOVED and
  * its consumption obligation (if any) is discharged. Field reads are
- * NOT moves — `f.fd` peeks, `f` transfers. To keep the flat tracking
- * exact, moves are only allowed in the function's OUTERMOST block
- * (v0.6's defer restriction, for the same reason: statements there run
- * unconditionally, in order). */
+ * NOT moves — `f.fd` peeks, `f` transfers.
+ * v0.18 relaxes v0.17's outermost-block-only rule to BRANCH-AWARE
+ * tracking: a move is fine anywhere the statement runs at most once on
+ * any path — the outermost block, and `if`/`else` arms (S_IF reconciles
+ * the two exit states below). Moves stay refused where a statement may
+ * run zero or many times: loop bodies AND `while` conditions (the
+ * condition re-evaluates every iteration — consuming there would use
+ * the value again on the second test), and inside match arms (reserved;
+ * consume conditionally with if/else in v0.18). */
 static void own_move_expr(Expr* e, int line) {
     if (!e || e->k != E_PATH) return;
     VarInfo* v = vars_find(e->name);
     if (!v || v->own_state == OWN_NONE) return;
     if (v->own_state == OWN_MOVED)
         die("%s:%d: use of '%s' after move", FILENAME, line, e->name);
-    if (BLOCK_DEPTH > 1)
-        die("%s:%d: own value '%s' can only move in the function's outermost block (v0.17)",
+    if (LOOP_DEPTH > 0)
+        die("%s:%d: own value '%s' cannot move inside a loop — the move could run zero or many times (v0.18)",
+            FILENAME, line, e->name);
+    if (MATCH_DEPTH > 0)
+        die("%s:%d: own value '%s' cannot move inside a match arm — consume it with if/else instead (v0.18)",
             FILENAME, line, e->name);
     v->own_state = OWN_MOVED;
 }
 
 /* Any own binding at index >= from still OWN_LIVE here leaks — report
- * the first one. Returns scan from 0 (the whole frame); block ends scan
- * their own scope, which also catches births in nested blocks (they can
- * never be consumed there, since moves are outermost-only). */
+ * the first one. Return sites scan from 0 (the whole frame); block ends
+ * scan their own scope, so a value born inside a block must be consumed
+ * before that block closes. */
 static void own_leak_scan(int from, int line, const char* where) {
     for (int i = from; i < NVARS; i++)
         if (VARS[i].own_state == OWN_LIVE)
@@ -2071,6 +2084,13 @@ static void gen_try(Stmt* s, int ind) {
     if (s->k == S_LET) vars_add(s->name, okty, s->is_mut);
 }
 
+/* Does this block's last statement return? (v0.18: an if arm that ends
+ * with `return` never reaches the code after the if, so the own-state
+ * merge takes the OTHER arm's states unchallenged.) */
+static int block_returns(Block* b) {
+    return b && b->n > 0 && b->st[b->n - 1]->k == S_RET;
+}
+
 static void gen_stmt(Stmt* s, int ind) {
     if (s->is_try) { gen_try(s, ind); return; }
     switch (s->k) {
@@ -2082,7 +2102,7 @@ static void gen_stmt(Stmt* s, int ind) {
                     FILENAME, s->line, s->name);
             own_move_expr(s->e, s->line);         /* v0.17: init consumes its source */
             if (ty_is_own(t) && s->is_mut)
-                die("%s:%d: own bindings are immutable in v0.17 — ownership transfers by move",
+                die("%s:%d: own bindings are immutable — ownership transfers by move (v0.17)",
                     FILENAME, s->line);
             gen_preludes(s->e, ind);
             indentf(ind);
@@ -2376,6 +2396,9 @@ static void gen_stmt(Stmt* s, int ind) {
             gen_expr(s->e);
             fputs(";\n", OUT);
             indentf(ind + 1); fprintf(OUT, "switch (__m%d.tag) {\n", mid);
+            MATCH_DEPTH++;     /* v0.18: own moves stay out of match arms
+                                * (see own_move_expr) — if/else got the
+                                * branch merge first */
             for (int a = 0; a < s->narms; a++) {
                 int vi = variant_index(ed, s->arms[a].variant);
                 indentf(ind + 1);
@@ -2396,11 +2419,15 @@ static void gen_stmt(Stmt* s, int ind) {
                 indentf(ind + 1); fputs("}\n", OUT);
                 NVARS = vsave;
             }
+            MATCH_DEPTH--;
             indentf(ind + 1); fputs("}\n", OUT);
             indentf(ind); fputs("}\n", OUT);
             break;
         }
         case S_WHILE:
+            LOOP_DEPTH++;      /* v0.18: covers the CONDITION too — it
+                                * re-evaluates every iteration, so an own
+                                * move there would consume twice */
             check_expr(s->cond);
             gen_preludes(s->cond, ind);
             indentf(ind);
@@ -2408,6 +2435,7 @@ static void gen_stmt(Stmt* s, int ind) {
             gen_expr(s->cond);
             fputs(") ", OUT);
             gen_block(s->body, ind, 0);
+            LOOP_DEPTH--;
             fputs("\n", OUT);
             break;
         case S_FOR: {
@@ -2439,24 +2467,54 @@ static void gen_stmt(Stmt* s, int ind) {
             {
                 int vsave = NVARS;
                 vars_add(s->name, ty_named("i64"), 0);
+                LOOP_DEPTH++;  /* v0.18: the body may run 0..N times; the
+                                * BOUNDS stay outside the guard — they are
+                                * hoisted and evaluated exactly once */
                 gen_block(s->body, ind + 1, 0);
+                LOOP_DEPTH--;
                 NVARS = vsave;
             }
             fputs("\n", OUT);
             indentf(ind); fputs("}\n", OUT);
             break;
         }
-        case S_IF:
+        case S_IF: {
             check_expr(s->cond);
             gen_preludes(s->cond, ind);
             indentf(ind);
             fputs("if (", OUT);
             gen_expr(s->cond);
             fputs(") ", OUT);
+            /* v0.18 branch-aware own tracking: each arm is checked from
+             * the same pre-if states, and at the merge point the two
+             * exits must AGREE on every own binding — consumed in both
+             * arms or in neither. An arm whose last statement is
+             * `return` never reaches the merge point, so it is exempt
+             * (the return's own leak scan already policed that path). */
+            int n0 = NVARS;
+            int pre[256], thn[256];
+            for (int i = 0; i < n0; i++) pre[i] = VARS[i].own_state;
             gen_block(s->body, ind, 0);
+            for (int i = 0; i < n0; i++) { thn[i] = VARS[i].own_state;
+                                           VARS[i].own_state = pre[i]; }
             if (s->els) { fputs(" else ", OUT); gen_block(s->els, ind, 0); }
+            int t_ret = block_returns(s->body);
+            int e_ret = s->els ? block_returns(s->els) : 0;
+            for (int i = 0; i < n0; i++) {
+                /* VARS now holds the else-exit state (= pre-if when the
+                 * if has no else: falling past it changes nothing). */
+                if (t_ret)       { if (!e_ret) continue;          /* else exit flows on */
+                                   VARS[i].own_state = thn[i]; }  /* neither flows: dead */
+                else if (e_ret)    VARS[i].own_state = thn[i];    /* then exit flows on */
+                else {
+                    if (thn[i] != VARS[i].own_state)
+                        die("%s:%d: own value '%s' is consumed in only one branch of this if — both branches must agree (v0.18)",
+                            FILENAME, s->line, VARS[i].name);
+                }
+            }
             fputs("\n", OUT);
             break;
+        }
     }
 }
 
@@ -2668,6 +2726,7 @@ static void gen_program(const char* srcname) {
         NVARS = 0;
         NDEFERS = 0;
         BLOCK_DEPTH = 0;
+        LOOP_DEPTH = MATCH_DEPTH = 0;
         vars_add((char*)"self", ty_named(m->type), 0);   /* receiver: immutable */
         for (int p = 0; p < m->np; p++) vars_add(m->ps[p].name, m->ps[p].ty, 0);
         fputs("static ", OUT);
@@ -2691,6 +2750,7 @@ static void gen_program(const char* srcname) {
         NVARS = 0;                      /* fresh symbol table per function */
         NDEFERS = 0;                    /* defers are function-scoped */
         BLOCK_DEPTH = 0;
+        LOOP_DEPTH = MATCH_DEPTH = 0;
         for (int p = 0; p < f->np; p++) {   /* parameters are immutable bindings */
             vars_add(f->ps[p].name, f->ps[p].ty, 0);
             if (ty_is_own(f->ps[p].ty))     /* v0.17: this fn is the owner now */
