@@ -1,6 +1,6 @@
 # The N Language — Specification
 
-**Version:** v0.16 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
+**Version:** v0.17 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
 
 This document specifies N exactly as implemented by the bootstrap compiler
 `ncc`. It is a *descriptive* spec: everything here compiles today. Planned
@@ -48,7 +48,7 @@ Identifiers match `[A-Za-z_][A-Za-z0-9_]*`. The following are reserved:
 
 ```
 as break continue defer else enum extern false fn for if impl in match
-mut raw return struct syscall true while
+mut own raw return struct syscall true while
 ```
 
 Additionally, **C keywords that are not N keywords** (`double`, `int`,
@@ -95,7 +95,7 @@ never overflowed. Use `\{` and `\}` for literal braces.
 ( ) { } [ ] , ; : . .. ->
 := = += -=
 #[user]           (attribute, v0.12 — see 3.2)
-#[caps(syscall)]  (attribute, v0.14 — see 4.6)
+#[caps(syscall)]  (attribute, v0.14 — see 4.7)
 + - * / %
 == != < <= > >=
 ! && ||
@@ -165,7 +165,7 @@ This is the bootstrap slice of the N++ design's §2.3; the compile-time
 *range proof* (that the pointer lies in the canonical user half) arrives
 with the `n++` front-end. The attribute space is reserved: `#[` followed
 by anything other than a known attribute (`#[user]`, `#[caps(syscall)]`
-— §4.6) is a lex error.
+— §4.7) is a lex error.
 
 ### 3.3 `pageflags` — W^X page permissions (since v0.13)
 
@@ -400,7 +400,56 @@ enum. Rules:
   (`r.area` is the field lookup — an error if no such field — and
   `r.area()` is the call).
 
-### 4.6 Capabilities — `#[caps(syscall)]` (since v0.14)
+### 4.6 `own struct` — must-consume types (since v0.17, opening N++ P5)
+
+```n
+own struct File { fd: i64 }
+
+fn open_log() -> File { File{ fd: 3 } }   // birth; discharged by return
+fn close_log(f: File) { put("closing {f.fd}
+"); }   // the consuming sink
+
+f := open_log();      // f is born LIVE: someone must consume it
+put("{f.fd}
+");      // field reads peek — no move
+g := f;               // ownership MOVES to g; f is dead
+close_log(g);         // obligation discharged
+```
+
+An `own struct` is **move-not-copy** and **must-consume** — the two
+classic handle bugs become compile errors:
+
+- **Leaking** — an own binding still live when its scope ends (function
+  end, an early `return`, a nested block), or an own call result that is
+  discarded instead of bound, is an *unconsumed own value* error.
+- **Double use** — once a binding is moved (bound to another name,
+  passed as an argument, returned), any further use of the old name —
+  including field reads — is a *use after move* error.
+
+The ownership contract at function boundaries: a parameter of own type
+arrives **held** — the callee is the new owner of record, free to use,
+move, or simply let the value end with its body (that is how a consuming
+sink like `close_log` terminates the chain). A caller that receives an
+own return value gives it a fresh birth, obligation included.
+
+v0.17 keeps the flow tracking **flat and honest**, trading power for
+zero false confidence — each restriction is a compile error, not a gap:
+
+- Moves happen only in the function's **outermost block** (the same
+  first rule `defer` had in v0.6); a branch-aware tracker relaxes this
+  later.
+- Own bindings are **immutable** (`mut own` is refused); ownership
+  changes hands by move, not by overwrite.
+- Own values cannot **nest** in structs or enum payloads, be pointed to
+  (`*File` is refused everywhere), cross into **syscalls**, flow through
+  a **match expression**, or appear in a **defer**.
+- No destructors yet — the design document reserves them; today the
+  consuming sink is an ordinary function.
+
+Everything above is erased at codegen: an own struct lowers to the same
+plain C struct as any other — the ownership discipline is free.
+
+### 4.7 Capabilities — `#[caps(syscall)]` (since v0.14)
 
 ```n
 #[caps(syscall)]
@@ -829,7 +878,8 @@ Condensed EBNF of the implemented language:
 ```ebnf
 program      = { item } ;
 item         = [ "#[caps(syscall)]" ] ( extern_block | fn_decl )
-             | struct_decl | enum_decl | impl_block ;
+             | [ "own" ] struct_decl | enum_decl | impl_block ;
+             (* own: must-consume move semantics, 4.6 *)
 impl_block   = "impl" ident "{" { method } "}" ;
 method       = "fn" ident "(" "self" { "," param } ")" [ "->" type ] block ;
 

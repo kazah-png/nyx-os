@@ -1,0 +1,50 @@
+// own.n — N v0.17 own structs (opening N++ P5):
+//   an `own struct` is move-not-copy and MUST-CONSUME — the two handle
+//   bugs (leaking one, using one twice) become compile errors:
+//   - construction is a birth: the binding now carries an obligation
+//   - passing / returning / rebinding MOVES it — the obligation
+//     transfers, and the old name is dead (use-after-move = error)
+//   - field reads peek without moving (`f.fd` is fine, bare `f` moves)
+//   - a fn taking an own param is the new owner of record: inside it
+//     the value arrives held, with no further local obligation
+//   - dropping one on the floor — falling off the function, an early
+//     return, discarding an own call result — is a compile error
+//   v0.17 keeps the tracking flat and honest: moves happen only in the
+//   function's outermost block (the same first rule defer had in v0.6),
+//   and own values cannot nest in other types, alias through pointers,
+//   cross into syscalls, ride match expressions, or appear in defers.
+//   All of it is erased at codegen: an own struct is a plain C struct.
+
+#[caps(syscall)]
+extern syscall {
+    fn write(fd: i32, buf: #[user] *u8, len: isize) -> i64 = 1
+}
+
+#[caps(syscall)]
+fn put(s: str) {
+    write(1, s.ptr as #[user] *u8, s.len as isize);
+}
+
+own struct File { fd: i64 }
+
+// Birth happens here; the obligation is discharged by returning.
+fn open_log() -> File {
+    File{ fd: 3 }
+}
+
+// The consuming sink: this fn owns f now, and may let it end here.
+fn close_log(f: File) {
+    put("closed fd {f.fd}\n");
+}
+
+fn main() -> i64 {
+    f := open_log();               // f is born live: someone must consume it
+    put("using fd {f.fd}\n");      // field reads do not move
+    g := f;                        // ownership moves to g; f is dead now
+    close_log(g);                  // obligation discharged
+    // Each of these is a compile error (negative tests):
+    //   put("{f.fd}\n");           ← use of 'f' after move
+    //   h := open_log();  0        ← unconsumed own value 'h'
+    //   open_log();                ← own result discarded
+    0
+}

@@ -1,7 +1,7 @@
 # N & N++ — the native languages of NyxOS
 
 <p align="center">
-  <img src="https://img.shields.io/badge/N-v0.16-825AD2?style=flat" />
+  <img src="https://img.shields.io/badge/N-v0.17-825AD2?style=flat" />
   &nbsp;
   <img src="https://img.shields.io/badge/N%2B%2B-design-825AD2?style=flat" />
   &nbsp;
@@ -31,7 +31,7 @@ N++ program, and N++ compiles down through the same pipeline.
 | Memory model | Manual, raw pointers | Ownership/borrowing opt-in, `#[user]` checked pointers |
 | Error handling | Return codes | `Result<T, E>` + `?` propagation |
 | Data types | Primitives, pointers, `str` | + `struct` methods, `enum` sum types, `match`, generics, traits |
-| Status | **v0.16 — working** (see below) | **P1–P4 complete** (`#[user]` pointers, `pageflags` W^X, `#[caps]` capabilities; P5 next: `own` types + GUI) |
+| Status | **v0.17 — working** (see below) | **P1–P4 complete, P5 started** (`own` must-consume types shipped; GUI bindings wait on kernel window syscalls) |
 
 Both share the same DNA:
 
@@ -64,7 +64,7 @@ Both share the same DNA:
 ## Status — what works today
 
 The bootstrap compiler `ncc` ([ncc/ncc.c](ncc/ncc.c), single-file C, no
-dependencies) implements N v0.16 — type inference (typed `:=` bindings with an
+dependencies) implements N v0.17 — type inference (typed `:=` bindings with an
 `i64` default, interpolation that inserts `str` values as text, enforced
 `mut`), a complete expression-level checker (undeclared names, unknown
 callees, arity, argument/operand/return/assignment types — all compile errors
@@ -77,7 +77,8 @@ ranges, `#[user]` checked-pointer flavors with explicit `as` crossings,
 `pageflags` page permissions with a total compile-time W^X proof,
 `#[caps(syscall)]`-gated kernel crossings with audited wrapper boundaries,
 byte-level indexing into str and pointers with element writes (real
-buffers and stacks — the self-hosting enabler),
+buffers and stacks — the self-hosting enabler), `own` must-consume types
+that turn handle leaks and double-use into compile errors,
 strict-C99 output — and is verified three ways:
 
 1. **Real programs run on NyxOS.** The in-OS TinyCC builds the current
@@ -136,7 +137,8 @@ lang/
     ├── ntokens.n        ← M5 link 1: an N tokenizer written in N
     ├── ncalc.n          ← M5 link 2: precedence parser + evaluator in N
     ├── nemit.n          ← M5 link 3: stack-code emitter in N (read→parse→emit)
-    └── nstack.n         ← v0.16 index writes: a VM in N runs nemit's code
+    ├── nstack.n         ← v0.16 index writes: a VM in N runs nemit's code
+    └── own.n            ← v0.17 own structs: leaks and double-use refused
 ```
 
 The runtime N programs link against lives with the rest of user space:

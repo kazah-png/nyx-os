@@ -1,6 +1,6 @@
 # N++ — Design Document
 
-**Status:** staged into `ncc` (P1 + P2 shipped, P3 started) · **Base language:** [N](spec-n.md) · **Compiler (planned):** `n++`
+**Status:** staged into `ncc` (P1–P4 complete, P5 started) · **Base language:** [N](spec-n.md) · **Compiler (planned):** `n++`
 
 N++ is to N what C++ was to C: a superset that keeps the base language intact
 and adds the abstraction and safety layer on top. The contract:
@@ -133,7 +133,7 @@ feature is debuggable by reading the generated C.
 | P2 | ✅ **complete**: `struct` (v0.5) · `defer` (v0.6) · `enum` + `match` (v0.7) · `impl` methods (v0.8, static dispatch) | structs.n, defer.n, enums.n, methods.n |
 | P3 | ✅ **complete** (bootstrap side): match-as-expression (v0.9) · `?` over structural Ok/Err result enums (v0.10 — same-type pass-through, cross-type Err rewrap, defers honored) · fs bindings sketch (`fsio.n`: the negative-return→Result boundary conversion of §2.2, `?` chains, deferred close). Generic `Result<T, E>` and the idiomatic `.npp` rewrite move to the `n++` front-end (P5 era) | `fsio.n` runs the §2.2 shape end-to-end |
 | P4 | ✅ **complete** (bootstrap side): `#[user]` pointer flavor (v0.12 — hard no-implicit-conversion boundary, `as` as the audited crossing) · `pageflags` W^X bitset (v0.13 — total compile-time W^X proof, live-mmap verified) · capabilities (v0.14 — `#[caps(syscall)]` gates extern blocks, direct callers must hold the cap, wrapper = audited boundary). The canonical-half range proof, further capability names (`mmio`, `ports`), and ring heights move to the `n++` front-end and kernel-side modules | a kernel-module example checked at `ring0` |
-| P5 | `own` types, GUI bindings | a windowed N++ app on the NyxOS desktop |
+| P5 | 🔨 **started**: `own` structs shipped (v0.17 — move-not-copy, must-consume, flat function-local tracking with outermost-block moves; leaks/double-use/discards are compile errors; no destructors yet). Remaining: destructors, branch-aware moves, GUI bindings (wait on kernel window syscalls) | a windowed N++ app on the NyxOS desktop |
 
 P1 is the enabling investment: everything later depends on the checker
 existing. It also immediately improves plain N (better errors from `ncc`).

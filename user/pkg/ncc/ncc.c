@@ -3,7 +3,7 @@
  * Hosted tool (runs on the dev machine); single file, no dependencies.
  * See lang/docs/spec-n.md for the language specification this implements.
  *
- * Supported subset (currently N v0.16):
+ * Supported subset (currently N v0.17):
  *   - extern syscall { fn name(params) [-> T] = N }
  *   - fn decls with block bodies, params, return types
  *   - statements: let (:=, mut), assignment (= += -=), return, while,
@@ -72,6 +72,15 @@
  *     required on the pointer. Writing through a str index stays
  *     refused: str is an immutable view (often read-only storage).
  *     Unlocks real buffers and stacks — the M5 arc's motivating case.
+ *   - own structs (v0.17, opening N++ P5): `own struct File { fd: i64 }`
+ *     is move-not-copy and must-consume. A locally-born own value MUST
+ *     be returned or passed on (leak = compile error); using a binding
+ *     after its move is an error; field reads peek without moving; own
+ *     params arrive held (the callee is the owner of record). Flat flow
+ *     tracking, so moves are outermost-block-only (v0.6 defer's rule);
+ *     own values cannot nest in structs/enums, alias through pointers,
+ *     cross into syscalls, ride match expressions, or appear in defers.
+ *     Zero-cost: the C layout is a plain struct.
  * Not yet (N++ territory): closures, generic Result<T,E>, modules/use.
  */
 /* Platform includes. In-OS builds (milestone M2) compile this file with
@@ -123,7 +132,7 @@ typedef enum {
     T_KW_AS, T_KW_RAW, T_KW_TRUE, T_KW_FALSE, T_KW_STRUCT, T_KW_DEFER,
     T_KW_ENUM, T_KW_MATCH, T_FATARROW, T_KW_IMPL,
     T_KW_FOR, T_KW_IN, T_DOTDOT, T_ATTR_USER, T_ATTR_CAPS_SYSCALL,
-    T_LBRACK, T_RBRACK,
+    T_LBRACK, T_RBRACK, T_KW_OWN,
     T_LP, T_RP, T_LB, T_RB, T_COMMA, T_SEMI, T_COLON,
     T_WALRUS, T_ARROW, T_ASSIGN,
     T_PLUS, T_MINUS, T_STAR, T_SLASH, T_PERCENT,
@@ -217,6 +226,7 @@ static TK kwlook(const char* s, int n) {
         {"true", T_KW_TRUE}, {"false", T_KW_FALSE}, {"struct", T_KW_STRUCT},
         {"defer", T_KW_DEFER}, {"enum", T_KW_ENUM}, {"match", T_KW_MATCH},
         {"impl", T_KW_IMPL}, {"for", T_KW_FOR}, {"in", T_KW_IN},
+        {"own", T_KW_OWN},
     };
     for (size_t i = 0; i < sizeof(K) / sizeof(K[0]); i++)
         if ((int)strlen(K[i].w) == n && !memcmp(K[i].w, s, (size_t)n)) return K[i].k;
@@ -461,8 +471,10 @@ typedef struct { char* name; Param* ps; int np; Ty ret; Block* body; int caps; }
 static XFn XFNS[64]; static int NXFN;
 static Fn  FNS[64];  static int NFN;
 
-/* struct declarations (v0.5): named field records, C-struct layout */
-typedef struct { char* name; Param* fs; int nf; } StructDef;
+/* struct declarations (v0.5): named field records, C-struct layout.
+ * is_own (v0.17, N++ P5): a move-not-copy, must-consume type — the
+ * checker tracks each binding's life; the C layout is unchanged. */
+typedef struct { char* name; Param* fs; int nf; int is_own; } StructDef;
 static StructDef STRUCTS[32]; static int NSTRUCTS;
 
 static StructDef* struct_lookup(const char* name) {
@@ -1049,9 +1061,10 @@ static void parse_fn(int caps) {
     f->body = parse_block();
 }
 
-static void parse_struct(void) {
+static void parse_struct(int is_own) {
     if (NSTRUCTS >= 32) die("too many structs");
     StructDef* sd = &STRUCTS[NSTRUCTS++];
+    sd->is_own = is_own;
     Tok id = pexp(T_IDENT, "struct name");
     sd->name = id.s;
     pexp(T_LB, "'{'");
@@ -1154,7 +1167,12 @@ static void parse_program(void) {
         if (caps)
             die("%s:%d: #[caps(syscall)] applies to a fn or an extern syscall block",
                 FILENAME, CUR.line);
-        if (pacc(T_KW_STRUCT)) { parse_struct(); continue; }
+        if (pacc(T_KW_OWN)) {             /* v0.17: own struct — must-consume type */
+            pexp(T_KW_STRUCT, "'struct' after 'own'");
+            parse_struct(1);
+            continue;
+        }
+        if (pacc(T_KW_STRUCT)) { parse_struct(0); continue; }
         if (pacc(T_KW_ENUM))   { parse_enum(); continue; }
         if (pacc(T_KW_IMPL))   { parse_impl(); continue; }
         die("%s:%d: expected 'extern', 'fn', 'struct', 'enum' or 'impl' at top level",
@@ -1205,8 +1223,17 @@ static int is_never(Ty t) { return t.name && !strcmp(t.name, "never"); }
  * `mut` — the three things codegen cannot do blind. The full checker is
  * N++ P1 (lang/docs/design-npp.md). */
 /* pmask (v0.13): for a pageflags binding, the statically-known flag-bit
- * set — what the W^X check reasons about. -1 = unknown (parameters). */
-typedef struct { char* name; Ty ty; int is_mut; long long pmask; } VarInfo;
+ * set — what the W^X check reasons about. -1 = unknown (parameters).
+ * own_state (v0.17): OWN_NONE for ordinary bindings; a locally-born own
+ * value is OWN_LIVE (it MUST be consumed), a consumed one is OWN_MOVED
+ * (any further use is an error), and an own parameter is OWN_HELD —
+ * usable and movable, but this function is already its owner-of-record,
+ * so it carries no local consumption obligation. */
+#define OWN_NONE  0
+#define OWN_LIVE  1
+#define OWN_MOVED 2
+#define OWN_HELD  3
+typedef struct { char* name; Ty ty; int is_mut; long long pmask; int own_state; } VarInfo;
 static VarInfo VARS[256];
 static int NVARS;
 
@@ -1215,6 +1242,7 @@ static void vars_add(char* name, Ty ty, int is_mut) {
     VARS[NVARS].name = name;
     VARS[NVARS].ty = ty;
     VARS[NVARS].pmask = -1;
+    VARS[NVARS].own_state = OWN_NONE;
     VARS[NVARS].is_mut = is_mut;
     NVARS++;
 }
@@ -1257,6 +1285,69 @@ static long long pf_mask(Expr* e) {
         return (l < 0 || r < 0) ? -1 : (l | r);
     }
     return -1;
+}
+
+/* Is t a value of an `own struct` type? (v0.17) */
+static int ty_is_own(Ty t) {
+    if (!t.name || t.ptrs != 0) return 0;
+    StructDef* sd = struct_lookup(t.name);
+    return sd && sd->is_own;
+}
+
+/* v0.17 move point: expression e is being consumed as a VALUE (bound,
+ * passed, returned, assigned). If it is a bare path naming an own
+ * binding, ownership transfers here: the binding becomes OWN_MOVED and
+ * its consumption obligation (if any) is discharged. Field reads are
+ * NOT moves — `f.fd` peeks, `f` transfers. To keep the flat tracking
+ * exact, moves are only allowed in the function's OUTERMOST block
+ * (v0.6's defer restriction, for the same reason: statements there run
+ * unconditionally, in order). */
+static void own_move_expr(Expr* e, int line) {
+    if (!e || e->k != E_PATH) return;
+    VarInfo* v = vars_find(e->name);
+    if (!v || v->own_state == OWN_NONE) return;
+    if (v->own_state == OWN_MOVED)
+        die("%s:%d: use of '%s' after move", FILENAME, line, e->name);
+    if (BLOCK_DEPTH > 1)
+        die("%s:%d: own value '%s' can only move in the function's outermost block (v0.17)",
+            FILENAME, line, e->name);
+    v->own_state = OWN_MOVED;
+}
+
+/* Any own binding at index >= from still OWN_LIVE here leaks — report
+ * the first one. Returns scan from 0 (the whole frame); block ends scan
+ * their own scope, which also catches births in nested blocks (they can
+ * never be consumed there, since moves are outermost-only). */
+static void own_leak_scan(int from, int line, const char* where) {
+    for (int i = from; i < NVARS; i++)
+        if (VARS[i].own_state == OWN_LIVE)
+            die("%s:%d: unconsumed own value '%s' at %s — return it or pass it on",
+                FILENAME, line, VARS[i].name, where);
+}
+
+/* Does this expression mention an own binding anywhere? Used to keep own
+ * values out of `defer` (v0.17): a deferred expression runs at exits,
+ * after moves the flat tracker cannot see across. */
+static int expr_has_own(Expr* e) {
+    if (!e) return 0;
+    switch (e->k) {
+        case E_PATH: {
+            VarInfo* v = vars_find(e->name);
+            return v && v->own_state != OWN_NONE;
+        }
+        case E_FIELD: return expr_has_own(e->base);
+        case E_CALL: {
+            if (expr_has_own(e->callee)) return 1;
+            for (int i = 0; i < e->nargs; i++)
+                if (expr_has_own(e->args[i])) return 1;
+            return 0;
+        }
+        case E_UN:    return expr_has_own(e->r);
+        case E_BIN:   return expr_has_own(e->l) || expr_has_own(e->r);
+        case E_CAST:  return expr_has_own(e->l);
+        case E_INDEX: return expr_has_own(e->l) || expr_has_own(e->r);
+        default:      return 0;
+    }
 }
 
 static Ty ty_named(const char* n) { Ty t; t.name = (char*)n; t.ptrs = 0; t.is_user = 0; return t; }
@@ -1417,11 +1508,15 @@ static int ty_compat(Ty a, Ty p) {
 static void check_expr(Expr* e) {
     if (!e) return;
     switch (e->k) {
-        case E_PATH:
+        case E_PATH: {
             if (pf_const(e->name, NULL)) break;   /* predeclared pageflags const */
-            if (!vars_find(e->name))
+            VarInfo* v = vars_find(e->name);
+            if (!v)
                 die("%s:%d: undeclared variable '%s'", FILENAME, e->line, e->name);
+            if (v->own_state == OWN_MOVED)        /* v0.17: no life after move */
+                die("%s:%d: use of '%s' after move", FILENAME, e->line, e->name);
             break;
+        }
         case E_CALL: {
             if (e->callee->k == E_FIELD) {      /* method call: recv.m(args) */
                 Expr* recv = e->callee->base;
@@ -1442,6 +1537,7 @@ static void check_expr(Expr* e) {
                         die("%s:%d: argument %d to '%s.%s': expected %s, got %s",
                             FILENAME, e->line, i + 1, m->type, m->name,
                             ty_str(m->ps[i].ty), ty_str(at));
+                    own_move_expr(e->args[i], e->line);   /* v0.17 */
                 }
                 break;
             }
@@ -1463,6 +1559,7 @@ static void check_expr(Expr* e) {
                     die("%s:%d: argument %d to '%s': expected %s, got %s",
                         FILENAME, e->line, i + 1, e->callee->name,
                         ty_str(ps[i].ty), ty_str(at));
+                own_move_expr(e->args[i], e->line);       /* v0.17 */
             }
             break;
         }
@@ -1983,6 +2080,10 @@ static void gen_stmt(Stmt* s, int ind) {
             if (!t.name || is_never(t))
                 die("%s:%d: cannot bind '%s' to an expression with no value",
                     FILENAME, s->line, s->name);
+            own_move_expr(s->e, s->line);         /* v0.17: init consumes its source */
+            if (ty_is_own(t) && s->is_mut)
+                die("%s:%d: own bindings are immutable in v0.17 — ownership transfers by move",
+                    FILENAME, s->line);
             gen_preludes(s->e, ind);
             indentf(ind);
             emit_type(t);
@@ -1992,6 +2093,8 @@ static void gen_stmt(Stmt* s, int ind) {
             vars_add(s->name, t, s->is_mut);
             if (ty_is(t, "pageflags"))            /* track the static flag set */
                 VARS[NVARS - 1].pmask = pf_mask(s->e);
+            if (ty_is_own(t))                     /* v0.17: birth — must be consumed */
+                VARS[NVARS - 1].own_state = OWN_LIVE;
             break;
         }
         case S_ASSIGN: {
@@ -2029,6 +2132,7 @@ static void gen_stmt(Stmt* s, int ind) {
                     die("%s:%d: '%s' requires an integer target (got %s)",
                         FILENAME, s->line, s->aop, ty_str(lt));
             }
+            own_move_expr(s->e, s->line);         /* v0.17: assignment consumes */
             if (s->lhs->k == E_PATH) {            /* keep a reassigned pageflags
                                                    * binding's static set current */
                 VarInfo* v = vars_find(s->lhs->name);
@@ -2056,6 +2160,8 @@ static void gen_stmt(Stmt* s, int ind) {
                 die("%s:%d: 'return' without a value in a function returning %s",
                     FILENAME, s->line, ty_str(CUR_RET));
             }
+            own_move_expr(s->e, s->line);         /* v0.17: returning consumes */
+            own_leak_scan(0, s->line, "this return");
             if (NDEFERS && s->e) {
                 /* Semantics: the return value is computed BEFORE the defers
                  * run, so a defer cannot change what gets returned. */
@@ -2083,6 +2189,9 @@ static void gen_stmt(Stmt* s, int ind) {
             break;
         case S_EXPR:
             check_expr(s->e);
+            if (ty_is_own(infer_type(s->e)))      /* v0.17: nobody owns this now */
+                die("%s:%d: own result discarded — bind it so someone owns it",
+                    FILENAME, s->line);
             gen_preludes(s->e, ind);
             indentf(ind);
             gen_expr(s->e);
@@ -2097,6 +2206,10 @@ static void gen_stmt(Stmt* s, int ind) {
             if (NDEFERS >= 16)
                 die("%s:%d: too many defers in one function", FILENAME, s->line);
             check_expr(s->e);           /* names resolve at registration point */
+            if (expr_has_own(s->e))     /* v0.17: defers run after moves the
+                                         * flat tracker cannot see across */
+                die("%s:%d: own values may not appear in defer expressions (v0.17)",
+                    FILENAME, s->line);
             FN_DEFERS[NDEFERS++] = s->e;
             break;
         case S_MATCH: {
@@ -2147,6 +2260,10 @@ static void gen_stmt(Stmt* s, int ind) {
                             FILENAME, s->arms[a].line, s->arms[a].variant,
                             ty_str(at), ty_str(res));
                 }
+                if (ty_is_own(res))     /* v0.17: only one arm runs — the flat
+                                         * tracker cannot follow that */
+                    die("%s:%d: own values cannot flow through a match expression (v0.17)",
+                        FILENAME, s->line);
                 if (s->mtarget == MT_ASSIGN) {   /* same checks as S_ASSIGN */
                     check_expr(s->lhs);
                     Expr* root = s->lhs;
@@ -2350,6 +2467,7 @@ static void gen_block(Block* b, int ind, int fn_tail) {
     for (int i = 0; i < b->n; i++) gen_stmt(b->st[i], ind + 1);
     if (b->tail) {
         check_expr(b->tail);
+        own_move_expr(b->tail, 0);                /* v0.17: the tail consumes */
         int returns = fn_tail && CUR_RET.name && !is_never(CUR_RET);
         if (returns) {
             Ty vt = infer_type(b->tail);         /* tail value = return value */
@@ -2379,6 +2497,9 @@ static void gen_block(Block* b, int ind, int fn_tail) {
     }
     indentf(ind);
     fputs("}", OUT);
+    own_leak_scan(vsave, b->n ? b->st[b->n - 1]->line : 0,   /* v0.17: nothing
+        * may leak out of any scope; nested births can never be consumed */
+        BLOCK_DEPTH == 1 ? "the end of the function" : "the end of this block");
     BLOCK_DEPTH--;
     NVARS = vsave;
 }
@@ -2437,18 +2558,33 @@ static void gen_fn_sig(Fn* f) {
  * declared struct — catches typos before they become C errors. */
 static void validate_ty(Ty t, const char* where) {
     if (!t.name) return;
+    if (t.ptrs > 0 && ty_is_own(ty_named(t.name)))   /* v0.17: no aliasing an owner */
+        die("%s: pointers to own type '%s' are not allowed (in %s)",
+            FILENAME, t.name, where);
     if (strcmp(base_ctype(t.name), t.name) != 0) return;   /* mapped: primitive */
     if (!struct_lookup(t.name) && !enum_lookup(t.name))
         die("%s: unknown type '%s' in %s", FILENAME, t.name, where);
 }
 
 static void gen_program(const char* srcname) {
+    /* v0.17 own containment: an own value lives in exactly one binding at
+     * a time, so it cannot hide inside other aggregates or cross the
+     * kernel boundary — only plain bindings, fn params and fn returns. */
     for (int i = 0; i < NSTRUCTS; i++)
-        for (int f = 0; f < STRUCTS[i].nf; f++)
+        for (int f = 0; f < STRUCTS[i].nf; f++) {
             validate_ty(STRUCTS[i].fs[f].ty, STRUCTS[i].name);
+            if (ty_is_own(STRUCTS[i].fs[f].ty))
+                die("%s: own type in field '%s.%s' — own values cannot nest in other types (v0.17)",
+                    FILENAME, STRUCTS[i].name, STRUCTS[i].fs[f].name);
+        }
     for (int i = 0; i < NXFN; i++) {
         validate_ty(XFNS[i].ret, XFNS[i].name);
-        for (int p = 0; p < XFNS[i].np; p++) validate_ty(XFNS[i].ps[p].ty, XFNS[i].name);
+        for (int p = 0; p < XFNS[i].np; p++) {
+            validate_ty(XFNS[i].ps[p].ty, XFNS[i].name);
+            if (ty_is_own(XFNS[i].ps[p].ty))
+                die("%s: own type in syscall '%s' — the kernel is not an owner (v0.17)",
+                    FILENAME, XFNS[i].name);
+        }
     }
     for (int i = 0; i < NFN; i++) {
         validate_ty(FNS[i].ret, FNS[i].name);
@@ -2457,12 +2593,19 @@ static void gen_program(const char* srcname) {
 
     for (int i = 0; i < NENUMS; i++)
         for (int v = 0; v < ENUMS[i].nv; v++)
-            for (int f = 0; f < ENUMS[i].vs[v].nf; f++)
+            for (int f = 0; f < ENUMS[i].vs[v].nf; f++) {
                 validate_ty(ENUMS[i].vs[v].fs[f].ty, ENUMS[i].name);
+                if (ty_is_own(ENUMS[i].vs[v].fs[f].ty))
+                    die("%s: own type in variant '%s.%s' — own values cannot nest in other types (v0.17)",
+                        FILENAME, ENUMS[i].name, ENUMS[i].vs[v].name);
+            }
     for (int i = 0; i < NMETHODS; i++) {
         Method* m = &METHODS[i];
         if (!struct_lookup(m->type) && !enum_lookup(m->type))
             die("%s: impl for unknown type '%s'", FILENAME, m->type);
+        if (struct_lookup(m->type) && struct_lookup(m->type)->is_own)
+            die("%s: impl for own type '%s' — by-value self would move the receiver (v0.17)",
+                FILENAME, m->type);
         validate_ty(m->ret, m->name);
         for (int p = 0; p < m->np; p++) validate_ty(m->ps[p].ty, m->name);
     }
@@ -2548,8 +2691,11 @@ static void gen_program(const char* srcname) {
         NVARS = 0;                      /* fresh symbol table per function */
         NDEFERS = 0;                    /* defers are function-scoped */
         BLOCK_DEPTH = 0;
-        for (int p = 0; p < f->np; p++) /* parameters are immutable bindings */
+        for (int p = 0; p < f->np; p++) {   /* parameters are immutable bindings */
             vars_add(f->ps[p].name, f->ps[p].ty, 0);
+            if (ty_is_own(f->ps[p].ty))     /* v0.17: this fn is the owner now */
+                VARS[NVARS - 1].own_state = OWN_HELD;
+        }
         gen_fn_sig(f);
         fputc(' ', OUT);
         gen_block(f->body, 0, 1);
