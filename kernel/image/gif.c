@@ -31,9 +31,13 @@ static int gif_getcode(gif_bits* b, int nbits) {
 // Decode an LZW-compressed GIF image-data stream into `out` (outcap palette indices). 0 on success.
 static int gif_lzw(const uint8_t* data, uint32_t dlen, int mcs, uint8_t* out, uint32_t outcap) {
     gif_bits b = { data, dlen, 0, 0, 0 };
-    uint16_t prefix[GIF_MAXCODES];
-    uint8_t  suffix[GIF_MAXCODES];
-    uint8_t  stack[GIF_MAXCODES];
+    // The LZW dictionary is 16 KB (prefix[4096]*2 + suffix[4096] + stack[4096]); keeping it on the
+    // stack would blow NyxOS's 4 KB kernel task stack while decoding an untrusted GIF. GIF decoding
+    // is single-threaded and serial (Selene / image viewer, one frame at a time), and every call
+    // reinitialises the entries it uses, so a .bss-resident dictionary is safe and O(1)-stack.
+    static uint16_t prefix[GIF_MAXCODES];
+    static uint8_t  suffix[GIF_MAXCODES];
+    static uint8_t  stack[GIF_MAXCODES];
     int clear = 1 << mcs, eoi = clear + 1;
     int codesize = mcs + 1, freecode = clear + 2, prev = -1, first = 0;
     uint32_t o = 0, i;
