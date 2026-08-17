@@ -410,7 +410,7 @@ static const command_t commands[] = {
     {"ext2ls",    cmd_mount,     "Alias for mount", false},
     {"ext2cat",   cmd_mount,     "Alias for mount", false},
     {"df",        cmd_df,        "Show disk usage of the mounted filesystem", false},
-    {"screenshot",cmd_screenshot,"Save a PPM snapshot of the screen: screenshot [path]", false},
+    {"screenshot",cmd_screenshot,"Save a PNG/PPM snapshot of the screen: screenshot [path]", false},
     {NULL, NULL, NULL, false}
 };
 
@@ -730,7 +730,7 @@ static const man_page_t man_pages[] = {
     {"kill",     "Terminate the process with the given <pid>. Run ps first to find the pid you want."},
     {"mem",      "Show a summary of physical memory: how much is in use, how much is free, and the total the kernel manages."},
     {"df",       "Report the total, used and available space of the mounted ext2 filesystem on /mnt."},
-    {"screenshot","Save a snapshot of the whole screen to an image file: `screenshot [path]` (default /tmp/screenshot.ppm; pass e.g. /mnt/shot.ppm to keep it on disk). The image is a binary PPM (Netpbm P6) - captured from the framebuffer the compositor last presented, at the current resolution - which opens directly in most image viewers and converts to PNG/JPEG with any standard tool."},
+    {"screenshot","Save a snapshot of the whole screen to an image file: `screenshot [path]` (default /tmp/screenshot.png; pass /mnt/shot.png to keep it on disk). If the path ends in .png the image is written as a real PNG (8-bit RGB, DEFLATE-compressed - small and universally viewable); any other extension writes an uncompressed binary PPM (Netpbm P6). Captured from the framebuffer the compositor last presented, at the current resolution."},
     {"mount",    "Mount an ext2 filesystem onto /mnt. With no arguments it probes the first ATA disk; [drive] and [part_lba] select a specific disk and partition."},
     {"date",     "Print the current date and time from the CMOS real-time clock. With a `+FORMAT` argument, format it strftime-style: %Y %y %m %d %e %H %I %M %S %p (year/month/day/hour/min/sec), %A/%a (weekday), %B/%b (month name), %j (day of year), %% — e.g. `date +%A` or `date +%Y-%m-%d`."},
     {"uname",    "Print system information: the operating-system name, its version and the machine architecture."},
@@ -3162,19 +3162,31 @@ static uint32_t ppm_encode(const uint32_t* px, uint32_t w, uint32_t h, uint8_t* 
     return o;
 }
 
-// Off-stack capture buffer, sized for the largest supported mode (1280x720x3 + header).
-static uint8_t shot_buf[3 * 1280 * 720 + 64];
+// Off-stack capture buffers, sized for the largest supported mode (1280x720).
+#define SHOT_MAXW 1280u
+#define SHOT_MAXH 720u
+#define SHOT_RAW  (SHOT_MAXH * (1u + SHOT_MAXW * 3u))          // filtered scanlines / raw RGB bytes
+static uint8_t shot_buf[SHOT_RAW + 64];                        // PPM output, or PNG raw scratch
+static uint8_t png_out[SHOT_RAW + SHOT_RAW / 8 + 1024];        // PNG file (worst-case deflate slack)
+
+static int str_ends_png(const char* s) {
+    int n = 0; while (s[n]) n++;
+    return n >= 4 && s[n-4] == '.' && (s[n-3]|0x20) == 'p' && (s[n-2]|0x20) == 'n' && (s[n-1]|0x20) == 'g';
+}
 
 // Capture the framebuffer the compositor last presented (fb_get_addr = the contiguous back buffer
-// on the desktop) to `path` as a PPM. Returns bytes written (>0), -1 on write failure, -2 if the
-// mode is larger than shot_buf.
+// on the desktop) to `path`: a real PNG when the path ends in ".png" (compact, universally
+// viewable), else a raw PPM. Returns bytes written (>0), -1 on write failure, -2 if the mode is
+// larger than the capture buffers.
 static int screenshot_save(const char* path) {
     uint32_t w = fb_get_width(), h = fb_get_height();
     const uint32_t* px = (const uint32_t*)fb_get_addr();
     if (!px || w == 0 || h == 0) return -1;
-    uint32_t n = ppm_encode(px, w, h, shot_buf, sizeof(shot_buf));
+    int is_png = str_ends_png(path);
+    uint32_t n = is_png ? png_encode(px, w, h, png_out, sizeof(png_out), shot_buf, sizeof(shot_buf))
+                        : ppm_encode(px, w, h, shot_buf, sizeof(shot_buf));
     if (n == 0) return -2;
-    if (vfs_write_file(path, shot_buf, n) != (int)n) return -1;
+    if (vfs_write_file(path, is_png ? png_out : shot_buf, n) != (int)n) return -1;
     return (int)n;
 }
 
@@ -3194,9 +3206,10 @@ int ppm_selftest(void) {
     return 0;
 }
 
-// `screenshot [path]` — save a PPM snapshot of the screen (default /tmp/screenshot.ppm).
+// `screenshot [path]` — save a snapshot of the screen (default /tmp/screenshot.png; a real PNG
+// when the path ends .png, else a raw PPM).
 static void cmd_screenshot(int argc, char** argv) {
-    const char* path = (argc >= 2) ? argv[1] : "/tmp/screenshot.ppm";
+    const char* path = (argc >= 2) ? argv[1] : "/tmp/screenshot.png";
     int r = screenshot_save(path);
     if (r > 0) printf("screenshot: saved %ux%u -> %s (%d bytes)\n", fb_get_width(), fb_get_height(), path, r);
     else if (r == -2) printf("screenshot: resolution too large to capture\n");
@@ -5048,6 +5061,7 @@ static void run_selftests(void) {
         {"json-query",   json_query_selftest},
         {"pkg-hash",     pkg_hash_selftest},
         {"ppm",          ppm_selftest},
+        {"png-encode",   png_encode_selftest},
         {"numparse",     numparse_selftest},        {"hkdf",          hkdf_selftest},
         {"chacha20",     chacha20_selftest},        {"siphash",       siphash_selftest},
         {"poly1305",     poly1305_selftest},        {"chachapoly",    chacha20poly1305_selftest},

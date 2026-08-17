@@ -8,6 +8,7 @@
 #include "../core/kernel.h"
 #include "png.h"
 #include "inflate.h"
+#include "deflate.h"                             // zlib_deflate, for the PNG encoder
 #include "bmp.h"                                 // sibling decoders, for the cross-format reject self-test
 #include "gif.h"
 #include "jpeg.h"
@@ -270,6 +271,81 @@ static int png_case(const char* name, const uint8_t* file, uint32_t flen,
     if (ok) printf("png: %s PASS (%dx%d)\n", name, (int)w, (int)h);
     else    printf("png: %s FAIL (rc=%d %dx%d)\n", name, rc, (int)im.width, (int)im.height);
     return ok;
+}
+
+// ============================================================
+// PNG ENCODER - 8-bit RGB truecolor, filter None, single IDAT
+// ============================================================
+// Writes a standard PNG from w*h XRGB (0xFFRRGGBB, as fb_get_addr provides). Reuses the existing
+// zlib_deflate (RFC 1950) for IDAT and crc32_calc for the per-chunk CRC-32. Heap-free: the caller
+// supplies `raw` scratch (>= h*(1+w*3) bytes) for the filtered scanlines. Returns bytes written to
+// dst, or 0 on overflow/failure. Verified against a real PNG decoder (scratchpad/png_proto.c) and,
+// in-OS, round-tripped through png_decode by png_encode_selftest.
+static void png_put32be(uint8_t* p, uint32_t v) { p[0] = v >> 24; p[1] = v >> 16; p[2] = v >> 8; p[3] = (uint8_t)v; }
+
+uint32_t png_encode(const uint32_t* px, uint32_t w, uint32_t h,
+                    uint8_t* dst, uint32_t cap, uint8_t* raw, uint32_t rawcap) {
+    if (!px || !dst || !raw || w == 0 || h == 0) return 0;
+    uint32_t raw_len = h * (1 + w * 3);
+    if (raw_len > rawcap) return 0;
+    uint32_t o = 0;                                   // filtered scanlines: filter 0 (None) + RGB
+    for (uint32_t y = 0; y < h; y++) {
+        raw[o++] = 0;
+        const uint32_t* row = px + (uint64_t)y * w;
+        for (uint32_t x = 0; x < w; x++) {
+            uint32_t p = row[x];
+            raw[o++] = (p >> 16) & 0xFF; raw[o++] = (p >> 8) & 0xFF; raw[o++] = p & 0xFF;
+        }
+    }
+    if (cap < 8 + 25 + 12 + 12) return 0;             // sig + IHDR + min IDAT + IEND
+    static const uint8_t sig[8] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+    uint32_t d = 0;
+    for (int i = 0; i < 8; i++) dst[d++] = sig[i];
+    png_put32be(dst + d, 13); d += 4;                 // IHDR
+    uint32_t ihdr_t = d;
+    dst[d++] = 'I'; dst[d++] = 'H'; dst[d++] = 'D'; dst[d++] = 'R';
+    png_put32be(dst + d, w); d += 4; png_put32be(dst + d, h); d += 4;
+    dst[d++] = 8; dst[d++] = 2; dst[d++] = 0; dst[d++] = 0; dst[d++] = 0;   // 8-bit RGB, deflate, filter, no-interlace
+    png_put32be(dst + d, crc32_calc(dst + ihdr_t, 4 + 13)); d += 4;
+    uint32_t idat_len_pos = d; d += 4;                // IDAT length placeholder
+    uint32_t idat_t = d;
+    dst[d++] = 'I'; dst[d++] = 'D'; dst[d++] = 'A'; dst[d++] = 'T';
+    uint32_t idat_data = d;
+    if (cap < idat_data + 4 + 12) return 0;
+    uint32_t avail = cap - idat_data - 4 - 12;        // leave room for IDAT crc + IEND
+    uint32_t idat_len = 0;
+    if (zlib_deflate(raw, raw_len, dst + idat_data, avail, &idat_len) != 0) return 0;
+    d = idat_data + idat_len;
+    png_put32be(dst + idat_len_pos, idat_len);
+    png_put32be(dst + d, crc32_calc(dst + idat_t, 4 + idat_len)); d += 4;
+    png_put32be(dst + d, 0); d += 4;                  // IEND
+    uint32_t iend_t = d;
+    dst[d++] = 'I'; dst[d++] = 'E'; dst[d++] = 'N'; dst[d++] = 'D';
+    png_put32be(dst + d, crc32_calc(dst + iend_t, 4)); d += 4;
+    return d;
+}
+
+// KAT: encode a fixed image, then decode it with the OS's own png_decode and require the pixels
+// round-trip exactly (also checks the PNG signature). Robust to the exact deflate byte output.
+int png_encode_selftest(void) {
+    static const uint32_t src[6] = {0x00FF0000, 0x0000FF00, 0x000000FF, 0x00FFFFFF, 0x00000000, 0x00808080};
+    static uint8_t raw[64];
+    static uint8_t out[512];
+    uint32_t n = png_encode(src, 3, 2, out, sizeof(out), raw, sizeof(raw));
+    if (n == 0) return 1;
+    static const uint8_t sig[8] = {0x89, 'P', 'N', 'G', 0x0D, 0x0A, 0x1A, 0x0A};
+    for (int i = 0; i < 8; i++) if (out[i] != sig[i]) return 2;
+    image_t img;
+    if (png_decode(out, n, &img) != 0) return 3;
+    if (img.width != 3 || img.height != 2 || !img.pixels) { png_free(&img); return 4; }
+    for (uint32_t i = 0; i < 6; i++) {
+        uint32_t p = src[i];
+        if (img.pixels[i * 4 + 0] != ((p >> 16) & 0xFF) ||
+            img.pixels[i * 4 + 1] != ((p >> 8) & 0xFF) ||
+            img.pixels[i * 4 + 2] != (p & 0xFF)) { png_free(&img); return 5; }
+    }
+    png_free(&img);
+    return 0;
 }
 
 int png_selftest(void) {
