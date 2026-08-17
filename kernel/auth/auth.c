@@ -193,9 +193,14 @@ static int read_passwd(char* buf, uint32_t sz) {
     return r;
 }
 
+// The passwd buffers in write_passwd / auth_add_user / auth_set_avatar are `static` (in .bss)
+// rather than on the stack: at 3-4 KB each they would overflow NyxOS's 4 KB kernel task stack,
+// and auth_add_user/auth_set_avatar even nest a write_passwd call (~11 KB combined). Auth writes
+// are serial in practice (login is modal; useradd/avatar changes are single-user), so sharing one
+// .bss copy of each buffer is safe. See issue #68 (kernel stack-frame hardening).
 static int write_passwd(const char* buf, uint32_t len) {
     if (ext2_fs.block_size == 0) return -1;
-    char tmp[4096];
+    static char tmp[4096];
     uint32_t cplen = len < sizeof(tmp) ? len : sizeof(tmp) - 1;
     memcpy(tmp, buf, cplen);
     xor_buf(tmp, cplen);
@@ -316,7 +321,7 @@ void auth_add_user(const char* username, const char* password, int avatar) {
         return;
     }
 
-    char existing[3072];
+    static char existing[3072];   // off-stack (see write_passwd note; #68)
     int exlen = read_passwd(existing, sizeof(existing) - 1);
     if (exlen < 0) exlen = 0;
     existing[exlen] = '\0';
@@ -340,7 +345,7 @@ void auth_add_user(const char* username, const char* password, int avatar) {
     char new_entry[128 + SHA256_DIGEST_SIZE * 2];
     format_entry(new_entry, sizeof(new_entry), username, salt_hex, PBKDF2_ITERATIONS, hash, avatar);
 
-    char combined[4096];
+    static char combined[4096];   // off-stack (see write_passwd note; #68)
     snprintf(combined, sizeof(combined), "%s%s", existing, new_entry);
     if (write_passwd(combined, strlen(combined)) > 0)
         printf("[AUTH] Added user '%s' (persistent, PBKDF2-HMAC-SHA256, %u iterations)\n",
@@ -423,12 +428,12 @@ void auth_set_avatar(const char* username, int avatar) {
         return;
     }
 
-    char buf[3072];
+    static char buf[3072];        // off-stack (see write_passwd note; #68)
     int len = read_passwd(buf, sizeof(buf) - 1);
     if (len < 0) return;
     buf[len] = '\0';
 
-    char out[3200];
+    static char out[3200];        // off-stack (see write_passwd note; #68)
     int oi = 0, ulen = strlen(username), start = 0;
     for (int i = 0; i <= len; i++) {
         if (buf[i] == '\n' || buf[i] == '\0') {

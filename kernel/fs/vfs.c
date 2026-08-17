@@ -1225,8 +1225,8 @@ void vfs_list_dir(const char* path) {
         int mlen = strlen(me->mount_point);
         const char* subpath = path + mlen;
         if (subpath[0] == '\0') subpath = "/";
-        dirent_t entries[64];
-        int n = me->readdir(subpath, entries, 64);
+        static dirent_t entries[64];   // off-stack: ~8.7 KB would overflow the 4 KB kernel task
+        int n = me->readdir(subpath, entries, 64);   // stack; `ls` is single-threaded terminal I/O
         if (n < 0) {
             printf("ls: %s: error reading directory\n", path ? path : "");
             return;
