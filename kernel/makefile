@@ -31,7 +31,7 @@ vpath %.c $(SRCDIRS)
 vpath %.h $(SRCDIRS)
 vpath %.asm core
 
-OBJS_KERNEL = boot.o kernel.o datefmt.o ini.o factor.o semver.o comm.o seq.o urlcodec.o paste.o tac.o csv.o tsort.o base58.o cut.o uniq.o join.o fletcher.o murmur3.o bech32.o gdt.o idt.o isr.o isr_stubs.o irq.o \
+OBJS_KERNEL = boot.o kernel.o datefmt.o ini.o factor.o semver.o comm.o seq.o urlcodec.o paste.o tac.o csv.o tsort.o base58.o cut.o uniq.o join.o calc.o fletcher.o murmur3.o bech32.o gdt.o idt.o isr.o isr_stubs.o irq.o \
         memory.o heap.o slab.o process.o syscall.o signal.o mmap.o pipe.o vfs.o ext2.o filetype.o tar.o ata.o net.o udp.o \
         ip.o arp.o ethernet.o rtl8139.o icmp.o timer.o keyboard.o screen.o \
         serial.o umoddi3.o paging.o switch.o stubs.o dhcp.o \

@@ -28,6 +28,7 @@
 #include "cut.h"
 #include "uniq.h"
 #include "join.h"
+#include "calc.h"
 #include "fletcher.h"
 #include "../crypto/bech32.h"
 #include "../crypto/murmur3.h"
@@ -160,6 +161,7 @@ static void cmd_expand(int argc, char** argv);
 static void cmd_unexpand(int argc, char** argv);
 static void cmd_deflate(int argc, char** argv);
 static void cmd_ipcalc(int argc, char** argv);
+static void cmd_calc(int argc, char** argv);
 static void cmd_tree(int argc, char** argv);
 static void cmd_env(int argc, char** argv);
 static void cmd_export(int argc, char** argv);
@@ -326,6 +328,7 @@ static const command_t commands[] = {
     {"unexpand",  cmd_unexpand,  "Convert spaces to tabs: unexpand [-a] [-t N] <file>", false},
     {"deflate",   cmd_deflate,   "Compress a file (zlib/DEFLATE): deflate <in> <out>", false},
     {"ipcalc",    cmd_ipcalc,    "IPv4 subnet calc: ipcalc <ip>/<prefix> | <ip> <mask>", false},
+    {"calc",      cmd_calc,      "Evaluate an integer expression: calc <expr>", false},
     {"wc",        cmd_wc,        "Count lines/words/chars: wc <file>", false},
     {"write",     cmd_write,     "Write text to file: write <file> <text>", false},
     {"dhcp",      cmd_dhcp,      "Request IP via DHCP", false},
@@ -581,7 +584,7 @@ static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev",
 static const char* const HC_sys[]   = {"ps","kill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat",0};
 static const char* const HC_user[]  = {"useradd","users",0};
 static const char* const HC_net[]   = {"ifconfig","dhcp","dns","ping","setip","httpget","tls","ipcalc",0};
-static const char* const HC_dev[]   = {"cc","xbm","semver","fnv","urlcode","crc32c","fletcher","murmur","base58","bech32","deflate",0};
+static const char* const HC_dev[]   = {"cc","xbm","semver","fnv","urlcode","crc32c","fletcher","murmur","base58","bech32","deflate","calc",0};
 static const char* const HC_media[] = {"play","sb16play","imageview","selene",0};
 static const char* const HC_games[] = {"doom","pong","voxel","fire","matrix","lava","fractal","julia","particles","snake","tetris",0};
 static const char* const HC_test[]  = {"mtdemo","smpstress","smpuser","smpthreads","smpbalance","tlbtest","cowtest","crash","usertest","tcptest","tcpdrop","tcploop","tcpserve","posttest","tlsstrict","prftest","gcmtest","dertest","p256test","p384test","x25519test","tlskeytest","tlsrectest","csprngtest","skp384test","deflatetest","sha512test","pngtest","bmptest","giftest","jpegtest","imgreject","httptest","ext2test","rsatest","chaintest","formtest",0};
@@ -691,6 +694,7 @@ static const man_page_t man_pages[] = {
     {"dirname",  "Strip the final component from <path>, printing the directory portion that remains."},
     {"deflate",  "Compress <in> into <out> using DEFLATE with a zlib wrapper (RFC 1950) - the format stock zlib and Python zlib.decompress read. Fixed-Huffman + LZ77; the output is verified to inflate back byte-for-byte, so it can be decompressed anywhere."},
     {"ipcalc",   "IPv4 subnet calculator. Give an address as `ipcalc <ip>/<prefix>`, `ipcalc <ip> <netmask>`, or `ipcalc <ip> <prefix>` and it prints the network and broadcast addresses, the netmask and wildcard, the usable host range (HostMin..HostMax) and the host count. RFC-correct at the edges: a /31 has two usable addresses (RFC 3021) and a /32 is a single host."},
+    {"calc",     "Evaluate a 64-bit signed integer expression with C operators and precedence: + - * / %, the bitwise/shift operators | ^ & << >>, unary - + ~, parentheses, and decimal / 0x-hex / 0b-binary literals. Division truncates toward zero. Quote or join the terms, e.g. calc (2 + 3) * 4. Reports divide-by-zero, bad syntax, and unbalanced parentheses."},
     {"xbm",      "The NyxOS package manager. `xbm install <name>` compiles a package from its recipe with the in-OS C compiler and installs it; `xbm remove <name>` uninstalls it; `xbm search <str>` and `xbm list` browse the available and installed packages. A recipe may carry a `url:` line pointing at a remote http:// source; xbm then downloads that source into the package before building it, the pacman/apt \"fetch source, then compile in-OS\" model."},
     {"cc",       "Compile and link C source into an ELF program with the in-OS TinyCC toolchain. -c stops after producing an object file."},
     {"fire",     "Open Nyx Fire, an animated doom-fire effect window. It is also a visual performance demo, re-filling the whole framebuffer region each frame."},
@@ -2077,6 +2081,42 @@ static void cmd_ipcalc(int argc, char** argv) {
     printf("HostMax:   %u.%u.%u.%u\n", IPC_Q(r.hostmax));
     printf("Hosts:     %u\n", r.hosts);
     #undef IPC_Q
+}
+
+// calc <expression> — evaluate a 64-bit integer expression (core/calc.c). Joins the args so both
+// `calc "2+3*4"` and `calc 2 + 3 * 4` work; formats the int64 result by hand (no printf %lld dep).
+static void cmd_calc(int argc, char** argv) {
+    if (argc < 2) { printf("Usage: calc <expression>   (e.g. calc \"2 + 3 * (4 - 1)\")\n"); return; }
+    char buf[256]; int n = 0;
+    for (int i = 1; i < argc && n < (int)sizeof(buf) - 1; i++) {
+        if (i > 1 && n < (int)sizeof(buf) - 1) buf[n++] = ' ';
+        for (int k = 0; argv[i][k] && n < (int)sizeof(buf) - 1; k++) buf[n++] = argv[i][k];
+    }
+    buf[n] = '\0';
+    int64_t r;
+    int e = calc_eval(buf, &r);
+    if (e != 0) {
+        const char* msg;
+        switch (-e) {
+            case 1:  msg = "syntax error"; break;
+            case 2:  msg = "unbalanced parentheses"; break;
+            case 3:  msg = "division by zero"; break;
+            case 4:  msg = "trailing characters"; break;
+            case 5:  msg = "shift amount out of range (0..63)"; break;
+            case 6:  msg = "empty expression"; break;
+            default: msg = "error"; break;
+        }
+        printf("calc: %s\n", msg);
+        return;
+    }
+    char num[24], tmp[24]; int ni = 0, ti = 0, neg = (r < 0);
+    uint64_t u = neg ? (uint64_t)(-(r + 1)) + 1u : (uint64_t)r;
+    if (u == 0) tmp[ti++] = '0';
+    while (u) { tmp[ti++] = (char)('0' + u % 10u); u /= 10u; }
+    if (neg) num[ni++] = '-';
+    while (ti) num[ni++] = tmp[--ti];
+    num[ni] = '\0';
+    printf("%s\n", num);
 }
 
 static void cmd_tree(int argc, char** argv) {
@@ -4778,6 +4818,7 @@ static void run_selftests(void) {
         {"totp",         totp_selftest},          {"ipv4",          ipv4_parse_selftest},
         {"ipv6",         ipv6_parse_selftest},
         {"ipcalc",       ipcalc_selftest},
+        {"calc",         calc_selftest},
         {"numparse",     numparse_selftest},        {"hkdf",          hkdf_selftest},
         {"chacha20",     chacha20_selftest},        {"siphash",       siphash_selftest},
         {"poly1305",     poly1305_selftest},        {"chachapoly",    chacha20poly1305_selftest},
