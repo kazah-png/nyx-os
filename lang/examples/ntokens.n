@@ -4,6 +4,10 @@
 //   versions: s[i] byte reads (v0.15), for-ranges (v0.11), enums + match
 //   as an expression (v0.7/v0.9), #[caps]/#[user] boundaries (v0.12-14),
 //   and addr casts for the one place a sub-span must become a pointer.
+//   Grown toward the real N lexer surface: it now recognizes line
+//   comments, string literals (with backslash escapes skipped, so an
+//   embedded \" cannot end the scan early), and the two-character
+//   operators := -> == != <= >= .. += -= that pepper any real N source.
 //   When this scanner grows a parser and a C emitter, ncc self-hosts.
 
 #[caps(syscall)]
@@ -23,13 +27,16 @@ fn put_span(s: str, start: i64, len: i64) {
     write(1, (s.ptr as addr + start as addr) as #[user] *u8, len as isize);
 }
 
-enum Kind { Kw, Ident, Num, Punct }
+enum Kind { Kw, Ident, Num, Str, Cmnt, Op, Punct }
 
 fn label(k: Kind) -> str {
     return match k {
         Kw    => "kw    ",
         Ident => "ident ",
         Num   => "num   ",
+        Str   => "str   ",
+        Cmnt  => "cmnt  ",
+        Op    => "op    ",
         Punct => "punct ",
     };
 }
@@ -46,6 +53,20 @@ fn is_alpha(b: i64) -> bool {
     (b >= 97 && b <= 122) || (b >= 65 && b <= 90) || b == 95
 }
 fn is_alnum(b: i64) -> bool { is_alpha(b) || is_digit(b) }
+
+// The two-character operator table, as byte pairs: := -> == != <= >= .. += -=
+fn is_op2(a: i64, b: i64) -> bool {
+    if a == 58 && b == 61 { return true; }   // :=
+    if a == 45 && b == 62 { return true; }   // ->
+    if a == 61 && b == 61 { return true; }   // ==
+    if a == 33 && b == 61 { return true; }   // !=
+    if a == 60 && b == 61 { return true; }   // <=
+    if a == 62 && b == 61 { return true; }   // >=
+    if a == 46 && b == 46 { return true; }   // ..
+    if a == 43 && b == 61 { return true; }   // +=
+    if a == 45 && b == 61 { return true; }   // -=
+    false
+}
 
 // Byte-wise comparison of s[start .. start+len) against a keyword.
 fn span_is(s: str, start: i64, len: i64, kw: str) -> bool {
@@ -65,23 +86,47 @@ fn is_kw(s: str, start: i64, len: i64) -> bool {
     if span_is(s, start, len, "mut")    { return true; }
     if span_is(s, start, len, "return") { return true; }
     if span_is(s, start, len, "if")     { return true; }
+    if span_is(s, start, len, "else")   { return true; }
     if span_is(s, start, len, "while")  { return true; }
     if span_is(s, start, len, "for")    { return true; }
+    if span_is(s, start, len, "in")     { return true; }
+    if span_is(s, start, len, "own")    { return true; }
     false
 }
 
 fn main() -> i64 {
-    // Braces are escaped so they read as text, not interpolation (§2.5).
-    src := "fn twice(x: i64) -> i64 \{ return x * 2 \}";
-    put("tokens of: ");
-    put(src);
-    put("\n");
+    // Braces and quotes are escaped so they read as text (§2.5) — the
+    // snippet exercises a comment, ->, :=, >=, and a string literal.
+    src := "// twice, with a guard\nfn twice(x: i64) -> i64 \{ s := \"two\"; if x >= 0 \{ return x * 2 \} 0 \}";
+    put("tokens:\n");
     n := src.len as i64;
     mut i := 0;
     while i < n {
         b := src[i] as i64;
         if is_space(b) {
             i += 1;
+            continue;
+        }
+        if b == 47 && i + 1 < n && src[i + 1] as i64 == 47 {
+            mut j := i;                   // line comment: runs to end of line
+            while j < n && src[j] as i64 != 10 {
+                j += 1;
+            }
+            emit(Kind.Cmnt, src, i, j - i);
+            i = j;
+            continue;
+        }
+        if b == 34 {
+            mut j := i + 1;               // string literal: a backslash always
+            while j < n && src[j] as i64 != 34 {
+                if src[j] as i64 == 92 {  // escapes the next byte, so \" cannot
+                    j += 2;               // close the scan early
+                } else {
+                    j += 1;
+                }
+            }
+            emit(Kind.Str, src, i, j + 1 - i);
+            i = j + 1;
             continue;
         }
         if is_digit(b) {
@@ -104,6 +149,11 @@ fn main() -> i64 {
                 emit(Kind.Ident, src, i, j - i);
             }
             i = j;
+            continue;
+        }
+        if i + 1 < n && is_op2(b, src[i + 1] as i64) {
+            emit(Kind.Op, src, i, 2);
+            i += 2;
             continue;
         }
         emit(Kind.Punct, src, i, 1);      // single-char punctuation
