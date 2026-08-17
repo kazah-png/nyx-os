@@ -29,6 +29,7 @@
 #include "uniq.h"
 #include "join.h"
 #include "calc.h"
+#include "json.h"
 #include "fletcher.h"
 #include "../crypto/bech32.h"
 #include "../crypto/murmur3.h"
@@ -162,6 +163,7 @@ static void cmd_unexpand(int argc, char** argv);
 static void cmd_deflate(int argc, char** argv);
 static void cmd_ipcalc(int argc, char** argv);
 static void cmd_calc(int argc, char** argv);
+static void cmd_json(int argc, char** argv);
 static void cmd_tree(int argc, char** argv);
 static void cmd_env(int argc, char** argv);
 static void cmd_export(int argc, char** argv);
@@ -329,6 +331,7 @@ static const command_t commands[] = {
     {"deflate",   cmd_deflate,   "Compress a file (zlib/DEFLATE): deflate <in> <out>", false},
     {"ipcalc",    cmd_ipcalc,    "IPv4 subnet calc: ipcalc <ip>/<prefix> | <ip> <mask>", false},
     {"calc",      cmd_calc,      "Evaluate an integer expression: calc <expr>", false},
+    {"json",      cmd_json,      "Validate a JSON file (RFC 8259): json <file>", false},
     {"wc",        cmd_wc,        "Count lines/words/chars: wc <file>", false},
     {"write",     cmd_write,     "Write text to file: write <file> <text>", false},
     {"dhcp",      cmd_dhcp,      "Request IP via DHCP", false},
@@ -584,7 +587,7 @@ static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev",
 static const char* const HC_sys[]   = {"ps","kill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat",0};
 static const char* const HC_user[]  = {"useradd","users",0};
 static const char* const HC_net[]   = {"ifconfig","dhcp","dns","ping","setip","httpget","tls","ipcalc",0};
-static const char* const HC_dev[]   = {"cc","xbm","semver","fnv","urlcode","crc32c","fletcher","murmur","base58","bech32","deflate","calc",0};
+static const char* const HC_dev[]   = {"cc","xbm","semver","fnv","urlcode","crc32c","fletcher","murmur","base58","bech32","deflate","calc","json",0};
 static const char* const HC_media[] = {"play","sb16play","imageview","selene",0};
 static const char* const HC_games[] = {"doom","pong","voxel","fire","matrix","lava","fractal","julia","particles","snake","tetris",0};
 static const char* const HC_test[]  = {"mtdemo","smpstress","smpuser","smpthreads","smpbalance","tlbtest","cowtest","crash","usertest","tcptest","tcpdrop","tcploop","tcpserve","posttest","tlsstrict","prftest","gcmtest","dertest","p256test","p384test","x25519test","tlskeytest","tlsrectest","csprngtest","skp384test","deflatetest","sha512test","pngtest","bmptest","giftest","jpegtest","imgreject","httptest","ext2test","rsatest","chaintest","formtest",0};
@@ -695,6 +698,7 @@ static const man_page_t man_pages[] = {
     {"deflate",  "Compress <in> into <out> using DEFLATE with a zlib wrapper (RFC 1950) - the format stock zlib and Python zlib.decompress read. Fixed-Huffman + LZ77; the output is verified to inflate back byte-for-byte, so it can be decompressed anywhere."},
     {"ipcalc",   "IPv4 subnet calculator. Give an address as `ipcalc <ip>/<prefix>`, `ipcalc <ip> <netmask>`, or `ipcalc <ip> <prefix>` and it prints the network and broadcast addresses, the netmask and wildcard, the usable host range (HostMin..HostMax) and the host count. RFC-correct at the edges: a /31 has two usable addresses (RFC 3021) and a /32 is a single host."},
     {"calc",     "Evaluate a 64-bit signed integer expression with C operators and precedence: + - * / %, the bitwise/shift operators | ^ & << >>, unary - + ~, parentheses, and decimal / 0x-hex / 0b-binary literals. Division truncates toward zero. Quote or join the terms, e.g. calc (2 + 3) * 4. Reports divide-by-zero, bad syntax, and unbalanced parentheses."},
+    {"json",     "Validate a JSON document (RFC 8259) read from <file>, printing whether it is valid or the byte offset of the first error. Strict: rejects trailing commas, unquoted keys, leading zeros, bad escapes, control characters in strings, and NaN/Infinity. Nesting deeper than 256 levels is rejected as a safety limit. Parsing is iterative, so even hostile deeply-nested input cannot exhaust the kernel stack."},
     {"xbm",      "The NyxOS package manager. `xbm install <name>` compiles a package from its recipe with the in-OS C compiler and installs it; `xbm remove <name>` uninstalls it; `xbm search <str>` and `xbm list` browse the available and installed packages. A recipe may carry a `url:` line pointing at a remote http:// source; xbm then downloads that source into the package before building it, the pacman/apt \"fetch source, then compile in-OS\" model."},
     {"cc",       "Compile and link C source into an ELF program with the in-OS TinyCC toolchain. -c stops after producing an object file."},
     {"fire",     "Open Nyx Fire, an animated doom-fire effect window. It is also a visual performance demo, re-filling the whole framebuffer region each frame."},
@@ -2117,6 +2121,21 @@ static void cmd_calc(int argc, char** argv) {
     while (ti) num[ni++] = tmp[--ti];
     num[ni] = '\0';
     printf("%s\n", num);
+}
+
+// json <file> — validate a JSON document (RFC 8259) read from the VFS (core/json.c).
+static void cmd_json(int argc, char** argv) {
+    if (argc < 2) { printf("Usage: json <file>   (validate a JSON document, RFC 8259)\n"); return; }
+    int fd = vfs_open(argv[1], 0, 0);
+    if (fd < 0) { printf("json: cannot open '%s'\n", argv[1]); return; }
+    static char buf[65536];
+    int bytes = vfs_read(fd, buf, sizeof(buf) - 1);
+    vfs_close(fd);
+    if (bytes < 0) { printf("json: read error\n"); return; }
+    buf[bytes] = '\0';
+    int errpos = 0;
+    if (json_validate(buf, &errpos) == 0) printf("%s: valid JSON\n", argv[1]);
+    else printf("%s: invalid JSON at byte %d\n", argv[1], errpos);
 }
 
 static void cmd_tree(int argc, char** argv) {
@@ -4819,6 +4838,7 @@ static void run_selftests(void) {
         {"ipv6",         ipv6_parse_selftest},
         {"ipcalc",       ipcalc_selftest},
         {"calc",         calc_selftest},
+        {"json",         json_selftest},
         {"numparse",     numparse_selftest},        {"hkdf",          hkdf_selftest},
         {"chacha20",     chacha20_selftest},        {"siphash",       siphash_selftest},
         {"poly1305",     poly1305_selftest},        {"chachapoly",    chacha20poly1305_selftest},
