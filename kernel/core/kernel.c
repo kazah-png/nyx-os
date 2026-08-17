@@ -203,6 +203,7 @@ static void cmd_rotor(int argc, char** argv);
 static void cmd_fill(int argc, char** argv);
 static void cmd_life(int argc, char** argv);
 static void cmd_blobs(int argc, char** argv);
+static void cmd_screenshot(int argc, char** argv);
 static void cmd_snake(int argc, char** argv);
 static void cmd_tetris(int argc, char** argv);
 static void cmd_selene(int argc, char** argv);
@@ -409,6 +410,7 @@ static const command_t commands[] = {
     {"ext2ls",    cmd_mount,     "Alias for mount", false},
     {"ext2cat",   cmd_mount,     "Alias for mount", false},
     {"df",        cmd_df,        "Show disk usage of the mounted filesystem", false},
+    {"screenshot",cmd_screenshot,"Save a PPM snapshot of the screen: screenshot [path]", false},
     {NULL, NULL, NULL, false}
 };
 
@@ -587,7 +589,7 @@ typedef struct { const char* title; const char* const* names; } help_cat_t;
 static const char* const HC_shell[] = {"help","man","version","clear","history","exec","spawn","jobs","wait","nice","renice",0};
 static const char* const HC_files[] = {"ls","cd","pwd","cat","file","tar","iniget","open","touch","mkdir","rm","cp","mv","tree","find","which","basename","dirname","files","df","mount","ext2ls","ext2cat",0};
 static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","fold","nl","expand","unexpand","factor","seq","paste","cut","uniq","join","comm","printf","wc","write","hexdump",0};
-static const char* const HC_sys[]   = {"ps","kill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat",0};
+static const char* const HC_sys[]   = {"ps","kill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat","screenshot",0};
 static const char* const HC_user[]  = {"useradd","users",0};
 static const char* const HC_net[]   = {"ifconfig","dhcp","dns","ping","setip","httpget","tls","ipcalc",0};
 static const char* const HC_dev[]   = {"cc","xbm","semver","fnv","urlcode","crc32c","fletcher","murmur","base58","bech32","deflate","gzip","calc","json",0};
@@ -728,6 +730,7 @@ static const man_page_t man_pages[] = {
     {"kill",     "Terminate the process with the given <pid>. Run ps first to find the pid you want."},
     {"mem",      "Show a summary of physical memory: how much is in use, how much is free, and the total the kernel manages."},
     {"df",       "Report the total, used and available space of the mounted ext2 filesystem on /mnt."},
+    {"screenshot","Save a snapshot of the whole screen to an image file: `screenshot [path]` (default /tmp/screenshot.ppm; pass e.g. /mnt/shot.ppm to keep it on disk). The image is a binary PPM (Netpbm P6) - captured from the framebuffer the compositor last presented, at the current resolution - which opens directly in most image viewers and converts to PNG/JPEG with any standard tool."},
     {"mount",    "Mount an ext2 filesystem onto /mnt. With no arguments it probes the first ATA disk; [drive] and [part_lba] select a specific disk and partition."},
     {"date",     "Print the current date and time from the CMOS real-time clock. With a `+FORMAT` argument, format it strftime-style: %Y %y %m %d %e %H %I %M %S %p (year/month/day/hour/min/sec), %A/%a (weekday), %B/%b (month name), %j (day of year), %% — e.g. `date +%A` or `date +%Y-%m-%d`."},
     {"uname",    "Print system information: the operating-system name, its version and the machine architecture."},
@@ -3138,6 +3141,68 @@ static void cmd_blobs(int argc, char** argv) {
     launch_blobs();
 }
 
+// ---- screenshot: capture the framebuffer to a binary PPM (P6) image file ----------------------
+// Encode w*h XRGB (0xFFRRGGBB) pixels as a binary PPM (P6): "P6\n<w> <h>\n255\n" then 3 bytes
+// (R,G,B) per pixel. Returns bytes written, or 0 if dst is too small. The output opens as a
+// standard Netpbm image on any host (verified against file(1) + a parser in scratchpad/ppm_proto.c).
+static uint32_t ppm_encode(const uint32_t* px, uint32_t w, uint32_t h, uint8_t* dst, uint32_t cap) {
+    char hdr[32];
+    int hn = snprintf(hdr, sizeof(hdr), "P6\n%u %u\n255\n", w, h);
+    if (hn < 0) return 0;
+    uint32_t need = (uint32_t)hn + w * h * 3;
+    if (need > cap) return 0;
+    for (int i = 0; i < hn; i++) dst[i] = (uint8_t)hdr[i];
+    uint32_t o = (uint32_t)hn, n = w * h;
+    for (uint32_t i = 0; i < n; i++) {
+        uint32_t p = px[i];
+        dst[o++] = (p >> 16) & 0xFF;   // R
+        dst[o++] = (p >> 8) & 0xFF;    // G
+        dst[o++] = p & 0xFF;           // B
+    }
+    return o;
+}
+
+// Off-stack capture buffer, sized for the largest supported mode (1280x720x3 + header).
+static uint8_t shot_buf[3 * 1280 * 720 + 64];
+
+// Capture the framebuffer the compositor last presented (fb_get_addr = the contiguous back buffer
+// on the desktop) to `path` as a PPM. Returns bytes written (>0), -1 on write failure, -2 if the
+// mode is larger than shot_buf.
+static int screenshot_save(const char* path) {
+    uint32_t w = fb_get_width(), h = fb_get_height();
+    const uint32_t* px = (const uint32_t*)fb_get_addr();
+    if (!px || w == 0 || h == 0) return -1;
+    uint32_t n = ppm_encode(px, w, h, shot_buf, sizeof(shot_buf));
+    if (n == 0) return -2;
+    if (vfs_write_file(path, shot_buf, n) != (int)n) return -1;
+    return (int)n;
+}
+
+// KAT: encode a fixed 2x2 image and require the exact PPM byte stream (validates header + the
+// R/G/B channel order), plus that a too-small buffer returns 0.
+int ppm_selftest(void) {
+    static const uint32_t px[4] = {0x00FF0000, 0x0000FF00, 0x000000FF, 0x00FFFFFF};
+    uint8_t out[64];
+    uint32_t n = ppm_encode(px, 2, 2, out, sizeof(out));
+    static const uint8_t want[] = {
+        'P','6','\n','2',' ','2','\n','2','5','5','\n',
+        0xFF,0x00,0x00, 0x00,0xFF,0x00, 0x00,0x00,0xFF, 0xFF,0xFF,0xFF
+    };
+    if (n != (uint32_t)sizeof(want)) return 1;
+    for (uint32_t i = 0; i < n; i++) if (out[i] != want[i]) return 2;
+    if (ppm_encode(px, 2, 2, out, 10) != 0) return 3;   // too-small cap -> 0
+    return 0;
+}
+
+// `screenshot [path]` — save a PPM snapshot of the screen (default /tmp/screenshot.ppm).
+static void cmd_screenshot(int argc, char** argv) {
+    const char* path = (argc >= 2) ? argv[1] : "/tmp/screenshot.ppm";
+    int r = screenshot_save(path);
+    if (r > 0) printf("screenshot: saved %ux%u -> %s (%d bytes)\n", fb_get_width(), fb_get_height(), path, r);
+    else if (r == -2) printf("screenshot: resolution too large to capture\n");
+    else printf("screenshot: cannot write '%s'\n", path);
+}
+
 // `snake` — open a Snake game window (in-kernel, compositor.c).
 static void cmd_snake(int argc, char** argv) {
     (void)argc; (void)argv;
@@ -4982,6 +5047,7 @@ static void run_selftests(void) {
         {"json",         json_selftest},
         {"json-query",   json_query_selftest},
         {"pkg-hash",     pkg_hash_selftest},
+        {"ppm",          ppm_selftest},
         {"numparse",     numparse_selftest},        {"hkdf",          hkdf_selftest},
         {"chacha20",     chacha20_selftest},        {"siphash",       siphash_selftest},
         {"poly1305",     poly1305_selftest},        {"chachapoly",    chacha20poly1305_selftest},
