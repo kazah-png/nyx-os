@@ -333,7 +333,7 @@ static const command_t commands[] = {
     {"gzip",      cmd_gzip,      "Compress a file to gunzip-readable .gz: gzip <in> <out>", false},
     {"ipcalc",    cmd_ipcalc,    "IPv4 subnet calc: ipcalc <ip>/<prefix> | <ip> <mask>", false},
     {"calc",      cmd_calc,      "Evaluate an integer expression: calc <expr>", false},
-    {"json",      cmd_json,      "Validate a JSON file (RFC 8259): json <file>", false},
+    {"json",      cmd_json,      "Validate / query JSON: json <file> | json get <file> <path>", false},
     {"wc",        cmd_wc,        "Count lines/words/chars: wc <file>", false},
     {"write",     cmd_write,     "Write text to file: write <file> <text>", false},
     {"dhcp",      cmd_dhcp,      "Request IP via DHCP", false},
@@ -701,7 +701,7 @@ static const man_page_t man_pages[] = {
     {"gzip",     "Compress <in> into <out> as a gzip (.gz) file (RFC 1952) - the format stock gunzip, web browsers, and Python gzip.decompress read. Wraps the DEFLATE compressor with a gzip header and a CRC-32 + uncompressed-size trailer."},
     {"ipcalc",   "IPv4 subnet calculator. Give an address as `ipcalc <ip>/<prefix>`, `ipcalc <ip> <netmask>`, or `ipcalc <ip> <prefix>` and it prints the network and broadcast addresses, the netmask and wildcard, the usable host range (HostMin..HostMax) and the host count. RFC-correct at the edges: a /31 has two usable addresses (RFC 3021) and a /32 is a single host."},
     {"calc",     "Evaluate a 64-bit signed integer expression with C operators and precedence: + - * / %, the bitwise/shift operators | ^ & << >>, unary - + ~, parentheses, and decimal / 0x-hex / 0b-binary literals. Division truncates toward zero. Quote or join the terms, e.g. calc (2 + 3) * 4. Reports divide-by-zero, bad syntax, and unbalanced parentheses."},
-    {"json",     "Validate a JSON document (RFC 8259) read from <file>, printing whether it is valid or the byte offset of the first error. Strict: rejects trailing commas, unquoted keys, leading zeros, bad escapes, control characters in strings, and NaN/Infinity. Nesting deeper than 256 levels is rejected as a safety limit. Parsing is iterative, so even hostile deeply-nested input cannot exhaust the kernel stack."},
+    {"json",     "Validate or query a JSON document (RFC 8259) read from a file. `json <file>` prints whether it is valid or the byte offset of the first error - strict: rejects trailing commas, unquoted keys, leading zeros, bad escapes, control chars in strings, and NaN/Infinity. `json get <file> <path>` extracts the value at a jq-lite path built from `.name` (object member) and `[N]` (array index) steps, e.g. `json get cfg.json .users[0].name`; `.` selects the whole document; it prints the value's raw JSON (scalar or subtree), or a not-found / type-mismatch / bad-path error. Both parsing and extraction are iterative (O(1) kernel stack), so nesting beyond 256 levels is rejected and even hostile deeply-nested input cannot exhaust the stack."},
     {"xbm",      "The NyxOS package manager. `xbm install <name>` compiles a package from its recipe with the in-OS C compiler and installs it; `xbm remove <name>` uninstalls it; `xbm search <str>` and `xbm list` browse the available and installed packages. A recipe may carry a `url:` line pointing at a remote http:// source; xbm then downloads that source into the package before building it, the pacman/apt \"fetch source, then compile in-OS\" model."},
     {"cc",       "Compile and link C source into an ELF program with the in-OS TinyCC toolchain. -c stops after producing an object file."},
     {"fire",     "Open Nyx Fire, an animated doom-fire effect window. It is also a visual performance demo, re-filling the whole framebuffer region each frame."},
@@ -2145,19 +2145,40 @@ static void cmd_calc(int argc, char** argv) {
     printf("%s\n", num);
 }
 
-// json <file> — validate a JSON document (RFC 8259) read from the VFS (core/json.c).
+// json <file>            — validate a JSON document (RFC 8259) read from the VFS (core/json.c).
+// json get <file> <path> — extract the value at a jq-lite path, e.g. json get cfg.json .a[0].b
+static char json_buf[65536];   // off the 4 KB kernel stack: JSON documents can be large
 static void cmd_json(int argc, char** argv) {
-    if (argc < 2) { printf("Usage: json <file>   (validate a JSON document, RFC 8259)\n"); return; }
-    int fd = vfs_open(argv[1], 0, 0);
-    if (fd < 0) { printf("json: cannot open '%s'\n", argv[1]); return; }
-    static char buf[65536];
-    int bytes = vfs_read(fd, buf, sizeof(buf) - 1);
+    int getmode = (argc >= 2 && strcmp(argv[1], "get") == 0);
+    if (getmode ? (argc < 4) : (argc < 2)) {
+        printf("Usage: json <file>            (validate, RFC 8259)\n");
+        printf("       json get <file> <path> (extract value, e.g. .users[0].name)\n");
+        return;
+    }
+    const char* file = getmode ? argv[2] : argv[1];
+    int fd = vfs_open(file, 0, 0);
+    if (fd < 0) { printf("json: cannot open '%s'\n", file); return; }
+    int bytes = vfs_read(fd, json_buf, sizeof(json_buf) - 1);
     vfs_close(fd);
     if (bytes < 0) { printf("json: read error\n"); return; }
-    buf[bytes] = '\0';
+    json_buf[bytes] = '\0';
     int errpos = 0;
-    if (json_validate(buf, &errpos) == 0) printf("%s: valid JSON\n", argv[1]);
-    else printf("%s: invalid JSON at byte %d\n", argv[1], errpos);
+    if (json_validate(json_buf, &errpos) != 0) {
+        printf("%s: invalid JSON at byte %d\n", file, errpos);
+        return;
+    }
+    if (!getmode) { printf("%s: valid JSON\n", file); return; }
+    int st, ln;
+    int r = json_query(json_buf, argv[3], &st, &ln);
+    if (r == JQ_OK) {
+        char saved = json_buf[st + ln];
+        json_buf[st + ln] = '\0';
+        printf("%s\n", &json_buf[st]);       // value's raw byte span (scalar or subtree)
+        json_buf[st + ln] = saved;
+    } else if (r == JQ_ENOTFOUND) printf("json: path not found\n");
+    else if (r == JQ_ETYPE)       printf("json: type mismatch at a path step\n");
+    else if (r == JQ_EPATH)       printf("json: malformed path '%s'\n", argv[3]);
+    else                          printf("json: extract error\n");
 }
 
 static void cmd_tree(int argc, char** argv) {
@@ -4862,6 +4883,7 @@ static void run_selftests(void) {
         {"ipcalc",       ipcalc_selftest},
         {"calc",         calc_selftest},
         {"json",         json_selftest},
+        {"json-query",   json_query_selftest},
         {"numparse",     numparse_selftest},        {"hkdf",          hkdf_selftest},
         {"chacha20",     chacha20_selftest},        {"siphash",       siphash_selftest},
         {"poly1305",     poly1305_selftest},        {"chachapoly",    chacha20poly1305_selftest},

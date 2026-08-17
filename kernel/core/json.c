@@ -109,6 +109,114 @@ fail:
     return -1;
 }
 
+// ---- json_query: jq-lite path extractor (iterative, O(1) C-stack) ---------------------------
+static int jws(char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r'; }
+
+// Skip exactly one JSON value at s[*pp] (after leading ws). Container nesting is tracked by an
+// integer counter (not recursion), and strings are skipped whole so braces inside them don't
+// miscount — so this is O(1) C-stack even for deeply nested input. 0 = ok, -1 = malformed.
+static int jskip_value(const char* s, int* pp) {
+    int p = *pp;
+    while (jws(s[p])) p++;
+    char c = s[p];
+    if (c == '"') { *pp = p; return jstring(s, pp); }
+    if (c == '-' || jdig(c)) { *pp = p; return jnumber(s, pp); }
+    if (c == 't') { *pp = p; return jlit(s, pp, "true"); }
+    if (c == 'f') { *pp = p; return jlit(s, pp, "false"); }
+    if (c == 'n') { *pp = p; return jlit(s, pp, "null"); }
+    if (c == '{' || c == '[') {
+        int depth = 0;
+        for (;;) {
+            c = s[p];
+            if (c == '\0') { *pp = p; return -1; }
+            if (c == '"') { if (jstring(s, &p) != 0) { *pp = p; return -1; } continue; }
+            if (c == '{' || c == '[') { depth++; p++; continue; }
+            if (c == '}' || c == ']') { depth--; p++; if (depth == 0) { *pp = p; return 0; } continue; }
+            p++;
+        }
+    }
+    *pp = p; return -1;
+}
+
+static int key_eq(const char* s, int kstart, int kend, const char* n, int nlen) {
+    if (kend - kstart != nlen) return 0;
+    for (int i = 0; i < nlen; i++) if (s[kstart + i] != n[i]) return 0;
+    return 1;
+}
+
+int json_query(const char* s, const char* path, int* out_start, int* out_len) {
+    int vp = 0;
+    while (jws(s[vp])) vp++;                      // vp = start of the value in focus
+    const char* q = path;
+    while (*q) {
+        if (*q == '[') {                          // array-index step [N]
+            q++;
+            if (!jdig(*q)) return JQ_EPATH;
+            int idx = 0;
+            while (jdig(*q)) { idx = idx * 10 + (*q - '0'); if (idx > 1000000000) return JQ_EPATH; q++; }
+            if (*q != ']') return JQ_EPATH;
+            q++;
+            int p = vp; while (jws(s[p])) p++;
+            if (s[p] != '[') return JQ_ETYPE;
+            p++; while (jws(s[p])) p++;
+            if (s[p] == ']') return JQ_ENOTFOUND;
+            int i = 0;
+            for (;;) {
+                while (jws(s[p])) p++;
+                int estart = p;
+                if (i == idx) { vp = estart; break; }
+                int eend = estart;
+                if (jskip_value(s, &eend) != 0) return JQ_EMALFORMED;
+                while (jws(s[eend])) eend++;
+                if (s[eend] == ',') { p = eend + 1; i++; continue; }
+                if (s[eend] == ']') return JQ_ENOTFOUND;
+                return JQ_EMALFORMED;
+            }
+            continue;
+        }
+        if (*q == '.') {                          // object-member step .name
+            q++;
+            const char* nstart = q;
+            while (*q && *q != '.' && *q != '[') q++;
+            int nlen = (int)(q - nstart);
+            if (nlen == 0) {
+                if (*q == '.') return JQ_EPATH;   // ".."
+                continue;                          // identity: leading '.', or '.' before '['/end
+            }
+            int p = vp; while (jws(s[p])) p++;
+            if (s[p] != '{') return JQ_ETYPE;
+            p++; while (jws(s[p])) p++;
+            if (s[p] == '}') return JQ_ENOTFOUND;
+            for (;;) {
+                while (jws(s[p])) p++;
+                if (s[p] != '"') return JQ_EMALFORMED;
+                int kstart = p + 1;
+                int ke = p;
+                if (jstring(s, &ke) != 0) return JQ_EMALFORMED;
+                int kend = ke - 1;                 // closing-quote index
+                while (jws(s[ke])) ke++;
+                if (s[ke] != ':') return JQ_EMALFORMED;
+                ke++; while (jws(s[ke])) ke++;
+                int vstart = ke;
+                if (key_eq(s, kstart, kend, nstart, nlen)) { vp = vstart; break; }
+                int vend = vstart;
+                if (jskip_value(s, &vend) != 0) return JQ_EMALFORMED;
+                while (jws(s[vend])) vend++;
+                if (s[vend] == ',') { p = vend + 1; continue; }
+                if (s[vend] == '}') return JQ_ENOTFOUND;
+                return JQ_EMALFORMED;
+            }
+            continue;
+        }
+        return JQ_EPATH;
+    }
+    while (jws(s[vp])) vp++;
+    int vend = vp;
+    if (jskip_value(s, &vend) != 0) return JQ_EMALFORMED;
+    *out_start = vp; *out_len = vend - vp;
+    return 0;
+}
+
 int json_selftest(void) {
     static const char* valid[] = {
         "{}", "[]", "0", "-0", "123", "1.5", "-1.5e+10", "1E10", "true", "false", "null", "\"\"",
@@ -127,5 +235,37 @@ int json_selftest(void) {
     for (int i = 0; i < 300; i++) { deep[i] = '['; deep[300 + i] = ']'; }
     deep[600] = '\0';
     if (json_validate(deep, 0) == 0) return 91;                     // must reject (depth cap)
+    return 0;
+}
+
+int json_query_selftest(void) {
+    static const char* D =
+        "{\"name\":\"nyx\",\"ver\":6,\"tags\":[\"os\",\"kernel\",42],"
+        "\"meta\":{\"lts\":false,\"nested\":{\"deep\":[0,{\"x\":true}]}},"
+        "\"empty\":{},\"arr\":[]}";
+    static const struct { const char* path; const char* want; } pos[] = {
+        {".name", "\"nyx\""}, {".ver", "6"}, {".tags[0]", "\"os\""}, {".tags[2]", "42"},
+        {".meta.lts", "false"}, {".meta.nested.deep[1].x", "true"},
+        {".meta.nested.deep", "[0,{\"x\":true}]"}, {".tags", "[\"os\",\"kernel\",42]"}, {0, 0}
+    };
+    for (int i = 0; pos[i].path; i++) {
+        int st, ln;
+        if (json_query(D, pos[i].path, &st, &ln) != 0) return 10 + i;
+        int wl = 0; while (pos[i].want[wl]) wl++;
+        if (ln != wl) return 30 + i;
+        for (int k = 0; k < ln; k++) if (D[st + k] != pos[i].want[k]) return 50 + i;
+    }
+    { int st, ln;                                          // "." selects the whole document
+      int dl = 0; while (D[dl]) dl++;
+      if (json_query(D, ".", &st, &ln) != 0 || st != 0 || ln != dl) return 69; }
+    static const struct { const char* path; int code; } neg[] = {
+        {".missing", JQ_ENOTFOUND}, {".tags[9]", JQ_ENOTFOUND}, {".name.x", JQ_ETYPE},
+        {".ver[0]", JQ_ETYPE}, {".empty.x", JQ_ENOTFOUND}, {".arr[0]", JQ_ENOTFOUND},
+        {"..", JQ_EPATH}, {".tags[", JQ_EPATH}, {0, 0}
+    };
+    for (int i = 0; neg[i].path; i++) {
+        int st, ln;
+        if (json_query(D, neg[i].path, &st, &ln) != neg[i].code) return 70 + i;
+    }
     return 0;
 }
