@@ -84,15 +84,16 @@ strict-C99 output — and is verified three ways:
 1. **Real programs run on NyxOS.** The in-OS TinyCC builds the current
    `ncc` from source inside the running system, and that compiler
    transpiles, compiles, and runs the **entire example suite** — all
-   twenty programs, v0.1 through v0.18 (v0.19's auto-drops verified on host) — in a single boot, with output
-   identical to the host runs: the fs bindings exercise real kernel
-   `open`/`read`/`close`, the `pageflags` demo performs a live anonymous
-   `mmap` through the W^X-typed flags, the `own`-struct demo moves a
-   must-consume handle through its whole life (branch-aware consumption
-   included), and the M5 chain — a lexer covering comments, string
-   literals, and two-char operators, parser/evaluator, code emitter, and
-   the VM that executes the emitted code — **runs the whole toy compiler
-   loop inside NyxOS**. (This
+   twenty-one programs, v0.1 through v0.19 — in a single boot, with
+   output identical to the host runs: the fs bindings exercise real
+   kernel `open`/`read`/`close`, the `pageflags` demo performs a live
+   anonymous `mmap` through the W^X-typed flags, the `own`-struct demo
+   moves a must-consume handle through its whole life (branch-aware
+   consumption and `#[drop]` auto-close included), and the M5 chain — a
+   lexer covering comments, string literals, and two-char operators, a
+   parser that consumes a token buffer, a code emitter, and the VM that
+   executes the emitted code — **runs the whole toy compiler loop
+   inside NyxOS**. (This
    workload also uncovered — and keeps profiling — a kernel VFS
    node-pool exhaustion,
    [#66](https://github.com/kazah-png/nyx-os/issues/66) — the language
