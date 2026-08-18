@@ -91,8 +91,8 @@ strict-C99 output — and is verified three ways:
    moves a must-consume handle through its whole life (branch-aware
    consumption and `#[drop]` auto-close included), and the M5 chain — a
    lexer covering comments, string literals, and two-char operators, a
-   parser that consumes a token buffer, a code emitter, and the VM that
-   executes the emitted code — **runs the whole toy compiler loop
+   parser that consumes a token buffer and emits stack code, and the VM
+   that executes the emitted code — **runs the whole toy compiler loop
    inside NyxOS**. (This
    workload also uncovered — and keeps profiling — a kernel VFS
    node-pool exhaustion,
@@ -143,7 +143,7 @@ lang/
     ├── nemit.n          ← M5 link 3: stack-code emitter in N (read→parse→emit)
     ├── nstack.n         ← v0.16 index writes: a VM in N runs nemit's code
     ├── own.n            ← own structs: leaks/double-use refused, #[drop] auto-close
-    └── nparse.n         ← M5 chain wired: lex into a token buffer, parse tokens
+    └── nparse.n         ← M5 token-native pipeline: lex → parse → emit → run
 ```
 
 The runtime N programs link against lives with the rest of user space:
@@ -162,7 +162,7 @@ compiles packages from source on the machine itself). N rides that ladder:
 | M2 | `ncc` compiles *inside* NyxOS with the in-OS `cc` (tcc) | ✅ done |
 | M3 | `ncc hello.n` → running binary, entirely in-OS (the HolyC moment) | ✅ done |
 | M4 | N++ front-end: type checker, structs/enums/match, `Result`/`?` | design ready |
-| M5 | Self-hosting: `ncc` rewritten in N | **started** — the full toy loop runs: tokenizer ([ntokens.n](examples/ntokens.n)) · parser + evaluator ([ncalc.n](examples/ncalc.n)) · code emitter ([nemit.n](examples/nemit.n)) · a VM that executes the emitted code ([nstack.n](examples/nstack.n), on v0.16 index writes); the tokenizer covers the real lexer surface (comments, string literals, two-char operators) and [nparse.n](examples/nparse.n) **wires the chain**: the parser consumes a token buffer, never a character — with identifiers and comparisons on top of ncalc's grammar; next: grow toward N's own syntax |
+| M5 | Self-hosting: `ncc` rewritten in N | **started** — the full toy loop runs: tokenizer ([ntokens.n](examples/ntokens.n)) · parser + evaluator ([ncalc.n](examples/ncalc.n)) · code emitter ([nemit.n](examples/nemit.n)) · a VM that executes the emitted code ([nstack.n](examples/nstack.n), on v0.16 index writes); the tokenizer covers the real lexer surface (comments, string literals, two-char operators) and [nparse.n](examples/nparse.n) **closes the chain token-natively**: lex into a token buffer, parse the tokens, EMIT stack code from the descent, and run it on the VM — with identifiers and comparisons on top of ncalc's grammar; next: grow toward N's own syntax (statements, bindings) |
 
 M2 and M3 were reached with zero changes to the compiler's design: `ncc.c` is
 plain C99 in one file, so the in-OS tcc builds it directly, and the same

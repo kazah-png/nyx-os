@@ -1,19 +1,25 @@
-// nparse.n — the M5 chain WIRED: lex into a token buffer, parse tokens.
+// nparse.n — the M5 chain, token-native end to end: lex → parse → emit → run.
 //   ntokens.n scans N source and ncalc.n evaluates expressions, but each
 //   worked alone: ncalc re-reads raw characters inside its grammar. Real
-//   compilers do not — the lexer runs first and the parser consumes its
-//   TOKEN STREAM. This program closes that gap with the architecture
-//   every later self-hosting step will use:
+//   compilers do not — the lexer runs first, the parser consumes its
+//   TOKEN STREAM, and the output is CODE, not a value:
 //     source str ──lex()──► kinds[] / vals[] (sbrk'd i64 buffers,
-//     written with v0.16 index stores) ──parse──► value
-//   The parser never touches a character: it walks token indexes with
-//   the same PR{val,pos} functional threading ncalc introduced (no
-//   globals in N — state rides the return value). On top of ncalc's
-//   grammar it adds identifiers (a one-letter environment: x=10, y=4)
-//   and comparisons < > ==, one precedence level below + and -.
+//     written with v0.16 index stores) ──parse──► stack code ──run──► value
+//   The parser never touches a character and never computes a result:
+//   each grammar rule EMITS opcodes as it recognizes its shape (postfix
+//   order falls out of the descent, exactly like ncc's own gen_expr),
+//   and an inline VM — nstack's machine plus three comparison opcodes —
+//   executes the emitted program. State rides return values in the
+//   EP{pos,cp} pair (token position, code position): N has no globals,
+//   so both cursors thread functionally through every rule.
+//   On top of ncalc's grammar: identifiers (a one-letter environment:
+//   x=10, y=4, folded to constants at emit time) and comparisons
+//   < > ==, one precedence level below + and -.
 //   Token encoding: kind 0 = number (val = its value), 1 = identifier
 //   (val = environment index), 2 = operator/paren (val = its byte),
 //   3 = the two-char operator '==', 9 = end of input.
+//   Opcodes: 0 HALT · 1 PUSH arg · 2 ADD · 3 SUB · 4 MUL · 5 DIV ·
+//   6 MOD · 7 NEG · 8 LT · 9 GT · 10 EQ (comparisons push 0 or 1).
 
 #[caps(syscall)]
 extern syscall {
@@ -82,40 +88,49 @@ fn lex(src: str, k: *i64, v: *i64) -> i64 {
     t + 1
 }
 
-// Functional state threading, one level per precedence tier: each rule
-// takes the token arrays and a position, and returns PR{val, pos}.
-struct PR { val: i64, pos: i64 }
+// Both cursors, threaded functionally: pos walks tokens, cp walks code.
+struct EP { pos: i64, cp: i64 }
 
-// factor := number | ident | '-' factor | '(' cmp ')'
-fn parse_factor(k: *i64, v: *i64, pos: i64) -> PR {
-    if k[pos] == 0 {
-        return PR{ val: v[pos], pos: pos + 1 };
-    }
-    if k[pos] == 1 {
-        return PR{ val: env(v[pos]), pos: pos + 1 };
-    }
-    if k[pos] == 2 && v[pos] == 45 {       // unary minus
-        r := parse_factor(k, v, pos + 1);
-        return PR{ val: -r.val, pos: r.pos };
-    }
-    r := parse_cmp(k, v, pos + 1);         // '(' — mutual recursion
-    PR{ val: r.val, pos: r.pos + 1 }       // skip ')'
+fn emit1(code: *i64, cp: i64, op: i64) -> i64 {
+    code[cp] = op;
+    cp + 1
 }
 
-// term := factor (('*' | '/' | '%') factor)*
-fn parse_term(k: *i64, v: *i64, pos: i64) -> PR {
-    mut r := parse_factor(k, v, pos);
+fn emit2(code: *i64, cp: i64, op: i64, arg: i64) -> i64 {
+    code[cp] = op;
+    code[cp + 1] = arg;
+    cp + 2
+}
+
+// factor := number | ident | '-' factor | '(' cmp ')'
+fn parse_factor(k: *i64, v: *i64, pos: i64, code: *i64, cp: i64) -> EP {
+    if k[pos] == 0 {
+        return EP{ pos: pos + 1, cp: emit2(code, cp, 1, v[pos]) };
+    }
+    if k[pos] == 1 {                       // ident: fold env to a constant
+        return EP{ pos: pos + 1, cp: emit2(code, cp, 1, env(v[pos])) };
+    }
+    if k[pos] == 2 && v[pos] == 45 {       // unary minus: operand, then NEG
+        r := parse_factor(k, v, pos + 1, code, cp);
+        return EP{ pos: r.pos, cp: emit1(code, r.cp, 7) };
+    }
+    r := parse_cmp(k, v, pos + 1, code, cp);   // '(' — mutual recursion
+    EP{ pos: r.pos + 1, cp: r.cp }             // skip ')'
+}
+
+// term := factor (('*' | '/' | '%') factor)*  — op emitted after its rhs
+fn parse_term(k: *i64, v: *i64, pos: i64, code: *i64, cp: i64) -> EP {
+    mut r := parse_factor(k, v, pos, code, cp);
     mut going := true;
     while going {
         going = false;
         if k[r.pos] == 2 && (v[r.pos] == 42 || v[r.pos] == 47 || v[r.pos] == 37) {
             op := v[r.pos];
-            n := parse_factor(k, v, r.pos + 1);
-            mut val := r.val;
-            if op == 42 { val = val * n.val; }
-            if op == 47 { val = val / n.val; }
-            if op == 37 { val = val % n.val; }
-            r = PR{ val: val, pos: n.pos };
+            n := parse_factor(k, v, r.pos + 1, code, r.cp);
+            mut oc := 4;                   // MUL
+            if op == 47 { oc = 5; }        // DIV
+            if op == 37 { oc = 6; }        // MOD
+            r = EP{ pos: n.pos, cp: emit1(code, n.cp, oc) };
             going = true;
         }
     }
@@ -123,56 +138,90 @@ fn parse_term(k: *i64, v: *i64, pos: i64) -> PR {
 }
 
 // sum := term (('+' | '-') term)*
-fn parse_sum(k: *i64, v: *i64, pos: i64) -> PR {
-    mut r := parse_term(k, v, pos);
+fn parse_sum(k: *i64, v: *i64, pos: i64, code: *i64, cp: i64) -> EP {
+    mut r := parse_term(k, v, pos, code, cp);
     mut going := true;
     while going {
         going = false;
         if k[r.pos] == 2 && (v[r.pos] == 43 || v[r.pos] == 45) {
             op := v[r.pos];
-            n := parse_term(k, v, r.pos + 1);
-            mut val := r.val;
-            if op == 43 { val = val + n.val; }
-            if op == 45 { val = val - n.val; }
-            r = PR{ val: val, pos: n.pos };
+            n := parse_term(k, v, r.pos + 1, code, r.cp);
+            mut oc := 2;                   // ADD
+            if op == 45 { oc = 3; }        // SUB
+            r = EP{ pos: n.pos, cp: emit1(code, n.cp, oc) };
             going = true;
         }
     }
     r
 }
 
-// cmp := sum [('<' | '>' | '==') sum]   — lowest tier, yields 0 or 1
-fn parse_cmp(k: *i64, v: *i64, pos: i64) -> PR {
-    l := parse_sum(k, v, pos);
+// cmp := sum [('<' | '>' | '==') sum]   — lowest tier, pushes 0 or 1
+fn parse_cmp(k: *i64, v: *i64, pos: i64, code: *i64, cp: i64) -> EP {
+    l := parse_sum(k, v, pos, code, cp);
     two := k[l.pos] == 3;
     one := k[l.pos] == 2 && (v[l.pos] == 60 || v[l.pos] == 62);
     if two || one {
-        mut op := v[l.pos];
-        if two { op = 200; }               // internal code for ==
-        r := parse_sum(k, v, l.pos + 1);
-        mut val := 0;
-        if op == 60 && l.val < r.val  { val = 1; }
-        if op == 62 && l.val > r.val  { val = 1; }
-        if op == 200 && l.val == r.val { val = 1; }
-        return PR{ val: val, pos: r.pos };
+        mut oc := 10;                      // EQ
+        if one && v[l.pos] == 60 { oc = 8; }   // LT
+        if one && v[l.pos] == 62 { oc = 9; }   // GT
+        r := parse_sum(k, v, l.pos + 1, code, l.cp);
+        return EP{ pos: r.pos, cp: emit1(code, r.cp, oc) };
     }
     l
 }
 
-// The wired pipeline: one call runs both stages over shared buffers.
-fn show(src: str, k: *i64, v: *i64) {
+// nstack's machine, grown three comparison opcodes.
+fn run(prog: *i64, stk: *i64) -> i64 {
+    mut pc := 0;
+    mut sp := 0;
+    mut running := true;
+    while running {
+        op := prog[pc];
+        if op == 0 { running = false; }
+        if op == 1 { stk[sp] = prog[pc + 1]; sp += 1; pc += 2; }
+        if op == 2 { stk[sp - 2] = stk[sp - 2] + stk[sp - 1]; sp -= 1; pc += 1; }
+        if op == 3 { stk[sp - 2] = stk[sp - 2] - stk[sp - 1]; sp -= 1; pc += 1; }
+        if op == 4 { stk[sp - 2] = stk[sp - 2] * stk[sp - 1]; sp -= 1; pc += 1; }
+        if op == 5 { stk[sp - 2] = stk[sp - 2] / stk[sp - 1]; sp -= 1; pc += 1; }
+        if op == 6 { stk[sp - 2] = stk[sp - 2] % stk[sp - 1]; sp -= 1; pc += 1; }
+        if op == 7 { stk[sp - 1] = -stk[sp - 1]; pc += 1; }
+        if op == 8 {
+            mut t := 0;
+            if stk[sp - 2] < stk[sp - 1] { t = 1; }
+            stk[sp - 2] = t; sp -= 1; pc += 1;
+        }
+        if op == 9 {
+            mut t := 0;
+            if stk[sp - 2] > stk[sp - 1] { t = 1; }
+            stk[sp - 2] = t; sp -= 1; pc += 1;
+        }
+        if op == 10 {
+            mut t := 0;
+            if stk[sp - 2] == stk[sp - 1] { t = 1; }
+            stk[sp - 2] = t; sp -= 1; pc += 1;
+        }
+    }
+    stk[0]
+}
+
+// The whole pipeline in one call: tokens in, code out, value from the VM.
+fn show(src: str, k: *i64, v: *i64, code: *i64, stk: *i64) {
     lex(src, k, v);
-    r := parse_cmp(k, v, 0);
-    put("{src}  ->  {r.val}\n");
+    r := parse_cmp(k, v, 0, code, 0);
+    words := emit1(code, r.cp, 0);         // HALT closes the program
+    val := run(code, stk);
+    put("{src}  ->  {val}   [{words} code words]\n");
 }
 
 fn main() -> i64 {
     k := alloc_words(64);
     v := alloc_words(64);
-    put("lex+parse with x=10, y=4:\n");
-    show("2 + x * y", k, v);
-    show("(2 + x) * y", k, v);
-    show("x * y == 40", k, v);
-    show("x - y < 5", k, v);
+    code := alloc_words(64);
+    stk := alloc_words(64);
+    put("lex -> parse -> emit -> run, with x=10, y=4:\n");
+    show("2 + x * y", k, v, code, stk);
+    show("(2 + x) * y", k, v, code, stk);
+    show("x * y == 40", k, v, code, stk);
+    show("x - y < 5", k, v, code, stk);
     0
 }
