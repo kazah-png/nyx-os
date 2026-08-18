@@ -713,7 +713,7 @@ static const man_page_t man_pages[] = {
     {"ipcalc",   "IPv4 subnet calculator. Give an address as `ipcalc <ip>/<prefix>`, `ipcalc <ip> <netmask>`, or `ipcalc <ip> <prefix>` and it prints the network and broadcast addresses, the netmask and wildcard, the usable host range (HostMin..HostMax) and the host count. RFC-correct at the edges: a /31 has two usable addresses (RFC 3021) and a /32 is a single host."},
     {"calc",     "Evaluate a 64-bit signed integer expression with C operators and precedence: + - * / %, the bitwise/shift operators | ^ & << >>, unary - + ~, parentheses, and decimal / 0x-hex / 0b-binary literals. Division truncates toward zero. Quote or join the terms, e.g. calc (2 + 3) * 4. Reports divide-by-zero, bad syntax, and unbalanced parentheses."},
     {"json",     "Validate or query a JSON document (RFC 8259) read from a file. `json <file>` prints whether it is valid or the byte offset of the first error - strict: rejects trailing commas, unquoted keys, leading zeros, bad escapes, control chars in strings, and NaN/Infinity. `json get <file> <path>` extracts the value at a jq-lite path built from `.name` (object member) and `[N]` (array index) steps, e.g. `json get cfg.json .users[0].name`; `.` selects the whole document; it prints the value's raw JSON (scalar or subtree), or a not-found / type-mismatch / bad-path error. Both parsing and extraction are iterative (O(1) kernel stack), so nesting beyond 256 levels is rejected and even hostile deeply-nested input cannot exhaust the stack."},
-    {"xbm",      "The NyxOS package manager. `xbm install <name>` compiles a package from its recipe with the in-OS C compiler, installs it, and records a SHA-256 integrity manifest; `xbm verify <name>` re-hashes the installed binary and reports OK or MODIFIED against that manifest (apt/pacman-style tamper detection); `xbm remove <name>` uninstalls it; `xbm deps <name>` resolves and prints the install order from the recipes' `deps:` fields (dependencies before dependents, target last), detecting dependency cycles and missing packages - a topological sort like the one apt/pacman use to order an install. `xbm search <str>` and `xbm list` browse the available and installed packages. A recipe may carry a `url:` line pointing at a remote http:// source; xbm then downloads that source into the package before building it, the pacman/apt \"fetch source, then compile in-OS\" model."},
+    {"xbm",      "The NyxOS package manager. `xbm install <name>` resolves the recipe's `deps:` (installing every dependency first, in topological order — the apt/pacman \"pull the whole tree\" model), compiles each package from its recipe with the in-OS C compiler, installs it, and records a SHA-256 integrity manifest; `xbm verify <name>` re-hashes the installed binary and reports OK or MODIFIED against that manifest (apt/pacman-style tamper detection); `xbm remove <name>` uninstalls it; `xbm deps <name>` resolves and prints the install order from the recipes' `deps:` fields (dependencies before dependents, target last), detecting dependency cycles and missing packages - a topological sort like the one apt/pacman use to order an install. `xbm search <str>` and `xbm list` browse the available and installed packages. A recipe may carry a `url:` line pointing at a remote http:// source; xbm then downloads that source into the package before building it, the pacman/apt \"fetch source, then compile in-OS\" model."},
     {"cc",       "Compile and link C source into an ELF program with the in-OS TinyCC toolchain. -c stops after producing an object file."},
     {"fire",     "Open Nyx Fire, an animated doom-fire effect window. It is also a visual performance demo, re-filling the whole framebuffer region each frame."},
     {"fractal",  "Open Nyx Fractal, a fixed-point Mandelbrot renderer that auto-zooms toward the seahorse valley. A P4 rendering-performance-testing demo: a benchmark HUD shows the measured per-frame render time, the derived render FPS, the current iteration cap, and the zoom factor, so you can watch the software renderer's cost rise and fall with the load. All-integer (Q8.24 fixed point)."},
@@ -3006,6 +3006,54 @@ int xbm_deps_selftest(void) {
     return 0;
 }
 
+// Build + install ONE package (no dependency handling): read its recipe, optionally fetch a
+// remote `url:` source, compile it with the in-OS `cc`, and record a SHA-256 manifest. Returns 0
+// on success, -1 on any failure. `xbm install` calls this once per resolved dependency, in order.
+static int xbm_install_one(const char* name, const char* prog) {
+    if (!pkg_valid_name(name)) { printf("%s: invalid package name '%s'\n", prog, name); return -1; }
+    char rpath[128];
+    snprintf(rpath, sizeof(rpath), "/usr/pkg/%s/recipe", name);
+    int fd = vfs_open(rpath, 0, 0);
+    if (fd < 0) { printf("%s: package '%s' not found\n", prog, name); return -1; }
+    char rbuf[512];
+    int n = vfs_read(fd, rbuf, sizeof(rbuf) - 1);
+    vfs_close(fd);
+    if (n <= 0) { printf("%s: empty recipe for '%s'\n", prog, name); return -1; }
+    rbuf[n] = '\0';
+    char source[64], bin[64];
+    if (!pkg_recipe_value(rbuf, "source", source, sizeof(source))) { printf("%s: recipe for '%s' is missing 'source'\n", prog, name); return -1; }
+    if (!pkg_recipe_value(rbuf, "bin", bin, sizeof(bin)))          { printf("%s: recipe for '%s' is missing 'bin'\n", prog, name); return -1; }
+    if (!pkg_valid_name(source) || !pkg_valid_name(bin)) { printf("%s: recipe for '%s' has an unsafe 'source'/'bin' name\n", prog, name); return -1; }
+    char url[256];
+    if (pkg_recipe_value(rbuf, "url", url, sizeof(url))) {
+        char srcpath[160];
+        snprintf(srcpath, sizeof(srcpath), "/usr/pkg/%s/%s", name, source);
+        printf("%s: fetching %s ...\n", prog, url);
+        if (xbm_fetch_url(url, srcpath) != 0) { printf("%s: fetch failed for '%s'\n", prog, name); return -1; }
+        printf("%s: fetched source -> %s\n", prog, srcpath);
+    }
+    vfs_mkdir("/mnt/bin", 0755);
+    char cmd[256], outp[128];
+    snprintf(outp, sizeof(outp), "/mnt/bin/%s", bin);
+    snprintf(cmd, sizeof(cmd), "cc /usr/pkg/%s/%s -o %s", name, source, outp);
+    printf("%s: building %s (%s) ...\n", prog, name, source);
+    execute_command(cmd);
+    int ofd = vfs_open(outp, 0, 0);
+    if (ofd < 0) { printf("%s: build of '%s' failed\n", prog, name); return -1; }
+    vfs_close(ofd);
+    char hex[65];
+    if (pkg_sha256_file(outp, hex) == 0) {
+        char mpath[160];
+        snprintf(mpath, sizeof(mpath), "/usr/pkg/%s/sha256", name);
+        vfs_write_file(mpath, hex, 64);
+        printf("%s: installed %s -> %s (run it: %s; sha256 %c%c%c%c%c%c%c%c...)\n",
+               prog, name, outp, bin, hex[0],hex[1],hex[2],hex[3],hex[4],hex[5],hex[6],hex[7]);
+    } else {
+        printf("%s: installed %s -> %s (run it: %s)\n", prog, name, outp, bin);
+    }
+    return 0;
+}
+
 static void cmd_xbm(int argc, char** argv) {
     const char* prog = argv[0];   // "xbm" (or the "pkg" alias) — echo whatever was typed
     if (argc < 2) { printf("Usage: %s install|remove|verify|deps <name> | %s search <str> | %s list [--installed]\n", prog, prog, prog); return; }
@@ -3073,61 +3121,26 @@ static void cmd_xbm(int argc, char** argv) {
         const char* name = argv[2];
         if (!pkg_valid_name(name)) { printf("%s: invalid package name '%s'\n", prog, name); return; }
 
-        char rpath[128];
-        snprintf(rpath, sizeof(rpath), "/usr/pkg/%s/recipe", name);
-        int fd = vfs_open(rpath, 0, 0);
-        if (fd < 0) { printf("%s: package '%s' not found\n", prog, name); return; }
-        char rbuf[512];
-        int n = vfs_read(fd, rbuf, sizeof(rbuf) - 1);
-        vfs_close(fd);
-        if (n <= 0) { printf("%s: empty recipe for '%s'\n", prog, name); return; }
-        rbuf[n] = '\0';
-
-        char source[64], bin[64];
-        if (!pkg_recipe_value(rbuf, "source", source, sizeof(source))) { printf("%s: recipe for '%s' is missing 'source'\n", prog, name); return; }
-        if (!pkg_recipe_value(rbuf, "bin", bin, sizeof(bin)))          { printf("%s: recipe for '%s' is missing 'bin'\n", prog, name); return; }
-        if (!pkg_valid_name(source) || !pkg_valid_name(bin)) {
-            printf("%s: recipe for '%s' has an unsafe 'source'/'bin' name\n", prog, name); return;
+        // Resolve the dependency order (deps before dependents, target last), then build each in
+        // turn — the apt/pacman "pull the whole tree" install. A package with no `deps:` resolves
+        // to just itself, so this is a superset of the old single-package install.
+        static char order[XBM_MAXP][XBM_NAMELEN];
+        int pn = 0;
+        int r = xbm_resolve(name, xbm_vfs_get_deps, 0, order, &pn);
+        if (r == XBM_ECYCLE)   { printf("%s: dependency cycle involving '%s' - aborting\n", prog, name); return; }
+        if (r == XBM_EMISSING) { printf("%s: '%s' or one of its dependencies has no recipe - aborting\n", prog, name); return; }
+        if (r != XBM_OK)       { printf("%s: dependency graph too large - aborting\n", prog); return; }
+        if (pn > 1) {
+            printf("%s: %s pulls in %d package(s):", prog, name, pn);
+            for (int i = 0; i < pn; i++) printf(" %s", order[i]);
+            printf("\n");
         }
-
-        // Optional `url:` — fetch the source over HTTP into the package dir before building,
-        // so a recipe can point at a remote .c instead of shipping it locally (the pacman/apt
-        // "download source, then compile in-OS" model). name/source are pkg_valid_name-checked,
-        // so the destination path can't traverse out of /usr/pkg.
-        char url[256];
-        if (pkg_recipe_value(rbuf, "url", url, sizeof(url))) {
-            char srcpath[160];
-            snprintf(srcpath, sizeof(srcpath), "/usr/pkg/%s/%s", name, source);
-            printf("%s: fetching %s ...\n", prog, url);
-            if (xbm_fetch_url(url, srcpath) != 0) { printf("%s: fetch failed for '%s'\n", prog, name); return; }
-            printf("%s: fetched source -> %s\n", prog, srcpath);
-        }
-
-        vfs_mkdir("/mnt/bin", 0755);   // ensure the install dir exists (harmless if it already does)
-
-        char cmd[256], outp[128];
-        snprintf(outp, sizeof(outp), "/mnt/bin/%s", bin);
-        snprintf(cmd, sizeof(cmd), "cc /usr/pkg/%s/%s -o %s", name, source, outp);
-        printf("%s: building %s (%s) ...\n", prog, name, source);
-        execute_command(cmd);
-
-        int ofd = vfs_open(outp, 0, 0);            // did the binary land?
-        if (ofd >= 0) {
-            vfs_close(ofd);
-            // Record a SHA-256 integrity manifest next to the recipe so `xbm verify` can later
-            // detect a tampered/corrupted binary (the apt/pacman "trust on install" model).
-            char hex[65];
-            if (pkg_sha256_file(outp, hex) == 0) {
-                char mpath[160];
-                snprintf(mpath, sizeof(mpath), "/usr/pkg/%s/sha256", name);
-                vfs_write_file(mpath, hex, 64);
-                printf("%s: installed %s -> %s (run it: %s; sha256 %c%c%c%c%c%c%c%c...)\n",
-                       prog, name, outp, bin, hex[0],hex[1],hex[2],hex[3],hex[4],hex[5],hex[6],hex[7]);
-            } else {
-                printf("%s: installed %s -> %s (run it: %s)\n", prog, name, outp, bin);
+        for (int i = 0; i < pn; i++) {
+            if (xbm_install_one(order[i], prog) != 0) {
+                printf("%s: aborting - '%s' failed to install\n", prog, order[i]);
+                return;
             }
         }
-        else            printf("%s: build of '%s' failed\n", prog, name);
         return;
     }
 
