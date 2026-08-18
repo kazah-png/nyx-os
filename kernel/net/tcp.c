@@ -519,7 +519,12 @@ static void tcp_handle_packet_inner(uint8_t* packet, uint32_t len, uint32_t src_
     uint8_t flags = off_flags & 0x003F;
     uint8_t data_offset = (off_flags >> 12) & 0x0F;
     uint32_t header_len = data_offset * 4;
-    if (header_len > len) return;
+    // A valid TCP data offset is >= 5 (a 20-byte header). Reject a short one as well as one
+    // past the segment: header_len < 20 makes `payload` overlap the header and payload_len
+    // over-count, so header bytes would be delivered as data and ack would advance past bytes
+    // never received. The IP layer already lower-bounds IHL the same way (ip.c). A segment
+    // with a valid checksum can still carry data_offset < 5, so this is not redundant.
+    if (header_len < sizeof(tcp_header_t) || header_len > len) return;
     uint8_t* payload = packet + header_len;
     uint32_t payload_len = len - header_len;
     // The address the peer targeted (our NIC IP, or 127.0.0.1 for loopback) is the
