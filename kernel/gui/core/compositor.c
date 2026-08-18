@@ -1044,6 +1044,8 @@ static const char* ctx_menu_items[] = {
 
 // Forward declarations
 static void redraw_all(void);
+static void notify_render(uint32_t now);        // desktop toasts, drawn on top
+static int  notify_active_count(uint32_t now);  // live-toast count (loop repaint gate)
 static void draw_snap_preview(void);
 static void do_start_menu_action(int idx);
 static void settings_win_click(window_t* win, int mx, int my, int btn);
@@ -1706,6 +1708,7 @@ static void redraw_all(void) {
     draw_cal_popup();
     draw_net_popup();
     draw_spk_popup();
+    notify_render(get_ticks());   // desktop toasts sit on top of everything
     frame_dirty = 1;      // a fresh frame is in the back buffer, awaiting fb_present()
 }
 
@@ -1718,6 +1721,97 @@ void compositor_redraw_now(void) {
     redraw_all();
     fb_present();     // this path runs outside the event loop, so publish here
     frame_dirty = 0;
+}
+
+// ---------------------------------------------------------------------------
+// Desktop notifications / toasts (v6.4.247). notify_push() drops a short-lived
+// purple Nyx card in the top-right corner; the compositor keeps repainting
+// while any toast is alive (see compositor_run) so it fades out on its own. The
+// ring logic (alive/expire/capacity/eviction) takes an injected clock so it is
+// KAT'd with no framebuffer (same idea as the auth-lockout clock injection).
+// ---------------------------------------------------------------------------
+#define NOTIFY_MAX     4
+#define NOTIFY_TTL_MS  4000u
+#define NOTIFY_TITLE   48
+#define NOTIFY_BODY    96
+
+typedef struct {
+    int      used;
+    uint32_t born;                 // get_ticks() ms when pushed
+    char     title[NOTIFY_TITLE];
+    char     body[NOTIFY_BODY];
+} toast_t;
+
+static toast_t toasts[NOTIFY_MAX];
+
+static int toast_alive(const toast_t* t, uint32_t now) {
+    return t->used && (uint32_t)(now - t->born) < NOTIFY_TTL_MS;
+}
+
+static int notify_active_count(uint32_t now) {
+    int c = 0;
+    for (int i = 0; i < NOTIFY_MAX; i++) if (toast_alive(&toasts[i], now)) c++;
+    return c;
+}
+
+// Push a toast at time `now`: reuse a dead slot, else evict the oldest live one.
+static void notify_push_at(const char* title, const char* body, uint32_t now) {
+    int slot = -1;
+    for (int i = 0; i < NOTIFY_MAX; i++) if (!toast_alive(&toasts[i], now)) { slot = i; break; }
+    if (slot < 0) {
+        slot = 0;
+        for (int i = 1; i < NOTIFY_MAX; i++)
+            if ((uint32_t)(now - toasts[i].born) > (uint32_t)(now - toasts[slot].born)) slot = i;
+    }
+    toasts[slot].used = 1;
+    toasts[slot].born = now;
+    strncpy(toasts[slot].title, title ? title : "", NOTIFY_TITLE - 1);
+    toasts[slot].title[NOTIFY_TITLE - 1] = '\0';
+    strncpy(toasts[slot].body, body ? body : "", NOTIFY_BODY - 1);
+    toasts[slot].body[NOTIFY_BODY - 1] = '\0';
+}
+
+void notify_push(const char* title, const char* body) {
+    notify_push_at(title, body, get_ticks());
+    compositor_redraw_now();       // show it immediately (safe re-entrantly)
+}
+
+// Draw the live toasts stacked top-right; reap any that have expired.
+static void notify_render(uint32_t now) {
+    const int tw = 264, th = 46, pad = 12, gap = 8;
+    int maxc = (tw - 24) / FONT_WIDTH;
+    if (maxc > 38) maxc = 38;
+    int x = (int)fb_get_width() - tw - pad;
+    int y = 40;
+    for (int i = 0; i < NOTIFY_MAX; i++) {
+        if (!toast_alive(&toasts[i], now)) { toasts[i].used = 0; continue; }
+        fb_fill_rect(x, y, tw, th, fb_rgb(40, 32, 58));            // Nyx purple card
+        fb_fill_rect(x, y, 4, th, fb_rgb(150, 110, 235));         // accent bar
+        char line[40];
+        int n = 0; while (n < maxc && toasts[i].title[n]) { line[n] = toasts[i].title[n]; n++; } line[n] = '\0';
+        font_draw_string_trans(x + 12, y + 6, line, fb_rgb(235, 230, 245));
+        n = 0; while (n < maxc && toasts[i].body[n]) { line[n] = toasts[i].body[n]; n++; } line[n] = '\0';
+        font_draw_string_trans(x + 12, y + 8 + FONT_HEIGHT, line, fb_rgb(182, 176, 200));
+        y += th + gap;
+    }
+}
+
+int notify_selftest(void) {
+    for (int i = 0; i < NOTIFY_MAX; i++) toasts[i].used = 0;
+
+    uint32_t t0 = 1000;
+    notify_push_at("a", "1", t0);
+    if (notify_active_count(t0) != 1) return 1;
+    if (notify_active_count(t0 + NOTIFY_TTL_MS - 1) != 1) return 2;   // alive just before TTL
+    if (notify_active_count(t0 + NOTIFY_TTL_MS) != 0)     return 3;   // expired at TTL
+
+    for (int i = 0; i < NOTIFY_MAX; i++) notify_push_at("x", "y", t0);
+    if (notify_active_count(t0) != NOTIFY_MAX) return 4;             // all slots filled
+    notify_push_at("new", "z", t0 + 10);                            // full -> evict oldest
+    if (notify_active_count(t0 + 10) != NOTIFY_MAX) return 5;        // still capped, no overflow
+
+    for (int i = 0; i < NOTIFY_MAX; i++) toasts[i].used = 0;         // leave a clean slate
+    return 0;
 }
 
 static window_t* find_window(int id) {
@@ -3906,6 +4000,20 @@ done_click:
             wp_anim_ms = now;
             redraw = 1;
         }
+
+        // Keep repainting (~10 fps) while a notification toast is on screen so it
+        // self-dismisses even on a still wallpaper; gated on a live toast, so an
+        // idle desktop with none still rests. When the last toast expires, force
+        // one final repaint so the desktop erases it instead of leaving it painted.
+        static uint32_t notify_anim_ms = 0;
+        static int notify_was_active = 0;
+        int notify_now_active = notify_active_count(now) > 0;
+        if ((notify_now_active && now - notify_anim_ms >= 100u) ||
+            (!notify_now_active && notify_was_active)) {
+            notify_anim_ms = now;
+            redraw = 1;
+        }
+        notify_was_active = notify_now_active;
 
         if (redraw) {
             redraw_all();

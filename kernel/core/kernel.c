@@ -206,10 +206,12 @@ static void cmd_life(int argc, char** argv);
 static void cmd_blobs(int argc, char** argv);
 static void cmd_screenshot(int argc, char** argv);
 static void cmd_clip(int argc, char** argv);
+static void cmd_notify(int argc, char** argv);
 static void cmd_stackcheck(int argc, char** argv);
 extern int stack_canary_sweep(void);      // process.c — scan task-stack canaries
 extern int stack_canary_selftest(void);   // process.c — canary KAT
 extern int term_paste_selftest(void);      // gui/apps/terminal_win.c — Ctrl+V paste KAT
+extern int notify_selftest(void);           // gui/core/compositor.c — toast ring KAT
 static void cmd_snake(int argc, char** argv);
 static void cmd_tetris(int argc, char** argv);
 static void cmd_selene(int argc, char** argv);
@@ -320,6 +322,7 @@ static const command_t commands[] = {
     {"seq",       cmd_seq,       "Integer sequence: seq [FIRST [STEP]] LAST", false},
     {"paste",     cmd_paste,     "Merge lines of files: paste [-s] [-d LIST] <file ...>", false},
     {"clip",      cmd_clip,      "Clipboard: clip <text> to copy, clip to paste, clip -c to clear", false},
+    {"notify",    cmd_notify,    "Show a desktop notification: notify <title> [message...]", false},
     {"cut",       cmd_cut,       "Select fields/chars of each line: cut -f|-c|-b LIST [-d C] [-s] <file>", false},
     {"uniq",      cmd_uniq,      "Collapse adjacent equal lines: uniq [-c|-d|-u|-i|-f N|-s N|-w N] <file>", false},
     {"join",      cmd_join,      "Join two sorted files on a field: join [-t C] [-1/-2/-j N] [-a 1|2] <f1> <f2>", false},
@@ -690,6 +693,7 @@ static const man_page_t man_pages[] = {
     {"semver",   "Parse and compare Semantic Versioning 2.0.0 strings (MAJOR.MINOR.PATCH[-prerelease][+build]). With one argument, validate it and print the parsed fields. With two, print their precedence relation (`A < B`, `A = B`, or `A > B`) per the semver spec: core numbers compared numerically, a prerelease ranks below the same version without one, and build metadata is ignored. Useful for comparing package versions."},
     {"seq",      "Print an inclusive sequence of integers, one per line. `seq LAST` counts 1..LAST; `seq FIRST LAST` counts FIRST..LAST; `seq FIRST STEP LAST` advances by STEP (which may be negative). A range that starts on the wrong side of LAST prints nothing, and a zero STEP is an error. Integer-only (64-bit signed), matching GNU seq for integer arguments."},
     {"stackcheck","Scan every running task's kernel stack for overflow. Each 4 KB kernel task stack carries a magic canary word at its low (overflow) end, stamped when the stack is allocated; `stackcheck` walks the process table and reports whether every canary is still intact or names any task whose stack has been smashed (grown past 4 KB into the canary). A cheap detect-and-report tripwire for stack overflows, complementing the off-stack-buffer hardening."},
+    {"notify",   "Post a desktop notification toast. `notify <title> [message...]` pops a small purple Nyx card in the top-right of the desktop (title on the first line, the rest of the arguments joined as the message below) that stays up for a few seconds and then dismisses itself — the compositor keeps repainting while a toast is alive so it fades out on its own. Up to a few toasts stack at once; a new one past that evicts the oldest. Useful for surfacing background events (a finished job, a download) to the user without stealing focus."},
     {"clip",     "A system text clipboard (like pbcopy/pbpaste). `clip <text...>` copies the arguments (joined with spaces) to the clipboard; `clip` with no arguments pastes - prints the current contents; `clip -c` clears it. The clipboard holds up to 4096 bytes and persists across commands, so you can copy a value from one command's output and paste it into another. The same buffer is exposed to the rest of the kernel (clipboard_get/set), so the GUI terminal and editor can be wired to copy/paste through it."},
     {"paste",    "Merge corresponding lines of files. By default the i-th line of each file is printed on one row, separated by a tab, continuing until every file runs out (a spent file leaves its column empty). -s writes each file's lines onto a single line instead. -d LIST replaces the tab with the characters of LIST used in turn (\\t, \\n, \\\\ escapes recognised). Reads each whole file; up to 16 files. Matches GNU paste for newline-delimited text."},
     {"cut",      "Print selected parts of each line of <file>. Choose one mode: -f LIST cuts fields (a field is text between delimiters; the delimiter is a TAB by default, or the single character given by -d C), -c LIST cuts characters, -b LIST cuts bytes. A LIST is a comma-separated set of 1-based ranges: 'N' one position, 'N-M' the inclusive range, 'N-' from N to the end, '-M' the same as '1-M'. Selected parts are always emitted in increasing position order, never duplicated, so the order the ranges are written in does not matter. In field mode a line that contains no delimiter is printed unchanged, unless -s suppresses such lines; selected fields are re-joined with the delimiter. Matches GNU cut byte-for-byte for newline-delimited text (chars and bytes coincide for ASCII). Reads a bounded chunk of each file; several files may be given."},
@@ -3594,6 +3598,20 @@ static void cmd_clip(int argc, char** argv) {
     printf("clip: copied %u byte%s\n", o, o == 1 ? "" : "s");
 }
 
+// `notify <title> [body...]` — pop a desktop toast (body joined from argv[2..]).
+static void cmd_notify(int argc, char** argv) {
+    if (argc < 2) { printf("Usage: notify <title> [message...]\n"); return; }
+    char body[96];
+    int o = 0;
+    for (int a = 2; a < argc && o < (int)sizeof(body) - 1; a++) {
+        if (a > 2 && o < (int)sizeof(body) - 1) body[o++] = ' ';
+        for (const char* p = argv[a]; *p && o < (int)sizeof(body) - 1; p++) body[o++] = *p;
+    }
+    body[o] = '\0';
+    notify_push(argv[1], body);
+    printf("notify: posted '%s'\n", argv[1]);
+}
+
 // `stackcheck` — sweep every task's kernel-stack overflow canary (process.c) and report.
 static void cmd_stackcheck(int argc, char** argv) {
     (void)argc; (void)argv;
@@ -5453,6 +5471,7 @@ static void run_selftests(void) {
         {"clipboard",    clipboard_selftest},
         {"term-paste",   term_paste_selftest},
         {"du",           du_selftest},
+        {"notify",       notify_selftest},
         {"stack-canary", stack_canary_selftest},
         {"numparse",     numparse_selftest},        {"hkdf",          hkdf_selftest},
         {"chacha20",     chacha20_selftest},        {"siphash",       siphash_selftest},

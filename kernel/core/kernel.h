@@ -18,7 +18,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.4.246"
+#define KERNEL_VERSION "6.4.247"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -1022,6 +1022,11 @@ void     clipboard_set(const char* data, uint32_t len);
 uint32_t clipboard_get(char* out, uint32_t cap);
 uint32_t clipboard_len(void);
 void     clipboard_clear(void);
+
+// Desktop notification / toast (gui/core/compositor.c). Shows `title`/`body` as
+// a purple Nyx card in the top-right of the desktop for a few seconds; the
+// compositor repaints while it is alive so it self-dismisses.
+void notify_push(const char* title, const char* body);
 
 int printf(const char* fmt, ...);
 int vprintf(const char* fmt, va_list args);

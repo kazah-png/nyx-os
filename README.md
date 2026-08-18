@@ -7,7 +7,7 @@
 <p align="center">
   <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.9.0-LTS"><img src="https://img.shields.io/badge/release-v5.9.0--LTS-825AD2?style=flat" /></a>
   &nbsp;
-  <img src="https://img.shields.io/badge/version-v6.4.246-825AD2?style=flat" />
+  <img src="https://img.shields.io/badge/version-v6.4.247-825AD2?style=flat" />
   &nbsp;
   <img src="https://img.shields.io/badge/arch-x86__64-825AD2?style=flat" />
   &nbsp;
@@ -68,7 +68,7 @@ nyx:root$ nyxfetch
        .:::o:o#:.           nyx@nyxos
     .:oo.. :o.              -----------------
   :oo:.oo.o:                OS:         NyxOS x86_64
- .#o:.   :.                 Kernel:     NyxOS 6.4.246
+ .#o:.   :.                 Kernel:     NyxOS 6.4.247
  #:::....:                  Uptime:     00:00:11
 o#::. . o.                  Resolution: 1024 x 768
 o#.o:   :o                  CPU:        QEMU Virtual CPU (1)
