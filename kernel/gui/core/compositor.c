@@ -405,8 +405,18 @@ static int start_hit(int mx, int my) {
     return mx >= 2 && mx < 2 + 80 && my >= (int)(fb_get_height() - TASKBAR_H) && my < (int)fb_get_height();
 }
 
+static int systray_x(void);   // defined below; the hit-test needs draw_taskbar()'s exact right edge
+
 static int taskbar_win_hit(int mx, int my, int* id) {
-    uint32_t fw = fb_get_width(), fh = fb_get_height();
+    uint32_t fh = fb_get_height();
+    // Clamp buttons at the SAME right edge draw_taskbar() uses — systray_x() - 4, which
+    // reserves the system tray + user badge + clock. The old limit here was fw - CLOCK_W - 8,
+    // which reserved only the clock and so sat a tray+badge width further right than the
+    // drawn limit: once a button was clamped the two loops computed different bw, bx drifted,
+    // and clicks in the tray/badge strip (or on undrawn-but-clickable buttons) landed on the
+    // wrong window — exactly the drift the note below says must not happen.
+    int right_limit = systray_x() - 4;
+    if (right_limit < 90) right_limit = 90;
     int bx = 90;
     for (int i = 0; i < MAX_WINDOWS; i++) {
         if (!windows[i] || !windows[i]->visible) continue;
@@ -416,7 +426,7 @@ static int taskbar_win_hit(int mx, int my, int* id) {
         // workspaces (so they can be restored), so this hit-test must too.
         if (windows[i]->workspace != current_workspace && windows[i]->state != WSTATE_MINIMIZED) continue;
         int bw = 150;
-        if (bx + bw > (int)(fw - CLOCK_W - 8)) bw = (int)(fw - CLOCK_W - 8) - bx;
+        if (bx + bw > right_limit) bw = right_limit - bx;
         if (bw < 40) break;
         if (mx >= bx && mx < bx + bw && my >= (int)(fh - TASKBAR_H + 4) && my < (int)fh - 4) {
             *id = windows[i]->id;
