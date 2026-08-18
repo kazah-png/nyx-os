@@ -45,5 +45,8 @@ void terminal_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch);
 void terminal_win_key(window_t* win, int key);
 int terminal_capture_putchar(int c);
 void terminal_capture_reset(terminal_win_t* t);   // leave screen mode when a cmd ends
+int term_input_paste(char* input, int* input_len, int* cursor_pos, int cap,
+                     const char* clip, int clip_len);   // Ctrl+V insert (bounded)
+int term_paste_selftest(void);
 
 #endif

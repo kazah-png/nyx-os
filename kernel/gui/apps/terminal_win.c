@@ -314,6 +314,64 @@ static void term_scroll(terminal_win_t* t, int delta) {
     if (t->scroll_offset > max_off) t->scroll_offset = max_off;
 }
 
+// ---------------------------------------------------------------------------
+// Clipboard cut/paste for the input line (v6.4.245). Ctrl+X cuts the whole
+// input line to the system clipboard; Ctrl+V pastes the clipboard back in at
+// the cursor. term_input_paste is the pure, bounded insert Ctrl+V uses (and the
+// term-paste KAT exercises): it drops non-printable bytes — a pasted '\n' must
+// not submit or corrupt the line — and never grows the line past `cap`.
+int term_input_paste(char* input, int* input_len, int* cursor_pos, int cap,
+                     const char* clip, int clip_len) {
+    int inserted = 0;
+    for (int i = 0; i < clip_len; i++) {
+        unsigned char uch = (unsigned char)clip[i];
+        if (uch < 0x20 || uch >= 0x7F) continue;   // skip control / non-ASCII bytes
+        if (*input_len >= cap - 1) break;          // input line is full
+        for (int j = *input_len; j > *cursor_pos; j--)
+            input[j] = input[j - 1];
+        input[*cursor_pos] = (char)uch;
+        (*input_len)++;
+        (*cursor_pos)++;
+        inserted++;
+    }
+    return inserted;
+}
+
+int term_paste_selftest(void) {
+    char buf[TERM_INPUT_MAX];
+    int len, cur;
+
+    // 1) paste into an empty line
+    buf[0] = '\0'; len = 0; cur = 0;
+    if (term_input_paste(buf, &len, &cur, TERM_INPUT_MAX, "echo hi", 7) != 7) return 1;
+    if (len != 7 || cur != 7) return 2;
+    buf[len] = '\0';
+    if (strcmp(buf, "echo hi") != 0) return 3;
+
+    // 2) paste at a mid-line cursor (right after "echo")
+    cur = 4;
+    if (term_input_paste(buf, &len, &cur, TERM_INPUT_MAX, "X", 1) != 1) return 4;
+    buf[len] = '\0';
+    if (len != 8 || cur != 5 || strcmp(buf, "echoX hi") != 0) return 5;
+
+    // 3) non-printable bytes are dropped (a pasted tab/newline never enters the line)
+    len = 0; cur = 0; buf[0] = '\0';
+    if (term_input_paste(buf, &len, &cur, TERM_INPUT_MAX, "a\tb\nc", 5) != 3) return 6;
+    buf[len] = '\0';
+    if (len != 3 || strcmp(buf, "abc") != 0) return 7;
+
+    // 4) truncation at cap: a source longer than the line fills to TERM_INPUT_MAX-1
+    len = 0; cur = 0;
+    char big[TERM_INPUT_MAX];
+    for (int i = 0; i < TERM_INPUT_MAX; i++) big[i] = 'z';
+    if (term_input_paste(buf, &len, &cur, TERM_INPUT_MAX, big, TERM_INPUT_MAX)
+            != TERM_INPUT_MAX - 1) return 8;
+    if (len != TERM_INPUT_MAX - 1 || cur != TERM_INPUT_MAX - 1) return 9;
+    if (term_input_paste(buf, &len, &cur, TERM_INPUT_MAX, "q", 1) != 0) return 10;   // full: refuses more
+
+    return 0;
+}
+
 void terminal_win_key(window_t* win, int key) {
     terminal_win_t* term = (terminal_win_t*)win->reserved;
     if (!term) return;
@@ -357,6 +415,25 @@ void terminal_win_key(window_t* win, int key) {
                 }
                 break;
         }
+        return;
+    }
+
+    // Desktop cut/paste through the system clipboard (v6.4.245). Ctrl+C is
+    // reserved for SIGINT and Ctrl+Z for SIGTSTP (the keyboard driver turns them
+    // into signals), so the terminal takes the X/V pair.
+    if (c == 0x18) {                    // Ctrl+X — cut the whole input line
+        if (term->input_len > 0) {
+            clipboard_set(term->input, (uint32_t)term->input_len);
+            term->input_len = 0;
+            term->cursor_pos = 0;
+        }
+        return;
+    }
+    if (c == 0x16) {                    // Ctrl+V — paste the clipboard at the cursor
+        char cb[TERM_INPUT_MAX];
+        uint32_t n = clipboard_get(cb, sizeof(cb));
+        term_input_paste(term->input, &term->input_len, &term->cursor_pos,
+                         TERM_INPUT_MAX, cb, (int)n);
         return;
     }
 

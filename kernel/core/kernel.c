@@ -208,6 +208,7 @@ static void cmd_clip(int argc, char** argv);
 static void cmd_stackcheck(int argc, char** argv);
 extern int stack_canary_sweep(void);      // process.c — scan task-stack canaries
 extern int stack_canary_selftest(void);   // process.c — canary KAT
+extern int term_paste_selftest(void);      // gui/apps/terminal_win.c — Ctrl+V paste KAT
 static void cmd_snake(int argc, char** argv);
 static void cmd_tetris(int argc, char** argv);
 static void cmd_selene(int argc, char** argv);
@@ -5291,6 +5292,7 @@ static void run_selftests(void) {
         {"auth-lockout", auth_lockout_selftest},
         {"xbm-deps",     xbm_deps_selftest},
         {"clipboard",    clipboard_selftest},
+        {"term-paste",   term_paste_selftest},
         {"stack-canary", stack_canary_selftest},
         {"numparse",     numparse_selftest},        {"hkdf",          hkdf_selftest},
         {"chacha20",     chacha20_selftest},        {"siphash",       siphash_selftest},
