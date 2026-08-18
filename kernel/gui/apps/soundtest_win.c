@@ -168,8 +168,11 @@ void soundtest_win_click(window_t* win, int mx, int my, int btn) {
         }
     }
 
-    // SB16 buttons (3)
-    y0 = y0 + 3 * (bh + 4) + 12 + FONT_HEIGHT + 6;
+    // SB16 buttons (3). Advance to the SB section EXACTLY as the draw does: the first
+    // two PC-Speaker buttons step by bh+4, but the third (Alarm) steps by bh+12, then the
+    // "Sound Blaster 16:" label adds FONT_HEIGHT+6. The old `3*(bh+4)+12` assumed all three
+    // stepped by bh+4, so every SB16 button's click rectangle sat 4px below what was painted.
+    y0 = y0 + 2 * (bh + 4) + (bh + 12) + FONT_HEIGHT + 6;
     int sb16_ok = sb16_is_initialized();
     for (int i = 0; i < 3; i++) {
         int by = y0 + i * (bh + 4);
