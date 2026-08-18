@@ -196,7 +196,14 @@ uint64_t do_dlsym(long handle, const char* name) {
     if (!lib->used || !lib->elf) return 0;
 
     elf64_hdr_t* h = (elf64_hdr_t*)lib->elf;
-    if (h->e_shoff + (uint64_t)h->e_shnum * sizeof(elf64_shdr_t) > lib->elf_size) return 0;
+    // Bound the section-header table subtraction-first. e_shoff is a 64-bit field taken
+    // from a .so the calling process can write, so the old addition-first form
+    // `e_shoff + e_shnum*64 > elf_size` could WRAP past 2^64 and pass the check, leaving
+    // `lib->elf + e_shoff` pointing far outside the image — an out-of-bounds read as the
+    // scan below walks sh[i]. Every other bound in this function is already written this
+    // way (see sh_offset/sh_size just below); this was the one that wasn't.
+    if (h->e_shoff > lib->elf_size ||
+        (uint64_t)h->e_shnum * sizeof(elf64_shdr_t) > lib->elf_size - h->e_shoff) return 0;
     elf64_shdr_t* sh = (elf64_shdr_t*)(lib->elf + h->e_shoff);
     for (int i = 0; i < h->e_shnum; i++) {
         if (sh[i].sh_type != SHT_SYMTAB || sh[i].sh_entsize == 0) continue;
