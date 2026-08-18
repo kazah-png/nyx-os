@@ -227,6 +227,7 @@ h3 { font-family: var(--display); font-size: 1.15rem; margin: 0 0 .5rem; }
   -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
   -webkit-mask-composite: xor; mask-composite: exclude;
   opacity: 0; transition: opacity .3s;
+  pointer-events: none;   /* decorative overlay must never intercept clicks on buttons/links inside a card */
 }
 .card:hover { transform: translateY(-4px); background: var(--surface-2); }
 .card:hover::after { opacity: 1; }
