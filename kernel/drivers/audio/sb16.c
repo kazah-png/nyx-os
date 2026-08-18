@@ -24,8 +24,14 @@ static sb16_t sb16;
 static volatile int sb16_irq_fired = 0;
 static volatile int sb16_dma_playing = 0;
 
-// Large physically-contiguous DMA buffer within identity-mapped region
-static uint8_t sb16_dma_static_buf[SB16_DMA_BUF_SIZE] __attribute__((aligned(64)));
+// Large physically-contiguous DMA buffer within identity-mapped region. Aligned to
+// its full 64 KB size, not just 64 bytes: an ISA-DMA transfer must not cross a 64 KB
+// physical boundary (the 8237 only increments the low 16 bits of the address; the page
+// register is fixed). A 64 KB buffer that is merely 64-byte-aligned straddles such a
+// boundary, so a playback running past it wraps to the page start and streams the wrong
+// RAM as audio. 64 KB alignment makes the buffer occupy exactly one page, so no single
+// transfer within it can cross a boundary. (.bss only — no on-disk cost.)
+static uint8_t sb16_dma_static_buf[SB16_DMA_BUF_SIZE] __attribute__((aligned(SB16_DMA_BUF_SIZE)));
 
 static void sb16_short_delay(void) {
     for (volatile int i = 0; i < 10000; i++) __asm__ __volatile__("");
@@ -121,7 +127,12 @@ int sb16_start_dma(uint8_t* buffer, uint32_t len, uint8_t bits) {
 
     uint8_t channel = (bits == 16) ? SB16_DMA_CHANNEL_16BIT : SB16_DMA_CHANNEL_8BIT;
     uint8_t is16bit = (bits == 16);
-    uint16_t dma_len = len - 1;
+    // The 8237 count register holds (transfer_units - 1) in the CHANNEL's units. The 8-bit
+    // channel (1) counts BYTES, but the 16-bit channel (5) counts WORDS. `len` is a byte
+    // count, so a 16-bit transfer must halve it — else the controller is told to move `len`
+    // words (2*len bytes) and reads a full `len` bytes past the buffer. (The 16-bit path is
+    // not currently wired — every caller passes bits=8 — but it was miscounted.)
+    uint16_t dma_len = is16bit ? (uint16_t)((len >> 1) - 1) : (uint16_t)(len - 1);
 
     dma_set_mask(channel, 1);
     dma_clear_ff(is16bit);
