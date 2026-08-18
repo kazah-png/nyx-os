@@ -1,25 +1,28 @@
-// nparse.n — the M5 chain, token-native end to end: lex → parse → emit → run.
+// nparse.n — the M5 chain, token-native end to end, now over STATEMENTS:
+//   lex → parse → emit → run, in N's own surface syntax.
 //   ntokens.n scans N source and ncalc.n evaluates expressions, but each
 //   worked alone: ncalc re-reads raw characters inside its grammar. Real
 //   compilers do not — the lexer runs first, the parser consumes its
 //   TOKEN STREAM, and the output is CODE, not a value:
 //     source str ──lex()──► kinds[] / vals[] (sbrk'd i64 buffers,
 //     written with v0.16 index stores) ──parse──► stack code ──run──► value
-//   The parser never touches a character and never computes a result:
-//   each grammar rule EMITS opcodes as it recognizes its shape (postfix
+//   This iteration graduates from expressions to PROGRAMS: a statement
+//   list in N's own binding syntax —
+//       x := 10; y := 4; a := 2 + x; b := a * y; b - 1
+//   — where each `ident := expr;` statement STOREs into a variable
+//   table and the final tail expression is the program's value. No
+//   fixed environment remains: every name is bound by parsed code.
+//   Each grammar rule EMITS opcodes as it recognizes its shape (postfix
 //   order falls out of the descent, exactly like ncc's own gen_expr),
-//   and an inline VM — nstack's machine plus three comparison opcodes —
-//   executes the emitted program. State rides return values in the
+//   and an inline VM — nstack's machine plus comparisons and LOAD/STORE
+//   — executes the emitted program. State rides return values in the
 //   EP{pos,cp} pair (token position, code position): N has no globals,
 //   so both cursors thread functionally through every rule.
-//   On top of ncalc's grammar: identifiers (a one-letter environment:
-//   x=10, y=4, folded to constants at emit time) and comparisons
-//   < > ==, one precedence level below + and -.
-//   Token encoding: kind 0 = number (val = its value), 1 = identifier
-//   (val = environment index), 2 = operator/paren (val = its byte),
-//   3 = the two-char operator '==', 9 = end of input.
+//   Token encoding: kind 0 = number (val = its value), 1 = variable
+//   (single letter a–z, val = its slot), 2 = operator/paren (val = its
+//   byte), 3 = '==', 4 = ':=', 9 = end of input.
 //   Opcodes: 0 HALT · 1 PUSH arg · 2 ADD · 3 SUB · 4 MUL · 5 DIV ·
-//   6 MOD · 7 NEG · 8 LT · 9 GT · 10 EQ (comparisons push 0 or 1).
+//   6 MOD · 7 NEG · 8 LT · 9 GT · 10 EQ · 11 LOAD slot · 12 STORE slot.
 
 #[caps(syscall)]
 extern syscall {
@@ -38,14 +41,6 @@ fn alloc_words(n: i64) -> *i64 {
 }
 
 fn is_digit(b: i64) -> bool { b >= 48 && b <= 57 }
-
-// The fixed environment: x = 10, y = 4.
-fn env(id: i64) -> i64 {
-    if id == 0 {
-        return 10;
-    }
-    4
-}
 
 // Scan src into the two token arrays; returns the token count. The
 // last token is always the end marker (kind 9), so the parser can
@@ -69,11 +64,14 @@ fn lex(src: str, k: *i64, v: *i64) -> i64 {
             k[t] = 0; v[t] = val; t += 1;
             continue;
         }
-        if b == 120 || b == 121 {          // x | y — the environment
-            k[t] = 1;
-            if b == 120 { v[t] = 0; } else { v[t] = 1; }
-            t += 1;
+        if b >= 97 && b <= 122 {           // a–z: a one-letter variable
+            k[t] = 1; v[t] = b - 97; t += 1;
             i += 1;
+            continue;
+        }
+        if b == 58 && i + 1 < n && src[i + 1] as i64 == 61 {
+            k[t] = 4; v[t] = 0; t += 1;    // :=
+            i += 2;
             continue;
         }
         if b == 61 && i + 1 < n && src[i + 1] as i64 == 61 {
@@ -81,7 +79,7 @@ fn lex(src: str, k: *i64, v: *i64) -> i64 {
             i += 2;
             continue;
         }
-        k[t] = 2; v[t] = b; t += 1;        // operator / paren, by byte
+        k[t] = 2; v[t] = b; t += 1;        // operator / punct, by byte
         i += 1;
     }
     k[t] = 9; v[t] = 0;                    // end marker
@@ -102,13 +100,13 @@ fn emit2(code: *i64, cp: i64, op: i64, arg: i64) -> i64 {
     cp + 2
 }
 
-// factor := number | ident | '-' factor | '(' cmp ')'
+// factor := number | variable | '-' factor | '(' cmp ')'
 fn parse_factor(k: *i64, v: *i64, pos: i64, code: *i64, cp: i64) -> EP {
     if k[pos] == 0 {
         return EP{ pos: pos + 1, cp: emit2(code, cp, 1, v[pos]) };
     }
-    if k[pos] == 1 {                       // ident: fold env to a constant
-        return EP{ pos: pos + 1, cp: emit2(code, cp, 1, env(v[pos])) };
+    if k[pos] == 1 {                       // variable read: LOAD its slot
+        return EP{ pos: pos + 1, cp: emit2(code, cp, 11, v[pos]) };
     }
     if k[pos] == 2 && v[pos] == 45 {       // unary minus: operand, then NEG
         r := parse_factor(k, v, pos + 1, code, cp);
@@ -170,8 +168,31 @@ fn parse_cmp(k: *i64, v: *i64, pos: i64, code: *i64, cp: i64) -> EP {
     l
 }
 
-// nstack's machine, grown three comparison opcodes.
-fn run(prog: *i64, stk: *i64) -> i64 {
+// program := { variable ':=' cmp ';' } cmp
+//   Each binding statement compiles its right side, then STOREs into
+//   the variable's slot — the stack is balanced after every statement.
+//   The final expression is the program's value. Statement recognition
+//   needs one token of lookahead (variable followed by ':='), which the
+//   end marker makes safe at any position.
+fn parse_program(k: *i64, v: *i64, pos: i64, code: *i64, cp: i64) -> EP {
+    mut p := pos;
+    mut c := cp;
+    mut more := true;
+    while more {
+        more = false;
+        if k[p] == 1 && k[p + 1] == 4 {
+            slot := v[p];
+            r := parse_cmp(k, v, p + 2, code, c);
+            c = emit2(code, r.cp, 12, slot);   // STORE
+            p = r.pos + 1;                     // skip ';'
+            more = true;
+        }
+    }
+    parse_cmp(k, v, p, code, c)
+}
+
+// nstack's machine, grown comparisons and a variable table.
+fn run(prog: *i64, stk: *i64, vars: *i64) -> i64 {
     mut pc := 0;
     mut sp := 0;
     mut running := true;
@@ -200,28 +221,30 @@ fn run(prog: *i64, stk: *i64) -> i64 {
             if stk[sp - 2] == stk[sp - 1] { t = 1; }
             stk[sp - 2] = t; sp -= 1; pc += 1;
         }
+        if op == 11 { stk[sp] = vars[prog[pc + 1]]; sp += 1; pc += 2; }
+        if op == 12 { sp -= 1; vars[prog[pc + 1]] = stk[sp]; pc += 2; }
     }
     stk[0]
 }
 
 // The whole pipeline in one call: tokens in, code out, value from the VM.
-fn show(src: str, k: *i64, v: *i64, code: *i64, stk: *i64) {
+fn show(src: str, k: *i64, v: *i64, code: *i64, stk: *i64, vars: *i64) {
     lex(src, k, v);
-    r := parse_cmp(k, v, 0, code, 0);
+    r := parse_program(k, v, 0, code, 0);
     words := emit1(code, r.cp, 0);         // HALT closes the program
-    val := run(code, stk);
-    put("{src}  ->  {val}   [{words} code words]\n");
+    val := run(code, stk, vars);
+    put("{src}\n  ->  {val}   [{words} code words]\n");
 }
 
 fn main() -> i64 {
     k := alloc_words(64);
     v := alloc_words(64);
-    code := alloc_words(64);
+    code := alloc_words(128);
     stk := alloc_words(64);
-    put("lex -> parse -> emit -> run, with x=10, y=4:\n");
-    show("2 + x * y", k, v, code, stk);
-    show("(2 + x) * y", k, v, code, stk);
-    show("x * y == 40", k, v, code, stk);
-    show("x - y < 5", k, v, code, stk);
+    vars := alloc_words(26);
+    put("statements in N's own syntax, lex -> parse -> emit -> run:\n");
+    show("x := 10; y := 4; a := 2 + x; b := a * y; b - 1", k, v, code, stk, vars);
+    show("n := 7; m := n * n; m > 40", k, v, code, stk, vars);
+    show("p := 3; q := -p + 10; (p + q) * 2 == 20", k, v, code, stk, vars);
     0
 }
