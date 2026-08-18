@@ -205,6 +205,9 @@ static void cmd_life(int argc, char** argv);
 static void cmd_blobs(int argc, char** argv);
 static void cmd_screenshot(int argc, char** argv);
 static void cmd_clip(int argc, char** argv);
+static void cmd_stackcheck(int argc, char** argv);
+extern int stack_canary_sweep(void);      // process.c — scan task-stack canaries
+extern int stack_canary_selftest(void);   // process.c — canary KAT
 static void cmd_snake(int argc, char** argv);
 static void cmd_tetris(int argc, char** argv);
 static void cmd_selene(int argc, char** argv);
@@ -413,6 +416,7 @@ static const command_t commands[] = {
     {"ext2cat",   cmd_mount,     "Alias for mount", false},
     {"df",        cmd_df,        "Show disk usage of the mounted filesystem", false},
     {"screenshot",cmd_screenshot,"Save a PNG/PPM snapshot of the screen: screenshot [path]", false},
+    {"stackcheck",cmd_stackcheck,"Check every task's kernel-stack overflow canary", false},
     {NULL, NULL, NULL, false}
 };
 
@@ -591,7 +595,7 @@ typedef struct { const char* title; const char* const* names; } help_cat_t;
 static const char* const HC_shell[] = {"help","man","version","clear","history","exec","spawn","jobs","wait","nice","renice",0};
 static const char* const HC_files[] = {"ls","cd","pwd","cat","file","tar","iniget","open","touch","mkdir","rm","cp","mv","tree","find","which","basename","dirname","files","df","mount","ext2ls","ext2cat",0};
 static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","fold","nl","expand","unexpand","factor","seq","paste","clip","cut","uniq","join","comm","printf","wc","write","hexdump",0};
-static const char* const HC_sys[]   = {"ps","kill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat","screenshot",0};
+static const char* const HC_sys[]   = {"ps","kill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat","screenshot","stackcheck",0};
 static const char* const HC_user[]  = {"useradd","users",0};
 static const char* const HC_net[]   = {"ifconfig","dhcp","dns","ping","setip","httpget","tls","ipcalc",0};
 static const char* const HC_dev[]   = {"cc","xbm","semver","fnv","urlcode","crc32c","fletcher","murmur","base58","bech32","deflate","gzip","calc","json",0};
@@ -682,6 +686,7 @@ static const man_page_t man_pages[] = {
     {"comm",     "Compare two files that are each already sorted, line by line, in three columns: lines only in <file1> (column 1), lines only in <file2> (column 2, indented one tab), and lines common to both (column 3, indented two tabs). `-1`/`-2`/`-3` suppress the respective column (and drop its indentation from the later columns), so e.g. `comm -12 a b` prints just the lines common to both. Input is assumed sorted in byte order."},
     {"semver",   "Parse and compare Semantic Versioning 2.0.0 strings (MAJOR.MINOR.PATCH[-prerelease][+build]). With one argument, validate it and print the parsed fields. With two, print their precedence relation (`A < B`, `A = B`, or `A > B`) per the semver spec: core numbers compared numerically, a prerelease ranks below the same version without one, and build metadata is ignored. Useful for comparing package versions."},
     {"seq",      "Print an inclusive sequence of integers, one per line. `seq LAST` counts 1..LAST; `seq FIRST LAST` counts FIRST..LAST; `seq FIRST STEP LAST` advances by STEP (which may be negative). A range that starts on the wrong side of LAST prints nothing, and a zero STEP is an error. Integer-only (64-bit signed), matching GNU seq for integer arguments."},
+    {"stackcheck","Scan every running task's kernel stack for overflow. Each 4 KB kernel task stack carries a magic canary word at its low (overflow) end, stamped when the stack is allocated; `stackcheck` walks the process table and reports whether every canary is still intact or names any task whose stack has been smashed (grown past 4 KB into the canary). A cheap detect-and-report tripwire for stack overflows, complementing the off-stack-buffer hardening."},
     {"clip",     "A system text clipboard (like pbcopy/pbpaste). `clip <text...>` copies the arguments (joined with spaces) to the clipboard; `clip` with no arguments pastes - prints the current contents; `clip -c` clears it. The clipboard holds up to 4096 bytes and persists across commands, so you can copy a value from one command's output and paste it into another. The same buffer is exposed to the rest of the kernel (clipboard_get/set), so the GUI terminal and editor can be wired to copy/paste through it."},
     {"paste",    "Merge corresponding lines of files. By default the i-th line of each file is printed on one row, separated by a tab, continuing until every file runs out (a spent file leaves its column empty). -s writes each file's lines onto a single line instead. -d LIST replaces the tab with the characters of LIST used in turn (\\t, \\n, \\\\ escapes recognised). Reads each whole file; up to 16 files. Matches GNU paste for newline-delimited text."},
     {"cut",      "Print selected parts of each line of <file>. Choose one mode: -f LIST cuts fields (a field is text between delimiters; the delimiter is a TAB by default, or the single character given by -d C), -c LIST cuts characters, -b LIST cuts bytes. A LIST is a comma-separated set of 1-based ranges: 'N' one position, 'N-M' the inclusive range, 'N-' from N to the end, '-M' the same as '1-M'. Selected parts are always emitted in increasing position order, never duplicated, so the order the ranges are written in does not matter. In field mode a line that contains no delimiter is printed unchanged, unless -s suppresses such lines; selected fields are re-joined with the delimiter. Matches GNU cut byte-for-byte for newline-delimited text (chars and bytes coincide for ASCII). Reads a bounded chunk of each file; several files may be given."},
@@ -3416,6 +3421,14 @@ static void cmd_clip(int argc, char** argv) {
     printf("clip: copied %u byte%s\n", o, o == 1 ? "" : "s");
 }
 
+// `stackcheck` — sweep every task's kernel-stack overflow canary (process.c) and report.
+static void cmd_stackcheck(int argc, char** argv) {
+    (void)argc; (void)argv;
+    int smashed = stack_canary_sweep();
+    if (smashed == 0) printf("stackcheck: all task kernel-stack canaries intact\n");
+    else              printf("stackcheck: %d task kernel-stack(s) SMASHED\n", smashed);
+}
+
 // `snake` — open a Snake game window (in-kernel, compositor.c).
 static void cmd_snake(int argc, char** argv) {
     (void)argc; (void)argv;
@@ -5265,6 +5278,7 @@ static void run_selftests(void) {
         {"auth-lockout", auth_lockout_selftest},
         {"xbm-deps",     xbm_deps_selftest},
         {"clipboard",    clipboard_selftest},
+        {"stack-canary", stack_canary_selftest},
         {"numparse",     numparse_selftest},        {"hkdf",          hkdf_selftest},
         {"chacha20",     chacha20_selftest},        {"siphash",       siphash_selftest},
         {"poly1305",     poly1305_selftest},        {"chachapoly",    chacha20poly1305_selftest},

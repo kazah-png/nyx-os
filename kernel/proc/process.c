@@ -35,8 +35,55 @@ void init_process(void) {
 //   r15, r14, r13, r12, r11, r10, r9, r8,
 //   rbp, rdi, rsi, rdx, rcx, rbx, rax,
 //   int_no(32), error(0), rip, cs, rflags, rsp, ss
+// ---- kernel task-stack canary (stack-smash tripwire) -----------------------------------------
+// Each task's kernel stack is a kmalloc(4096) block that grows DOWN from stack_mem+4096. The
+// lowest 8 bytes (stack_mem[0..7]) are the overflow-danger end: real usage peaks ~2.9 KB from the
+// top (scratchpad/stackscan.sh), so they're never touched unless a frame nearly overruns the 4 KB
+// stack. We stamp a magic there at allocation; `stackcheck` (stack_canary_sweep) later scans every
+// task to detect a smash - detect-and-report defence-in-depth (no paging / no scheduler-path
+// change) complementing the v6.4.233-234 off-stack-buffer work.
+#define STACK_CANARY 0x4E7853746B437921ULL   /* "NxStkCy!" */
+
+static void stack_canary_place(void* stack_mem) {
+    if (stack_mem) *(volatile uint64_t*)stack_mem = STACK_CANARY;
+}
+static int stack_canary_intact(void* stack_mem) {
+    return stack_mem && *(volatile uint64_t*)stack_mem == STACK_CANARY;
+}
+// kmalloc a 4 KB task stack with a canary already stamped at its low (overflow) end.
+static void* alloc_task_stack(void) {
+    void* m = kmalloc(4096);
+    stack_canary_place(m);
+    return m;
+}
+// Scan every live task's kernel-stack canary. Returns the count of SMASHED stacks (0 = all intact),
+// logging each. kernel_stack == stack_mem+4096, so the canary lives at kernel_stack-4096.
+int stack_canary_sweep(void) {
+    int smashed = 0;
+    for (int i = 0; i < process_count; i++) {
+        process_t* p = process_table[i];
+        if (!p || !p->kernel_stack) continue;
+        if (!stack_canary_intact((void*)((uintptr_t)p->kernel_stack - 4096))) {
+            smashed++;
+            printf("[STACKGUARD] pid %d: kernel stack canary SMASHED\n", p->pid);
+        }
+    }
+    return smashed;
+}
+// KAT: stamp a canary, confirm intact, corrupt a byte, confirm the check fails, restore.
+int stack_canary_selftest(void) {
+    uint8_t buf[16];
+    stack_canary_place(buf);
+    if (!stack_canary_intact(buf)) return 1;
+    buf[0] ^= 0xFF;
+    if (stack_canary_intact(buf)) return 2;
+    stack_canary_place(buf);
+    if (!stack_canary_intact(buf)) return 3;
+    return 0;
+}
+
 static int init_task_stack(process_t* proc, void* entry_point) {
-    void* stack_mem = kmalloc(4096);
+    void* stack_mem = alloc_task_stack();
     if (!stack_mem) return -1;
     uint64_t* sp = (uint64_t*)((uintptr_t)stack_mem + 4096);
 
@@ -65,7 +112,7 @@ static int init_task_stack(process_t* proc, void* entry_point) {
 }
 
 static int init_user_task_stack(process_t* proc, void* entry_point, void* user_stack_top) {
-    void* stack_mem = kmalloc(4096);
+    void* stack_mem = alloc_task_stack();
     if (!stack_mem) return -1;
     uint64_t* sp = (uint64_t*)((uintptr_t)stack_mem + 4096);
 
@@ -191,7 +238,7 @@ process_t* create_user_process(const char* name, void* entry, void* user_stack, 
 // so the scheduler resumes it through the same irq_common RESTORE_REGS/iretq path.
 // (parameter is `u_rsp`, not `user_rsp`: that name is now the per-CPU accessor.)
 static int init_forked_task_stack(process_t* proc, uint64_t* frame, uint64_t u_rsp) {
-    void* stack_mem = kmalloc(4096);
+    void* stack_mem = alloc_task_stack();
     if (!stack_mem) return -1;
     uint64_t* sp = (uint64_t*)((uintptr_t)stack_mem + 4096);
 
@@ -322,7 +369,7 @@ int do_fork(void) {
 // high->low (rax,rbx,rcx,rdx,rsi,rdi,rbp,r8..r15), so RDI is the 6th push.
 static int init_thread_task_stack(process_t* proc, void* entry, void* user_stack_top,
                                   uint64_t arg) {
-    void* stack_mem = kmalloc(4096);
+    void* stack_mem = alloc_task_stack();
     if (!stack_mem) return -1;
     uint64_t* sp = (uint64_t*)((uintptr_t)stack_mem + 4096);
 
