@@ -295,6 +295,12 @@ int do_fork(void) {
     }
 
     if (init_forked_task_stack(child, frame, user_rsp) < 0) {
+        // The child already holds resources copied/refcounted above: its own kmalloc'd
+        // file-backed VMA snapshots (file_buf) and a pipe_incref on every inherited pipe
+        // end. free_page_directory + kfree(child) alone would leak both. Undo them the
+        // same way reap and do_clone's failure path do, before freeing the process_t.
+        close_proc_fds(child);      // drop the inherited pipe-end refcounts
+        mmap_free_bufs(child);      // free the per-child file_buf copies
         free_page_directory(child_pml4);
         kfree(child);
         return -1;
