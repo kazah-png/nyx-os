@@ -349,7 +349,7 @@ static const command_t commands[] = {
     {"sb16play",  cmd_sb16play,  "Test SB16 playback: sb16play [freq] [ms]", false},
     {"exec",      cmd_exec,      "Run ELF in foreground (waits): exec <file>", false},
     {"cc",        cmd_cc,        "Compile/link C in-OS: cc [-c] [--self-libc] <in.c/.o ...> [-o out]", false},
-    {"xbm",       cmd_xbm,       "Package manager: xbm install|remove|verify <name> | xbm search <str> | xbm list [--installed]", false},
+    {"xbm",       cmd_xbm,       "Package manager: xbm install|remove|verify|deps <name> | xbm search <str> | xbm list [--installed]", false},
     {"pkg",       cmd_xbm,       "Alias for xbm (package manager)", true},
     {"spawn",     cmd_spawn,     "Run ELF in background: spawn <file>", false},
     {"doom",      cmd_doom,      "Play DOOM in a window (Ctrl-C to quit)", false},
@@ -705,7 +705,7 @@ static const man_page_t man_pages[] = {
     {"ipcalc",   "IPv4 subnet calculator. Give an address as `ipcalc <ip>/<prefix>`, `ipcalc <ip> <netmask>`, or `ipcalc <ip> <prefix>` and it prints the network and broadcast addresses, the netmask and wildcard, the usable host range (HostMin..HostMax) and the host count. RFC-correct at the edges: a /31 has two usable addresses (RFC 3021) and a /32 is a single host."},
     {"calc",     "Evaluate a 64-bit signed integer expression with C operators and precedence: + - * / %, the bitwise/shift operators | ^ & << >>, unary - + ~, parentheses, and decimal / 0x-hex / 0b-binary literals. Division truncates toward zero. Quote or join the terms, e.g. calc (2 + 3) * 4. Reports divide-by-zero, bad syntax, and unbalanced parentheses."},
     {"json",     "Validate or query a JSON document (RFC 8259) read from a file. `json <file>` prints whether it is valid or the byte offset of the first error - strict: rejects trailing commas, unquoted keys, leading zeros, bad escapes, control chars in strings, and NaN/Infinity. `json get <file> <path>` extracts the value at a jq-lite path built from `.name` (object member) and `[N]` (array index) steps, e.g. `json get cfg.json .users[0].name`; `.` selects the whole document; it prints the value's raw JSON (scalar or subtree), or a not-found / type-mismatch / bad-path error. Both parsing and extraction are iterative (O(1) kernel stack), so nesting beyond 256 levels is rejected and even hostile deeply-nested input cannot exhaust the stack."},
-    {"xbm",      "The NyxOS package manager. `xbm install <name>` compiles a package from its recipe with the in-OS C compiler, installs it, and records a SHA-256 integrity manifest; `xbm verify <name>` re-hashes the installed binary and reports OK or MODIFIED against that manifest (apt/pacman-style tamper detection); `xbm remove <name>` uninstalls it; `xbm search <str>` and `xbm list` browse the available and installed packages. A recipe may carry a `url:` line pointing at a remote http:// source; xbm then downloads that source into the package before building it, the pacman/apt \"fetch source, then compile in-OS\" model."},
+    {"xbm",      "The NyxOS package manager. `xbm install <name>` compiles a package from its recipe with the in-OS C compiler, installs it, and records a SHA-256 integrity manifest; `xbm verify <name>` re-hashes the installed binary and reports OK or MODIFIED against that manifest (apt/pacman-style tamper detection); `xbm remove <name>` uninstalls it; `xbm deps <name>` resolves and prints the install order from the recipes' `deps:` fields (dependencies before dependents, target last), detecting dependency cycles and missing packages - a topological sort like the one apt/pacman use to order an install. `xbm search <str>` and `xbm list` browse the available and installed packages. A recipe may carry a `url:` line pointing at a remote http:// source; xbm then downloads that source into the package before building it, the pacman/apt \"fetch source, then compile in-OS\" model."},
     {"cc",       "Compile and link C source into an ELF program with the in-OS TinyCC toolchain. -c stops after producing an object file."},
     {"fire",     "Open Nyx Fire, an animated doom-fire effect window. It is also a visual performance demo, re-filling the whole framebuffer region each frame."},
     {"fractal",  "Open Nyx Fractal, a fixed-point Mandelbrot renderer that auto-zooms toward the seahorse valley. A P4 rendering-performance-testing demo: a benchmark HUD shows the measured per-frame render time, the derived render FPS, the current iteration cap, and the zoom factor, so you can watch the software renderer's cost rise and fall with the load. All-integer (Q8.24 fixed point)."},
@@ -2878,9 +2878,129 @@ int pkg_hash_selftest(void) {
     return 0;
 }
 
+// ---- xbm dependency resolution: topological install order + cycle detection ------------------
+// A recipe may declare `deps: <pkg> <pkg> ...`; `xbm deps <name>` prints the install order (each
+// dependency before the package that needs it, target last), or reports a cycle / a missing
+// package. Iterative DFS with an explicit STATIC stack (off the 4 KB task stack); the static
+// scratch makes it non-reentrant, which is fine — xbm runs serially in the shell.
+#define XBM_MAXP    64
+#define XBM_MAXD    16
+#define XBM_NAMELEN 32
+enum { XBM_OK = 0, XBM_EMISSING = -1, XBM_ECYCLE = -2, XBM_EOVERFLOW = -3 };
+typedef int (*xbm_deps_fn)(const char* name, char deps[][XBM_NAMELEN], int maxd, void* ctx);
+
+static char xr_name[XBM_MAXP][XBM_NAMELEN];
+static struct { int node; int di; char deps[XBM_MAXD][XBM_NAMELEN]; int nd; } xr_stk[XBM_MAXP];
+static unsigned char xr_color[XBM_MAXP];   // 0 white, 1 gray (on stack), 2 black (done)
+
+static int xbm_resolve(const char* target, xbm_deps_fn get, void* ctx, char order[][XBM_NAMELEN], int* pn) {
+    int nn = 0;
+    #define XR_INTERN(s, outidx) do {                                          \
+        int _f = -1;                                                           \
+        for (int _i = 0; _i < nn; _i++) if (strcmp(xr_name[_i], s) == 0) { _f = _i; break; } \
+        if (_f < 0) { if (nn >= XBM_MAXP) return XBM_EOVERFLOW;                \
+            strncpy(xr_name[nn], s, XBM_NAMELEN - 1); xr_name[nn][XBM_NAMELEN - 1] = 0; \
+            xr_color[nn] = 0; _f = nn++; }                                     \
+        outidx = _f;                                                           \
+    } while (0)
+    int ti; XR_INTERN(target, ti);
+    int on = 0, sp = 0;
+    int d = get(xr_name[ti], xr_stk[sp].deps, XBM_MAXD, ctx);
+    if (d < 0) return XBM_EMISSING;
+    xr_stk[sp].node = ti; xr_stk[sp].di = 0; xr_stk[sp].nd = d; xr_color[ti] = 1; sp++;
+    while (sp > 0) {
+        int top = sp - 1, node = xr_stk[top].node;
+        if (xr_stk[top].di < xr_stk[top].nd) {
+            char* dep = xr_stk[top].deps[xr_stk[top].di++];
+            int ci; XR_INTERN(dep, ci);
+            if (xr_color[ci] == 1) return XBM_ECYCLE;      // back-edge to a node on the stack
+            if (xr_color[ci] == 2) continue;               // already resolved
+            if (sp >= XBM_MAXP) return XBM_EOVERFLOW;
+            int dd = get(xr_name[ci], xr_stk[sp].deps, XBM_MAXD, ctx);
+            if (dd < 0) return XBM_EMISSING;
+            xr_stk[sp].node = ci; xr_stk[sp].di = 0; xr_stk[sp].nd = dd; xr_color[ci] = 1; sp++;
+        } else {
+            xr_color[node] = 2;                            // post-order: deps all done
+            if (on >= XBM_MAXP) return XBM_EOVERFLOW;
+            strncpy(order[on], xr_name[node], XBM_NAMELEN - 1); order[on][XBM_NAMELEN - 1] = 0; on++;
+            sp--;
+        }
+    }
+    *pn = on;
+    return XBM_OK;
+    #undef XR_INTERN
+}
+
+// VFS-backed dependency source: read /usr/pkg/<name>/recipe, split its `deps:` line into names.
+// Returns the direct-dep count, 0 if the recipe has no `deps:`, or -1 if the package has no recipe.
+static int xbm_vfs_get_deps(const char* name, char deps[][XBM_NAMELEN], int maxd, void* ctx) {
+    (void)ctx;
+    if (!pkg_valid_name(name)) return -1;
+    char rpath[160];
+    snprintf(rpath, sizeof(rpath), "/usr/pkg/%s/recipe", name);
+    int fd = vfs_open(rpath, 0, 0);
+    if (fd < 0) return -1;
+    char rbuf[512];
+    int n = vfs_read(fd, rbuf, sizeof(rbuf) - 1);
+    vfs_close(fd);
+    if (n < 0) return -1;
+    rbuf[n] = '\0';
+    char dline[256];
+    if (!pkg_recipe_value(rbuf, "deps", dline, sizeof(dline))) return 0;   // recipe exists, no deps
+    int nd = 0;
+    for (char* p = dline; *p && nd < maxd; ) {
+        while (*p == ' ' || *p == '\t') p++;
+        if (!*p) break;
+        int k = 0;
+        while (*p && *p != ' ' && *p != '\t' && k < XBM_NAMELEN - 1) deps[nd][k++] = *p++;
+        deps[nd][k] = '\0';
+        while (*p && *p != ' ' && *p != '\t') p++;   // skip any overflow of an over-long name
+        nd++;
+    }
+    return nd;
+}
+
+// KAT: resolve fixed dependency graphs from an in-memory table (deterministic order + errors).
+struct xbm_tabpkg { const char* name; const char* deps[XBM_MAXD]; int nd; };
+static const struct xbm_tabpkg* g_xbm_tab; static int g_xbm_ntab;
+static int xbm_tab_get(const char* name, char deps[][XBM_NAMELEN], int maxd, void* ctx) {
+    (void)ctx;
+    for (int i = 0; i < g_xbm_ntab; i++) if (strcmp(g_xbm_tab[i].name, name) == 0) {
+        int n = g_xbm_tab[i].nd; if (n > maxd) n = maxd;
+        for (int j = 0; j < n; j++) { strncpy(deps[j], g_xbm_tab[i].deps[j], XBM_NAMELEN - 1); deps[j][XBM_NAMELEN - 1] = 0; }
+        return n;
+    }
+    return -1;
+}
+int xbm_deps_selftest(void) {
+    static char order[XBM_MAXP][XBM_NAMELEN];
+    int pn;
+    static const struct xbm_tabpkg chain[] = {{"a",{"b"},1},{"b",{"c"},1},{"c",{0},0}};
+    g_xbm_tab = chain; g_xbm_ntab = 3;
+    if (xbm_resolve("a", xbm_tab_get, 0, order, &pn) != XBM_OK) return 1;
+    if (pn != 3 || strcmp(order[0],"c") || strcmp(order[1],"b") || strcmp(order[2],"a")) return 2;
+    static const struct xbm_tabpkg diamond[] = {{"a",{"b","c"},2},{"b",{"d"},1},{"c",{"d"},1},{"d",{0},0}};
+    g_xbm_tab = diamond; g_xbm_ntab = 4;
+    if (xbm_resolve("a", xbm_tab_get, 0, order, &pn) != XBM_OK) return 3;
+    if (pn != 4 || strcmp(order[0],"d") || strcmp(order[1],"b") || strcmp(order[2],"c") || strcmp(order[3],"a")) return 4;
+    static const struct xbm_tabpkg cyc[] = {{"a",{"b"},1},{"b",{"a"},1}};
+    g_xbm_tab = cyc; g_xbm_ntab = 2;
+    if (xbm_resolve("a", xbm_tab_get, 0, order, &pn) != XBM_ECYCLE) return 5;
+    static const struct xbm_tabpkg self[] = {{"a",{"a"},1}};
+    g_xbm_tab = self; g_xbm_ntab = 1;
+    if (xbm_resolve("a", xbm_tab_get, 0, order, &pn) != XBM_ECYCLE) return 6;
+    static const struct xbm_tabpkg miss[] = {{"a",{"x"},1}};
+    g_xbm_tab = miss; g_xbm_ntab = 1;
+    if (xbm_resolve("a", xbm_tab_get, 0, order, &pn) != XBM_EMISSING) return 7;
+    static const struct xbm_tabpkg leaf[] = {{"a",{0},0}};
+    g_xbm_tab = leaf; g_xbm_ntab = 1;
+    if (xbm_resolve("a", xbm_tab_get, 0, order, &pn) != XBM_OK || pn != 1 || strcmp(order[0],"a")) return 8;
+    return 0;
+}
+
 static void cmd_xbm(int argc, char** argv) {
     const char* prog = argv[0];   // "xbm" (or the "pkg" alias) — echo whatever was typed
-    if (argc < 2) { printf("Usage: %s install|remove|verify <name> | %s search <str> | %s list [--installed]\n", prog, prog, prog); return; }
+    if (argc < 2) { printf("Usage: %s install|remove|verify|deps <name> | %s search <str> | %s list [--installed]\n", prog, prog, prog); return; }
 
     if (strcmp(argv[1], "list") == 0) {
         // `xbm list` = packages available in the repo; `xbm list --installed` = binaries in /mnt/bin.
@@ -2919,6 +3039,24 @@ static void cmd_xbm(int argc, char** argv) {
         }
         vfs_close(fd);
         if (hits == 0) printf("%s: no packages match '%s'\n", prog, q);
+        return;
+    }
+
+    if (strcmp(argv[1], "deps") == 0) {
+        // Print the topological install order for <name> from recipe `deps:` fields.
+        if (argc < 3) { printf("Usage: %s deps <name>\n", prog); return; }
+        const char* name = argv[2];
+        if (!pkg_valid_name(name)) { printf("%s: invalid package name '%s'\n", prog, name); return; }
+        static char order[XBM_MAXP][XBM_NAMELEN];
+        int pn = 0;
+        int r = xbm_resolve(name, xbm_vfs_get_deps, 0, order, &pn);
+        if (r == XBM_OK) {
+            printf("%s: install order for '%s' (%d):", prog, name, pn);
+            for (int i = 0; i < pn; i++) printf(" %s", order[i]);
+            printf("\n");
+        } else if (r == XBM_EMISSING) printf("%s: '%s' or one of its dependencies has no recipe\n", prog, name);
+        else if (r == XBM_ECYCLE)     printf("%s: dependency cycle detected involving '%s'\n", prog, name);
+        else                          printf("%s: dependency graph too large (> %d packages)\n", prog, XBM_MAXP);
         return;
     }
 
@@ -3056,7 +3194,7 @@ static void cmd_xbm(int argc, char** argv) {
         return;
     }
 
-    printf("%s: unknown subcommand '%s' (expected install|remove|verify|search|list)\n", prog, argv[1]);
+    printf("%s: unknown subcommand '%s' (expected install|remove|verify|deps|search|list)\n", prog, argv[1]);
 }
 
 // Run an ELF as a BACKGROUND job: spawn it and return immediately. It runs
@@ -5063,6 +5201,7 @@ static void run_selftests(void) {
         {"ppm",          ppm_selftest},
         {"png-encode",   png_encode_selftest},
         {"auth-lockout", auth_lockout_selftest},
+        {"xbm-deps",     xbm_deps_selftest},
         {"numparse",     numparse_selftest},        {"hkdf",          hkdf_selftest},
         {"chacha20",     chacha20_selftest},        {"siphash",       siphash_selftest},
         {"poly1305",     poly1305_selftest},        {"chachapoly",    chacha20poly1305_selftest},
