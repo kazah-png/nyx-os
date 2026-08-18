@@ -5062,6 +5062,7 @@ static void run_selftests(void) {
         {"pkg-hash",     pkg_hash_selftest},
         {"ppm",          ppm_selftest},
         {"png-encode",   png_encode_selftest},
+        {"auth-lockout", auth_lockout_selftest},
         {"numparse",     numparse_selftest},        {"hkdf",          hkdf_selftest},
         {"chacha20",     chacha20_selftest},        {"siphash",       siphash_selftest},
         {"poly1305",     poly1305_selftest},        {"chachapoly",    chacha20poly1305_selftest},

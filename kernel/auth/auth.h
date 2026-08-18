@@ -8,6 +8,7 @@
 
 int  auth_setup(void);
 int  auth_verify(const char* username, const char* password);
+int  auth_lockout_selftest(void);   /* KAT: login brute-force lockout state machine */
 void auth_add_user(const char* username, const char* password, int avatar);
 void auth_list_users(void);
 int  auth_get_avatar(const char* username);

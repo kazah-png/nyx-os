@@ -259,7 +259,31 @@ int auth_setup(void) {
     return 0;
 }
 
-int auth_verify(const char* username, const char* password) {
+/* ------------------------------------------------------------------ */
+/*  Login brute-force lockout (rate-limiting)                         */
+/* ------------------------------------------------------------------ */
+/* After LOCKOUT_THRESHOLD consecutive failed logins the gate is closed for
+ * LOCKOUT_COOLDOWN timer ticks: every attempt (even the correct password) is
+ * refused until the window elapses, throttling an online password-guessing
+ * attack to a few tries per cooldown. Any successful login clears the counter.
+ * A single global gate (the login screen serves one user at a time); the
+ * decision logic is pure + clock-injected so it is known-answer tested. */
+#define LOCKOUT_THRESHOLD 5
+#define LOCKOUT_COOLDOWN  1800u          /* ticks (~18 s at the 100 Hz PIT) */
+
+typedef struct { int fails; uint32_t locked_until; } lockout_t;
+static lockout_t g_lockout;
+
+static int lockout_blocked(const lockout_t* L, uint32_t now) {
+    return L->fails >= LOCKOUT_THRESHOLD && (int32_t)(L->locked_until - now) > 0;
+}
+static void lockout_record(lockout_t* L, int success, uint32_t now) {
+    if (success) { L->fails = 0; L->locked_until = 0; return; }
+    if (L->fails < 1000000) L->fails++;
+    if (L->fails >= LOCKOUT_THRESHOLD) L->locked_until = now + LOCKOUT_COOLDOWN;
+}
+
+static int auth_verify_core(const char* username, const char* password) {
     if (!username || !password) return 0;
 
     if (ext2_fs.block_size == 0 || !passwd_exists())
@@ -299,6 +323,34 @@ int auth_verify(const char* username, const char* password) {
         }
     }
     return fallback_verify(username, password);
+}
+
+/* Public entry: apply the brute-force lockout gate around the password check. */
+int auth_verify(const char* username, const char* password) {
+    uint32_t now = get_ticks();
+    if (lockout_blocked(&g_lockout, now)) return 0;      /* locked out - refuse outright */
+    int ok = auth_verify_core(username, password);
+    lockout_record(&g_lockout, ok, now);
+    return ok;
+}
+
+/* KAT: drive the lockout state machine with an injected clock (deterministic). */
+int auth_lockout_selftest(void) {
+    lockout_t L = {0, 0};
+    uint32_t t = 1000;
+    for (int i = 0; i < LOCKOUT_THRESHOLD - 1; i++) {
+        lockout_record(&L, 0, t);
+        if (lockout_blocked(&L, t)) return 1;                          /* no lock before threshold */
+    }
+    lockout_record(&L, 0, t);
+    if (!lockout_blocked(&L, t)) return 2;                             /* threshold failure arms lock */
+    if (!lockout_blocked(&L, t + LOCKOUT_COOLDOWN - 1)) return 3;      /* still locked in-window */
+    if (lockout_blocked(&L, t + LOCKOUT_COOLDOWN + 1)) return 4;       /* unlocks after cooldown */
+    lockout_record(&L, 1, t + LOCKOUT_COOLDOWN + 2);                   /* success resets the counter */
+    if (L.fails != 0 || lockout_blocked(&L, t + LOCKOUT_COOLDOWN + 2)) return 5;
+    for (int i = 0; i < LOCKOUT_THRESHOLD; i++) lockout_record(&L, 0, t + 10000);
+    if (!lockout_blocked(&L, t + 10000)) return 6;                     /* re-locks after threshold */
+    return 0;
 }
 
 void auth_add_user(const char* username, const char* password, int avatar) {
