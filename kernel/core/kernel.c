@@ -167,6 +167,7 @@ static void cmd_ipcalc(int argc, char** argv);
 static void cmd_calc(int argc, char** argv);
 static void cmd_json(int argc, char** argv);
 static void cmd_tree(int argc, char** argv);
+static void cmd_du(int argc, char** argv);
 static void cmd_env(int argc, char** argv);
 static void cmd_export(int argc, char** argv);
 static void cmd_find(int argc, char** argv);
@@ -304,6 +305,7 @@ static const command_t commands[] = {
     {"tar",       cmd_tar,       "List a tar archive: tar t[v] <file.tar>", false},
     {"iniget",    cmd_iniget,    "Read an INI/conf value: iniget <file> <section|-> <key>", false},
     {"tree",      cmd_tree,      "Show filesystem tree: tree [path]", false},
+    {"du",        cmd_du,        "Disk usage: du [path] sums file sizes over a subtree", false},
     {"env",       cmd_env,       "Show environment variables", false},
     {"export",    cmd_export,    "Set env variable: export <name>=<value>", false},
     {"find",      cmd_find,      "Find files by name: find <name> [path]", false},
@@ -594,7 +596,7 @@ void execute_command(const char* cmd_line) {
 // ever dropped even if a new command isn't categorised here yet.
 typedef struct { const char* title; const char* const* names; } help_cat_t;
 static const char* const HC_shell[] = {"help","man","version","clear","history","exec","spawn","jobs","wait","nice","renice",0};
-static const char* const HC_files[] = {"ls","cd","pwd","cat","file","tar","iniget","open","touch","mkdir","rm","cp","mv","tree","find","which","basename","dirname","files","df","mount","ext2ls","ext2cat",0};
+static const char* const HC_files[] = {"ls","cd","pwd","cat","file","tar","iniget","open","touch","mkdir","rm","cp","mv","tree","find","which","basename","dirname","files","df","du","mount","ext2ls","ext2cat",0};
 static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","fold","nl","expand","unexpand","factor","seq","paste","clip","cut","uniq","join","comm","printf","wc","write","hexdump",0};
 static const char* const HC_sys[]   = {"ps","kill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat","screenshot","stackcheck",0};
 static const char* const HC_user[]  = {"useradd","users",0};
@@ -730,6 +732,7 @@ static const man_page_t man_pages[] = {
     {"head",     "Write the first lines of <file> to standard output (10 by default, or a count given as the second argument). Useful for peeking at the top of a file without reading the whole thing."},
     {"tail",     "Write the last lines of <file> to standard output (10 by default, or a count given as the second argument)."},
     {"tree",     "Print the directory rooted at [path] (the current directory by default) as an indented tree, showing each subdirectory's immediate children."},
+    {"du",       "Disk usage: sum the sizes of every file in the subtree rooted at [path] (the current directory by default) and print the total, both human-readable (B/K/M/G) and in exact bytes, with a file and directory count. The walk is iterative with a bounded off-stack frontier (the 4 KB kernel task stack forbids deep recursion); a subtree wider than that many pending directories reports the total as a floor. Complements `df`, which reports whole-filesystem free space rather than per-directory usage."},
     {"find",     "Search for files whose name matches <name>, starting at [path] (the current directory by default), and print the path of every match."},
     {"touch",    "Create <file> as a new, empty file if it does not already exist."},
     {"which",    "Look <name> up as a shell command and report how it would run: as a built-in, or as the program at a particular path."},
@@ -2218,6 +2221,162 @@ static void cmd_tree(int argc, char** argv) {
         de = vfs_readdir(fd);
     }
     vfs_close(fd);
+}
+
+// ---------------------------------------------------------------------------
+// du — disk usage (v6.4.246). Walks a directory subtree ITERATIVELY (an
+// explicit, bounded off-stack frontier — the 4 KB kernel task stack forbids
+// deep recursion) and sums the sizes of every file underneath. The traversal
+// takes an injected "enumerate one directory" callback so it can be KAT'd
+// against a synthetic tree with no VFS (same pattern as the xbm dep resolver).
+// ---------------------------------------------------------------------------
+#define DU_MAXPEND 128        // max directories pending in the DFS frontier
+#define DU_PATHMAX 256        // longest path we track
+static char du_pend[DU_MAXPEND][DU_PATHMAX];   // off-stack frontier (~32 KB BSS)
+
+// Format `bytes` as a short human-readable string: "0B", "1023B", "1.0K",
+// "1.5M", "2.0G" — one decimal, integer-only (the kernel is -mno-sse).
+static void du_human(uint64_t bytes, char* out, int cap) {
+    if (bytes < 1024) { snprintf(out, cap, "%uB", (uint32_t)bytes); return; }
+    const char* units = "KMGT";
+    uint64_t div = 1024;
+    int e = 0;
+    while (bytes / div >= 1024 && e < 3) { div *= 1024; e++; }
+    uint64_t whole = bytes / div;
+    uint64_t frac  = (bytes % div) * 10 / div;
+    snprintf(out, cap, "%u.%u%c", (uint32_t)whole, (uint32_t)frac, units[e]);
+}
+
+// Join dir + "/" + name into out[], collapsing the "/name" case for the root.
+static void du_join(const char* dir, const char* name, char* out, int cap) {
+    if (dir[0] == '/' && dir[1] == '\0') snprintf(out, cap, "/%s", name);
+    else                                 snprintf(out, cap, "%s/%s", dir, name);
+}
+
+// enum callback: for directory `path`, invoke child(cctx, name, is_dir, size)
+// once per immediate child. Injected so du_walk is testable without a VFS.
+typedef void (*du_child_fn)(void* cctx, const char* name, int is_dir, uint64_t size);
+typedef void (*du_enum_fn)(void* ectx, const char* path, du_child_fn child, void* cctx);
+
+typedef struct {
+    int         npend;        // frontier depth
+    int         truncated;    // set if the frontier overflowed
+    uint64_t    total;
+    int         files;
+    const char* parent;       // directory currently being enumerated (for path join)
+} du_state_t;
+
+// child callback used by du_walk: a file adds to the total, a directory is
+// pushed onto the frontier to visit later (dropped, with a flag, if it is full).
+static void du_on_child(void* cctx, const char* name, int is_dir, uint64_t size) {
+    du_state_t* st = (du_state_t*)cctx;
+    if (!is_dir) { st->total += size; st->files++; return; }
+    if (st->npend >= DU_MAXPEND) { st->truncated = 1; return; }
+    du_join(st->parent, name, du_pend[st->npend], DU_PATHMAX);
+    st->npend++;
+}
+
+// Iterative DFS from `root`. Returns total bytes; *files/*dirs/*truncated out.
+static uint64_t du_walk(const char* root, du_enum_fn enum_dir, void* ectx,
+                        int* out_files, int* out_dirs, int* out_trunc) {
+    du_state_t st;
+    st.npend = 0; st.truncated = 0; st.total = 0; st.files = 0;
+    int dirs = 0;
+    char cur[DU_PATHMAX];
+    strncpy(du_pend[0], root, DU_PATHMAX - 1); du_pend[0][DU_PATHMAX - 1] = '\0';
+    st.npend = 1;
+    while (st.npend > 0) {
+        st.npend--;                                        // pop
+        strncpy(cur, du_pend[st.npend], DU_PATHMAX - 1); cur[DU_PATHMAX - 1] = '\0';
+        dirs++;
+        st.parent = cur;
+        enum_dir(ectx, cur, du_on_child, &st);             // pushes children / adds file sizes
+    }
+    if (out_files) *out_files = st.files;
+    if (out_dirs)  *out_dirs  = dirs;
+    if (out_trunc) *out_trunc = st.truncated;
+    return st.total;
+}
+
+// Real VFS enumeration for one directory. Snapshots the entries first (name +
+// type) so a vfs_stat for a file's size never lands between two vfs_readdir
+// calls on the same fd. du_walk never nests these, so the static buffer is safe.
+static void du_vfs_enum(void* ectx, const char* path, du_child_fn child, void* cctx) {
+    (void)ectx;
+    int fd = vfs_open(path, 0, 0);
+    if (fd < 0) return;
+    static dirent_t du_ents[256];
+    int n = 0;
+    dirent_t* de = vfs_readdir(fd);
+    while (de && n < 256) { du_ents[n++] = *de; de = vfs_readdir(fd); }
+    vfs_close(fd);
+    for (int i = 0; i < n; i++) {
+        const char* nm = du_ents[i].name;
+        if (nm[0] == '.' && (nm[1] == '\0' || (nm[1] == '.' && nm[2] == '\0'))) continue;  // skip . / ..
+        if (du_ents[i].type == 1) {
+            child(cctx, nm, 1, 0);
+        } else {
+            char childpath[DU_PATHMAX];
+            du_join(path, nm, childpath, DU_PATHMAX);
+            uint32_t sz = 0; int isd = 0;
+            vfs_stat(childpath, &sz, &isd);
+            child(cctx, nm, 0, (uint64_t)sz);
+        }
+    }
+}
+
+// Synthetic tree for the KAT (no VFS):
+//   /      -> dir a, file f0(500)
+//   /a     -> file x(100), file y(200), dir c
+//   /a/c   -> file z(50)
+// Expected: total 850, files 4, dirs 3.
+static void du_test_enum(void* ectx, const char* path, du_child_fn child, void* cctx) {
+    (void)ectx;
+    if (strcmp(path, "/") == 0) {
+        child(cctx, "a", 1, 0);
+        child(cctx, "f0", 0, 500);
+    } else if (strcmp(path, "/a") == 0) {
+        child(cctx, "x", 0, 100);
+        child(cctx, "y", 0, 200);
+        child(cctx, "c", 1, 0);
+    } else if (strcmp(path, "/a/c") == 0) {
+        child(cctx, "z", 0, 50);
+    }
+}
+
+int du_selftest(void) {
+    int files = 0, dirs = 0, trunc = 0;
+    uint64_t t = du_walk("/", du_test_enum, 0, &files, &dirs, &trunc);
+    if (t != 850 || files != 4 || dirs != 3 || trunc != 0) return 1;
+
+    char b[24];
+    du_human(0, b, sizeof(b));            if (strcmp(b, "0B") != 0)    return 2;
+    du_human(1023, b, sizeof(b));         if (strcmp(b, "1023B") != 0) return 3;
+    du_human(1024, b, sizeof(b));         if (strcmp(b, "1.0K") != 0)  return 4;
+    du_human(1536, b, sizeof(b));         if (strcmp(b, "1.5K") != 0)  return 5;
+    du_human(1048576, b, sizeof(b));      if (strcmp(b, "1.0M") != 0)  return 6;
+    du_human(1572864, b, sizeof(b));      if (strcmp(b, "1.5M") != 0)  return 7;
+    du_human(1073741824ULL, b, sizeof(b));if (strcmp(b, "1.0G") != 0)  return 8;
+    du_human(5242880, b, sizeof(b));      if (strcmp(b, "5.0M") != 0)  return 9;
+    return 0;
+}
+
+static void cmd_du(int argc, char** argv) {
+    const char* path = (argc >= 2) ? argv[1] : vfs_getcwd();
+    uint32_t sz = 0; int is_dir = 0;
+    if (vfs_stat(path, &sz, &is_dir) != 0) { printf("du: cannot access '%s'\n", path); return; }
+    char hb[24];
+    if (!is_dir) {
+        du_human((uint64_t)sz, hb, sizeof(hb));
+        printf("%s\t%s (%u bytes)\n", hb, path, sz);
+        return;
+    }
+    int files = 0, dirs = 0, trunc = 0;
+    uint64_t total = du_walk(path, du_vfs_enum, 0, &files, &dirs, &trunc);
+    du_human(total, hb, sizeof(hb));
+    printf("%s\t%s\n", hb, path);
+    printf("  %u bytes across %d file(s) in %d director(y/ies)\n", (uint32_t)total, files, dirs);
+    if (trunc) printf("  (note: subtree exceeds %d pending dirs - total is a floor)\n", DU_MAXPEND);
 }
 
 static char* env_vars[16];
@@ -5293,6 +5452,7 @@ static void run_selftests(void) {
         {"xbm-deps",     xbm_deps_selftest},
         {"clipboard",    clipboard_selftest},
         {"term-paste",   term_paste_selftest},
+        {"du",           du_selftest},
         {"stack-canary", stack_canary_selftest},
         {"numparse",     numparse_selftest},        {"hkdf",          hkdf_selftest},
         {"chacha20",     chacha20_selftest},        {"siphash",       siphash_selftest},
