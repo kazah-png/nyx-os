@@ -204,6 +204,7 @@ static void cmd_fill(int argc, char** argv);
 static void cmd_life(int argc, char** argv);
 static void cmd_blobs(int argc, char** argv);
 static void cmd_screenshot(int argc, char** argv);
+static void cmd_clip(int argc, char** argv);
 static void cmd_snake(int argc, char** argv);
 static void cmd_tetris(int argc, char** argv);
 static void cmd_selene(int argc, char** argv);
@@ -312,6 +313,7 @@ static const command_t commands[] = {
     {"factor",    cmd_factor,    "Prime factorization: factor N [N ...]", false},
     {"seq",       cmd_seq,       "Integer sequence: seq [FIRST [STEP]] LAST", false},
     {"paste",     cmd_paste,     "Merge lines of files: paste [-s] [-d LIST] <file ...>", false},
+    {"clip",      cmd_clip,      "Clipboard: clip <text> to copy, clip to paste, clip -c to clear", false},
     {"cut",       cmd_cut,       "Select fields/chars of each line: cut -f|-c|-b LIST [-d C] [-s] <file>", false},
     {"uniq",      cmd_uniq,      "Collapse adjacent equal lines: uniq [-c|-d|-u|-i|-f N|-s N|-w N] <file>", false},
     {"join",      cmd_join,      "Join two sorted files on a field: join [-t C] [-1/-2/-j N] [-a 1|2] <f1> <f2>", false},
@@ -588,7 +590,7 @@ void execute_command(const char* cmd_line) {
 typedef struct { const char* title; const char* const* names; } help_cat_t;
 static const char* const HC_shell[] = {"help","man","version","clear","history","exec","spawn","jobs","wait","nice","renice",0};
 static const char* const HC_files[] = {"ls","cd","pwd","cat","file","tar","iniget","open","touch","mkdir","rm","cp","mv","tree","find","which","basename","dirname","files","df","mount","ext2ls","ext2cat",0};
-static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","fold","nl","expand","unexpand","factor","seq","paste","cut","uniq","join","comm","printf","wc","write","hexdump",0};
+static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","fold","nl","expand","unexpand","factor","seq","paste","clip","cut","uniq","join","comm","printf","wc","write","hexdump",0};
 static const char* const HC_sys[]   = {"ps","kill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat","screenshot",0};
 static const char* const HC_user[]  = {"useradd","users",0};
 static const char* const HC_net[]   = {"ifconfig","dhcp","dns","ping","setip","httpget","tls","ipcalc",0};
@@ -680,6 +682,7 @@ static const man_page_t man_pages[] = {
     {"comm",     "Compare two files that are each already sorted, line by line, in three columns: lines only in <file1> (column 1), lines only in <file2> (column 2, indented one tab), and lines common to both (column 3, indented two tabs). `-1`/`-2`/`-3` suppress the respective column (and drop its indentation from the later columns), so e.g. `comm -12 a b` prints just the lines common to both. Input is assumed sorted in byte order."},
     {"semver",   "Parse and compare Semantic Versioning 2.0.0 strings (MAJOR.MINOR.PATCH[-prerelease][+build]). With one argument, validate it and print the parsed fields. With two, print their precedence relation (`A < B`, `A = B`, or `A > B`) per the semver spec: core numbers compared numerically, a prerelease ranks below the same version without one, and build metadata is ignored. Useful for comparing package versions."},
     {"seq",      "Print an inclusive sequence of integers, one per line. `seq LAST` counts 1..LAST; `seq FIRST LAST` counts FIRST..LAST; `seq FIRST STEP LAST` advances by STEP (which may be negative). A range that starts on the wrong side of LAST prints nothing, and a zero STEP is an error. Integer-only (64-bit signed), matching GNU seq for integer arguments."},
+    {"clip",     "A system text clipboard (like pbcopy/pbpaste). `clip <text...>` copies the arguments (joined with spaces) to the clipboard; `clip` with no arguments pastes - prints the current contents; `clip -c` clears it. The clipboard holds up to 4096 bytes and persists across commands, so you can copy a value from one command's output and paste it into another. The same buffer is exposed to the rest of the kernel (clipboard_get/set), so the GUI terminal and editor can be wired to copy/paste through it."},
     {"paste",    "Merge corresponding lines of files. By default the i-th line of each file is printed on one row, separated by a tab, continuing until every file runs out (a spent file leaves its column empty). -s writes each file's lines onto a single line instead. -d LIST replaces the tab with the characters of LIST used in turn (\\t, \\n, \\\\ escapes recognised). Reads each whole file; up to 16 files. Matches GNU paste for newline-delimited text."},
     {"cut",      "Print selected parts of each line of <file>. Choose one mode: -f LIST cuts fields (a field is text between delimiters; the delimiter is a TAB by default, or the single character given by -d C), -c LIST cuts characters, -b LIST cuts bytes. A LIST is a comma-separated set of 1-based ranges: 'N' one position, 'N-M' the inclusive range, 'N-' from N to the end, '-M' the same as '1-M'. Selected parts are always emitted in increasing position order, never duplicated, so the order the ranges are written in does not matter. In field mode a line that contains no delimiter is printed unchanged, unless -s suppresses such lines; selected fields are re-joined with the delimiter. Matches GNU cut byte-for-byte for newline-delimited text (chars and bytes coincide for ASCII). Reads a bounded chunk of each file; several files may be given."},
     {"join",     "Join two files, <f1> and <f2>, on a common field — the relational join of the shell. Both files must already be SORTED on their join field (join is a merge join; sort first). For every pair of lines whose join fields match it prints the join field, then the other fields of <f1>, then the other fields of <f2>; a repeated key prints the full cartesian product of the matching lines. By default the join field is field 1 and fields are separated by runs of blanks (collapsed to a single space on output). -t C uses the single character C as the field separator on input and output. -1 N / -2 N set the join field for file 1 / file 2 (or -j N for both). -a 1 or -a 2 additionally prints the unpaired lines of that file (reformatted). Matches GNU join byte-for-byte under the C locale (byte-ordered keys). Reads a bounded chunk of each file."},
@@ -3354,6 +3357,65 @@ static void cmd_screenshot(int argc, char** argv) {
     else printf("screenshot: cannot write '%s'\n", path);
 }
 
+// ---- system clipboard: an in-kernel text clipboard (pbcopy/pbpaste-style) --------------------
+// A single shared text buffer. `clip <text>` copies, `clip` (no args) pastes, `clip -c` clears.
+// The clipboard_* API is exposed (kernel.h) so the GUI terminal/editor can later wire Ctrl+C/V to
+// the same buffer. Content is opaque bytes; the +1 slot lets paste NUL-terminate for printf.
+#define CLIP_MAX 4096
+static char clip_buf[CLIP_MAX + 1];
+static uint32_t clip_len_v;
+
+void clipboard_set(const char* data, uint32_t len) {
+    if (len > CLIP_MAX) len = CLIP_MAX;
+    for (uint32_t i = 0; i < len; i++) clip_buf[i] = data[i];
+    clip_len_v = len;
+}
+uint32_t clipboard_get(char* out, uint32_t cap) {
+    uint32_t n = clip_len_v; if (n > cap) n = cap;
+    for (uint32_t i = 0; i < n; i++) out[i] = clip_buf[i];
+    return n;
+}
+uint32_t clipboard_len(void) { return clip_len_v; }
+void clipboard_clear(void) { clip_len_v = 0; }
+
+// KAT: set/get round-trip, overwrite, truncation at CLIP_MAX, capped get, clear.
+int clipboard_selftest(void) {
+    char out[64];
+    clipboard_set("hello", 5);
+    if (clipboard_len() != 5) return 1;
+    if (clipboard_get(out, sizeof(out)) != 5 ||
+        out[0] != 'h' || out[1] != 'e' || out[2] != 'l' || out[3] != 'l' || out[4] != 'o') return 2;
+    clipboard_set("xy", 2);                                      // overwrite shrinks
+    if (clipboard_len() != 2 || clipboard_get(out, sizeof(out)) != 2 || out[0] != 'x' || out[1] != 'y') return 3;
+    static char big[CLIP_MAX + 100];
+    for (int i = 0; i < CLIP_MAX + 100; i++) big[i] = 'A';
+    clipboard_set(big, CLIP_MAX + 100);                          // over-long input truncates
+    if (clipboard_len() != CLIP_MAX) return 4;
+    if (clipboard_get(out, 3) != 3) return 5;                    // small cap limits the copy
+    clipboard_clear();
+    if (clipboard_len() != 0) return 6;
+    return 0;
+}
+
+// `clip [text...] | -c` — copy args to the clipboard, paste it (no args), or clear it (-c).
+static void cmd_clip(int argc, char** argv) {
+    if (argc >= 2 && strcmp(argv[1], "-c") == 0) { clipboard_clear(); printf("clip: cleared\n"); return; }
+    if (argc < 2) {                                              // paste
+        uint32_t n = clipboard_len();
+        if (n == 0) { printf("clip: (empty)\n"); return; }
+        clip_buf[n] = '\0';
+        printf("%s\n", clip_buf);
+        return;
+    }
+    uint32_t o = 0;                                              // copy: join argv[1..] with spaces
+    for (int a = 1; a < argc && o < CLIP_MAX; a++) {
+        if (a > 1 && o < CLIP_MAX) clip_buf[o++] = ' ';
+        for (const char* p = argv[a]; *p && o < CLIP_MAX; p++) clip_buf[o++] = *p;
+    }
+    clip_len_v = o;
+    printf("clip: copied %u byte%s\n", o, o == 1 ? "" : "s");
+}
+
 // `snake` — open a Snake game window (in-kernel, compositor.c).
 static void cmd_snake(int argc, char** argv) {
     (void)argc; (void)argv;
@@ -5202,6 +5264,7 @@ static void run_selftests(void) {
         {"png-encode",   png_encode_selftest},
         {"auth-lockout", auth_lockout_selftest},
         {"xbm-deps",     xbm_deps_selftest},
+        {"clipboard",    clipboard_selftest},
         {"numparse",     numparse_selftest},        {"hkdf",          hkdf_selftest},
         {"chacha20",     chacha20_selftest},        {"siphash",       siphash_selftest},
         {"poly1305",     poly1305_selftest},        {"chachapoly",    chacha20poly1305_selftest},
