@@ -5361,23 +5361,21 @@ static void cmd_nyxinstall(int argc, char** argv) {
         printf("  Re-run with the literal word 'confirm' as the 2nd argument to proceed.\n");
         return;
     }
-    int drive = atoi(argv[1]);
+    uint8_t dev = parse_blk_dev(argv[1]);
     const char* src = (argc >= 4) ? argv[3] : "/bin";
     if (strcmp(src, "/") == 0 || strncmp(src, "/mnt", 4) == 0) {
         printf("nyxinstall: refusing srcdir '%s' (would recurse into the install target)\n", src);
         return;
     }
-    ata_init();
-    static uint16_t id[256];
-    if (ata_identify((uint8_t)drive, id) != 0) { printf("nyxinstall: no disk at drive %d\n", drive); return; }
-    uint64_t total = ata_id_sectors(id);
-    char model[42]; ata_id_model(id, model, sizeof(model));
+    uint64_t total = blk_dev_sectors(dev);
+    if (total == 0) { printf("nyxinstall: %s not available\n", argv[1]); return; }
+    const char* model = (dev == BLK_NVME0) ? nvme_model_str() : "disk";
     char hb[24]; du_human(total * 512ULL, hb, sizeof(hb));
-    printf("=== nyxinstall: target drive %d  [%s  %s] ===\n", drive, model[0] ? model : "disk", hb);
+    printf("=== nyxinstall: target %s  [%s  %s] ===\n", argv[1], model[0] ? model : "disk", hb);
 
     uint32_t part_lba = 2048;
     if (total <= part_lba + 128) { printf("nyxinstall: disk too small\n"); return; }
-    uint32_t part_sectors = (uint32_t)(total - part_lba);
+    uint32_t part_sectors = (total - part_lba) > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)(total - part_lba);
     uint32_t blocks = part_sectors / 2;
     if (blocks > 32u * 8192 + 1) blocks = 32u * 8192 + 1;               // mkfs single-drive cap
 
@@ -5385,15 +5383,15 @@ static void cmd_nyxinstall(int argc, char** argv) {
     mbr_part_t p = { .status = 0x80, .type = 0x83, .lba_start = part_lba, .sectors = part_sectors };
     static uint8_t sec[512];
     mbr_build(&p, 1, sec);
-    if (ata_write_sectors((uint8_t)drive, 0, 1, sec) < 0) { printf("nyxinstall: partition write failed\n"); return; }
-    ata_flush();
+    if (blk_write1(dev, 0, sec) != 0) { printf("nyxinstall: partition write failed\n"); return; }
+    if (dev != BLK_NVME0) ata_flush();
 
     du_human((uint64_t)blocks * 1024ULL, hb, sizeof(hb));
     printf("[2/5] Formatting ext2 (%s)...\n", hb);
-    if (ext2_format((uint8_t)drive, part_lba, blocks) != 0) { printf("nyxinstall: mkfs failed\n"); return; }
+    if (ext2_format(dev, part_lba, blocks) != 0) { printf("nyxinstall: mkfs failed\n"); return; }
 
     printf("[3/5] Mounting at /mnt...\n");
-    if (ext2_mount((uint8_t)drive, part_lba) != 0) { printf("nyxinstall: mount failed\n"); return; }
+    if (ext2_mount(dev, part_lba) != 0) { printf("nyxinstall: mount failed\n"); return; }
     if (vfs_mount("/mnt", FS_TYPE_EXT2, NULL) < 0) { printf("nyxinstall: VFS mount failed\n"); return; }
 
     printf("[4/5] Copying %s -> /mnt ...\n", src);
@@ -5425,8 +5423,8 @@ static void cmd_nyxinstall(int argc, char** argv) {
         printf("  (no /nyxkernel.bin module; add /boot/nyx-kernel.bin manually)\n");
     }
 
-    printf("=== nyxinstall done: %d file(s) across %d director(y/ies) written to drive %d%s ===\n",
-           files, dirs, drive, err ? " (with errors)" : "");
+    printf("=== nyxinstall done: %d file(s) across %d director(y/ies) written to %s%s ===\n",
+           files, dirs, argv[1], err ? " (with errors)" : "");
     printf("  /mnt now holds %s+ /boot/grub/grub.cfg.\n",
            have_kernel ? "/boot/nyx-kernel.bin " : "the OS tree ");
     printf("  Remaining to boot standalone: install GRUB's boot sectors to the disk MBR\n");
