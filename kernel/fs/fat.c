@@ -144,6 +144,27 @@ static uint32_t fat_clus_sector(const fat_geom_t* g, uint32_t clus) {
     return g->data_start + (clus - 2) * g->sec_per_clus;
 }
 
+static uint8_t fat_stage[FAT_ZERO_SECS * SECSZ] __attribute__((aligned(4096)));  // batched file-write staging
+
+// Write `len` bytes of `src` into the data area starting at cluster `first`,
+// batching up to FAT_ZERO_SECS sectors per blk_write (contiguous clusters -> a
+// contiguous sector run; the final sector is zero-padded).
+static int fat_write_file(uint8_t dev, uint32_t part_lba, const fat_geom_t* g,
+                          uint32_t first, const uint8_t* src, uint32_t len) {
+    uint32_t total = (len + SECSZ - 1) / SECSZ; if (!total) total = 1;
+    uint32_t base = part_lba + fat_clus_sector(g, first), done = 0;
+    while (done < total) {
+        uint32_t n = total - done > FAT_ZERO_SECS ? FAT_ZERO_SECS : total - done;
+        uint32_t off = done * SECSZ, copy = len > off ? len - off : 0;
+        if (copy > n * SECSZ) copy = n * SECSZ;
+        __builtin_memset(fat_stage, 0, n * SECSZ);
+        if (copy) __builtin_memcpy(fat_stage, src + off, copy);
+        if (blk_write(dev, base + done, n, fat_stage) != 0) return -1;
+        done += n;
+    }
+    return 0;
+}
+
 int fat_format_esp(uint8_t dev, uint32_t part_lba, uint32_t total_sectors,
                    const void* boot_efi, uint32_t boot_len,
                    const char* cfg, uint32_t cfg_len) {
@@ -213,23 +234,9 @@ int fat_format_esp(uint8_t dev, uint32_t part_lba, uint32_t total_sectors,
     fat_83_name(nm, "GRUB.CFG");             fat_dir_entry(fat_sec + 96, nm, ATTR_ARCH, cg, cfg_len);
     if (blk_write1(dev, part_lba + fat_clus_sector(&g, 4), fat_sec) != 0) return -9;
 
-    // 6. file data: BOOTX64.EFI then grub.cfg, one cluster (sector) at a time
-    const uint8_t* bp = (const uint8_t*)boot_efi;
-    for (uint32_t i = 0; i < bc; i++) {
-        __builtin_memset(fat_sec, 0, SECSZ);
-        uint32_t off = i * clus_bytes, n = boot_len > off ? boot_len - off : 0;
-        if (n > clus_bytes) n = clus_bytes;
-        if (n) __builtin_memcpy(fat_sec, bp + off, n);
-        if (blk_write1(dev, part_lba + fat_clus_sector(&g, cb + i), fat_sec) != 0) return -10;
-    }
-    const uint8_t* gp = (const uint8_t*)cfg;
-    for (uint32_t i = 0; i < gc; i++) {
-        __builtin_memset(fat_sec, 0, SECSZ);
-        uint32_t off = i * clus_bytes, n = cfg_len > off ? cfg_len - off : 0;
-        if (n > clus_bytes) n = clus_bytes;
-        if (n) __builtin_memcpy(fat_sec, gp + off, n);
-        if (blk_write1(dev, part_lba + fat_clus_sector(&g, cg + i), fat_sec) != 0) return -11;
-    }
+    // 6. file data: BOOTX64.EFI then grub.cfg (batched multi-sector writes)
+    if (fat_write_file(dev, part_lba, &g, cb, (const uint8_t*)boot_efi, boot_len) != 0) return -10;
+    if (fat_write_file(dev, part_lba, &g, cg, (const uint8_t*)cfg, cfg_len) != 0) return -11;
 
     if (dev != BLK_NVME0) ata_flush();
     return 0;
