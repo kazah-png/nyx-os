@@ -89,6 +89,24 @@ The build **must** finish with zero errors and zero warnings — a regression is
 2. Rebase onto the latest `master` before opening.
 3. Ensure the build produces zero warnings.
 4. Mention what you tested and how.
+5. Sign off every commit (`git commit -s`) — see the DCO below.
+
+## Developer Certificate of Origin
+
+NyxOS uses the [Developer Certificate of Origin](DCO.txt) (DCO) — the same
+lightweight process the Linux kernel uses. It is **not** a copyright assignment:
+you keep the rights to your work. By signing off, you certify that you wrote the
+patch (or otherwise have the right to submit it) under the project's GPL-2.0+
+license.
+
+Add a sign-off line to every commit:
+
+```
+Signed-off-by: Your Name <your.email@example.com>
+```
+
+`git commit -s` adds it automatically from your `user.name` / `user.email`. The
+full text is in [DCO.txt](DCO.txt).
 
 ## AI-assisted contributions
 

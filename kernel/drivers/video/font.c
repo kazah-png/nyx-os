@@ -1,3 +1,12 @@
+/*
+ * font.c -- 8x16 text-console glyphs.
+ *
+ * The 256x16 `font_data` table below is the classic IBM VGA 8x16 code-page-437
+ * bitmap font. Bitmap font *data* of this kind is long-standing prior art and is
+ * treated as public domain (in the United States, the bitmap rendering of a
+ * typeface is not itself protected by copyright); it carries no upstream license
+ * terms. Recorded here for provenance -- see THIRD-PARTY-NOTICES.md.
+ */
 #include "../../core/kernel.h"
 #include "font.h"
 

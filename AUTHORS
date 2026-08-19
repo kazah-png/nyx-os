@@ -1,0 +1,23 @@
+NyxOS Authors
+=============
+
+NyxOS is copyright (C) 2026 the NyxOS authors and is distributed under the
+GNU General Public License, version 2 or later. See LICENSE for the full text.
+
+Core / main developer
+  kazah-png            github.com/kazah-png
+
+Contributors
+  Voliox86             github.com/Voliox86       (bug finder)
+  kurawi-debug         github.com/kurawi-debug   (art & design)
+  0plimplim0           github.com/0plimplim0      (junior dev)
+
+Contact: nyxos@inbox.lv
+
+---
+
+Third-party code bundled in this repository -- the DOOM engine (kernel/doom_src),
+the TinyCC toolchain (user/tcc), the documentation-site web fonts (docs/fonts),
+and the cryptography reference implementations (kernel/crypto) -- remains
+copyright its respective authors and is licensed separately. See
+THIRD-PARTY-NOTICES.md for the full attribution and license of each component.
