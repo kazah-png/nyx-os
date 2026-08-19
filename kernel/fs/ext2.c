@@ -1381,70 +1381,90 @@ static void e2f_dirent(uint8_t* p, uint32_t ino, uint16_t rec_len, const char* n
 
 int ext2_format_cb(uint32_t total_blocks, ext2_wb_fn wb, void* ctx) {
     if (total_blocks < 64) return -1;
-    if (total_blocks > 8193) total_blocks = 8193;        // single group: block 0 + up to 8192 group blocks
-    uint32_t N = total_blocks / 4;                       // ~1 inode per 4 blocks
-    N = (N + 7) & ~7u; if (N < 16) N = 16; if (N > 8192) N = 8192;
-    uint32_t itb = N / 8;                                // inode-table blocks (8 inodes / 1024 block)
-    uint32_t b_bbmp = 3, b_ibmp = 4, b_itab = 5;
-    uint32_t b_root = b_itab + itb;
+    if (total_blocks > 32u * 8192 + 1) total_blocks = 32u * 8192 + 1;   // cap G<=32 (BGD table fits one block)
+    const uint32_t bpg = 8192;                                // blocks per group (block_size * 8)
+    uint32_t G = (total_blocks - 1 + bpg - 1) / bpg;          // number of block groups
+    uint32_t target = total_blocks / 4; if (target < 16) target = 16;
+    uint32_t ipg = (target + G - 1) / G;                      // inodes per group
+    ipg = (ipg + 7) & ~7u; if (ipg > bpg) ipg = bpg; if (ipg < 8) ipg = 8;
+    uint32_t itb = ipg / 8;                                   // inode-table blocks / group
+    uint32_t meta_pg = 1 + 1 + 1 + 1 + itb;                   // SB + BGD(1) + bbmp + ibmp + itable, every group
+    uint32_t total_inodes = ipg * G;
+    uint32_t b_root = 1 + meta_pg;                            // group 0's first data block
     uint32_t b_lf   = b_root + 1;
-    uint32_t used_blocks = b_lf + 1;
-    uint32_t free_blocks = total_blocks - used_blocks;
-    uint32_t free_inodes = N - 11;                       // inodes 1..11 used
-    uint32_t bpg = 1024u * 8;                            // blocks_per_group = 8192
 
-    static uint8_t B[1024];
+    static uint8_t B[1024], sbb[1024], gdt[1024];
 
-    memset_asm(B, 0, 1024); if (wb(ctx, 0, B) < 0) return -2;   // block 0: boot
-
-    memset_asm(B, 0, 1024);                                     // block 1: superblock
-    ext2_superblock_t* sb = (ext2_superblock_t*)B;
-    sb->total_inodes = N; sb->total_blocks = total_blocks; sb->free_blocks = free_blocks;
-    sb->free_inodes = free_inodes; sb->first_data_block = 1;
-    sb->blocks_per_group = bpg; sb->frags_per_group = bpg; sb->inodes_per_group = N;
-    sb->magic = EXT2_SUPER_MAGIC; sb->state = 1; sb->errors = 1; sb->rev_level = 1;
-    sb->first_ino = 11; sb->inode_size = 128; sb->max_mnt_count = 0xFFFF;
-    sb->feature_incompat = 0x0002;                             // FILETYPE
-    if (wb(ctx, 1, B) < 0) return -2;
-
-    memset_asm(B, 0, 1024);                                     // block 2: block group descriptor
-    ext2_bgd_t* bgd = (ext2_bgd_t*)B;
-    bgd->block_bitmap = b_bbmp; bgd->inode_bitmap = b_ibmp; bgd->inode_table = b_itab;
-    bgd->free_blocks_count = (uint16_t)free_blocks; bgd->free_inodes_count = (uint16_t)free_inodes;
-    bgd->used_dirs_count = 2;
-    if (wb(ctx, 2, B) < 0) return -2;
-
-    memset_asm(B, 0, 1024);                                     // block 3: block bitmap
-    for (uint32_t b = 1; b < used_blocks; b++) B[(b - 1) >> 3] |= 1u << ((b - 1) & 7);
-    for (uint32_t b = total_blocks; b <= bpg; b++)  B[(b - 1) >> 3] |= 1u << ((b - 1) & 7);  // pad non-existent
-    if (wb(ctx, 3, B) < 0) return -2;
-
-    memset_asm(B, 0, 1024);                                     // block 4: inode bitmap
-    for (uint32_t i = 1; i <= 11; i++) B[(i - 1) >> 3] |= 1u << ((i - 1) & 7);
-    for (uint32_t i = N + 1; i <= bpg; i++) B[(i - 1) >> 3] |= 1u << ((i - 1) & 7);
-    if (wb(ctx, 4, B) < 0) return -2;
-
-    for (uint32_t k = 0; k < itb; k++) {                       // inode table
-        memset_asm(B, 0, 1024);
-        if (k == 0) {                                          // inode 2 (root) at offset 128
-            ext2_inode_t* ri = (ext2_inode_t*)(B + 128);
-            ri->mode = EXT2_S_IFDIR | 0755; ri->links_count = 3; ri->size = 1024; ri->blocks_512 = 2; ri->block[0] = b_root;
-        }
-        if (k == 1) {                                          // inode 11 (lost+found) at offset 256
-            ext2_inode_t* li = (ext2_inode_t*)(B + 256);
-            li->mode = EXT2_S_IFDIR | 0700; li->links_count = 2; li->size = 1024; li->blocks_512 = 2; li->block[0] = b_lf;
-        }
-        if (wb(ctx, b_itab + k, B) < 0) return -2;
+    // Block-group descriptor table (one block, up to 32 entries) + free totals.
+    memset_asm(gdt, 0, 1024);
+    ext2_bgd_t* gd = (ext2_bgd_t*)gdt;
+    uint32_t s_free_blocks = 0, s_free_inodes = 0;
+    for (uint32_t g = 0; g < G; g++) {
+        uint32_t gs = 1 + g * bpg;
+        uint32_t bin = (total_blocks - 1) - g * bpg; if (bin > bpg) bin = bpg;   // blocks in this group
+        uint32_t used_data = (g == 0) ? 2 : 0;               // root + lost+found live in group 0
+        uint32_t fb = bin - meta_pg - used_data;
+        uint32_t fi = (g == 0) ? (ipg - 11) : ipg;
+        gd[g].block_bitmap = gs + 2; gd[g].inode_bitmap = gs + 3; gd[g].inode_table = gs + 4;
+        gd[g].free_blocks_count = (uint16_t)fb; gd[g].free_inodes_count = (uint16_t)fi;
+        gd[g].used_dirs_count = (g == 0) ? 2 : 0;
+        s_free_blocks += fb; s_free_inodes += fi;
     }
 
-    memset_asm(B, 0, 1024);                                     // root dir data
+    // Superblock template (block_group_nr stamped per copy below).
+    memset_asm(sbb, 0, 1024);
+    ext2_superblock_t* sb = (ext2_superblock_t*)sbb;
+    sb->total_inodes = total_inodes; sb->total_blocks = total_blocks;
+    sb->free_blocks = s_free_blocks; sb->free_inodes = s_free_inodes;
+    sb->first_data_block = 1; sb->blocks_per_group = bpg; sb->frags_per_group = bpg;
+    sb->inodes_per_group = ipg; sb->magic = EXT2_SUPER_MAGIC; sb->state = 1; sb->errors = 1;
+    sb->rev_level = 1; sb->first_ino = 11; sb->inode_size = 128; sb->max_mnt_count = 0xFFFF;
+    sb->feature_incompat = 0x0002;                            // FILETYPE (non-sparse: ro_compat left 0)
+
+    memset_asm(B, 0, 1024); if (wb(ctx, 0, B) < 0) return -2; // block 0: boot
+
+    for (uint32_t g = 0; g < G; g++) {                        // every group: SB copy + BGD + bitmaps + inode table
+        uint32_t gs = 1 + g * bpg;
+        uint32_t bin = (total_blocks - 1) - g * bpg; if (bin > bpg) bin = bpg;
+        uint32_t bbmp = gs + 2, ibmp = gs + 3, itab = gs + 4;
+
+        sb->block_group_nr = (uint16_t)g;
+        if (wb(ctx, gs, sbb) < 0) return -2;                  // superblock copy
+        if (wb(ctx, gs + 1, gdt) < 0) return -2;              // BGD table copy
+
+        memset_asm(B, 0, 1024);                               // block bitmap (bit i = block gs+i)
+        for (uint32_t i = 0; i < meta_pg; i++) B[i >> 3] |= 1u << (i & 7);
+        if (g == 0) { B[meta_pg >> 3] |= 1u << (meta_pg & 7); B[(meta_pg + 1) >> 3] |= 1u << ((meta_pg + 1) & 7); }
+        for (uint32_t i = bin; i < bpg; i++) B[i >> 3] |= 1u << (i & 7);   // pad non-existent
+        if (wb(ctx, bbmp, B) < 0) return -2;
+
+        memset_asm(B, 0, 1024);                               // inode bitmap (bit i = inode g*ipg+i+1)
+        if (g == 0) for (uint32_t i = 0; i < 11; i++) B[i >> 3] |= 1u << (i & 7);
+        for (uint32_t i = ipg; i < bpg; i++) B[i >> 3] |= 1u << (i & 7);
+        if (wb(ctx, ibmp, B) < 0) return -2;
+
+        for (uint32_t k = 0; k < itb; k++) {                  // inode table (root + lost+found in group 0)
+            memset_asm(B, 0, 1024);
+            if (g == 0 && k == 0) {                           // inode 2 (root) at offset 128
+                ext2_inode_t* ri = (ext2_inode_t*)(B + 128);
+                ri->mode = EXT2_S_IFDIR | 0755; ri->links_count = 3; ri->size = 1024; ri->blocks_512 = 2; ri->block[0] = b_root;
+            }
+            if (g == 0 && k == 1) {                           // inode 11 (lost+found) at offset 256
+                ext2_inode_t* li = (ext2_inode_t*)(B + 256);
+                li->mode = EXT2_S_IFDIR | 0700; li->links_count = 2; li->size = 1024; li->blocks_512 = 2; li->block[0] = b_lf;
+            }
+            if (wb(ctx, itab + k, B) < 0) return -2;
+        }
+    }
+
+    memset_asm(B, 0, 1024);                                   // root dir data
     { uint32_t off = 0;
       e2f_dirent(B + off, 2, 12, ".", 2);  off += 12;
       e2f_dirent(B + off, 2, 12, "..", 2); off += 12;
       e2f_dirent(B + off, 11, (uint16_t)(1024 - off), "lost+found", 2); }
     if (wb(ctx, b_root, B) < 0) return -2;
 
-    memset_asm(B, 0, 1024);                                     // lost+found dir data
+    memset_asm(B, 0, 1024);                                   // lost+found dir data
     { uint32_t off = 0;
       e2f_dirent(B + off, 11, 12, ".", 2); off += 12;
       e2f_dirent(B + off, 2, (uint16_t)(1024 - off), "..", 2); }
@@ -1482,5 +1502,32 @@ int ext2_format_selftest(void) {
     if (*(uint32_t*)rd != 2 || rd[6] != 1 || rd[8] != '.') return 7;        // "."
     uint8_t* lfe = rd + 24;                                                 // 3rd dirent = lost+found
     if (*(uint32_t*)lfe != 11 || lfe[6] != 10) return 8;
+    return 0;
+}
+
+// Multi-group KAT: build a 16384-block (2-group) fs, capturing only the primary
+// superblock (block 1), the backup superblock (block 8193, group 1) and the BGD
+// table (block 2) — so it needs no 16 MB image buffer.
+static uint8_t e2f_sb0[1024], e2f_sb1[1024], e2f_bgd[1024];
+static int e2f_pick_wb(void* c, uint32_t block, const uint8_t* buf) {
+    (void)c;
+    if (block == 1)    __builtin_memcpy(e2f_sb0, buf, 1024);
+    if (block == 2)    __builtin_memcpy(e2f_bgd, buf, 1024);
+    if (block == 8193) __builtin_memcpy(e2f_sb1, buf, 1024);
+    return 0;
+}
+int ext2_format_mg_selftest(void) {
+    memset_asm(e2f_sb0, 0, 1024); memset_asm(e2f_sb1, 0, 1024); memset_asm(e2f_bgd, 0, 1024);
+    if (ext2_format_cb(16384, e2f_pick_wb, 0) != 0) return 1;
+    ext2_superblock_t* s0 = (ext2_superblock_t*)e2f_sb0;
+    ext2_superblock_t* s1 = (ext2_superblock_t*)e2f_sb1;
+    if (s0->magic != EXT2_SUPER_MAGIC || s0->total_blocks != 16384) return 2;
+    if (s0->blocks_per_group != 8192 || s0->block_group_nr != 0) return 3;
+    if (s1->magic != EXT2_SUPER_MAGIC || s1->block_group_nr != 1) return 4;   // backup SB stamped group 1
+    if (s1->total_blocks != 16384 || s1->inodes_per_group != s0->inodes_per_group) return 5;
+    ext2_bgd_t* g = (ext2_bgd_t*)e2f_bgd;
+    if (g[0].block_bitmap != 3 || g[0].inode_bitmap != 4 || g[0].inode_table != 5) return 6;   // group 0 meta
+    if (g[1].block_bitmap != 8195) return 7;                                                    // group 1 bbmp = 8193+2
+    if (g[0].used_dirs_count != 2 || g[1].used_dirs_count != 0) return 8;
     return 0;
 }

@@ -144,6 +144,7 @@ int  ext2_create_file(const char* path);
 // (capped to one ~8 MB group). Returns 0 on success. ext2_format_selftest KATs it.
 int  ext2_format(uint8_t drive, uint32_t part_lba, uint32_t total_blocks);
 int  ext2_format_selftest(void);
+int  ext2_format_mg_selftest(void);   // multi-block-group format KAT
 int  ext2_mkdir(const char* path);
 int  ext2_unlink(const char* path);
 
