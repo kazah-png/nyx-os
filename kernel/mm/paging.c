@@ -283,6 +283,24 @@ void map_page_ro(uint64_t* pml4, void* phys, void* virt, int exec) {
     *pte = ((uint64_t)phys & PTE_ADDR_MASK) | f;
 }
 
+// Identity-map `bytes` of device MMIO at physical `phys` into the kernel address
+// space (virt == phys), UNCACHEABLE (PCD) + writable + NX. Device BARs — an NVMe
+// or AHCI controller's registers — sit far above boot.asm's 128 MB identity map,
+// so a driver must map its register window before dereferencing it; and MMIO must
+// be uncached, or the CPU would cache device-register reads/writes and the device
+// would never see them. Rounds to whole pages. Kernel-only (leaf lacks PAGE_USER).
+#define PAGE_PCD (1ULL << 4)
+void map_mmio_range(uint64_t phys, uint64_t bytes) {
+    uint64_t start = phys & ~0xFFFULL;
+    uint64_t end   = (phys + bytes + 0xFFFULL) & ~0xFFFULL;
+    for (uint64_t p = start; p < end; p += 0x1000) {
+        uint64_t* pte = pte_ptr(kernel_pml4, p, 1);
+        if (!pte) return;
+        *pte = (p & PTE_ADDR_MASK) | PAGE_PRESENT | PAGE_WRITABLE | PAGE_NX | PAGE_PCD;
+        __asm__ volatile("invlpg (%0)" :: "r"(p) : "memory");
+    }
+}
+
 // Walk a process's user address space, coalescing runs of present pages with the
 // same permissions into regions (for /proc/<pid>/maps). A COW page counts as
 // writable (it becomes writable on the next write). Returns the region count.

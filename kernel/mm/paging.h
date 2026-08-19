@@ -26,6 +26,7 @@
 void init_paging(void);
 void* get_phys_addr(void* virtual_addr);
 void map_page(void* phys_addr, void* virt_addr, uint64_t flags);
+void map_mmio_range(uint64_t phys, uint64_t bytes);  // paging.c: identity-map device MMIO, uncached (PCD)+NX
 void map_page_ro(uint64_t* pml4, void* phys, void* virt, int exec);  // paging.c: RO user page
 void unmap_page(void* virt_addr);
 void* clone_page_directory(void);
