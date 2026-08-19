@@ -203,6 +203,28 @@ int gpt_list(uint8_t dev) {
     return 0;
 }
 
+// Locate the EFI System Partition (type GUID == ESP) in the on-disk GPT, returning
+// its LBA range. Used by the FAT/ESP writer + the UEFI installer. 0 ok, -1 none.
+int gpt_find_esp(uint8_t dev, uint64_t* start, uint64_t* sectors) {
+    if (blk_read1(dev, 1, gpt_hdr) != 0) return -1;
+    gpt_header_t h;
+    if (gpt_parse_header(gpt_hdr, &h) != 0) return -1;
+    for (uint32_t i = 0; i < h.num_entries && i < GPT_NUM_ENTRIES; i++) {
+        uint32_t off = i * h.entry_size;
+        if (off + h.entry_size > GPT_ARRAY_BYTES) break;
+        if ((off % 512) == 0)
+            if (blk_read1(dev, (uint32_t)h.part_entry_lba + off / 512, gpt_arr) != 0) return -1;
+        gpt_entry_t e;
+        if (gpt_parse_entry(gpt_arr + (off % 512), &e) != 0) continue;
+        if (gbcmp(e.type_guid, GPT_TYPE_ESP, 16) == 0) {
+            if (start)   *start   = e.start_lba;
+            if (sectors) *sectors = e.end_lba - e.start_lba + 1;
+            return 0;
+        }
+    }
+    return -1;
+}
+
 // KAT: exercise the CRC + header/entry byte layout + a build->parse round-trip.
 // Vectors are hand-checked against the UEFI spec's field offsets; the whole
 // on-disk image is separately validated on the host with `sgdisk -v`/`gdisk`.

@@ -17,6 +17,7 @@
 #include "../fs/ext2.h"
 #include "../fs/grub_blobs.h"
 #include "../fs/gpt.h"
+#include "../fs/fat.h"
 #include "../fs/tar.h"
 #include "datefmt.h"
 #include "ini.h"
@@ -179,6 +180,7 @@ static void cmd_nvme(int argc, char** argv);
 static void cmd_nyxgrub(int argc, char** argv);
 static void cmd_nyxpart(int argc, char** argv);
 static void cmd_nyxgpt(int argc, char** argv);
+static void cmd_nyxfat(int argc, char** argv);
 static void cmd_mkfs(int argc, char** argv);
 static void cmd_nyxinstall(int argc, char** argv);
 static void cmd_env(int argc, char** argv);
@@ -332,6 +334,7 @@ static const command_t commands[] = {
     {"nyxinstall",cmd_nyxinstall,"Install NyxOS to a disk: nyxinstall <drive> confirm [srcdir]", false},
     {"nyxgrub",   cmd_nyxgrub,   "Install GRUB boot sectors so a disk boots standalone: nyxgrub <drive>", false},
     {"nyxgpt",    cmd_nyxgpt,    "Write a UEFI GUID Partition Table (ESP + NyxOS): nyxgpt <drive> confirm", false},
+    {"nyxfat",    cmd_nyxfat,    "Format the ESP FAT32 + write /EFI/BOOT: nyxfat <drive> confirm", false},
     {"env",       cmd_env,       "Show environment variables", false},
     {"export",    cmd_export,    "Set env variable: export <name>=<value>", false},
     {"find",      cmd_find,      "Find files by name: find <name> [path]", false},
@@ -767,6 +770,7 @@ static const man_page_t man_pages[] = {
     {"nyxinstall","Guided installer that puts NyxOS onto a disk in one command — the `archinstall`-style capstone of the disk-management tools. `nyxinstall <drive> confirm [srcdir]` runs the whole flow: [1] write a fresh MBR with one bootable Linux partition spanning the disk, [2] mkfs a multi-block-group ext2 filesystem on it, [3] mount it at /mnt, [4] recursively copy the source tree (srcdir, default /bin) onto it with `cp -r`. Each step prints progress and the run ends with a file/directory count. DESTRUCTIVE: it erases the whole target drive, so it refuses to run unless the literal word `confirm` is given as the second argument. The individual steps are also available on their own (`disks`, `nyxpart`, `mkfs`, `mount`, `cp -r`). Installing a bootloader so the disk boots standalone, and drivers for modern SATA/NVMe hardware, are separate later steps."},
     {"nyxpart",  "Write a fresh MBR partition table to a disk (the first WRITE step of nyxinstall's disk management). `nyxpart <drive> new [size_MB]` erases the drive's existing partition table and writes a single bootable Linux (0x83) partition, 1 MiB-aligned (starting at LBA 2048), spanning the whole disk or the given size in megabytes. The destructive action requires the explicit `new` keyword. Pair it with `disks`/`lsblk` to see the result. WARNING: this overwrites the partition table on the selected drive — only run it on a disk you intend to repartition."},
     {"nyxgpt",   "Write a UEFI GUID Partition Table (GPT) to a disk — the partitioning a modern UEFI machine boots from, versus the legacy MBR `nyxpart` writes. `nyxgpt <drive> confirm` erases the existing table and lays down a protective MBR, primary + backup GPT headers (each with the two CRC-32s the spec mandates) and a 128-entry partition array describing two partitions: a 64 MiB EFI System Partition and a NyxOS partition filling the rest. DESTRUCTIVE: requires the literal `confirm`. Validated against Linux `sgdisk -v`/`gdisk -l`. This is the first rung of the UEFI-install path (the ESP is formatted FAT and given a GRUB-EFI loader in later steps); `disks` lists a GPT disk's partitions."},
+    {"nyxfat",   "Format a disk's EFI System Partition as FAT32 and populate it for UEFI boot — rung E2 of the UEFI-install path (after `nyxgpt`). `nyxfat <drive> confirm` locates the ESP in the disk's GPT, writes a spec-correct FAT32 volume (boot sector/BPB with the FATSz32 geometry, FSInfo, two FATs, backups) and creates the /EFI/BOOT directory tree containing BOOTX64.EFI (a placeholder until the grub-efi loader is embedded) + grub.cfg — the path a UEFI firmware boots. DESTRUCTIVE: erases the ESP, requires the literal `confirm`, and needs `nyxgpt` to have written the GPT first. The FAT layout is validated on the host with `fsck.fat` and mtools."},
     {"du",       "Disk usage: sum the sizes of every file in the subtree rooted at [path] (the current directory by default) and print the total, both human-readable (B/K/M/G) and in exact bytes, with a file and directory count. The walk is iterative with a bounded off-stack frontier (the 4 KB kernel task stack forbids deep recursion); a subtree wider than that many pending directories reports the total as a floor. Complements `df`, which reports whole-filesystem free space rather than per-directory usage."},
     {"find",     "Search for files whose name matches <name>, starting at [path] (the current directory by default), and print the path of every match."},
     {"touch",    "Create <file> as a new, empty file if it does not already exist."},
@@ -2729,6 +2733,49 @@ static void cmd_nyxgpt(int argc, char** argv) {
            (uint32_t)((esp_sectors * 512) >> 20), (uint32_t)esp_start,
            (uint32_t)((nyx_sectors * 512) >> 20), (uint32_t)nyx_start);
     gpt_list(dev);
+}
+
+// nyxfat <drive> confirm — format the disk's EFI System Partition (located via its
+// GPT) as FAT32 and populate /EFI/BOOT with BOOTX64.EFI + grub.cfg. A UEFI firmware
+// boots \EFI\BOOT\BOOTX64.EFI, so this is rung E2 of the UEFI-install path (the real
+// grub-efi loader replaces the placeholder in the next rung). Destructive; the
+// written FAT is host-validated with fsck.fat.
+static void cmd_nyxfat(int argc, char** argv) {
+    if (argc < 3 || strcmp(argv[2], "confirm") != 0) {
+        printf("Usage: nyxfat <drive> confirm\n");
+        printf("  Formats the ESP (from the GPT) FAT32 + writes /EFI/BOOT/{BOOTX64.EFI,grub.cfg}.\n");
+        printf("  WARNING: erases the EFI System Partition. Run 'nyxgpt <drive> confirm' first.\n");
+        return;
+    }
+    uint8_t dev = parse_blk_dev(argv[1]);
+    if (blk_dev_sectors(dev) == 0) { printf("nyxfat: %s not available\n", argv[1]); return; }
+    uint64_t esp_start = 0, esp_sectors = 0;
+    if (gpt_find_esp(dev, &esp_start, &esp_sectors) != 0) {
+        printf("nyxfat: no EFI System Partition found (run 'nyxgpt %s confirm' first)\n", argv[1]);
+        return;
+    }
+    static const char* gcfg =
+        "set timeout=3\nset default=0\n"
+        "insmod part_gpt\ninsmod ext2\ninsmod all_video\n"
+        "menuentry 'NyxOS' {\n"
+        "    search --no-floppy --set=root --file /boot/nyx-kernel.bin\n"
+        "    multiboot2 /boot/nyx-kernel.bin\n"
+        "    boot\n}\n";
+    // Placeholder loader (the real grub-efi BOOTX64.EFI blob lands in rung E3); >1
+    // cluster so the FAT chain is exercised, with a banner to verify the read-back.
+    static uint8_t bootefi[2048];
+    for (uint32_t i = 0; i < sizeof(bootefi); i++) bootefi[i] = (uint8_t)(i & 0xFF);
+    const char* banner = "NYXOS-ESP-PLACEHOLDER-BOOTX64-EFI\n";
+    __builtin_memcpy(bootefi, banner, strlen(banner));
+
+    printf("=== nyxfat: ESP @ LBA %u (%u sectors) on %s ===\n",
+           (uint32_t)esp_start, (uint32_t)esp_sectors, argv[1]);
+    int r = fat_format_esp(dev, (uint32_t)esp_start, (uint32_t)esp_sectors,
+                           bootefi, (uint32_t)sizeof(bootefi), gcfg, (uint32_t)strlen(gcfg));
+    if (r != 0) { printf("nyxfat: format failed (%d)\n", r); return; }
+    printf("  ESP formatted FAT32 - /EFI/BOOT/BOOTX64.EFI (%u B) + grub.cfg (%u B) written.\n",
+           (uint32_t)sizeof(bootefi), (uint32_t)strlen(gcfg));
+    printf("  (validate on host with fsck.fat; the real BOOTX64.EFI loader is the next rung.)\n");
 }
 
 // mkfs <drive> [part_lba] [size_MB] — format a fresh ext2 (single block group,
@@ -6127,6 +6174,7 @@ static void run_selftests(void) {
         {"nvme",         nvme_selftest},
         {"nyxgrub",      nyxgrub_selftest},
         {"gpt",          gpt_selftest},
+        {"fat",          fat_selftest},
         {"mbr",          mbr_selftest},
         {"mbrbuild",     mbr_build_selftest},
         {"mkfs-ext2",    ext2_format_selftest},
