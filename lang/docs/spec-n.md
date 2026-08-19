@@ -1,6 +1,6 @@
 # The N Language — Specification
 
-**Version:** v0.19 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
+**Version:** v0.20 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
 
 This document specifies N exactly as implemented by the bootstrap compiler
 `ncc`. It is a *descriptive* spec: everything here compiles today. Planned
@@ -88,6 +88,22 @@ inserted verbatim as text; every other type is converted as a signed 64-bit
 integer and formatted in decimal. The result is a `str` built in a 256-byte
 function-scope buffer (§7.3); text beyond the buffer capacity is truncated,
 never overflowed. Use `\{` and `\}` for literal braces.
+
+**Format specs (since v0.20):** a `:x` or `:X` suffix on the expression —
+`{addr:x}`, `{addr:X}` — formats an **integer** in lowercase or uppercase
+hexadecimal instead of decimal. Hex shows the raw bit pattern: the value
+crosses as `u64`, so a negative integer prints as its two's-complement
+image — the reading a systems programmer expects. `:x` on a `str` is a
+compile error (a str interpolates as text), and any other suffix is an
+*unknown format spec* error — the space after `:` is reserved for future
+specs. A colon inside a nested construct (say, a struct literal's field)
+is not a format spec; only a `:x`/`:X` immediately before the closing
+`}` is.
+
+```n
+h := 0xdeadbeef;
+put("hash = {h} ({h:x} / {h:X})\n");   // hash = 3735928559 (deadbeef / DEADBEEF)
+```
 
 ### 2.6 Operators and punctuation
 
@@ -1034,8 +1050,10 @@ N++/type-checker phase:
 1. **No flow analysis.** Expression-level checking is complete (§6.5), but
    whether every control path of a typed function actually returns defers to
    the C compiler on the generated file.
-2. **Interpolation is text-or-decimal only.** `str` inserts text, everything
-   else formats as signed decimal; there are no hex/width format controls yet.
+2. **Interpolation has no width/padding controls.** `str` inserts text,
+   integers format as signed decimal or — since v0.20 — hex via the
+   `:x`/`:X` format specs (§2.5); field width, alignment, and zero-padding
+   are still open.
 3. **Missing constructs:** closures, modules/`use`, generic
    `Result<T, E>` — all specified in the N++ design document. (`struct`
    landed in v0.5, `defer` in v0.6, `enum` + `match` in v0.7, `impl`

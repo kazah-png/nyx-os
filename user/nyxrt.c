@@ -44,3 +44,18 @@ void __nyx_fmt_i64(nyx_str* d, char* buf, nyx_u64 cap, nyx_i64 v) {
     while (ti) out[oi++] = tmp[--ti];   /* reverse */
     nyx_append(d, buf, cap, out, (nyx_u64)oi);
 }
+
+/* v0.20 "{expr:x}" / "{expr:X}": hex shows the raw bit pattern, so the
+ * value arrives as u64 — a negative i64 prints as its two's-complement
+ * image, the reading a systems programmer expects from hex. */
+void __nyx_fmt_hex(nyx_str* d, char* buf, nyx_u64 cap, nyx_u64 v, int upper) {
+    const char* dig = upper ? "0123456789ABCDEF" : "0123456789abcdef";
+    char tmp[16];
+    int  ti = 0;
+    if (v == 0) tmp[ti++] = '0';
+    while (v) { tmp[ti++] = dig[v & 15]; v >>= 4; }
+    char out[16];
+    int  oi = 0;
+    while (ti) out[oi++] = tmp[--ti];   /* reverse */
+    nyx_append(d, buf, cap, out, (nyx_u64)oi);
+}

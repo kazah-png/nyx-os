@@ -48,5 +48,8 @@ fn main() -> i64 {
     phrase := "night goddess";
     put("vowels in the phrase: {count_vowels(phrase)}\n");
     put("fnv1a of {name} = {fnv1a(name)}\n");
+    // v0.20 format specs: ":x"/":X" print the bit pattern in hex.
+    h := fnv1a(name);
+    put("in hex: {h:x} (upper {h:X})\n");
     0
 }

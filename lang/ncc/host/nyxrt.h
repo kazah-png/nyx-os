@@ -80,5 +80,6 @@ static inline nyx_i64 __nyx_syscall6(nyx_i64 no, nyx_i64 a1, nyx_i64 a2,
 nyx_str __nyx_fmt_begin(char* buf, nyx_u64 cap);
 void    __nyx_fmt_str(nyx_str* dst, char* buf, nyx_u64 cap, nyx_str s);
 void    __nyx_fmt_i64(nyx_str* dst, char* buf, nyx_u64 cap, nyx_i64 v);
+void    __nyx_fmt_hex(nyx_str* dst, char* buf, nyx_u64 cap, nyx_u64 v, int upper);
 
 #endif /* NYXRT_H */
