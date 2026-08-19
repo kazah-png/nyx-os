@@ -193,12 +193,13 @@ command, a render demo, a wallpaper, or a CI self-test — see
 
 ## Contributors
 
-| Role | GitHub |
+| Role | Profile |
 |------|--------|
 | **Main Developer** | [@kazah-png](https://github.com/kazah-png) |
 | **Website Dev** | [@ScarDeveloper444](https://github.com/ScarDeveloper444) |
 | **Bug Finder** | [@Voliox86](https://github.com/Voliox86) |
 | **Art & Design** | [@kurawi-debug](https://github.com/kurawi-debug) |
+| **Logo Design** | [@katya_chips](https://x.com/katya_chips) (X) |
 | **Junior Dev** | [@0plimplim0](https://github.com/0plimplim0) |
 
 ---
