@@ -5291,27 +5291,40 @@ static void cmd_nyxinstall(int argc, char** argv) {
     uint32_t blocks = part_sectors / 2;
     if (blocks > 32u * 8192 + 1) blocks = 32u * 8192 + 1;               // mkfs single-drive cap
 
-    printf("[1/4] Partitioning (MBR: 1x bootable Linux @ LBA %u)...\n", part_lba);
+    printf("[1/5] Partitioning (MBR: 1x bootable Linux @ LBA %u)...\n", part_lba);
     mbr_part_t p = { .status = 0x80, .type = 0x83, .lba_start = part_lba, .sectors = part_sectors };
     static uint8_t sec[512];
     mbr_build(&p, 1, sec);
     if (ata_write_sectors((uint8_t)drive, 0, 1, sec) < 0) { printf("nyxinstall: partition write failed\n"); return; }
 
     du_human((uint64_t)blocks * 1024ULL, hb, sizeof(hb));
-    printf("[2/4] Formatting ext2 (%s)...\n", hb);
+    printf("[2/5] Formatting ext2 (%s)...\n", hb);
     if (ext2_format((uint8_t)drive, part_lba, blocks) != 0) { printf("nyxinstall: mkfs failed\n"); return; }
 
-    printf("[3/4] Mounting at /mnt...\n");
+    printf("[3/5] Mounting at /mnt...\n");
     if (ext2_mount((uint8_t)drive, part_lba) != 0) { printf("nyxinstall: mount failed\n"); return; }
     if (vfs_mount("/mnt", FS_TYPE_EXT2, NULL) < 0) { printf("nyxinstall: VFS mount failed\n"); return; }
 
-    printf("[4/4] Copying %s -> /mnt ...\n", src);
+    printf("[4/5] Copying %s -> /mnt ...\n", src);
     int dirs = 0, files = 0, err = 0;
     cptree_walk(src, "/mnt", cpt_vfs_enum, cpt_vfs_mkdir, cpt_vfs_cp, 0, &dirs, &files, &err);
 
+    // Write the GRUB boot config the disk's bootloader will use. A GRUB installed
+    // to this disk (boot.img in the MBR + core.img in the gap) reads this to load
+    // the multiboot2 kernel — the recipe verified to boot standalone in QEMU.
+    printf("[5/5] Writing /boot/grub/grub.cfg...\n");
+    vfs_mkdir("/mnt/boot", 0755);
+    vfs_mkdir("/mnt/boot/grub", 0755);
+    static const char* gcfg =
+        "set timeout=3\nset default=0\ninsmod all_video\n"
+        "menuentry 'NyxOS' {\n    multiboot2 /boot/nyx-kernel.bin\n    boot\n}\n";
+    vfs_write_file("/mnt/boot/grub/grub.cfg", gcfg, (uint32_t)strlen(gcfg));
+
     printf("=== nyxinstall done: %d file(s) across %d director(y/ies) written to drive %d%s ===\n",
            files, dirs, drive, err ? " (with errors)" : "");
-    printf("  Filesystem mounted at /mnt. (Bootloader install is a later step.)\n");
+    printf("  Filesystem mounted at /mnt; boot config at /boot/grub/grub.cfg.\n");
+    printf("  To make it boot standalone, install GRUB's boot sectors + copy the kernel to\n");
+    printf("  /boot/nyx-kernel.bin (a later rung; the recipe is proven in QEMU).\n");
 }
 
 static void cmd_mv(int argc, char** argv) {
