@@ -1,34 +1,36 @@
-// nparse.n — the M5 chain, token-native end to end, now with CONTROL FLOW:
-//   lex → parse → emit → run, in N's own surface syntax.
-//   ntokens.n scans N source and ncalc.n evaluates expressions, but each
-//   worked alone: ncalc re-reads raw characters inside its grammar. Real
-//   compilers do not — the lexer runs first, the parser consumes its
-//   TOKEN STREAM, and the output is CODE, not a value:
-//     source str ──lex()──► kinds[] / vals[] (sbrk'd i64 buffers,
-//     written with v0.16 index stores) ──parse──► stack code ──run──► value
-//   The grammar now covers statement programs WITH branches and loops:
-//       s := 0; i := 5; while i > 0 { s := s + i; i := i - 1; } s
-//   `ident := expr;` STOREs into a variable table; `if cmp { ... }` and
-//   `while cmp { ... }` compile with the real emitter's discipline —
-//   BRANCH PATCHING: emit JZ with a placeholder target, compile the
-//   body, then patch the target to the code position after it (while
-//   adds the back-JMP to its condition first). The final tail
-//   expression is the program's value. No fixed environment: every
-//   name is bound by parsed code.
-//   Each grammar rule EMITS opcodes as it recognizes its shape (postfix
-//   order falls out of the descent, exactly like ncc's own gen_expr),
-//   and an inline VM executes the emitted program. State rides return
-//   values in the EP{pos,cp} pair (token position, code position): N
-//   has no globals, so both cursors thread functionally through every
-//   rule — and the patch is one v0.16 index store into emitted code.
-//   Token encoding: kind 0 = number (val = its value), 1 = variable
-//   (single letter a–z, val = its slot), 2 = operator/punct (val = its
-//   byte), 3 = '==', 4 = ':=', 5 = 'if', 6 = 'while', 9 = end of input.
-//   The only multi-letter words are the two keywords; names are one
+// nparse.n — the M5 chain, token-native end to end: a complete toy
+//   compiler with FUNCTIONS. lex → parse → emit → run, in N's own
+//   surface syntax:
+//       fn f(n) { r := 1; if n > 1 { r := n * f(n - 1); } r } f(5)
+//   The lexer fills a token buffer (sbrk'd i64 arrays, v0.16 index
+//   stores); the parser consumes TOKENS and emits stack code; the VM
+//   runs it. The grammar now covers the whole toy language:
+//     program := { fndef } { stmt } cmp
+//     fndef   := 'fn' name '(' name ')' '{' { stmt } cmp '}'
+//     stmt    := name ':=' cmp ';' | 'if' cmp block | 'while' cmp block
+//   A function body has the same shape as a program — statements, then
+//   the value it returns. Compilation order is the classic one: a JMP
+//   emitted at the top with a placeholder target hops over the function
+//   bodies and is PATCHED to where the main statements start; each
+//   function's entry address is recorded BEFORE its body compiles, so
+//   self-recursion resolves. Calls use a CALLER-SAVE discipline over
+//   the toy's single variable table: the call site saves the callee's
+//   parameter slot (LOAD), binds the argument (STORE), CALLs, then
+//   restores the slot (SWAP + STORE) around the returned value — which
+//   is exactly why recursive calls work with no frame machinery at all.
+//   `if`/`while` compile with branch patching (JZ placeholder, compile
+//   the body, patch; `while` adds the back-JMP). State rides return
+//   values in the EP{pos,cp} pair — N has no globals, so the token and
+//   code cursors (and the two function tables) thread through every rule.
+//   Token encoding: kind 0 = number (val = its value), 1 = name (single
+//   letter a–z, val = its slot), 2 = operator/punct (val = its byte),
+//   3 = '==', 4 = ':=', 5 = 'if', 6 = 'while', 7 = 'fn', 9 = end.
+//   The only multi-letter words are the three keywords; names are one
 //   letter by design (a toy lexer's symbol table is the alphabet).
 //   Opcodes: 0 HALT · 1 PUSH arg · 2 ADD · 3 SUB · 4 MUL · 5 DIV ·
 //   6 MOD · 7 NEG · 8 LT · 9 GT · 10 EQ · 11 LOAD slot · 12 STORE slot
-//   · 13 JZ target (pop; jump if zero) · 14 JMP target.
+//   · 13 JZ target · 14 JMP target · 15 CALL target (pushes the return
+//   address) · 16 RET (returns the top value) · 17 SWAP.
 
 #[caps(syscall)]
 extern syscall {
@@ -71,7 +73,7 @@ fn lex(src: str, k: *i64, v: *i64) -> i64 {
             k[t] = 0; v[t] = val; t += 1;
             continue;
         }
-        if is_letter(b) {                  // keyword or one-letter variable
+        if is_letter(b) {                  // keyword or one-letter name
             st := i;
             mut j := i;
             while j < n && is_letter(src[j] as i64) {
@@ -82,6 +84,9 @@ fn lex(src: str, k: *i64, v: *i64) -> i64 {
             mut val := b - 97;
             if len == 2 && src[st] as i64 == 105 && src[st + 1] as i64 == 102 {
                 kind = 5; val = 0;         // if
+            }
+            if len == 2 && src[st] as i64 == 102 && src[st + 1] as i64 == 110 {
+                kind = 7; val = 0;         // fn
             }
             if len == 5 && src[st] as i64 == 119 && src[st + 1] as i64 == 104
                 && src[st + 2] as i64 == 105 && src[st + 3] as i64 == 108
@@ -123,31 +128,43 @@ fn emit2(code: *i64, cp: i64, op: i64, arg: i64) -> i64 {
     cp + 2
 }
 
-// factor := number | variable | '-' factor | '(' cmp ')'
-fn parse_factor(k: *i64, v: *i64, pos: i64, code: *i64, cp: i64) -> EP {
+// factor := number | name '(' cmp ')' | name | '-' factor | '(' cmp ')'
+//   A call saves the callee's parameter slot, binds the argument,
+//   CALLs, then restores the slot around the returned value — the
+//   caller-save discipline that lets recursion share one flat table.
+fn parse_factor(k: *i64, v: *i64, fe: *i64, fp: *i64, pos: i64, code: *i64, cp: i64) -> EP {
     if k[pos] == 0 {
         return EP{ pos: pos + 1, cp: emit2(code, cp, 1, v[pos]) };
     }
-    if k[pos] == 1 {                       // variable read: LOAD its slot
+    if k[pos] == 1 && k[pos + 1] == 2 && v[pos + 1] == 40 {
+        f := v[pos];                       // name '(' — a call
+        c1 := emit2(code, cp, 11, fp[f]);  // save the param slot
+        a := parse_cmp(k, v, fe, fp, pos + 2, code, c1);
+        c2 := emit2(code, a.cp, 12, fp[f]);    // bind the argument
+        c3 := emit2(code, c2, 15, fe[f]);      // CALL the entry
+        c4 := emit1(code, c3, 17);             // [saved, ret] -> [ret, saved]
+        return EP{ pos: a.pos + 1, cp: emit2(code, c4, 12, fp[f]) };  // restore
+    }
+    if k[pos] == 1 {                       // name read: LOAD its slot
         return EP{ pos: pos + 1, cp: emit2(code, cp, 11, v[pos]) };
     }
     if k[pos] == 2 && v[pos] == 45 {       // unary minus: operand, then NEG
-        r := parse_factor(k, v, pos + 1, code, cp);
+        r := parse_factor(k, v, fe, fp, pos + 1, code, cp);
         return EP{ pos: r.pos, cp: emit1(code, r.cp, 7) };
     }
-    r := parse_cmp(k, v, pos + 1, code, cp);   // '(' — mutual recursion
-    EP{ pos: r.pos + 1, cp: r.cp }             // skip ')'
+    r := parse_cmp(k, v, fe, fp, pos + 1, code, cp);   // '(' — mutual recursion
+    EP{ pos: r.pos + 1, cp: r.cp }                     // skip ')'
 }
 
 // term := factor (('*' | '/' | '%') factor)*  — op emitted after its rhs
-fn parse_term(k: *i64, v: *i64, pos: i64, code: *i64, cp: i64) -> EP {
-    mut r := parse_factor(k, v, pos, code, cp);
+fn parse_term(k: *i64, v: *i64, fe: *i64, fp: *i64, pos: i64, code: *i64, cp: i64) -> EP {
+    mut r := parse_factor(k, v, fe, fp, pos, code, cp);
     mut going := true;
     while going {
         going = false;
         if k[r.pos] == 2 && (v[r.pos] == 42 || v[r.pos] == 47 || v[r.pos] == 37) {
             op := v[r.pos];
-            n := parse_factor(k, v, r.pos + 1, code, r.cp);
+            n := parse_factor(k, v, fe, fp, r.pos + 1, code, r.cp);
             mut oc := 4;                   // MUL
             if op == 47 { oc = 5; }        // DIV
             if op == 37 { oc = 6; }        // MOD
@@ -159,14 +176,14 @@ fn parse_term(k: *i64, v: *i64, pos: i64, code: *i64, cp: i64) -> EP {
 }
 
 // sum := term (('+' | '-') term)*
-fn parse_sum(k: *i64, v: *i64, pos: i64, code: *i64, cp: i64) -> EP {
-    mut r := parse_term(k, v, pos, code, cp);
+fn parse_sum(k: *i64, v: *i64, fe: *i64, fp: *i64, pos: i64, code: *i64, cp: i64) -> EP {
+    mut r := parse_term(k, v, fe, fp, pos, code, cp);
     mut going := true;
     while going {
         going = false;
         if k[r.pos] == 2 && (v[r.pos] == 43 || v[r.pos] == 45) {
             op := v[r.pos];
-            n := parse_term(k, v, r.pos + 1, code, r.cp);
+            n := parse_term(k, v, fe, fp, r.pos + 1, code, r.cp);
             mut oc := 2;                   // ADD
             if op == 45 { oc = 3; }        // SUB
             r = EP{ pos: n.pos, cp: emit1(code, n.cp, oc) };
@@ -177,64 +194,62 @@ fn parse_sum(k: *i64, v: *i64, pos: i64, code: *i64, cp: i64) -> EP {
 }
 
 // cmp := sum [('<' | '>' | '==') sum]   — lowest tier, pushes 0 or 1
-fn parse_cmp(k: *i64, v: *i64, pos: i64, code: *i64, cp: i64) -> EP {
-    l := parse_sum(k, v, pos, code, cp);
+fn parse_cmp(k: *i64, v: *i64, fe: *i64, fp: *i64, pos: i64, code: *i64, cp: i64) -> EP {
+    l := parse_sum(k, v, fe, fp, pos, code, cp);
     two := k[l.pos] == 3;
     one := k[l.pos] == 2 && (v[l.pos] == 60 || v[l.pos] == 62);
     if two || one {
         mut oc := 10;                      // EQ
         if one && v[l.pos] == 60 { oc = 8; }   // LT
         if one && v[l.pos] == 62 { oc = 9; }   // GT
-        r := parse_sum(k, v, l.pos + 1, code, l.cp);
+        r := parse_sum(k, v, fe, fp, l.pos + 1, code, l.cp);
         return EP{ pos: r.pos, cp: emit1(code, r.cp, oc) };
     }
     l
 }
 
-// A statement begins with `if`, `while`, or a variable followed by ':='.
+// A statement begins with `if`, `while`, or a name followed by ':='.
 fn is_stmt_start(k: *i64, pos: i64) -> bool {
     k[pos] == 5 || k[pos] == 6 || (k[pos] == 1 && k[pos + 1] == 4)
 }
 
-// stmt := variable ':=' cmp ';'
-//       | 'if' cmp '{' { stmt } '}'
-//       | 'while' cmp '{' { stmt } '}'
+// stmt := name ':=' cmp ';' | 'if' cmp block | 'while' cmp block
 //   Control flow is where the emitter earns its keep — the jump target
 //   is not known until the body has been compiled, so the JZ is emitted
 //   with a placeholder and PATCHED afterwards (one index store into the
 //   code buffer). `while` also emits the back-JMP to its condition, and
 //   the JZ patch lands past that jump.
-fn parse_stmt(k: *i64, v: *i64, pos: i64, code: *i64, cp: i64) -> EP {
+fn parse_stmt(k: *i64, v: *i64, fe: *i64, fp: *i64, pos: i64, code: *i64, cp: i64) -> EP {
     if k[pos] == 5 {                       // if cmp { stmts }
-        c := parse_cmp(k, v, pos + 1, code, cp);
+        c := parse_cmp(k, v, fe, fp, pos + 1, code, cp);
         hole := c.cp + 1;                  // the JZ's target word
-        r := parse_block(k, v, c.pos, code, emit2(code, c.cp, 13, 0));
+        r := parse_block(k, v, fe, fp, c.pos, code, emit2(code, c.cp, 13, 0));
         code[hole] = r.cp;                 // patch: skip the body when false
         return r;
     }
     if k[pos] == 6 {                       // while cmp { stmts }
         top := cp;
-        c := parse_cmp(k, v, pos + 1, code, cp);
+        c := parse_cmp(k, v, fe, fp, pos + 1, code, cp);
         hole := c.cp + 1;
-        r := parse_block(k, v, c.pos, code, emit2(code, c.cp, 13, 0));
+        r := parse_block(k, v, fe, fp, c.pos, code, emit2(code, c.cp, 13, 0));
         e := emit2(code, r.cp, 14, top);   // back to the condition
         code[hole] = e;                    // exit lands past the back-jump
         return EP{ pos: r.pos, cp: e };
     }
-    slot := v[pos];                        // variable ':=' cmp ';'
-    r := parse_cmp(k, v, pos + 2, code, cp);
+    slot := v[pos];                        // name ':=' cmp ';'
+    r := parse_cmp(k, v, fe, fp, pos + 2, code, cp);
     EP{ pos: r.pos + 1, cp: emit2(code, r.cp, 12, slot) }
 }
 
 // block := '{' { stmt } '}'   — statement-only; a block has no tail.
-fn parse_block(k: *i64, v: *i64, pos: i64, code: *i64, cp: i64) -> EP {
+fn parse_block(k: *i64, v: *i64, fe: *i64, fp: *i64, pos: i64, code: *i64, cp: i64) -> EP {
     mut p := pos + 1;                      // skip '{'
     mut c := cp;
     mut more := true;
     while more {
         more = false;
         if is_stmt_start(k, p) {
-            r := parse_stmt(k, v, p, code, c);
+            r := parse_stmt(k, v, fe, fp, p, code, c);
             p = r.pos;
             c = r.cp;
             more = true;
@@ -243,25 +258,68 @@ fn parse_block(k: *i64, v: *i64, pos: i64, code: *i64, cp: i64) -> EP {
     EP{ pos: p + 1, cp: c }                // skip '}'
 }
 
-// program := { stmt } cmp   — statements bind and branch, the final
-// expression is the program's value.
-fn parse_program(k: *i64, v: *i64, pos: i64, code: *i64, cp: i64) -> EP {
-    mut p := pos;
+// fndef := 'fn' name '(' name ')' '{' { stmt } cmp '}'
+//   The entry address is recorded BEFORE the body compiles, so a
+//   function may call itself; the body ends in RET, which returns its
+//   tail value. Tokens: fn +0, name +1, '(' +2, param +3, ')' +4, '{' +5.
+fn parse_fndef(k: *i64, v: *i64, fe: *i64, fp: *i64, pos: i64, code: *i64, cp: i64) -> EP {
+    f := v[pos + 1];
+    fe[f] = cp;
+    fp[f] = v[pos + 3];
+    mut p := pos + 6;
     mut c := cp;
     mut more := true;
     while more {
         more = false;
         if is_stmt_start(k, p) {
-            r := parse_stmt(k, v, p, code, c);
+            r := parse_stmt(k, v, fe, fp, p, code, c);
             p = r.pos;
             c = r.cp;
             more = true;
         }
     }
-    parse_cmp(k, v, p, code, c)
+    t := parse_cmp(k, v, fe, fp, p, code, c);  // body tail = return value
+    EP{ pos: t.pos + 1, cp: emit1(code, t.cp, 16) }   // skip '}', RET
 }
 
-// nstack's machine, grown comparisons, a variable table, and jumps.
+// program := { fndef } { stmt } cmp
+//   If any functions exist, a JMP with a placeholder target is emitted
+//   first and patched to hop over their bodies — execution starts at
+//   the main statements, functions are entered only by CALL.
+fn parse_program(k: *i64, v: *i64, fe: *i64, fp: *i64, pos: i64, code: *i64, cp: i64) -> EP {
+    mut p := pos;
+    mut c := cp;
+    if k[p] == 7 {
+        c = emit2(code, c, 14, 0);
+        hole := c - 1;                     // the hop-over JMP's target
+        mut fns := true;
+        while fns {
+            fns = false;
+            if k[p] == 7 {
+                r := parse_fndef(k, v, fe, fp, p, code, c);
+                p = r.pos;
+                c = r.cp;
+                fns = true;
+            }
+        }
+        code[hole] = c;                    // main statements start here
+    }
+    mut more := true;
+    while more {
+        more = false;
+        if is_stmt_start(k, p) {
+            r := parse_stmt(k, v, fe, fp, p, code, c);
+            p = r.pos;
+            c = r.cp;
+            more = true;
+        }
+    }
+    parse_cmp(k, v, fe, fp, p, code, c)
+}
+
+// The stack machine: arithmetic, comparisons, a variable table, jumps,
+// and calls. CALL pushes the return address and jumps; RET consumes it
+// beneath the return value; SWAP serves the caller-save restore.
 fn run(prog: *i64, stk: *i64, vars: *i64) -> i64 {
     mut pc := 0;
     mut sp := 0;
@@ -298,14 +356,27 @@ fn run(prog: *i64, stk: *i64, vars: *i64) -> i64 {
             if stk[sp] == 0 { pc = prog[pc + 1]; } else { pc += 2; }
         }
         if op == 14 { pc = prog[pc + 1]; }
+        if op == 15 { stk[sp] = pc + 2; sp += 1; pc = prog[pc + 1]; }
+        if op == 16 {
+            rv := stk[sp - 1];             // the body's tail value
+            pc = stk[sp - 2];              // the pushed return address
+            stk[sp - 2] = rv;
+            sp -= 1;
+        }
+        if op == 17 {
+            t := stk[sp - 1];
+            stk[sp - 1] = stk[sp - 2];
+            stk[sp - 2] = t;
+            pc += 1;
+        }
     }
     stk[0]
 }
 
 // The whole pipeline in one call: tokens in, code out, value from the VM.
-fn show(src: str, k: *i64, v: *i64, code: *i64, stk: *i64, vars: *i64) {
+fn show(src: str, k: *i64, v: *i64, code: *i64, stk: *i64, vars: *i64, fe: *i64, fp: *i64) {
     lex(src, k, v);
-    r := parse_program(k, v, 0, code, 0);
+    r := parse_program(k, v, fe, fp, 0, code, 0);
     words := emit1(code, r.cp, 0);         // HALT closes the program
     val := run(code, stk, vars);
     put("{src}\n  ->  {val}   [{words} code words]\n");
@@ -314,14 +385,15 @@ fn show(src: str, k: *i64, v: *i64, code: *i64, stk: *i64, vars: *i64) {
 fn main() -> i64 {
     k := alloc_words(96);
     v := alloc_words(96);
-    code := alloc_words(192);
+    code := alloc_words(256);
     stk := alloc_words(64);
     vars := alloc_words(26);
-    put("statements, branches, loops - lex -> parse -> emit -> run:\n");
+    fe := alloc_words(26);
+    fp := alloc_words(26);
+    put("functions, recursion, loops - lex -> parse -> emit -> run:\n");
     // Braces are escaped so they read as text, not interpolation (§2.5).
-    show("s := 0; i := 5; while i > 0 \{ s := s + i; i := i - 1; \} s", k, v, code, stk, vars);
-    show("a := 7; if a > 5 \{ a := a * 10; \} a + 1", k, v, code, stk, vars);
-    show("b := 3; if b > 5 \{ b := 100; \} b", k, v, code, stk, vars);
-    show("t := 0; i := 3; while i > 0 \{ if i == 2 \{ t := t + 10; \} t := t + 1; i := i - 1; \} t", k, v, code, stk, vars);
+    show("fn d(a) \{ a * 2 \} d(21)", k, v, code, stk, vars, fe, fp);
+    show("fn f(n) \{ r := 1; if n > 1 \{ r := n * f(n - 1); \} r \} f(5)", k, v, code, stk, vars, fe, fp);
+    show("fn s(n) \{ t := 0; i := n; while i > 0 \{ t := t + i; i := i - 1; \} t \} s(10)", k, v, code, stk, vars, fe, fp);
     0
 }

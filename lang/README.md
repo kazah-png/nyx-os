@@ -143,7 +143,7 @@ lang/
     ├── nemit.n          ← M5 link 3: stack-code emitter in N (read→parse→emit)
     ├── nstack.n         ← v0.16 index writes: a VM in N runs nemit's code
     ├── own.n            ← own structs: leaks/double-use refused, #[drop] auto-close
-    └── nparse.n         ← M5 token-native pipeline: statements + if/while → emit → run
+    └── nparse.n         ← M5: a complete toy compiler — functions, recursion, loops
 ```
 
 The runtime N programs link against lives with the rest of user space:
@@ -162,7 +162,7 @@ compiles packages from source on the machine itself). N rides that ladder:
 | M2 | `ncc` compiles *inside* NyxOS with the in-OS `cc` (tcc) | ✅ done |
 | M3 | `ncc hello.n` → running binary, entirely in-OS (the HolyC moment) | ✅ done |
 | M4 | N++ front-end: type checker, structs/enums/match, `Result`/`?` | design ready |
-| M5 | Self-hosting: `ncc` rewritten in N | **started** — the full toy loop runs: tokenizer ([ntokens.n](examples/ntokens.n)) · parser + evaluator ([ncalc.n](examples/ncalc.n)) · code emitter ([nemit.n](examples/nemit.n)) · a VM that executes the emitted code ([nstack.n](examples/nstack.n), on v0.16 index writes); the tokenizer covers the real lexer surface (comments, string literals, two-char operators) and [nparse.n](examples/nparse.n) **closes the chain token-natively over N's own statement syntax**: `x := 10; y := 4; a := 2 + x; b := a * y; b - 1` lexes into a token buffer, each binding statement compiles to a STORE into a variable table, the tail expression is the program's value, and the VM runs the emitted code — no fixed environment, every name bound by parsed statements — and **control flow compiles with branch patching**: `if`/`while` emit JZ with a placeholder target that is patched once the body is compiled (`while` adds the back-jump), the discipline a real emitter lives by; next: functions in the toy grammar, or fold the chain back toward ncc itself |
+| M5 | Self-hosting: `ncc` rewritten in N | **started** — the full toy loop runs: tokenizer ([ntokens.n](examples/ntokens.n)) · parser + evaluator ([ncalc.n](examples/ncalc.n)) · code emitter ([nemit.n](examples/nemit.n)) · a VM that executes the emitted code ([nstack.n](examples/nstack.n), on v0.16 index writes); the tokenizer covers the real lexer surface (comments, string literals, two-char operators) and [nparse.n](examples/nparse.n) **closes the chain token-natively over N's own statement syntax**: `x := 10; y := 4; a := 2 + x; b := a * y; b - 1` lexes into a token buffer, each binding statement compiles to a STORE into a variable table, the tail expression is the program's value, and the VM runs the emitted code — no fixed environment, every name bound by parsed statements — and **control flow compiles with branch patching**: `if`/`while` emit JZ with a placeholder target that is patched once the body is compiled (`while` adds the back-jump), the discipline a real emitter lives by — and **functions with recursion**: `fn f(n) ... f(n - 1) ...` compiles to CALL/RET with entry addresses recorded before bodies (self-calls resolve) and a caller-save convention over the flat variable table (save, bind, call, restore) that makes recursion work with zero frame machinery — factorial(5) runs on the toy VM. The toy grammar is functionally complete; next: fold the lessons back toward ncc itself |
 
 M2 and M3 were reached with zero changes to the compiler's design: `ncc.c` is
 plain C99 in one file, so the in-OS tcc builds it directly, and the same
