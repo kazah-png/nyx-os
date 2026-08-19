@@ -247,6 +247,7 @@ static void copy_ident_str(char* dst, const uint8_t* src, int n) {
 // size) via two admin commands into a shared DMA page. Fills nvme_dev + prints.
 int nvme_identify(void) {
     if (!nvme_dev.present) { printf("nvme: controller not up (run nvme first)\n"); return -1; }
+    if (nvme_dev.identified) return 0;              // already done — don't re-submit / re-alloc
 
     void* buf = alloc_page();                       // 4 KB identity page = the PRP1 target
     if (!buf) { printf("nvme: identify buffer alloc failed\n"); return -1; }
@@ -370,6 +371,33 @@ int nvme_dump_lba(uint64_t lba) {
     }
     return 0;
 }
+
+// Multi-block I/O for the installer block layer: loop the single-block path.
+// `buf` MUST be page-aligned; count*lba_size must fit the caller's buffer, and
+// since lba_size (512 or 4096) divides the 4 KB page, each block stays within one
+// page. Returns 0 on success. nvme_write_blocks WRITES the medium.
+int nvme_read_blocks(uint64_t lba, uint32_t count, void* buf) {
+    if (!nvme_dev.io_ready) return -1;
+    uint32_t bs = nvme_dev.lba_size ? nvme_dev.lba_size : 512;
+    uint8_t* p = (uint8_t*)buf;
+    for (uint32_t i = 0; i < count; i++)
+        if (nvme_io(0, lba + i, p + (uint64_t)i * bs) != 0) return -1;
+    return 0;
+}
+int nvme_write_blocks(uint64_t lba, uint32_t count, const void* buf) {
+    if (!nvme_dev.io_ready) return -1;
+    uint32_t bs = nvme_dev.lba_size ? nvme_dev.lba_size : 512;
+    uint8_t* p = (uint8_t*)buf;
+    for (uint32_t i = 0; i < count; i++)
+        if (nvme_io(1, lba + i, p + (uint64_t)i * bs) != 0) return -1;
+    return 0;
+}
+
+// Accessors for the installer/`disks` layer (the device struct is file-private).
+int         nvme_io_ready(void)        { return nvme_dev.io_ready; }
+const char* nvme_model_str(void)       { return nvme_dev.model; }
+uint64_t    nvme_capacity_blocks(void) { return nvme_dev.nsze; }
+uint32_t    nvme_block_size(void)      { return nvme_dev.lba_size ? nvme_dev.lba_size : 512; }
 
 // QEMU functional check ONLY (needs a real `-device nvme`; NOT in the boot KAT
 // battery). Writes a known pattern to a scratch LBA, reads it back, compares.

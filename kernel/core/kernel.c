@@ -2529,6 +2529,21 @@ int mbr_build_selftest(void) {
     return 0;
 }
 
+// Parse + print the MBR partition table in a just-read 512-byte sector 0. Shared
+// by the ATA and NVMe branches of `disks`.
+static void print_mbr_parts(const uint8_t* sec) {
+    mbr_part_t p[4];
+    int np = mbr_parse(sec, p);
+    if (np < 0) { printf("  no MBR table (raw / GPT / unpartitioned)\n"); return; }
+    if (np == 0) { printf("  MBR present, empty partition table\n"); return; }
+    for (int i = 0; i < np; i++) {
+        char pb[24];
+        du_human((uint64_t)p[i].sectors * 512ULL, pb, sizeof(pb));
+        printf("  p%d  0x%02x %-14s start %-9u %s%s\n", i + 1, p[i].type, mbr_type_name(p[i].type),
+               p[i].lba_start, pb, (p[i].status & 0x80) ? "  [boot]" : "");
+    }
+}
+
 static void cmd_disks(int argc, char** argv) {
     (void)argc; (void)argv;
     ata_init();
@@ -2545,18 +2560,27 @@ static void cmd_disks(int argc, char** argv) {
         du_human(sectors * 512ULL, hb, sizeof(hb));
         printf("Disk %d: %s  %s (%u sectors)\n", d, model[0] ? model : "(unknown)", hb, (uint32_t)sectors);
         if (ata_read_sectors((uint8_t)d, 0, 1, sec) < 0) { printf("  (cannot read sector 0)\n"); continue; }
-        mbr_part_t p[4];
-        int np = mbr_parse(sec, p);
-        if (np < 0)      { printf("  no MBR table (raw / GPT / unpartitioned)\n"); continue; }
-        if (np == 0)     { printf("  MBR present, empty partition table\n"); continue; }
-        for (int i = 0; i < np; i++) {
-            char pb[24];
-            du_human((uint64_t)p[i].sectors * 512ULL, pb, sizeof(pb));
-            printf("  p%d  0x%02x %-14s start %-9u %s%s\n", i + 1, p[i].type, mbr_type_name(p[i].type),
-                   p[i].lba_start, pb, (p[i].status & 0x80) ? "  [boot]" : "");
+        print_mbr_parts(sec);
+    }
+    // NVMe namespace — a PCIe device, invisible to the ATA/IDE probe above. Bring
+    // the controller up (idempotent), then list model + capacity + its MBR table.
+    if (nvme_init() == 0) {
+        nvme_identify();
+        nvme_create_io_queues();
+        if (nvme_io_ready()) {
+            found++;
+            uint64_t blks = nvme_capacity_blocks();
+            uint32_t bs   = nvme_block_size();
+            char hb[24];
+            du_human(blks * (uint64_t)bs, hb, sizeof(hb));
+            printf("Disk n0: %s  %s (%u blocks x %u B) [NVMe]\n",
+                   nvme_model_str(), hb, (uint32_t)blks, bs);
+            static uint8_t nsec[4096] __attribute__((aligned(4096)));   // page-aligned NVMe DMA target
+            if (nvme_read_blocks(0, 1, nsec) == 0) print_mbr_parts(nsec);
+            else printf("  (cannot read LBA 0)\n");
         }
     }
-    if (!found) printf("disks: no ATA disks detected\n");
+    if (!found) printf("disks: no disks detected\n");
 }
 
 // lspci — enumerate PCI devices. On a modern UEFI machine the disk is an NVMe
