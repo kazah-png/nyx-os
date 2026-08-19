@@ -22,7 +22,8 @@
 #define NVME_REG_DBS   0x1000 // Doorbell registers base
 
 int nvme_init(void);      // probe + reset + enable + admin queue; 0 on success, <0 on failure
+int nvme_identify(void);  // admin IDENTIFY controller + namespace -> model/serial/capacity/LBA size
 int nvme_present(void);   // non-zero once a controller has been brought up
-int nvme_selftest(void);  // KAT the pure register-math (CAP decode + doorbell offsets)
+int nvme_selftest(void);  // KAT the pure register-math (CAP decode + doorbell + IDENTIFY parse)
 
 #endif

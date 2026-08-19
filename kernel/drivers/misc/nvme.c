@@ -27,10 +27,43 @@ typedef struct {
     uint64_t mmio;                 // BAR0 base (identity-mapped)
     uint32_t dstrd;                // doorbell stride exponent from CAP
     uint32_t mqes;                 // max queue entries supported
+    uint32_t to;                   // CAP.TO: max ready timeout, 500ms units
     uint64_t asq_phys, acq_phys;   // admin queue backing pages
     uint16_t vendor, device;
+    // admin queue software state (single command in flight at a time)
+    uint32_t sq_tail, cq_head, cq_phase;
+    // filled by nvme_identify()
+    int      identified;
+    uint64_t nsze;                 // namespace size in logical blocks
+    uint32_t lba_size;             // bytes per logical block
+    char     model[41], serial[21];
 } nvme_dev_t;
 static nvme_dev_t nvme_dev = {0};
+
+// Little-endian scalar reads out of a DMA'd identify buffer.
+static uint32_t rd32(const uint8_t* p) { return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24); }
+static uint64_t rd64(const uint8_t* p) { return (uint64_t)rd32(p) | ((uint64_t)rd32(p + 4) << 32); }
+
+// Build a 64-byte admin IDENTIFY SQE (opcode 0x06) into `sqe` (16 dwords). Pure
+// (KAT'd): CDW0 opcode+CID, NSID, PRP1 (64-bit data buffer), CDW10 CNS.
+static void build_identify(uint32_t* sqe, uint32_t nsid, uint32_t cns, uint64_t prp1, uint16_t cid) {
+    for (int i = 0; i < 16; i++) sqe[i] = 0;
+    sqe[0]  = 0x06u | ((uint32_t)cid << 16);   // CDW0: opcode 0x06 (IDENTIFY), CID
+    sqe[1]  = nsid;                            // NSID (1 for namespace, 0 for controller)
+    sqe[6]  = (uint32_t)prp1;                  // PRP1 low
+    sqe[7]  = (uint32_t)(prp1 >> 32);          // PRP1 high (data fits one 4 KB page -> PRP2=0)
+    sqe[10] = cns;                             // CDW10: CNS (0=namespace, 1=controller)
+}
+
+// Parse the IDENTIFY-NAMESPACE structure (pure, KAT'd): total blocks (NSZE) and
+// bytes-per-block from the formatted LBA format (FLBAS -> LBAF[idx].LBADS).
+static uint64_t ns_nsze(const uint8_t* d) { return rd64(d + 0); }
+static uint32_t ns_lba_size(const uint8_t* d) {
+    uint32_t idx   = (uint32_t)d[26] & 0xF;                 // FLBAS: selected LBA format
+    uint32_t lbaf  = rd32(d + 128 + idx * 4);
+    uint32_t lbads = (lbaf >> 16) & 0xFF;                   // LBA data size exponent
+    return (lbads < 32) ? (1u << lbads) : 0;
+}
 
 // Spin until CSTS.RDY matches `want` (1=ready, 0=idle), or the controller faults
 // (CSTS.CFS) / we time out. Bounded busy-loop — no dependency on the timer.
@@ -79,6 +112,7 @@ int nvme_init(void) {
     nvme_dev.mmio   = base;
     nvme_dev.dstrd  = cap_dstrd(cap);
     nvme_dev.mqes   = cap_mqes(cap);
+    nvme_dev.to     = cap_to(cap);
     nvme_dev.vendor = c->vendor;
     nvme_dev.device = c->device;
     uint32_t vs = mmio_r32(base, NVME_REG_VS);
@@ -111,10 +145,90 @@ int nvme_init(void) {
     mmio_w32(base, NVME_REG_CC, cc);
     if (wait_ready(base, 1) < 0) { printf("nvme: controller would not become ready (CSTS.RDY!=1)\n"); return -1; }
 
+    // Admin queue starts empty; the controller writes new CQ entries with phase=1
+    // on the first pass through the zeroed queue.
+    nvme_dev.sq_tail = 0; nvme_dev.cq_head = 0; nvme_dev.cq_phase = 1;
     nvme_dev.present = 1;
     printf("nvme: controller ready - admin queue up (ASQ@%08x ACQ@%08x depth %u, SQ0 db off 0x%x)\n",
            (uint32_t)nvme_dev.asq_phys, (uint32_t)nvme_dev.acq_phys, NVME_ASQ_DEPTH,
            sq_db_off(0, nvme_dev.dstrd));
+    return 0;
+}
+
+// Submit one already-built 64-byte admin command, ring the SQ tail doorbell, and
+// poll the admin CQ for its completion (phase-bit flip). Advances the queue
+// pointers + rings the CQ head doorbell. Returns the NVMe status (0 = success),
+// or -1 on timeout. Timeout scales to CAP.TO (500ms units) so a slow real SSD
+// (the target laptop reported TO=240 = 120s) is tolerated.
+static int nvme_admin_submit(const uint32_t* sqe) {
+    uint64_t base = nvme_dev.mmio;
+    volatile uint32_t* asq = (volatile uint32_t*)nvme_dev.asq_phys;
+    volatile uint32_t* acq = (volatile uint32_t*)nvme_dev.acq_phys;
+
+    volatile uint32_t* slot = &asq[nvme_dev.sq_tail * 16];
+    for (int i = 0; i < 16; i++) slot[i] = sqe[i];
+    nvme_dev.sq_tail = (nvme_dev.sq_tail + 1) % NVME_ASQ_DEPTH;
+    mmio_w32(base, sq_db_off(0, nvme_dev.dstrd), nvme_dev.sq_tail);
+
+    volatile uint32_t* cqe = &acq[nvme_dev.cq_head * 4];
+    uint64_t budget = (uint64_t)(nvme_dev.to + 1) * 2000000ULL;   // ~ CAP.TO-scaled spin
+    for (uint64_t i = 0; i < budget; i++) {
+        uint32_t d3 = cqe[3];
+        if (((d3 >> 16) & 1u) == nvme_dev.cq_phase) {
+            uint32_t status = (d3 >> 17) & 0x7FFu;
+            nvme_dev.cq_head = (nvme_dev.cq_head + 1) % NVME_ACQ_DEPTH;
+            if (nvme_dev.cq_head == 0) nvme_dev.cq_phase ^= 1u;
+            mmio_w32(base, cq_db_off(0, nvme_dev.dstrd), nvme_dev.cq_head);
+            return (int)status;
+        }
+        for (volatile int d = 0; d < 8; d++) { }
+    }
+    return -1;
+}
+
+// Copy a fixed-width, space-padded ASCII field (NVMe model/serial strings are not
+// NUL-terminated), trimming trailing spaces.
+static void copy_ident_str(char* dst, const uint8_t* src, int n) {
+    int end = n;
+    while (end > 0 && (src[end - 1] == ' ' || src[end - 1] == 0)) end--;
+    int i = 0;
+    for (; i < end && i < n; i++) dst[i] = (char)src[i];
+    dst[i] = 0;
+}
+
+// Rung 2: IDENTIFY the controller (model/serial) and namespace 1 (capacity + LBA
+// size) via two admin commands into a shared DMA page. Fills nvme_dev + prints.
+int nvme_identify(void) {
+    if (!nvme_dev.present) { printf("nvme: controller not up (run nvme first)\n"); return -1; }
+
+    void* buf = alloc_page();                       // 4 KB identity page = the PRP1 target
+    if (!buf) { printf("nvme: identify buffer alloc failed\n"); return -1; }
+    uint8_t* d = (uint8_t*)buf;
+
+    // IDENTIFY controller (CNS=1, NSID=0)
+    uint32_t sqe[16];
+    __builtin_memset(buf, 0, 4096);
+    build_identify(sqe, 0, 1, (uint64_t)buf, 0x01);
+    int st = nvme_admin_submit(sqe);
+    if (st != 0) { printf("nvme: IDENTIFY controller failed (status=%d)\n", st); return -1; }
+    copy_ident_str(nvme_dev.serial, d + 4, 20);
+    copy_ident_str(nvme_dev.model,  d + 24, 40);
+
+    // IDENTIFY namespace 1 (CNS=0, NSID=1)
+    __builtin_memset(buf, 0, 4096);
+    build_identify(sqe, 1, 0, (uint64_t)buf, 0x02);
+    st = nvme_admin_submit(sqe);
+    if (st != 0) { printf("nvme: IDENTIFY namespace failed (status=%d)\n", st); return -1; }
+    nvme_dev.nsze     = ns_nsze(d);
+    nvme_dev.lba_size = ns_lba_size(d);
+    nvme_dev.identified = 1;
+
+    // capacity = blocks * bytes-per-block, reported in MiB (kept in a u64)
+    uint64_t cap_bytes = nvme_dev.nsze * (uint64_t)nvme_dev.lba_size;
+    uint32_t cap_mib   = (uint32_t)(cap_bytes >> 20);
+    printf("nvme: model '%s' serial '%s'\n", nvme_dev.model, nvme_dev.serial);
+    printf("nvme: namespace 1: %u blocks x %u B = %u MiB\n",
+           (uint32_t)nvme_dev.nsze, nvme_dev.lba_size, cap_mib);
     return 0;
 }
 
@@ -137,5 +251,26 @@ int nvme_selftest(void) {
     if (cq_db_off(0, 2) != 0x1010) return 10;
     if (sq_db_off(1, 2) != 0x1020) return 11;
     if (cq_db_off(1, 2) != 0x1030) return 12;
+
+    // rung 2: IDENTIFY SQE encoding
+    uint32_t sqe[16];
+    build_identify(sqe, 1, 0, 0x00000001DEADB000ULL, 0x0042);
+    if (sqe[0]  != 0x00420006u) return 13;   // CDW0: opcode 0x06 | CID 0x42
+    if (sqe[1]  != 1u)          return 14;   // NSID
+    if (sqe[6]  != 0xDEADB000u) return 15;   // PRP1 low
+    if (sqe[7]  != 0x00000001u) return 16;   // PRP1 high
+    if (sqe[10] != 0u)          return 17;   // CNS
+
+    // rung 2: IDENTIFY-NAMESPACE field parse (NSZE + FLBAS -> LBAF -> LBA size)
+    static uint8_t ns[256];
+    for (int i = 0; i < 256; i++) ns[i] = 0;
+    ns[2] = 0x10;                                          // NSZE = 0x100000 blocks (LE)
+    ns[26] = 0;                                            // FLBAS -> LBA format 0
+    ns[130] = 0x09;                                        // LBAF[0] LBADS=9 -> 512 B
+    if (ns_nsze(ns)     != 0x100000ULL) return 18;
+    if (ns_lba_size(ns) != 512u)        return 19;
+    ns[26] = 1;                                            // FLBAS -> LBA format 1
+    ns[134] = 0x0C;                                        // LBAF[1] LBADS=12 -> 4096 B
+    if (ns_lba_size(ns) != 4096u)       return 20;
     return 0;
 }

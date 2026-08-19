@@ -2585,7 +2585,7 @@ static void cmd_lspci(int argc, char** argv) {
 // All the reporting lives in nvme_init(); this is just the shell entry point.
 static void cmd_nvme(int argc, char** argv) {
     (void)argc; (void)argv;
-    nvme_init();
+    if (nvme_init() == 0) nvme_identify();
 }
 
 // nyxpart <drive> new [size_MB] — write a fresh MBR with one bootable Linux
