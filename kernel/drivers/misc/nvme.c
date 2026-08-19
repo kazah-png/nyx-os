@@ -99,17 +99,43 @@ static void build_create_io_sq(uint32_t* sqe, uint64_t prp1, uint16_t qid, uint1
     sqe[10] = ((uint32_t)qsize0 << 16) | qid;
     sqe[11] = ((uint32_t)cqid << 16) | 0x1u;   // CQID, PC=1
 }
-// NVM READ (opcode 0x02) / WRITE (0x01) for one contiguous run: NSID, PRP1=data
-// page, SLBA (64-bit split across CDW10/11), NLB (0-based) in CDW12. Pure/KAT'd.
-static void build_io_rw(uint32_t* sqe, int write, uint32_t nsid, uint64_t slba, uint64_t prp1, uint16_t nlb0, uint16_t cid) {
+// NVM READ (opcode 0x02) / WRITE (0x01) for one contiguous run: NSID, PRP1=first
+// data page, PRP2 (0, the 2nd page, or a PRP-list page — see nvme_build_prps),
+// SLBA (64-bit split across CDW10/11), NLB (0-based) in CDW12. Pure/KAT'd.
+static void build_io_rw(uint32_t* sqe, int write, uint32_t nsid, uint64_t slba, uint64_t prp1, uint64_t prp2, uint16_t nlb0, uint16_t cid) {
     for (int i = 0; i < 16; i++) sqe[i] = 0;
     sqe[0]  = (write ? 0x01u : 0x02u) | ((uint32_t)cid << 16);
     sqe[1]  = nsid;
-    sqe[6]  = (uint32_t)prp1;
-    sqe[7]  = (uint32_t)(prp1 >> 32);
+    sqe[6]  = (uint32_t)prp1;                  // PRP1 low
+    sqe[7]  = (uint32_t)(prp1 >> 32);          // PRP1 high
+    sqe[8]  = (uint32_t)prp2;                  // PRP2 low  (2nd page or PRP-list)
+    sqe[9]  = (uint32_t)(prp2 >> 32);          // PRP2 high
     sqe[10] = (uint32_t)slba;                  // SLBA low
     sqe[11] = (uint32_t)(slba >> 32);          // SLBA high
     sqe[12] = nlb0;                            // NLB (0-based; 0 = one block)
+}
+
+// Pure (KAT'd): given the DMA buffer physical base (page-aligned), block count and
+// block size, compute PRP1/PRP2 for one NVM command. PRP1 is the first page; PRP2
+// is 0 (<=1 page), the second page (exactly 2 pages), or a pointer to `list` (a
+// PRP-list page holding the 2nd..last page addresses) for >2 pages. Because
+// buf_phys is page-aligned every page pointer has offset 0. Returns the page span.
+static uint32_t nvme_build_prps(uint64_t buf_phys, uint32_t nblocks, uint32_t bs,
+                                uint64_t* list, uint64_t* prp1, uint64_t* prp2) {
+    uint64_t bytes  = (uint64_t)nblocks * bs;
+    uint32_t npages = (uint32_t)((bytes + 4095) / 4096);
+    if (npages == 0) npages = 1;
+    *prp1 = buf_phys;
+    if (npages <= 1) {
+        *prp2 = 0;
+    } else if (npages == 2) {
+        *prp2 = buf_phys + 4096;                       // PRP2 = 2nd page directly
+    } else {
+        for (uint32_t i = 0; i + 1 < npages; i++)      // list[0..npages-2] = pages 1..npages-1
+            list[i] = buf_phys + (uint64_t)(i + 1) * 4096;
+        *prp2 = (uint64_t)list;
+    }
+    return npages;
 }
 
 // Spin until CSTS.RDY matches `want` (1=ready, 0=idle), or the controller faults
@@ -344,16 +370,31 @@ static int nvme_io_submit(const uint32_t* sqe) {
     return -1;
 }
 
-// Read (write=0) or write (write=1) ONE logical block at `slba` into/from `buf`.
-// `buf` MUST be page-aligned and >= one block (the single-PRP path). Returns 0 on
-// success. WRITE mutates the medium — callers must never write a real user disk.
-int nvme_io(int write, uint64_t slba, void* buf) {
+// One 4 KB page for the PRP list (holds up to 512 page pointers; we use <=15).
+static uint64_t nvme_prp_list[512] __attribute__((aligned(4096)));
+
+// Issue ONE NVM read/write command spanning `nblocks` contiguous blocks from
+// `slba`. `buf` MUST be page-aligned and hold nblocks*lba_size bytes; `nblocks` is
+// capped by the caller to the transfer buffer's reach (a single command, NLB>0,
+// with PRP1 + PRP2 (direct or PRP-list) describing the pages). WRITE mutates the
+// medium — callers must never write a real user disk.
+int nvme_io_n(int write, uint64_t slba, uint32_t nblocks, void* buf) {
     if (!nvme_dev.io_ready) { printf("nvme: I/O queue not up (run nvme first)\n"); return -1; }
+    if (nblocks == 0) return 0;
+    uint32_t bs = nvme_dev.lba_size ? nvme_dev.lba_size : 512;
+    uint64_t prp1, prp2;
+    nvme_build_prps((uint64_t)buf, nblocks, bs, nvme_prp_list, &prp1, &prp2);
     uint32_t sqe[16];
-    build_io_rw(sqe, write, 1, slba, (uint64_t)buf, 0, (uint16_t)(write ? 0x21 : 0x20));
+    build_io_rw(sqe, write, 1, slba, prp1, prp2, (uint16_t)(nblocks - 1), (uint16_t)(write ? 0x21 : 0x20));
     int st = nvme_io_submit(sqe);
-    if (st != 0) { printf("nvme: I/O %s LBA %u failed (status=%d)\n", write ? "write" : "read", (uint32_t)slba, st); return -1; }
+    if (st != 0) { printf("nvme: I/O %s LBA %u x%u failed (status=%d)\n", write ? "write" : "read", (uint32_t)slba, nblocks, st); return -1; }
     return 0;
+}
+
+// Read (write=0) or write (write=1) ONE logical block at `slba` into/from `buf`.
+// `buf` MUST be page-aligned. Thin wrapper over the batched path (nblocks=1).
+int nvme_io(int write, uint64_t slba, void* buf) {
+    return nvme_io_n(write, slba, 1, buf);
 }
 
 // READ-ONLY: read the block at `lba` and hex-dump its first 128 bytes. Safe on a
@@ -372,24 +413,38 @@ int nvme_dump_lba(uint64_t lba) {
     return 0;
 }
 
-// Multi-block I/O for the installer block layer: loop the single-block path.
-// `buf` MUST be page-aligned; count*lba_size must fit the caller's buffer, and
-// since lba_size (512 or 4096) divides the 4 KB page, each block stays within one
-// page. Returns 0 on success. nvme_write_blocks WRITES the medium.
+// Multi-block I/O for the installer block layer. Bounces the caller's (arbitrary-
+// alignment) buffer through a page-aligned DMA region in <=64 KB commands, issuing
+// ONE NVM command per chunk (NLB>0) instead of one per block — a ~64x drop in
+// round-trips for the ~4 MB install copy. Returns 0 on success. nvme_write_blocks
+// WRITES the medium.
+#define NVME_XFER_PAGES 16                                          // 64 KB per command
+static uint8_t nvme_xfer[NVME_XFER_PAGES * 4096] __attribute__((aligned(4096)));
+
 int nvme_read_blocks(uint64_t lba, uint32_t count, void* buf) {
     if (!nvme_dev.io_ready) return -1;
-    uint32_t bs = nvme_dev.lba_size ? nvme_dev.lba_size : 512;
+    uint32_t bs  = nvme_dev.lba_size ? nvme_dev.lba_size : 512;
+    uint32_t per = (NVME_XFER_PAGES * 4096) / bs;                   // blocks per command
     uint8_t* p = (uint8_t*)buf;
-    for (uint32_t i = 0; i < count; i++)
-        if (nvme_io(0, lba + i, p + (uint64_t)i * bs) != 0) return -1;
+    while (count) {
+        uint32_t n = count > per ? per : count;
+        if (nvme_io_n(0, lba, n, nvme_xfer) != 0) return -1;
+        __builtin_memcpy(p, nvme_xfer, (uint64_t)n * bs);
+        lba += n; p += (uint64_t)n * bs; count -= n;
+    }
     return 0;
 }
 int nvme_write_blocks(uint64_t lba, uint32_t count, const void* buf) {
     if (!nvme_dev.io_ready) return -1;
-    uint32_t bs = nvme_dev.lba_size ? nvme_dev.lba_size : 512;
-    uint8_t* p = (uint8_t*)buf;
-    for (uint32_t i = 0; i < count; i++)
-        if (nvme_io(1, lba + i, p + (uint64_t)i * bs) != 0) return -1;
+    uint32_t bs  = nvme_dev.lba_size ? nvme_dev.lba_size : 512;
+    uint32_t per = (NVME_XFER_PAGES * 4096) / bs;
+    const uint8_t* p = (const uint8_t*)buf;
+    while (count) {
+        uint32_t n = count > per ? per : count;
+        __builtin_memcpy(nvme_xfer, p, (uint64_t)n * bs);
+        if (nvme_io_n(1, lba, n, nvme_xfer) != 0) return -1;
+        lba += n; p += (uint64_t)n * bs; count -= n;
+    }
     return 0;
 }
 
@@ -474,16 +529,47 @@ int nvme_selftest(void) {
     if (sqe[10] != 0x00070001u) return 30;   // qsize0=7 | qid=1
     if (sqe[11] != 0x00010001u) return 31;   // cqid=1 | PC=1
 
-    // rung 4: NVM I/O SQE encoding (READ / WRITE, SLBA split, NLB)
-    build_io_rw(sqe, 0, 1, 0x000000123456789AULL, 0x000000001BEEF000ULL, 0, 0x20);
+    // rung 4: NVM I/O SQE encoding (READ / WRITE, SLBA split, NLB, PRP2)
+    build_io_rw(sqe, 0, 1, 0x000000123456789AULL, 0x000000001BEEF000ULL, 0, 0, 0x20);
     if (sqe[0]  != 0x00200002u) return 32;   // READ (0x02) | CID 0x20
     if (sqe[1]  != 1u)          return 33;   // NSID
     if (sqe[6]  != 0x1BEEF000u) return 34;   // PRP1 low
     if (sqe[7]  != 0u)          return 35;   // PRP1 high
-    if (sqe[10] != 0x3456789Au) return 36;   // SLBA low
-    if (sqe[11] != 0x00000012u) return 37;   // SLBA high
-    if (sqe[12] != 0u)          return 38;   // NLB (0-based = 1 block)
-    build_io_rw(sqe, 1, 1, 0, 0x00000000CAFE0000ULL, 0, 0x21);
-    if (sqe[0]  != 0x00210001u) return 39;   // WRITE (0x01) | CID 0x21
+    if (sqe[8]  != 0u)          return 36;   // PRP2 low (single page)
+    if (sqe[10] != 0x3456789Au) return 37;   // SLBA low
+    if (sqe[11] != 0x00000012u) return 38;   // SLBA high
+    if (sqe[12] != 0u)          return 39;   // NLB (0-based = 1 block)
+    build_io_rw(sqe, 1, 1, 0, 0x00000000CAFE0000ULL, 0, 0, 0x21);
+    if (sqe[0]  != 0x00210001u) return 40;   // WRITE (0x01) | CID 0x21
+
+    // rung D: PRP list + NLB encoding for batched multi-block I/O (pure)
+    uint64_t p1 = 0, p2 = 0, katlist[16];
+    for (int i = 0; i < 16; i++) katlist[i] = 0;
+    uint64_t B = 0x00000000C0DE0000ULL;                 // a page-aligned buffer base
+    if (nvme_build_prps(B, 1, 512, katlist, &p1, &p2) != 1) return 41;   // 512 B -> 1 page
+    if (p1 != B || p2 != 0)                                 return 42;
+    if (nvme_build_prps(B, 8, 512, katlist, &p1, &p2) != 1) return 43;   // 4096 B = exactly 1 page
+    if (p2 != 0)                                            return 44;
+    if (nvme_build_prps(B, 9, 512, katlist, &p1, &p2) != 2) return 45;   // 4608 B -> 2 pages
+    if (p2 != B + 4096)                                     return 46;   // PRP2 = 2nd page directly
+    if (nvme_build_prps(B, 16, 512, katlist, &p1, &p2) != 2) return 47;  // 8192 B = 2 pages
+    if (p2 != B + 4096)                                     return 48;
+    if (nvme_build_prps(B, 17, 512, katlist, &p1, &p2) != 3) return 49;  // 8704 B -> 3 pages -> list
+    if (p2 != (uint64_t)katlist)                           return 50;
+    if (katlist[0] != B + 4096)                            return 51;
+    if (katlist[1] != B + 8192)                            return 52;
+    if (nvme_build_prps(B, 128, 512, katlist, &p1, &p2) != 16) return 53; // 64 KB = 16 pages
+    if (katlist[0]  != B + 4096)                           return 54;
+    if (katlist[14] != B + (uint64_t)15 * 4096)            return 55;    // 15 list entries (pages 1..15)
+    if (nvme_build_prps(B, 1, 4096, katlist, &p1, &p2) != 1) return 56;  // 4 KB block -> 1 page
+    if (p2 != 0)                                            return 57;
+    if (nvme_build_prps(B, 3, 4096, katlist, &p1, &p2) != 3) return 58;  // 12 KB -> 3 pages -> list
+    if (katlist[0] != B + 4096 || katlist[1] != B + 8192)  return 59;
+    // build_io_rw carries PRP2 (CDW8-9) + a non-zero NLB
+    build_io_rw(sqe, 1, 1, 0, B, B + 4096, 7, 0x21);
+    if (sqe[6]  != 0xC0DE0000u) return 60;   // PRP1 low
+    if (sqe[8]  != 0xC0DE1000u) return 61;   // PRP2 low (2nd page)
+    if (sqe[9]  != 0u)          return 62;   // PRP2 high
+    if (sqe[12] != 7u)          return 63;   // NLB (0-based) = 8 blocks
     return 0;
 }

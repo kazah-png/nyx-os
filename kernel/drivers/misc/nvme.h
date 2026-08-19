@@ -25,8 +25,9 @@ int nvme_init(void);             // probe + reset + enable + admin queue; 0 on s
 int nvme_identify(void);         // admin IDENTIFY controller + namespace -> model/serial/capacity/LBA size
 int nvme_create_io_queues(void); // set-features + create one I/O SQ/CQ pair (qid 1)
 int nvme_io(int write, uint64_t slba, void* buf);  // one-block I/O; buf page-aligned. WRITE mutates the disk.
-int nvme_read_blocks(uint64_t lba, uint32_t count, void* buf);        // multi-block read; buf page-aligned
-int nvme_write_blocks(uint64_t lba, uint32_t count, const void* buf); // multi-block write; buf page-aligned. WRITES.
+int nvme_io_n(int write, uint64_t slba, uint32_t nblocks, void* buf); // ONE command for nblocks blocks; buf page-aligned. WRITE mutates.
+int nvme_read_blocks(uint64_t lba, uint32_t count, void* buf);        // multi-block read (bounces internally; any alignment)
+int nvme_write_blocks(uint64_t lba, uint32_t count, const void* buf); // multi-block write (bounces internally). WRITES.
 int nvme_dump_lba(uint64_t lba); // READ-ONLY: read a block + hex-dump it (safe on a real disk)
 int nvme_io_selftest(void);      // QEMU-ONLY write+read round-trip (WRITES; never a real disk)
 int         nvme_io_ready(void);        // non-zero once the I/O queue is up
