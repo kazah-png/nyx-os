@@ -1,5 +1,5 @@
 <div align="center">
-  <img src="media/nyxos-logo.png" alt="NyxOS" width="240" />
+  <img src="media/nyxos-logo.png" alt="NyxOS" width="300" />
 </div>
 
 <p align="center"><strong>A from-scratch x86_64 operating system · C and Assembly · GUI desktop, real network stack, and a self-hosting C toolchain</strong></p>
