@@ -99,6 +99,18 @@ static void build_create_io_sq(uint32_t* sqe, uint64_t prp1, uint16_t qid, uint1
     sqe[10] = ((uint32_t)qsize0 << 16) | qid;
     sqe[11] = ((uint32_t)cqid << 16) | 0x1u;   // CQID, PC=1
 }
+// NVM READ (opcode 0x02) / WRITE (0x01) for one contiguous run: NSID, PRP1=data
+// page, SLBA (64-bit split across CDW10/11), NLB (0-based) in CDW12. Pure/KAT'd.
+static void build_io_rw(uint32_t* sqe, int write, uint32_t nsid, uint64_t slba, uint64_t prp1, uint16_t nlb0, uint16_t cid) {
+    for (int i = 0; i < 16; i++) sqe[i] = 0;
+    sqe[0]  = (write ? 0x01u : 0x02u) | ((uint32_t)cid << 16);
+    sqe[1]  = nsid;
+    sqe[6]  = (uint32_t)prp1;
+    sqe[7]  = (uint32_t)(prp1 >> 32);
+    sqe[10] = (uint32_t)slba;                  // SLBA low
+    sqe[11] = (uint32_t)(slba >> 32);          // SLBA high
+    sqe[12] = nlb0;                            // NLB (0-based; 0 = one block)
+}
 
 // Spin until CSTS.RDY matches `want` (1=ready, 0=idle), or the controller faults
 // (CSTS.CFS) / we time out. Bounded busy-loop — no dependency on the timer.
@@ -303,6 +315,80 @@ int nvme_create_io_queues(void) {
     return 0;
 }
 
+// Submit one already-built I/O command on the qid-1 SQ, poll the qid-1 CQ. Same
+// shape as nvme_admin_submit but on the IO queue + its own doorbells/phase state.
+static int nvme_io_submit(const uint32_t* sqe) {
+    uint64_t base = nvme_dev.mmio;
+    volatile uint32_t* iosq = (volatile uint32_t*)nvme_dev.io_sq_phys;
+    volatile uint32_t* iocq = (volatile uint32_t*)nvme_dev.io_cq_phys;
+
+    volatile uint32_t* slot = &iosq[nvme_dev.io_sq_tail * 16];
+    for (int i = 0; i < 16; i++) slot[i] = sqe[i];
+    nvme_dev.io_sq_tail = (nvme_dev.io_sq_tail + 1) % NVME_IOQ_DEPTH;
+    mmio_w32(base, sq_db_off(1, nvme_dev.dstrd), nvme_dev.io_sq_tail);
+
+    volatile uint32_t* cqe = &iocq[nvme_dev.io_cq_head * 4];
+    uint64_t budget = (uint64_t)(nvme_dev.to + 1) * 2000000ULL;
+    for (uint64_t i = 0; i < budget; i++) {
+        uint32_t d3 = cqe[3];
+        if (((d3 >> 16) & 1u) == nvme_dev.io_cq_phase) {
+            uint32_t status = (d3 >> 17) & 0x7FFu;
+            nvme_dev.io_cq_head = (nvme_dev.io_cq_head + 1) % NVME_IOQ_DEPTH;
+            if (nvme_dev.io_cq_head == 0) nvme_dev.io_cq_phase ^= 1u;
+            mmio_w32(base, cq_db_off(1, nvme_dev.dstrd), nvme_dev.io_cq_head);
+            return (int)status;
+        }
+        for (volatile int d = 0; d < 8; d++) { }
+    }
+    return -1;
+}
+
+// Read (write=0) or write (write=1) ONE logical block at `slba` into/from `buf`.
+// `buf` MUST be page-aligned and >= one block (the single-PRP path). Returns 0 on
+// success. WRITE mutates the medium — callers must never write a real user disk.
+int nvme_io(int write, uint64_t slba, void* buf) {
+    if (!nvme_dev.io_ready) { printf("nvme: I/O queue not up (run nvme first)\n"); return -1; }
+    uint32_t sqe[16];
+    build_io_rw(sqe, write, 1, slba, (uint64_t)buf, 0, (uint16_t)(write ? 0x21 : 0x20));
+    int st = nvme_io_submit(sqe);
+    if (st != 0) { printf("nvme: I/O %s LBA %u failed (status=%d)\n", write ? "write" : "read", (uint32_t)slba, st); return -1; }
+    return 0;
+}
+
+// READ-ONLY: read the block at `lba` and hex-dump its first 128 bytes. Safe on a
+// real disk — it never writes. (`nvme read <lba>`.)
+static uint8_t nvme_rbuf[4096] __attribute__((aligned(4096)));
+int nvme_dump_lba(uint64_t lba) {
+    if (!nvme_dev.io_ready) { printf("nvme: I/O queue not up (run nvme first)\n"); return -1; }
+    __builtin_memset(nvme_rbuf, 0, 4096);
+    if (nvme_io(0, lba, nvme_rbuf) != 0) return -1;
+    printf("nvme: LBA %u (%u B/block) first 128 bytes:\n", (uint32_t)lba, nvme_dev.lba_size);
+    for (int r = 0; r < 8; r++) {
+        printf("  %04x:", r * 16);
+        for (int c = 0; c < 16; c++) printf(" %02x", nvme_rbuf[r * 16 + c]);
+        printf("\n");
+    }
+    return 0;
+}
+
+// QEMU functional check ONLY (needs a real `-device nvme`; NOT in the boot KAT
+// battery). Writes a known pattern to a scratch LBA, reads it back, compares.
+// WRITES — safe only against an emulated scratch disk, NEVER a real one.
+int nvme_io_selftest(void) {
+    if (!nvme_dev.io_ready) return -1;
+    static uint8_t wbuf[4096] __attribute__((aligned(4096)));
+    static uint8_t rbuf[4096] __attribute__((aligned(4096)));
+    uint32_t bs = nvme_dev.lba_size ? nvme_dev.lba_size : 512;
+    if (bs > 4096) bs = 4096;
+    for (uint32_t i = 0; i < bs; i++) wbuf[i] = (uint8_t)(0xA5u ^ (i & 0xFF));
+    uint64_t lba = 1000;                                    // scratch LBA on the QEMU image
+    if (nvme_io(1, lba, wbuf) != 0) return -2;              // WRITE
+    __builtin_memset(rbuf, 0, bs);
+    if (nvme_io(0, lba, rbuf) != 0) return -3;              // READ back
+    for (uint32_t i = 0; i < bs; i++) if (rbuf[i] != wbuf[i]) return (int)(1000 + i);
+    return 0;
+}
+
 int nvme_present(void) { return nvme_dev.present; }
 
 // KAT: exercise the pure register math against hand-computed vectors. The MMIO
@@ -359,5 +445,17 @@ int nvme_selftest(void) {
     if (sqe[0]  != 0x00120001u) return 29;   // CREATE IO SQ | CID 0x12
     if (sqe[10] != 0x00070001u) return 30;   // qsize0=7 | qid=1
     if (sqe[11] != 0x00010001u) return 31;   // cqid=1 | PC=1
+
+    // rung 4: NVM I/O SQE encoding (READ / WRITE, SLBA split, NLB)
+    build_io_rw(sqe, 0, 1, 0x000000123456789AULL, 0x000000001BEEF000ULL, 0, 0x20);
+    if (sqe[0]  != 0x00200002u) return 32;   // READ (0x02) | CID 0x20
+    if (sqe[1]  != 1u)          return 33;   // NSID
+    if (sqe[6]  != 0x1BEEF000u) return 34;   // PRP1 low
+    if (sqe[7]  != 0u)          return 35;   // PRP1 high
+    if (sqe[10] != 0x3456789Au) return 36;   // SLBA low
+    if (sqe[11] != 0x00000012u) return 37;   // SLBA high
+    if (sqe[12] != 0u)          return 38;   // NLB (0-based = 1 block)
+    build_io_rw(sqe, 1, 1, 0, 0x00000000CAFE0000ULL, 0, 0x21);
+    if (sqe[0]  != 0x00210001u) return 39;   // WRITE (0x01) | CID 0x21
     return 0;
 }

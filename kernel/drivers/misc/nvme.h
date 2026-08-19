@@ -24,7 +24,10 @@
 int nvme_init(void);             // probe + reset + enable + admin queue; 0 on success, <0 on failure
 int nvme_identify(void);         // admin IDENTIFY controller + namespace -> model/serial/capacity/LBA size
 int nvme_create_io_queues(void); // set-features + create one I/O SQ/CQ pair (qid 1)
+int nvme_io(int write, uint64_t slba, void* buf);  // one-block I/O; buf page-aligned. WRITE mutates the disk.
+int nvme_dump_lba(uint64_t lba); // READ-ONLY: read a block + hex-dump it (safe on a real disk)
+int nvme_io_selftest(void);      // QEMU-ONLY write+read round-trip (WRITES; never a real disk)
 int nvme_present(void);          // non-zero once a controller has been brought up
-int nvme_selftest(void);         // KAT the pure register-math (CAP/doorbell/IDENTIFY/queue-create SQEs)
+int nvme_selftest(void);         // KAT the pure register-math (CAP/doorbell/IDENTIFY/queue/IO SQEs)
 
 #endif
