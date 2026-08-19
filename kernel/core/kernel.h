@@ -18,7 +18,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.4.255"
+#define KERNEL_VERSION "6.4.256"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -1052,6 +1052,7 @@ int  ata_init(void);
 int  ata_read_sectors(uint8_t drive, uint32_t lba, uint8_t count, void* buf);
 int  ata_write_sectors(uint8_t drive, uint32_t lba, uint8_t count, const void* buf);
 int  ata_identify(uint8_t drive, uint16_t* buf);
+int  ata_flush(void);   // flush the drive write cache once per operation
 int  ext2_mount(uint8_t drive, uint32_t part_lba);
 uint32_t ext2_resolve(const char* path);
 uint32_t ext2_get_size(const char* path);

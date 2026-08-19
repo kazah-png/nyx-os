@@ -25,5 +25,6 @@ int ata_init(void);
 int ata_read_sectors(uint8_t drive, uint32_t lba, uint8_t count, void* buf);
 int ata_write_sectors(uint8_t drive, uint32_t lba, uint8_t count, const void* buf);
 int ata_identify(uint8_t drive, uint16_t* buf);
+int ata_flush(void);   // flush the drive write cache (batch once per operation)
 
 #endif

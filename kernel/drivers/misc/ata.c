@@ -80,12 +80,18 @@ int ata_write_sectors(uint8_t drive, uint32_t lba, uint8_t count, const void* bu
     if (ata_busy_wait(ATA_PRIMARY_CTRL, 30000) < 0)
         return -1;
 
-    // Flush cache
-    outb(ATA_PRIMARY_CMD, ATA_CMD_CACHE_FLUSH);
-    if (ata_busy_wait(ATA_PRIMARY_CTRL, 30000) < 0)
-        return -1;
-
     return count;
+}
+
+// Flush the drive's write cache. Callers batch this ONCE at the end of an
+// operation instead of paying a full FLUSH CACHE (a synchronous BSY wait) after
+// every sector — that per-write flush made a 4 MB write ~8000 flushes / minutes;
+// batching drops it to a handful. Data stays coherent within the session (the
+// drive serves reads from its own cache); the flush only forces it to the medium.
+int ata_flush(void) {
+    outb(ATA_PRIMARY_CMD, ATA_CMD_CACHE_FLUSH);
+    if (ata_busy_wait(ATA_PRIMARY_CTRL, 30000) < 0) return -1;
+    return 0;
 }
 
 int ata_identify(uint8_t drive, uint16_t* buf) {

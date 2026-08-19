@@ -2579,6 +2579,7 @@ static void cmd_nyxpart(int argc, char** argv) {
     static uint8_t sec[512];
     mbr_build(&p, 1, sec);
     if (ata_write_sectors((uint8_t)drive, 0, 1, sec) < 0) { printf("nyxpart: write to drive %d failed\n", drive); return; }
+    ata_flush();
     char hb[24];
     du_human((uint64_t)want * 512ULL, hb, sizeof(hb));
     printf("nyxpart: drive %d partitioned - 1x Linux %s at LBA %u [boot]\n", drive, hb, start);
@@ -5296,6 +5297,7 @@ static void cmd_nyxinstall(int argc, char** argv) {
     static uint8_t sec[512];
     mbr_build(&p, 1, sec);
     if (ata_write_sectors((uint8_t)drive, 0, 1, sec) < 0) { printf("nyxinstall: partition write failed\n"); return; }
+    ata_flush();
 
     du_human((uint64_t)blocks * 1024ULL, hb, sizeof(hb));
     printf("[2/5] Formatting ext2 (%s)...\n", hb);

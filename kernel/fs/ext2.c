@@ -549,6 +549,7 @@ int ext2_sync_superblock(void) {
     __builtin_memset(sb_buf, 0, 1024);
     __builtin_memcpy(sb_buf, &ext2_fs.sb, sizeof(ext2_superblock_t));
     write_sectors(2, 2, sb_buf);
+    ata_flush();   // commit point: force this op's batched writes to the medium
     return 0;
 }
 
@@ -1480,7 +1481,9 @@ static int e2f_disk_wb(void* c, uint32_t block, const uint8_t* buf) {
 }
 int ext2_format(uint8_t drive, uint32_t part_lba, uint32_t total_blocks) {
     e2f_disk_ctx_t c = { drive, part_lba };
-    return ext2_format_cb(total_blocks, e2f_disk_wb, &c);
+    int r = ext2_format_cb(total_blocks, e2f_disk_wb, &c);
+    ata_flush();   // commit the freshly-written filesystem to the medium
+    return r;
 }
 
 static uint8_t e2f_test_img[64 * 1024];                        // 64-block scratch fs for the KAT
