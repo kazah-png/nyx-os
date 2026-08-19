@@ -16,6 +16,7 @@
 #include "../drivers/audio/sb16.h"
 #include "../fs/ext2.h"
 #include "../fs/grub_blobs.h"
+#include "../fs/gpt.h"
 #include "../fs/tar.h"
 #include "datefmt.h"
 #include "ini.h"
@@ -177,6 +178,7 @@ static void cmd_lspci(int argc, char** argv);
 static void cmd_nvme(int argc, char** argv);
 static void cmd_nyxgrub(int argc, char** argv);
 static void cmd_nyxpart(int argc, char** argv);
+static void cmd_nyxgpt(int argc, char** argv);
 static void cmd_mkfs(int argc, char** argv);
 static void cmd_nyxinstall(int argc, char** argv);
 static void cmd_env(int argc, char** argv);
@@ -329,6 +331,7 @@ static const command_t commands[] = {
     {"mkfs",      cmd_mkfs,      "Format ext2 on a disk: mkfs <drive> [part_lba] [size_MB]", false},
     {"nyxinstall",cmd_nyxinstall,"Install NyxOS to a disk: nyxinstall <drive> confirm [srcdir]", false},
     {"nyxgrub",   cmd_nyxgrub,   "Install GRUB boot sectors so a disk boots standalone: nyxgrub <drive>", false},
+    {"nyxgpt",    cmd_nyxgpt,    "Write a UEFI GUID Partition Table (ESP + NyxOS): nyxgpt <drive> confirm", false},
     {"env",       cmd_env,       "Show environment variables", false},
     {"export",    cmd_export,    "Set env variable: export <name>=<value>", false},
     {"find",      cmd_find,      "Find files by name: find <name> [path]", false},
@@ -763,6 +766,7 @@ static const man_page_t man_pages[] = {
     {"mkfs",     "Format a fresh ext2 filesystem onto a disk (the 3rd nyxinstall rung, after nyxpart). `mkfs <drive> [part_lba] [size_MB]` writes a valid single-block-group ext2 (1024-byte blocks) at part_lba (default LBA 2048, matching `nyxpart`): superblock, block-group descriptor, block + inode bitmaps, inode table, the root directory and lost+found. The layout is byte-for-byte a real ext2 (verified against Linux `fsck.ext2` at 1 through 13 block groups). Multi-block-group is supported (a superblock + descriptor-table backup at the start of every group), so volumes up to 256 MB work; beyond that is capped for now. Destructive — it erases the target area. After it finishes, `mount <drive> <part_lba>` mounts the new filesystem on /mnt. Typical install flow: `nyxpart 0 new` -> `mkfs 0 2048` -> `mount 0 2048`."},
     {"nyxinstall","Guided installer that puts NyxOS onto a disk in one command — the `archinstall`-style capstone of the disk-management tools. `nyxinstall <drive> confirm [srcdir]` runs the whole flow: [1] write a fresh MBR with one bootable Linux partition spanning the disk, [2] mkfs a multi-block-group ext2 filesystem on it, [3] mount it at /mnt, [4] recursively copy the source tree (srcdir, default /bin) onto it with `cp -r`. Each step prints progress and the run ends with a file/directory count. DESTRUCTIVE: it erases the whole target drive, so it refuses to run unless the literal word `confirm` is given as the second argument. The individual steps are also available on their own (`disks`, `nyxpart`, `mkfs`, `mount`, `cp -r`). Installing a bootloader so the disk boots standalone, and drivers for modern SATA/NVMe hardware, are separate later steps."},
     {"nyxpart",  "Write a fresh MBR partition table to a disk (the first WRITE step of nyxinstall's disk management). `nyxpart <drive> new [size_MB]` erases the drive's existing partition table and writes a single bootable Linux (0x83) partition, 1 MiB-aligned (starting at LBA 2048), spanning the whole disk or the given size in megabytes. The destructive action requires the explicit `new` keyword. Pair it with `disks`/`lsblk` to see the result. WARNING: this overwrites the partition table on the selected drive — only run it on a disk you intend to repartition."},
+    {"nyxgpt",   "Write a UEFI GUID Partition Table (GPT) to a disk — the partitioning a modern UEFI machine boots from, versus the legacy MBR `nyxpart` writes. `nyxgpt <drive> confirm` erases the existing table and lays down a protective MBR, primary + backup GPT headers (each with the two CRC-32s the spec mandates) and a 128-entry partition array describing two partitions: a 64 MiB EFI System Partition and a NyxOS partition filling the rest. DESTRUCTIVE: requires the literal `confirm`. Validated against Linux `sgdisk -v`/`gdisk -l`. This is the first rung of the UEFI-install path (the ESP is formatted FAT and given a GRUB-EFI loader in later steps); `disks` lists a GPT disk's partitions."},
     {"du",       "Disk usage: sum the sizes of every file in the subtree rooted at [path] (the current directory by default) and print the total, both human-readable (B/K/M/G) and in exact bytes, with a file and directory count. The walk is iterative with a bounded off-stack frontier (the 4 KB kernel task stack forbids deep recursion); a subtree wider than that many pending directories reports the total as a floor. Complements `df`, which reports whole-filesystem free space rather than per-directory usage."},
     {"find",     "Search for files whose name matches <name>, starting at [path] (the current directory by default), and print the path of every match."},
     {"touch",    "Create <file> as a new, empty file if it does not already exist."},
@@ -2565,6 +2569,7 @@ static void cmd_disks(int argc, char** argv) {
         printf("Disk %d: %s  %s (%u sectors)\n", d, model[0] ? model : "(unknown)", hb, (uint32_t)sectors);
         if (ata_read_sectors((uint8_t)d, 0, 1, sec) < 0) { printf("  (cannot read sector 0)\n"); continue; }
         print_mbr_parts(sec);
+        gpt_list((uint8_t)d);                                 // if GPT, list its partitions too
     }
     // NVMe namespace — a PCIe device, invisible to the ATA/IDE probe above. Bring
     // the controller up (idempotent), then list model + capacity + its MBR table.
@@ -2582,6 +2587,7 @@ static void cmd_disks(int argc, char** argv) {
             static uint8_t nsec[4096] __attribute__((aligned(4096)));   // page-aligned NVMe DMA target
             if (nvme_read_blocks(0, 1, nsec) == 0) print_mbr_parts(nsec);
             else printf("  (cannot read LBA 0)\n");
+            gpt_list(BLK_NVME0);                              // if GPT, list its partitions too
         }
     }
     if (!found) printf("disks: no disks detected\n");
@@ -2679,6 +2685,50 @@ static void cmd_nyxpart(int argc, char** argv) {
     du_human((uint64_t)want * 512ULL, hb, sizeof(hb));
     printf("nyxpart: %s partitioned - 1x Linux %s at LBA %u [boot]\n", argv[1], hb, start);
     printf("  run 'disks' to confirm.\n");
+}
+
+// nyxgpt <drive> confirm — write a fresh GUID Partition Table: an EFI System
+// Partition (FAT, a later rung) + a NyxOS partition. This is the UEFI-boot disk
+// layout the real laptop needs (vs the legacy MBR nyxpart writes). Destructive;
+// the on-disk GPT is validated on the host with `sgdisk -v` / `gdisk -l`.
+static void cmd_nyxgpt(int argc, char** argv) {
+    if (argc < 3 || strcmp(argv[2], "confirm") != 0) {
+        printf("Usage: nyxgpt <drive> confirm\n");
+        printf("  Writes a fresh GPT: 1x EFI System Partition + 1x NyxOS partition.\n");
+        printf("  WARNING: this ERASES the drive's existing partition table.\n");
+        return;
+    }
+    uint8_t dev = parse_blk_dev(argv[1]);
+    uint64_t total = blk_dev_sectors(dev);
+    if (total == 0) { printf("nyxgpt: %s not available\n", argv[1]); return; }
+
+    uint64_t last_usable = (total > 34) ? total - 34 : 0;
+    uint64_t esp_start = 2048;                                // 1 MiB alignment
+    if (last_usable <= esp_start + 4096) { printf("nyxgpt: disk too small for a GPT layout\n"); return; }
+    uint64_t usable = last_usable - esp_start + 1;
+    uint64_t esp_sectors = 131072;                            // 64 MiB ESP
+    if (esp_sectors > usable / 2) esp_sectors = (usable / 4) & ~2047ULL;
+    if (esp_sectors < 2048) esp_sectors = 2048;
+    uint64_t nyx_start = esp_start + esp_sectors;
+    if (nyx_start > last_usable || (last_usable - nyx_start + 1) < 2048) {
+        printf("nyxgpt: disk too small for a NyxOS partition\n"); return;
+    }
+    uint64_t nyx_sectors = last_usable - nyx_start + 1;
+
+    // Unique GUIDs: a fixed template varied by a boot-time seed + slot (the kernel
+    // has no RNG; a GPT only needs non-zero uniqueness, not randomness).
+    uint32_t seed = get_ticks();
+    uint8_t dg[16], eg[16], ng[16];
+    for (int i = 0; i < 16; i++) { dg[i] = (uint8_t)(0x40 + i); eg[i] = (uint8_t)(0x50 + i); ng[i] = (uint8_t)(0x60 + i); }
+    dg[0] ^= (uint8_t)seed; eg[0] ^= (uint8_t)(seed >> 8); ng[0] ^= (uint8_t)(seed >> 16); dg[1] ^= (uint8_t)(seed >> 24);
+
+    printf("=== nyxgpt: target %s (%u sectors) ===\n", argv[1], (uint32_t)total);
+    int r = gpt_write_disk(dev, total, esp_start, esp_sectors, nyx_start, nyx_sectors, dg, eg, ng);
+    if (r != 0) { printf("nyxgpt: write failed (%d)\n", r); return; }
+    printf("  GPT written: ESP %u MiB @ LBA %u, NyxOS %u MiB @ LBA %u\n",
+           (uint32_t)((esp_sectors * 512) >> 20), (uint32_t)esp_start,
+           (uint32_t)((nyx_sectors * 512) >> 20), (uint32_t)nyx_start);
+    gpt_list(dev);
 }
 
 // mkfs <drive> [part_lba] [size_MB] — format a fresh ext2 (single block group,
@@ -6076,6 +6126,7 @@ static void run_selftests(void) {
         {"pci",          pci_selftest},
         {"nvme",         nvme_selftest},
         {"nyxgrub",      nyxgrub_selftest},
+        {"gpt",          gpt_selftest},
         {"mbr",          mbr_selftest},
         {"mbrbuild",     mbr_build_selftest},
         {"mkfs-ext2",    ext2_format_selftest},
