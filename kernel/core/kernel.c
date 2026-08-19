@@ -296,7 +296,7 @@ static const command_t commands[] = {
     {"touch",     cmd_touch,     "Create empty file: touch <file>", false},
     {"mkdir",     cmd_mkdir,     "Create directory: mkdir <dir>", false},
     {"rm",        cmd_rm,        "Remove file or directory: rm <path>", false},
-    {"cp",        cmd_cp,        "Copy file: cp <src> <dst>", false},
+    {"cp",        cmd_cp,        "Copy a file (cp <src> <dst>) or a tree (cp -r <srcdir> <dstdir>)", false},
     {"mv",        cmd_mv,        "Move/rename file: mv <src> <dst>", false},
     {"useradd",   cmd_useradd,   "Add a user account: useradd <user> <pass>", false},
     {"users",     cmd_users,     "List user accounts", false},
@@ -685,7 +685,7 @@ static const man_page_t man_pages[] = {
     {"file",     "Identify the type of each <file> from its leading bytes (magic numbers: ELF, PNG, GIF, JPEG, PDF, Zip, gzip, WAV, BMP, tar, #! scripts) and, for text, whether it is ASCII or UTF-8 (with a source-extension hint like `C source`). Prints `<file>: <type>`."},
     {"tar",      "List the members of a POSIX ustar (.tar) archive: `tar t <file.tar>` prints each member's path, and `tar tv` also prints its type flag and byte size. Listing only — extraction is not yet supported."},
     {"iniget",   "Read one value from an INI/.conf file: `iniget <file> <section> <key>` prints the trimmed value under [section], or `iniget <file> - <key>` reads the global section (keys before any [section]). '=' is the delimiter; ';'/'#' begin whole-line comments. Prints nothing and reports not-found if the key is absent."},
-    {"cp",       "Copy the file <src> to <dst>, replacing <dst> if it already exists."},
+    {"cp",       "Copy the file <src> to <dst>, replacing <dst> if it already exists. With `cp -r <srcdir> <dstdir>` it copies a whole directory tree recursively, creating each destination directory and copying every file across filesystems (e.g. from the RAM image to a freshly-formatted disk mounted at /mnt) — this is how `nyxinstall` populates a target disk. The walk is iterative with a bounded off-stack frontier, so deep trees are safe on the small kernel stack."},
     {"mv",       "Move or rename <src> to <dst>. Within one filesystem this only rewrites the directory entry."},
     {"rm",       "Remove <path>. There is no recycle bin, so a removed file is gone for good."},
     {"mkdir",    "Create a new, empty directory named <dir>."},
@@ -5136,8 +5136,121 @@ static void cmd_rm(int argc, char** argv) {
     if (vfs_unlink(argv[1]) < 0) printf("rm: failed to remove %s\n", argv[1]);
 }
 
+// ---------------------------------------------------------------------------
+// cp -r — recursive directory copy (v6.4.252), the copy-OS-to-disk installer
+// rung. Iterative (bounded off-stack frontier — the 4 KB kernel task stack
+// forbids recursion): pop a (src,dst) pair, mkdir the dst, enumerate the src,
+// push subdirs / copy files (via vfs_cp, which crosses filesystems). Enumerate/
+// mkdir/copy are injected so the traversal is KAT'd against a synthetic tree.
+// ---------------------------------------------------------------------------
+#define CPT_MAX 64
+static char cpt_ss[CPT_MAX][256], cpt_ds[CPT_MAX][256];   // off-stack frontier
+static char cpt_fs[256], cpt_fd[256];                     // file src/dst scratch (off-stack)
+
+typedef void (*cpt_child_fn)(void* cctx, const char* name, int is_dir);
+typedef void (*cpt_enum_fn)(void* ectx, const char* path, cpt_child_fn child, void* cctx);
+typedef int  (*cpt_mkdir_fn)(void* ctx, const char* path);
+typedef int  (*cpt_copy_fn)(void* ctx, const char* src, const char* dst);
+
+typedef struct {
+    int n, files, errors;
+    const char* cur_src; const char* cur_dst;
+    cpt_copy_fn cp; void* opctx;
+} cpt_state_t;
+
+static void cpt_on_child(void* cctx, const char* name, int is_dir) {
+    cpt_state_t* st = (cpt_state_t*)cctx;
+    if (is_dir) {
+        if (st->n >= CPT_MAX) { st->errors++; return; }      // frontier full
+        du_join(st->cur_src, name, cpt_ss[st->n], 256);
+        du_join(st->cur_dst, name, cpt_ds[st->n], 256);
+        st->n++;
+    } else {
+        du_join(st->cur_src, name, cpt_fs, 256);
+        du_join(st->cur_dst, name, cpt_fd, 256);
+        if (st->cp(st->opctx, cpt_fs, cpt_fd) == 0) st->files++; else st->errors++;
+    }
+}
+
+static int cptree_walk(const char* src, const char* dst, cpt_enum_fn enumf,
+                       cpt_mkdir_fn mk, cpt_copy_fn cp, void* opctx,
+                       int* out_dirs, int* out_files, int* out_err) {
+    cpt_state_t st; st.n = 0; st.files = 0; st.errors = 0; st.cp = cp; st.opctx = opctx;
+    strncpy(cpt_ss[0], src, 255); cpt_ss[0][255] = '\0';
+    strncpy(cpt_ds[0], dst, 255); cpt_ds[0][255] = '\0';
+    st.n = 1;
+    int dirs = 0;
+    char s[256], d[256];
+    while (st.n > 0) {
+        st.n--;                                              // pop; copy out so pushes can't clobber it
+        strncpy(s, cpt_ss[st.n], 255); s[255] = '\0';
+        strncpy(d, cpt_ds[st.n], 255); d[255] = '\0';
+        dirs++;
+        mk(opctx, d);                                        // ensure dst dir exists (best-effort)
+        st.cur_src = s; st.cur_dst = d;
+        enumf(opctx, s, cpt_on_child, &st);
+    }
+    if (out_dirs)  *out_dirs = dirs;
+    if (out_files) *out_files = st.files;
+    if (out_err)   *out_err = st.errors;
+    return 0;
+}
+
+// Real VFS backing for cp -r.
+static void cpt_vfs_enum(void* ec, const char* path, cpt_child_fn child, void* cc) {
+    (void)ec;
+    int fd = vfs_open(path, 0, 0);
+    if (fd < 0) return;
+    static dirent_t ents[256];
+    int n = 0;
+    dirent_t* de = vfs_readdir(fd);
+    while (de && n < 256) { ents[n++] = *de; de = vfs_readdir(fd); }
+    vfs_close(fd);
+    for (int i = 0; i < n; i++) {
+        const char* nm = ents[i].name;
+        if (nm[0] == '.' && (nm[1] == '\0' || (nm[1] == '.' && nm[2] == '\0'))) continue;
+        child(cc, nm, ents[i].type == 1);
+    }
+}
+static int cpt_vfs_mkdir(void* c, const char* path) { (void)c; vfs_mkdir(path, 0755); return 0; }  // ok if exists
+static int cpt_vfs_cp(void* c, const char* s, const char* d) { (void)c; return vfs_cp(s, d); }
+
+// KAT: drive cptree_walk over a synthetic tree, logging the mkdir/copy ops.
+//   /a -> file f1, dir sub ; /a/sub -> file f2   ==>  copy to /b
+static char cpt_log[512];
+static void cpt_log_append(const char* a, const char* b, const char* c) {
+    int L = 0; while (cpt_log[L]) L++;
+    const char* parts[3] = { a, b, c };
+    for (int p = 0; p < 3; p++) { const char* q = parts[p]; if (!q) continue; while (*q && L < 510) cpt_log[L++] = *q++; }
+    if (L < 511) cpt_log[L++] = '|'; cpt_log[L] = '\0';
+}
+static void cpt_test_enum(void* ec, const char* path, cpt_child_fn child, void* cc) {
+    (void)ec;
+    if (strcmp(path, "/a") == 0)          { child(cc, "f1", 0); child(cc, "sub", 1); }
+    else if (strcmp(path, "/a/sub") == 0) { child(cc, "f2", 0); }
+}
+static int cpt_test_mkdir(void* c, const char* p) { (void)c; cpt_log_append("M:", p, 0); return 0; }
+static int cpt_test_cp(void* c, const char* s, const char* d) { (void)c; cpt_log_append("C:", s, d); return 0; }
+int cptree_walk_selftest(void) {
+    cpt_log[0] = '\0';
+    int dirs = 0, files = 0, err = 0;
+    cptree_walk("/a", "/b", cpt_test_enum, cpt_test_mkdir, cpt_test_cp, 0, &dirs, &files, &err);
+    if (dirs != 2 || files != 2 || err != 0) return 1;       // dirs /a,/a/sub ; files f1,f2
+    if (!strstr(cpt_log, "M:/b|"))                 return 2;
+    if (!strstr(cpt_log, "M:/b/sub|"))             return 3;
+    if (!strstr(cpt_log, "C:/a/f1/b/f1|"))         return 4;
+    if (!strstr(cpt_log, "C:/a/sub/f2/b/sub/f2|")) return 5;
+    return 0;
+}
+
 static void cmd_cp(int argc, char** argv) {
-    if (argc < 3) { printf("Usage: cp <src> <dst>\n"); return; }
+    if (argc >= 4 && strcmp(argv[1], "-r") == 0) {           // recursive directory copy
+        int dirs = 0, files = 0, err = 0;
+        cptree_walk(argv[2], argv[3], cpt_vfs_enum, cpt_vfs_mkdir, cpt_vfs_cp, 0, &dirs, &files, &err);
+        printf("cp -r: copied %d file(s) across %d director(y/ies)%s\n", files, dirs, err ? " (some errors)" : "");
+        return;
+    }
+    if (argc < 3) { printf("Usage: cp [-r] <src> <dst>\n"); return; }
     if (!path_last_component_ok(argv[2])) { printf("cp: invalid destination name '%s'\n", argv[2]); return; }
     if (vfs_cp(argv[1], argv[2]) < 0) printf("cp: failed to copy %s to %s\n", argv[1], argv[2]);
 }
@@ -5704,6 +5817,7 @@ static void run_selftests(void) {
         {"mbrbuild",     mbr_build_selftest},
         {"mkfs-ext2",    ext2_format_selftest},
         {"mkfs-mg",      ext2_format_mg_selftest},
+        {"cptree",       cptree_walk_selftest},
         {"notify",       notify_selftest},
         {"stack-canary", stack_canary_selftest},
         {"numparse",     numparse_selftest},        {"hkdf",          hkdf_selftest},
