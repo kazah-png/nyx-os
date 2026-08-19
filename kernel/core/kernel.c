@@ -332,7 +332,7 @@ static const command_t commands[] = {
     {"nvme",      cmd_nvme,      "Bring up the NVMe controller (probe + admin queue)", false},
     {"nyxpart",   cmd_nyxpart,   "Write an MBR partition table: nyxpart <drive> new [size_MB]", false},
     {"mkfs",      cmd_mkfs,      "Format ext2 on a disk: mkfs <drive> [part_lba] [size_MB]", false},
-    {"nyxinstall",cmd_nyxinstall,"Install NyxOS to a disk: nyxinstall <drive> confirm [srcdir]", false},
+    {"nyxinstall",cmd_nyxinstall,"Install NyxOS to a disk (add --uefi for GPT+ESP): nyxinstall [--uefi] <drive> confirm", false},
     {"nyxgrub",   cmd_nyxgrub,   "Install GRUB boot sectors so a disk boots standalone: nyxgrub <drive>", false},
     {"nyxgpt",    cmd_nyxgpt,    "Write a UEFI GUID Partition Table (ESP + NyxOS): nyxgpt <drive> confirm", false},
     {"nyxfat",    cmd_nyxfat,    "Format the ESP FAT32 + write /EFI/BOOT: nyxfat <drive> confirm", false},
@@ -5523,12 +5523,84 @@ static int nyxgrub_selftest(void) {
 // the OS tree (srcdir, default /bin) onto it -> install GRUB. DESTRUCTIVE: wipes
 // the drive, so it demands the literal `confirm` keyword. Calls the primitives
 // directly (no nested execute_command).
+// Shared ext2-populate step for both installers: mkfs -> mount /mnt -> cp -r the OS
+// tree -> write /boot/grub/grub.cfg + copy the kernel to /boot/nyx-kernel.bin. The
+// embedded initramfs makes /boot/nyx-kernel.bin self-sufficient to boot. 0 on success.
+static int install_populate_ext2(uint8_t dev, uint32_t part_lba, uint32_t blocks,
+                                 const char* src, int* have_kernel_out) {
+    char hb[24];
+    du_human((uint64_t)blocks * 1024ULL, hb, sizeof(hb));
+    printf("  Formatting ext2 (%s)...\n", hb);
+    if (ext2_format(dev, part_lba, blocks) != 0) { printf("  mkfs failed\n"); return -1; }
+    printf("  Mounting at /mnt...\n");
+    if (ext2_mount(dev, part_lba) != 0) { printf("  mount failed\n"); return -1; }
+    if (vfs_mount("/mnt", FS_TYPE_EXT2, NULL) < 0) { printf("  VFS mount failed\n"); return -1; }
+    printf("  Copying %s -> /mnt ...\n", src);
+    int dirs = 0, files = 0, err = 0;
+    cptree_walk(src, "/mnt", cpt_vfs_enum, cpt_vfs_mkdir, cpt_vfs_cp, 0, &dirs, &files, &err);
+    vfs_mkdir("/mnt/boot", 0755);
+    vfs_mkdir("/mnt/boot/grub", 0755);
+    static const char* gcfg =
+        "set timeout=3\nset default=0\ninsmod all_video\n"
+        "menuentry 'NyxOS' {\n    multiboot2 /boot/nyx-kernel.bin\n    boot\n}\n";
+    vfs_write_file("/mnt/boot/grub/grub.cfg", gcfg, (uint32_t)strlen(gcfg));
+    uint32_t ksz = 0; int kisd = 0, have_kernel = 0;
+    if (vfs_stat("/nyxkernel.bin", &ksz, &kisd) == 0 && !kisd && ksz > 0) {
+        if (vfs_cp("/nyxkernel.bin", "/mnt/boot/nyx-kernel.bin") == 0) {
+            have_kernel = 1;
+            printf("  kernel image (%u bytes) -> /boot/nyx-kernel.bin\n", ksz);
+        } else printf("  (kernel copy failed)\n");
+    } else printf("  (no /nyxkernel.bin module; add /boot/nyx-kernel.bin manually)\n");
+    printf("  %d file(s) across %d director(y/ies)%s\n", files, dirs, err ? " (with errors)" : "");
+    if (have_kernel_out) *have_kernel_out = have_kernel;
+    return 0;
+}
+
+// nyxinstall --uefi <drive> confirm [srcdir] — the full UEFI install: GPT (nyxgpt) +
+// FAT ESP with GRUB-EFI (nyxfat) + an ext2 NyxOS partition (mkfs + the OS + kernel).
+// The written disk boots on a UEFI machine: firmware -> \EFI\BOOT\BOOTX64.EFI (GRUB) ->
+// grub.cfg `search --file /boot/nyx-kernel.bin` -> multiboot2 the kernel off the ext2.
+static void cmd_nyxinstall_uefi(int argc, char** argv) {
+    // argv: [0]=nyxinstall [1]=--uefi [2]=drive [3]=confirm [4]=srcdir?
+    if (argc < 4 || strcmp(argv[3], "confirm") != 0) {
+        printf("Usage: nyxinstall --uefi <drive> confirm [srcdir]\n");
+        printf("  UEFI install: GPT + FAT ESP (GRUB-EFI) + ext2 NyxOS partition. ERASES the drive.\n");
+        return;
+    }
+    uint8_t dev = parse_blk_dev(argv[2]);
+    const char* src = (argc >= 5) ? argv[4] : "/bin";
+    if (strcmp(src, "/") == 0 || strncmp(src, "/mnt", 4) == 0) {
+        printf("nyxinstall: refusing srcdir '%s' (would recurse into the target)\n", src); return;
+    }
+    if (blk_dev_sectors(dev) == 0) { printf("nyxinstall: %s not available\n", argv[2]); return; }
+    printf("=== nyxinstall --uefi: target %s ===\n", argv[2]);
+
+    printf("[1/3] GPT (ESP + NyxOS)...\n");
+    char* gv[] = { "nyxgpt", (char*)argv[2], "confirm" }; cmd_nyxgpt(3, gv);
+    printf("[2/3] ESP FAT32 + GRUB-EFI loader...\n");
+    char* fv[] = { "nyxfat", (char*)argv[2], "confirm" }; cmd_nyxfat(3, fv);
+
+    uint64_t nx_start = 0, nx_sectors = 0;
+    if (gpt_find_nyx(dev, &nx_start, &nx_sectors) != 0) { printf("nyxinstall: no NyxOS partition in the GPT\n"); return; }
+    uint32_t blocks = (uint32_t)(nx_sectors / 2);
+    if (blocks > 32u * 8192 + 1) blocks = 32u * 8192 + 1;               // mkfs single-drive cap
+    printf("[3/3] ext2 NyxOS partition @ LBA %u...\n", (uint32_t)nx_start);
+    int have_kernel = 0;
+    if (install_populate_ext2(dev, (uint32_t)nx_start, blocks, src, &have_kernel) != 0) { printf("nyxinstall: populate failed\n"); return; }
+
+    printf("=== nyxinstall --uefi done ===\n");
+    printf("  ESP: /EFI/BOOT/BOOTX64.EFI (GRUB-EFI) + grub.cfg; NyxOS ext2 %s.\n",
+           have_kernel ? "has /boot/nyx-kernel.bin" : "(NO kernel — boot will fail)");
+    printf("  Boot this disk on a UEFI machine (Secure Boot off) to run NyxOS.\n");
+}
+
 static void cmd_nyxinstall(int argc, char** argv) {
+    if (argc >= 2 && strcmp(argv[1], "--uefi") == 0) { cmd_nyxinstall_uefi(argc, argv); return; }
     if (argc < 3 || strcmp(argv[2], "confirm") != 0) {
-        printf("Usage: nyxinstall <drive> confirm [srcdir]\n");
+        printf("Usage: nyxinstall <drive> confirm [srcdir]      (legacy MBR/BIOS install)\n");
+        printf("       nyxinstall --uefi <drive> confirm [srcdir]  (GPT + ESP + GRUB-EFI, UEFI)\n");
         printf("  Installs NyxOS to a disk: partition -> mkfs ext2 -> mount -> copy the OS tree.\n");
         printf("  WARNING: this ERASES all data on the target drive.\n");
-        printf("  Re-run with the literal word 'confirm' as the 2nd argument to proceed.\n");
         return;
     }
     uint8_t dev = parse_blk_dev(argv[1]);
@@ -5549,60 +5621,24 @@ static void cmd_nyxinstall(int argc, char** argv) {
     uint32_t blocks = part_sectors / 2;
     if (blocks > 32u * 8192 + 1) blocks = 32u * 8192 + 1;               // mkfs single-drive cap
 
-    printf("[1/6] Partitioning (MBR: 1x bootable Linux @ LBA %u)...\n", part_lba);
+    printf("[1/4] Partitioning (MBR: 1x bootable Linux @ LBA %u)...\n", part_lba);
     mbr_part_t p = { .status = 0x80, .type = 0x83, .lba_start = part_lba, .sectors = part_sectors };
     static uint8_t sec[512];
     mbr_build(&p, 1, sec);
     if (blk_write1(dev, 0, sec) != 0) { printf("nyxinstall: partition write failed\n"); return; }
     if (dev != BLK_NVME0) ata_flush();
 
-    du_human((uint64_t)blocks * 1024ULL, hb, sizeof(hb));
-    printf("[2/6] Formatting ext2 (%s)...\n", hb);
-    if (ext2_format(dev, part_lba, blocks) != 0) { printf("nyxinstall: mkfs failed\n"); return; }
-
-    printf("[3/6] Mounting at /mnt...\n");
-    if (ext2_mount(dev, part_lba) != 0) { printf("nyxinstall: mount failed\n"); return; }
-    if (vfs_mount("/mnt", FS_TYPE_EXT2, NULL) < 0) { printf("nyxinstall: VFS mount failed\n"); return; }
-
-    printf("[4/6] Copying %s -> /mnt ...\n", src);
-    int dirs = 0, files = 0, err = 0;
-    cptree_walk(src, "/mnt", cpt_vfs_enum, cpt_vfs_mkdir, cpt_vfs_cp, 0, &dirs, &files, &err);
-
-    // Write the GRUB boot config the disk's bootloader will use. A GRUB installed
-    // to this disk (boot.img in the MBR + core.img in the gap) reads this to load
-    // the multiboot2 kernel — the recipe verified to boot standalone in QEMU.
-    printf("[5/6] Writing boot files (kernel + grub.cfg)...\n");
-    vfs_mkdir("/mnt/boot", 0755);
-    vfs_mkdir("/mnt/boot/grub", 0755);
-    static const char* gcfg =
-        "set timeout=3\nset default=0\ninsmod all_video\n"
-        "menuentry 'NyxOS' {\n    multiboot2 /boot/nyx-kernel.bin\n    boot\n}\n";
-    vfs_write_file("/mnt/boot/grub/grub.cfg", gcfg, (uint32_t)strlen(gcfg));
-    // GRUB loaded our own kernel image as a module at /nyxkernel.bin (see build.ps1);
-    // copy it onto the target so the installed disk has /boot/nyx-kernel.bin to boot.
-    uint32_t ksz = 0; int kisd = 0;
+    printf("[2/4] ext2 + OS tree + kernel...\n");
     int have_kernel = 0;
-    if (vfs_stat("/nyxkernel.bin", &ksz, &kisd) == 0 && !kisd && ksz > 0) {
-        if (vfs_cp("/nyxkernel.bin", "/mnt/boot/nyx-kernel.bin") == 0) {
-            have_kernel = 1;
-            printf("  kernel image (%u bytes) -> /boot/nyx-kernel.bin\n", ksz);
-        } else {
-            printf("  (kernel copy failed)\n");
-        }
-    } else {
-        printf("  (no /nyxkernel.bin module; add /boot/nyx-kernel.bin manually)\n");
-    }
+    if (install_populate_ext2(dev, part_lba, blocks, src, &have_kernel) != 0) { printf("nyxinstall: populate failed\n"); return; }
 
-    printf("[6/6] Installing GRUB boot sectors (core.img %u sectors -> gap)...\n", GRUB_CORE_SECTORS);
+    printf("[3/4] Installing GRUB boot sectors (core.img %u sectors -> gap)...\n", GRUB_CORE_SECTORS);
     int grub_ok = (have_kernel && install_grub_to(dev) == 0);
     if (grub_ok) printf("  GRUB installed to the MBR/gap - the disk boots standalone.\n");
     else if (!have_kernel) printf("  (skipped: no kernel on disk to boot)\n");
     else printf("  (GRUB install failed)\n");
 
-    printf("=== nyxinstall done: %d file(s) across %d director(y/ies) written to %s%s ===\n",
-           files, dirs, argv[1], err ? " (with errors)" : "");
-    printf("  /mnt now holds %s+ /boot/grub/grub.cfg.\n",
-           have_kernel ? "/boot/nyx-kernel.bin " : "the OS tree ");
+    printf("[4/4] === nyxinstall done: written to %s ===\n", argv[1]);
     if (grub_ok) printf("  Reboot from this disk (BIOS/CSM) to run the installed NyxOS.\n");
     else printf("  Run 'nyxgrub %s' to install the bootloader for standalone boot.\n", argv[1]);
 }

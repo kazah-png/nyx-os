@@ -58,6 +58,7 @@ int  gpt_write_disk(uint8_t dev, uint64_t disk_sectors,
                     const uint8_t disk_guid[16], const uint8_t esp_guid[16], const uint8_t nyx_guid[16]);
 int  gpt_list(uint8_t dev);            // read + print the GPT partition table; -1 if the disk is not GPT
 int  gpt_find_esp(uint8_t dev, uint64_t* start, uint64_t* sectors);  // locate the EFI System Partition; 0 ok, -1 none
+int  gpt_find_nyx(uint8_t dev, uint64_t* start, uint64_t* sectors);  // locate the NyxOS (Linux-type) partition; 0 ok, -1 none
 
 int  gpt_selftest(void);               // KAT the CRC + header/entry byte layout + a build->parse round-trip
 
