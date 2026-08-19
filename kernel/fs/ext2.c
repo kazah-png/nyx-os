@@ -1,5 +1,6 @@
 #include "../core/kernel.h"
 #include "../drivers/misc/ata.h"
+#include "../drivers/misc/blockdev.h"
 #include "ext2.h"
 #include "../core/spinlock.h"
 
@@ -54,14 +55,14 @@ static void sc_read1(uint32_t lba, void* buf) {
         sc_hits++;
         return;
     }
-    ata_read_sectors(ext2_fs.drive, ext2_fs.part_start_lba + lba, 1, buf);
+    blk_read1(ext2_fs.drive, ext2_fs.part_start_lba + lba, buf);
     __builtin_memcpy(sc_data[i], buf, 512);
     sc_tag[i] = lba; sc_valid[i] = 1;
     sc_misses++;
 }
 
 static void sc_write1(uint32_t lba, const void* buf) {
-    ata_write_sectors(ext2_fs.drive, ext2_fs.part_start_lba + lba, 1, buf);
+    blk_write1(ext2_fs.drive, ext2_fs.part_start_lba + lba, buf);
     uint32_t i = lba % SC_LINES;
     __builtin_memcpy(sc_data[i], buf, 512);            // write-through: keep the line coherent
     sc_tag[i] = lba; sc_valid[i] = 1;
@@ -1477,7 +1478,7 @@ int ext2_format_cb(uint32_t total_blocks, ext2_wb_fn wb, void* ctx) {
 typedef struct { uint8_t drive; uint32_t part_lba; } e2f_disk_ctx_t;
 static int e2f_disk_wb(void* c, uint32_t block, const uint8_t* buf) {
     e2f_disk_ctx_t* d = (e2f_disk_ctx_t*)c;
-    return ata_write_sectors(d->drive, d->part_lba + block * 2, 2, buf) < 0 ? -1 : 0;  // 2 sectors / 1024 block
+    return blk_write(d->drive, d->part_lba + block * 2, 2, buf);  // 2 sectors / 1024 block
 }
 int ext2_format(uint8_t drive, uint32_t part_lba, uint32_t total_blocks) {
     e2f_disk_ctx_t c = { drive, part_lba };

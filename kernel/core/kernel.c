@@ -9,6 +9,7 @@
 #include "../drivers/misc/apic.h"
 #include "../drivers/misc/pci.h"
 #include "../drivers/misc/nvme.h"
+#include "../drivers/misc/blockdev.h"
 #include "../drivers/misc/rtc.h"
 #include "../drivers/audio/speaker.h"
 #include "../net/tcp.h"
@@ -2618,10 +2619,36 @@ static void cmd_nvme(int argc, char** argv) {
         nvme_dump_lba((uint64_t)(uint32_t)atoi(argc >= 3 ? argv[2] : "0"));
 }
 
+// Parse a drive selector for the installer commands: "n0"/"nvme"/"nvme0" -> the
+// NVMe namespace, else an ATA drive index. Lets nyxpart/mkfs/mount/nyxinstall
+// target either disk (block I/O routes through blockdev.c).
+static uint8_t parse_blk_dev(const char* s) {
+    if (s[0] == 'n') return BLK_NVME0;
+    return (uint8_t)atoi(s);
+}
+
+// Bring the selected device up (idempotent for NVMe) and return its total 512-B
+// sector count, or 0 on failure. NVMe must present 512-B logical blocks.
+static uint64_t blk_dev_sectors(uint8_t dev) {
+    if (dev == BLK_NVME0) {
+        if (nvme_init() != 0) { printf("  no NVMe controller\n"); return 0; }
+        nvme_identify();
+        nvme_create_io_queues();
+        if (!nvme_io_ready()) { printf("  NVMe I/O queue not up\n"); return 0; }
+        if (nvme_block_size() != 512) { printf("  NVMe LBA size %u B unsupported (need 512)\n", nvme_block_size()); return 0; }
+        return nvme_capacity_blocks();
+    }
+    ata_init();
+    static uint16_t id[256];
+    if (ata_identify(dev, id) != 0) { printf("  no disk at drive %u\n", dev); return 0; }
+    return ata_id_sectors(id);
+}
+
 // nyxpart <drive> new [size_MB] — write a fresh MBR with one bootable Linux
 // (0x83) partition (whole disk, or size_MB), 1 MiB-aligned. ERASES the drive's
 // existing partition table. First WRITE rung of nyxinstall; the installer TUI
 // will drive this later. Destructive, so it needs the explicit `new` keyword.
+// <drive> is an ATA index (0/1) or `n0` for the NVMe namespace.
 static void cmd_nyxpart(int argc, char** argv) {
     if (argc < 3 || strcmp(argv[2], "new") != 0) {
         printf("Usage: nyxpart <drive> new [size_MB]\n");
@@ -2629,14 +2656,12 @@ static void cmd_nyxpart(int argc, char** argv) {
         printf("  WARNING: this ERASES the drive's existing partition table.\n");
         return;
     }
-    int drive = atoi(argv[1]);
-    ata_init();
-    static uint16_t id[256];
-    if (ata_identify((uint8_t)drive, id) != 0) { printf("nyxpart: no disk at drive %d\n", drive); return; }
-    uint64_t total = ata_id_sectors(id);
+    uint8_t dev = parse_blk_dev(argv[1]);
+    uint64_t total = blk_dev_sectors(dev);
+    if (total == 0) { printf("nyxpart: %s not available\n", argv[1]); return; }
     uint32_t start = 2048;                               // 1 MiB alignment
     if (total <= start) { printf("nyxpart: disk too small\n"); return; }
-    uint32_t avail = (uint32_t)(total - start);
+    uint32_t avail = (total - start) > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)(total - start);
     uint32_t want = avail;
     if (argc >= 4) {
         uint32_t s = (uint32_t)atoi(argv[3]) * 2048u;    // MB -> 512-byte sectors
@@ -2645,11 +2670,11 @@ static void cmd_nyxpart(int argc, char** argv) {
     mbr_part_t p = { .status = 0x80, .type = 0x83, .lba_start = start, .sectors = want };
     static uint8_t sec[512];
     mbr_build(&p, 1, sec);
-    if (ata_write_sectors((uint8_t)drive, 0, 1, sec) < 0) { printf("nyxpart: write to drive %d failed\n", drive); return; }
-    ata_flush();
+    if (blk_write1(dev, 0, sec) != 0) { printf("nyxpart: write to %s failed\n", argv[1]); return; }
+    if (dev != BLK_NVME0) ata_flush();                   // NVMe commits on completion; ATA needs a flush
     char hb[24];
     du_human((uint64_t)want * 512ULL, hb, sizeof(hb));
-    printf("nyxpart: drive %d partitioned - 1x Linux %s at LBA %u [boot]\n", drive, hb, start);
+    printf("nyxpart: %s partitioned - 1x Linux %s at LBA %u [boot]\n", argv[1], hb, start);
     printf("  run 'disks' to confirm.\n");
 }
 
@@ -2662,14 +2687,13 @@ static void cmd_mkfs(int argc, char** argv) {
         printf("  Formats a fresh ext2 filesystem. WARNING: erases the target area.\n");
         return;
     }
-    int drive = atoi(argv[1]);
+    uint8_t dev = parse_blk_dev(argv[1]);
     uint32_t part_lba = (argc >= 3) ? (uint32_t)atoi(argv[2]) : 2048;
-    ata_init();
-    static uint16_t id[256];
-    if (ata_identify((uint8_t)drive, id) != 0) { printf("mkfs: no disk at drive %d\n", drive); return; }
-    uint64_t total_sectors = ata_id_sectors(id);
+    uint64_t total_sectors = blk_dev_sectors(dev);
+    if (total_sectors == 0) { printf("mkfs: %s not available\n", argv[1]); return; }
     if (total_sectors <= part_lba) { printf("mkfs: part_lba past end of disk\n"); return; }
-    uint32_t blocks = (uint32_t)((total_sectors - part_lba) / 2);   // 1024-byte blocks
+    uint64_t avail_blocks = (total_sectors - part_lba) / 2;         // 1024-byte blocks
+    uint32_t blocks = avail_blocks > 0xFFFFFFFFu ? 0xFFFFFFFFu : (uint32_t)avail_blocks;
     if (argc >= 4) {
         uint32_t b = (uint32_t)atoi(argv[3]) * 1024u;               // MB -> 1024-byte blocks
         if (b > 0 && b < blocks) blocks = b;
@@ -2678,9 +2702,9 @@ static void cmd_mkfs(int argc, char** argv) {
     if (blocks > 32u * 8192 + 1) { blocks = 32u * 8192 + 1; printf("mkfs: capping to 256 MB (32 block groups)\n"); }
     char hb[24];
     du_human((uint64_t)blocks * 1024ULL, hb, sizeof(hb));
-    printf("mkfs: formatting drive %d @ LBA %u as ext2 (%s)...\n", drive, part_lba, hb);
-    if (ext2_format((uint8_t)drive, part_lba, blocks) != 0) { printf("mkfs: format failed\n"); return; }
-    printf("mkfs: done. mount it with:  mount %d %u\n", drive, part_lba);
+    printf("mkfs: formatting %s @ LBA %u as ext2 (%s)...\n", argv[1], part_lba, hb);
+    if (ext2_format(dev, part_lba, blocks) != 0) { printf("mkfs: format failed\n"); return; }
+    printf("mkfs: done. mount it with:  mount %s %u\n", argv[1], part_lba);
 }
 
 static char* env_vars[16];
@@ -4125,20 +4149,18 @@ static void cmd_setip(int argc, char** argv) {
 
 static void cmd_mount(int argc, char** argv) {
     (void)argc; (void)argv;
-    uint8_t drive = 0;
-    uint32_t part_lba = 0;
-
-    if (argc >= 2) drive = (uint8_t)atoi(argv[1]);
-    if (argc >= 3) part_lba = (uint32_t)atoi(argv[2]);
+    uint8_t dev = (argc >= 2) ? parse_blk_dev(argv[1]) : 0;
+    uint32_t part_lba = (argc >= 3) ? (uint32_t)atoi(argv[2]) : 0;
 
     if (ext2_fs.sb.magic == EXT2_SUPER_MAGIC) {
         printf("EXT2 already mounted.\n");
         return;
     }
 
-    ata_init();
-    if (ext2_mount(drive, part_lba) < 0) {
-        printf("EXT2: no EXT2 filesystem found on drive %d at LBA %u\n", drive, part_lba);
+    if (dev == BLK_NVME0) { if (blk_dev_sectors(dev) == 0) { printf("mount: NVMe not available\n"); return; } }
+    else ata_init();
+    if (ext2_mount(dev, part_lba) < 0) {
+        printf("EXT2: no EXT2 filesystem found at LBA %u\n", part_lba);
         return;
     }
 
