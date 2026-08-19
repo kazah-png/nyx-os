@@ -84,7 +84,7 @@ strict-C99 output — and is verified three ways:
 1. **Real programs run on NyxOS.** The in-OS TinyCC builds the current
    `ncc` from source inside the running system, and that compiler
    transpiles, compiles, and runs the **entire example suite** — all
-   twenty-one programs, v0.1 through v0.19 — in a single boot, with
+   twenty-one programs, v0.1 through v0.20 — in a single boot, with
    output identical to the host runs: the fs bindings exercise real
    kernel `open`/`read`/`close`, the `pageflags` demo performs a live
    anonymous `mmap` through the W^X-typed flags, the `own`-struct demo
