@@ -7,6 +7,7 @@
 #include "urlcodec.h"
 #include "../gui/core/compositor.h"
 #include "../drivers/misc/apic.h"
+#include "../drivers/misc/pci.h"
 #include "../drivers/misc/rtc.h"
 #include "../drivers/audio/speaker.h"
 #include "../net/tcp.h"
@@ -169,6 +170,7 @@ static void cmd_json(int argc, char** argv);
 static void cmd_tree(int argc, char** argv);
 static void cmd_du(int argc, char** argv);
 static void cmd_disks(int argc, char** argv);
+static void cmd_lspci(int argc, char** argv);
 static void cmd_nyxpart(int argc, char** argv);
 static void cmd_mkfs(int argc, char** argv);
 static void cmd_nyxinstall(int argc, char** argv);
@@ -316,6 +318,7 @@ static const command_t commands[] = {
     {"du",        cmd_du,        "Disk usage: du [path] sums file sizes over a subtree", false},
     {"disks",     cmd_disks,     "List physical disks + their MBR partitions", false},
     {"lsblk",     cmd_disks,     "Alias for disks", false},
+    {"lspci",     cmd_lspci,     "List PCI devices (finds NVMe/AHCI/network controllers)", false},
     {"nyxpart",   cmd_nyxpart,   "Write an MBR partition table: nyxpart <drive> new [size_MB]", false},
     {"mkfs",      cmd_mkfs,      "Format ext2 on a disk: mkfs <drive> [part_lba] [size_MB]", false},
     {"nyxinstall",cmd_nyxinstall,"Install NyxOS to a disk: nyxinstall <drive> confirm [srcdir]", false},
@@ -610,7 +613,7 @@ void execute_command(const char* cmd_line) {
 // ever dropped even if a new command isn't categorised here yet.
 typedef struct { const char* title; const char* const* names; } help_cat_t;
 static const char* const HC_shell[] = {"help","man","version","clear","history","exec","spawn","jobs","wait","nice","renice",0};
-static const char* const HC_files[] = {"ls","cd","pwd","cat","file","tar","iniget","open","touch","mkdir","rm","cp","mv","tree","find","which","basename","dirname","files","df","du","disks","lsblk","nyxpart","mkfs","nyxinstall","mount","ext2ls","ext2cat",0};
+static const char* const HC_files[] = {"ls","cd","pwd","cat","file","tar","iniget","open","touch","mkdir","rm","cp","mv","tree","find","which","basename","dirname","files","df","du","disks","lsblk","lspci","nyxpart","mkfs","nyxinstall","mount","ext2ls","ext2cat",0};
 static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","fold","nl","expand","unexpand","factor","seq","paste","clip","cut","uniq","join","comm","printf","wc","write","hexdump",0};
 static const char* const HC_sys[]   = {"ps","kill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat","screenshot","stackcheck",0};
 static const char* const HC_user[]  = {"useradd","users",0};
@@ -748,6 +751,7 @@ static const man_page_t man_pages[] = {
     {"tail",     "Write the last lines of <file> to standard output (10 by default, or a count given as the second argument)."},
     {"tree",     "Print the directory rooted at [path] (the current directory by default) as an indented tree, showing each subdirectory's immediate children."},
     {"disks",    "List the physical disks attached to the machine and their partitions (aliased as `lsblk`). For each ATA disk it reads the drive's IDENTIFY data (model name + capacity) and then sector 0, parsing the MBR partition table: for every non-empty entry it prints the partition number, type byte + a human label (Linux/EFI System/FAT32/NTFS/...), the starting LBA, the size, and a [boot] flag for an active partition. Read-only — the first rung of the `nyxinstall` disk-management work; partitioning, formatting and installing come later. A raw or GPT-only disk reports that it has no MBR table."},
+    {"lspci",    "Enumerate the machine's PCI/PCIe devices via configuration mechanism #1 (the 0xCF8/0xCFC port pair). For each device it prints the bus:slot.func address, the vendor:device ID, and a human label decoded from the class code (Host bridge, Display/VGA, Ethernet, USB, IDE/SATA AHCI/NVMe storage, ...). Storage controllers additionally show their class:subclass:prog-if triple, revision and BAR0. This is the hardware-recon step for real machines: on a modern UEFI laptop the disk is an NVMe controller on PCIe, which the ATA-based `disks` command cannot see, so `lspci` is how you locate it (and read the BAR a future NVMe driver will map). Read-only."},
     {"mkfs",     "Format a fresh ext2 filesystem onto a disk (the 3rd nyxinstall rung, after nyxpart). `mkfs <drive> [part_lba] [size_MB]` writes a valid single-block-group ext2 (1024-byte blocks) at part_lba (default LBA 2048, matching `nyxpart`): superblock, block-group descriptor, block + inode bitmaps, inode table, the root directory and lost+found. The layout is byte-for-byte a real ext2 (verified against Linux `fsck.ext2` at 1 through 13 block groups). Multi-block-group is supported (a superblock + descriptor-table backup at the start of every group), so volumes up to 256 MB work; beyond that is capped for now. Destructive — it erases the target area. After it finishes, `mount <drive> <part_lba>` mounts the new filesystem on /mnt. Typical install flow: `nyxpart 0 new` -> `mkfs 0 2048` -> `mount 0 2048`."},
     {"nyxinstall","Guided installer that puts NyxOS onto a disk in one command — the `archinstall`-style capstone of the disk-management tools. `nyxinstall <drive> confirm [srcdir]` runs the whole flow: [1] write a fresh MBR with one bootable Linux partition spanning the disk, [2] mkfs a multi-block-group ext2 filesystem on it, [3] mount it at /mnt, [4] recursively copy the source tree (srcdir, default /bin) onto it with `cp -r`. Each step prints progress and the run ends with a file/directory count. DESTRUCTIVE: it erases the whole target drive, so it refuses to run unless the literal word `confirm` is given as the second argument. The individual steps are also available on their own (`disks`, `nyxpart`, `mkfs`, `mount`, `cp -r`). Installing a bootloader so the disk boots standalone, and drivers for modern SATA/NVMe hardware, are separate later steps."},
     {"nyxpart",  "Write a fresh MBR partition table to a disk (the first WRITE step of nyxinstall's disk management). `nyxpart <drive> new [size_MB]` erases the drive's existing partition table and writes a single bootable Linux (0x83) partition, 1 MiB-aligned (starting at LBA 2048), spanning the whole disk or the given size in megabytes. The destructive action requires the explicit `new` keyword. Pair it with `disks`/`lsblk` to see the result. WARNING: this overwrites the partition table on the selected drive — only run it on a disk you intend to repartition."},
@@ -2549,6 +2553,27 @@ static void cmd_disks(int argc, char** argv) {
         }
     }
     if (!found) printf("disks: no ATA disks detected\n");
+}
+
+// lspci — enumerate PCI devices. On a modern UEFI machine the disk is an NVMe
+// controller on PCIe (invisible to the ATA/IDE `disks` probe), so this is the
+// recon step that finds it (and reads its BAR0) before a real storage driver
+// exists. Storage controllers get their class triple + BAR0 spelled out.
+static void cmd_lspci(int argc, char** argv) {
+    (void)argc; (void)argv;
+    static pci_dev_t devs[96];
+    int n = pci_enumerate(devs, 96);
+    if (n <= 0) { printf("lspci: no PCI devices found\n"); return; }
+    printf("PCI devices (%d):\n", n);
+    for (int i = 0; i < n; i++) {
+        pci_dev_t* d = &devs[i];
+        printf("  %02x:%02x.%u  %04x:%04x  %s", d->bus, d->slot, d->func,
+               d->vendor, d->device, pci_class_name(d->class_code, d->subclass, d->prog_if));
+        if (d->class_code == 0x01)                          // storage: dump the recon detail
+            printf("  [class %02x:%02x:%02x rev %02x BAR0=%08x]",
+                   d->class_code, d->subclass, d->prog_if, d->revision, d->bar0);
+        printf("\n");
+    }
 }
 
 // nyxpart <drive> new [size_MB] — write a fresh MBR with one bootable Linux
@@ -5902,6 +5927,7 @@ static void run_selftests(void) {
         {"clipboard",    clipboard_selftest},
         {"term-paste",   term_paste_selftest},
         {"du",           du_selftest},
+        {"pci",          pci_selftest},
         {"mbr",          mbr_selftest},
         {"mbrbuild",     mbr_build_selftest},
         {"mkfs-ext2",    ext2_format_selftest},
