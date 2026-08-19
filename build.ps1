@@ -47,6 +47,7 @@ set default=0
 insmod all_video
 menuentry 'NyxOS' {
     multiboot2 /boot/nyx-kernel.bin
+    module2 /boot/nyx-kernel.bin nyxkernel.bin
     boot
 }
 EOF

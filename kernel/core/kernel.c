@@ -5312,19 +5312,34 @@ static void cmd_nyxinstall(int argc, char** argv) {
     // Write the GRUB boot config the disk's bootloader will use. A GRUB installed
     // to this disk (boot.img in the MBR + core.img in the gap) reads this to load
     // the multiboot2 kernel — the recipe verified to boot standalone in QEMU.
-    printf("[5/5] Writing /boot/grub/grub.cfg...\n");
+    printf("[5/5] Writing boot files (kernel + grub.cfg)...\n");
     vfs_mkdir("/mnt/boot", 0755);
     vfs_mkdir("/mnt/boot/grub", 0755);
     static const char* gcfg =
         "set timeout=3\nset default=0\ninsmod all_video\n"
         "menuentry 'NyxOS' {\n    multiboot2 /boot/nyx-kernel.bin\n    boot\n}\n";
     vfs_write_file("/mnt/boot/grub/grub.cfg", gcfg, (uint32_t)strlen(gcfg));
+    // GRUB loaded our own kernel image as a module at /nyxkernel.bin (see build.ps1);
+    // copy it onto the target so the installed disk has /boot/nyx-kernel.bin to boot.
+    uint32_t ksz = 0; int kisd = 0;
+    int have_kernel = 0;
+    if (vfs_stat("/nyxkernel.bin", &ksz, &kisd) == 0 && !kisd && ksz > 0) {
+        if (vfs_cp("/nyxkernel.bin", "/mnt/boot/nyx-kernel.bin") == 0) {
+            have_kernel = 1;
+            printf("  kernel image (%u bytes) -> /boot/nyx-kernel.bin\n", ksz);
+        } else {
+            printf("  (kernel copy failed)\n");
+        }
+    } else {
+        printf("  (no /nyxkernel.bin module; add /boot/nyx-kernel.bin manually)\n");
+    }
 
     printf("=== nyxinstall done: %d file(s) across %d director(y/ies) written to drive %d%s ===\n",
            files, dirs, drive, err ? " (with errors)" : "");
-    printf("  Filesystem mounted at /mnt; boot config at /boot/grub/grub.cfg.\n");
-    printf("  To make it boot standalone, install GRUB's boot sectors + copy the kernel to\n");
-    printf("  /boot/nyx-kernel.bin (a later rung; the recipe is proven in QEMU).\n");
+    printf("  /mnt now holds %s+ /boot/grub/grub.cfg.\n",
+           have_kernel ? "/boot/nyx-kernel.bin " : "the OS tree ");
+    printf("  Remaining to boot standalone: install GRUB's boot sectors to the disk MBR\n");
+    printf("  (proven recipe; in-OS automation is the next rung).\n");
 }
 
 static void cmd_mv(int argc, char** argv) {
@@ -6779,7 +6794,21 @@ static void module_register(uint32_t mod_start, uint32_t mod_end, const char* na
         snprintf(path, sizeof(path), "/%s", name);
     else
         snprintf(path, sizeof(path), "/boot/module%u", idx);
-    vfs_create_from_mem(path, (uint8_t*)(uintptr_t)mod_start, mod_end - mod_start);
+    // COPY the module into the heap. GRUB's module memory is NOT reserved from the
+    // PMM, so it gets handed back out and overwritten as the kernel runs — a VFS
+    // file pointing straight at it (vfs_create_from_mem just stores the pointer)
+    // would read corrupt data later: a multi-MB `module` rotted byte-by-byte, so
+    // copying it to an installed disk produced a garbage kernel. A heap copy taken
+    // here (early boot, module still intact) is stable. Fall back to referencing
+    // only if the copy can't be allocated.
+    uint32_t sz = mod_end - mod_start;
+    uint8_t* copy = (uint8_t*)kmalloc(sz ? sz : 1);
+    if (copy) {
+        memcpy(copy, (uint8_t*)(uintptr_t)mod_start, sz);
+        vfs_create_from_mem(path, copy, sz);
+    } else {
+        vfs_create_from_mem(path, (uint8_t*)(uintptr_t)mod_start, sz);
+    }
 }
 
 void init_load_modules(void) {
