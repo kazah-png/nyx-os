@@ -168,6 +168,7 @@ static void cmd_calc(int argc, char** argv);
 static void cmd_json(int argc, char** argv);
 static void cmd_tree(int argc, char** argv);
 static void cmd_du(int argc, char** argv);
+static void cmd_disks(int argc, char** argv);
 static void cmd_env(int argc, char** argv);
 static void cmd_export(int argc, char** argv);
 static void cmd_find(int argc, char** argv);
@@ -308,6 +309,8 @@ static const command_t commands[] = {
     {"iniget",    cmd_iniget,    "Read an INI/conf value: iniget <file> <section|-> <key>", false},
     {"tree",      cmd_tree,      "Show filesystem tree: tree [path]", false},
     {"du",        cmd_du,        "Disk usage: du [path] sums file sizes over a subtree", false},
+    {"disks",     cmd_disks,     "List physical disks + their MBR partitions", false},
+    {"lsblk",     cmd_disks,     "Alias for disks", false},
     {"env",       cmd_env,       "Show environment variables", false},
     {"export",    cmd_export,    "Set env variable: export <name>=<value>", false},
     {"find",      cmd_find,      "Find files by name: find <name> [path]", false},
@@ -599,7 +602,7 @@ void execute_command(const char* cmd_line) {
 // ever dropped even if a new command isn't categorised here yet.
 typedef struct { const char* title; const char* const* names; } help_cat_t;
 static const char* const HC_shell[] = {"help","man","version","clear","history","exec","spawn","jobs","wait","nice","renice",0};
-static const char* const HC_files[] = {"ls","cd","pwd","cat","file","tar","iniget","open","touch","mkdir","rm","cp","mv","tree","find","which","basename","dirname","files","df","du","mount","ext2ls","ext2cat",0};
+static const char* const HC_files[] = {"ls","cd","pwd","cat","file","tar","iniget","open","touch","mkdir","rm","cp","mv","tree","find","which","basename","dirname","files","df","du","disks","lsblk","mount","ext2ls","ext2cat",0};
 static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","fold","nl","expand","unexpand","factor","seq","paste","clip","cut","uniq","join","comm","printf","wc","write","hexdump",0};
 static const char* const HC_sys[]   = {"ps","kill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat","screenshot","stackcheck",0};
 static const char* const HC_user[]  = {"useradd","users",0};
@@ -736,6 +739,7 @@ static const man_page_t man_pages[] = {
     {"head",     "Write the first lines of <file> to standard output (10 by default, or a count given as the second argument). Useful for peeking at the top of a file without reading the whole thing."},
     {"tail",     "Write the last lines of <file> to standard output (10 by default, or a count given as the second argument)."},
     {"tree",     "Print the directory rooted at [path] (the current directory by default) as an indented tree, showing each subdirectory's immediate children."},
+    {"disks",    "List the physical disks attached to the machine and their partitions (aliased as `lsblk`). For each ATA disk it reads the drive's IDENTIFY data (model name + capacity) and then sector 0, parsing the MBR partition table: for every non-empty entry it prints the partition number, type byte + a human label (Linux/EFI System/FAT32/NTFS/...), the starting LBA, the size, and a [boot] flag for an active partition. Read-only — the first rung of the `nyxinstall` disk-management work; partitioning, formatting and installing come later. A raw or GPT-only disk reports that it has no MBR table."},
     {"du",       "Disk usage: sum the sizes of every file in the subtree rooted at [path] (the current directory by default) and print the total, both human-readable (B/K/M/G) and in exact bytes, with a file and directory count. The walk is iterative with a bounded off-stack frontier (the 4 KB kernel task stack forbids deep recursion); a subtree wider than that many pending directories reports the total as a floor. Complements `df`, which reports whole-filesystem free space rather than per-directory usage."},
     {"find",     "Search for files whose name matches <name>, starting at [path] (the current directory by default), and print the path of every match."},
     {"touch",    "Create <file> as a new, empty file if it does not already exist."},
@@ -2381,6 +2385,113 @@ static void cmd_du(int argc, char** argv) {
     printf("%s\t%s\n", hb, path);
     printf("  %u bytes across %d file(s) in %d director(y/ies)\n", (uint32_t)total, files, dirs);
     if (trunc) printf("  (note: subtree exceeds %d pending dirs - total is a floor)\n", DU_MAXPEND);
+}
+
+// ---------------------------------------------------------------------------
+// disks / lsblk (v6.4.248) — first nyxinstall rung. Enumerates ATA disks
+// (IDENTIFY -> model + size) and parses each disk's MBR partition table. The
+// MBR parse is pure and KAT'd; the size formatter is du_human (above). Read-only
+// — the write side (partition + mkfs + install) comes in later increments.
+// ---------------------------------------------------------------------------
+typedef struct { uint8_t status; uint8_t type; uint32_t lba_start; uint32_t sectors; } mbr_part_t;
+
+// Parse the 4 primary entries of an MBR boot sector (offset 0x1BE, 16 B each).
+// Returns the count of non-empty (type != 0) partitions written to out[4], or
+// -1 if the 0x55AA boot signature is absent. Pure — no I/O.
+static int mbr_parse(const uint8_t* sec, mbr_part_t out[4]) {
+    if (sec[510] != 0x55 || sec[511] != 0xAA) return -1;
+    int n = 0;
+    for (int i = 0; i < 4; i++) {
+        const uint8_t* e = sec + 0x1BE + i * 16;
+        if (e[4] == 0) continue;                         // empty entry
+        out[n].status    = e[0];
+        out[n].type      = e[4];
+        out[n].lba_start = (uint32_t)e[8]  | ((uint32_t)e[9]  << 8) | ((uint32_t)e[10] << 16) | ((uint32_t)e[11] << 24);
+        out[n].sectors   = (uint32_t)e[12] | ((uint32_t)e[13] << 8) | ((uint32_t)e[14] << 16) | ((uint32_t)e[15] << 24);
+        n++;
+    }
+    return n;
+}
+
+static const char* mbr_type_name(uint8_t t) {
+    switch (t) {
+        case 0x83: return "Linux";
+        case 0x82: return "Linux swap";
+        case 0x07: return "NTFS/exFAT";
+        case 0x0B: case 0x0C: return "FAT32";
+        case 0x06: case 0x0E: return "FAT16";
+        case 0xEF: return "EFI System";
+        case 0xEE: return "GPT protective";
+        default:   return "unknown";
+    }
+}
+
+// Total 512-byte sectors from an ATA IDENTIFY buffer: prefer the 48-bit count
+// (words 100-103), fall back to the 28-bit count (words 60-61).
+static uint64_t ata_id_sectors(const uint16_t* id) {
+    uint64_t s48 = (uint64_t)id[100] | ((uint64_t)id[101] << 16) |
+                   ((uint64_t)id[102] << 32) | ((uint64_t)id[103] << 48);
+    if (s48) return s48;
+    return (uint64_t)id[60] | ((uint64_t)id[61] << 16);
+}
+
+// Model string (IDENTIFY words 27-46, byte-swapped within each word), trimmed.
+static void ata_id_model(const uint16_t* id, char* out, int cap) {
+    int o = 0;
+    for (int w = 27; w <= 46 && o < cap - 2; w++) {
+        out[o++] = (char)(id[w] >> 8);
+        out[o++] = (char)(id[w] & 0xFF);
+    }
+    while (o > 0 && (out[o - 1] == ' ' || out[o - 1] == '\0')) o--;
+    out[o] = '\0';
+}
+
+int mbr_selftest(void) {
+    static uint8_t sec[512];
+    mbr_part_t p[4];
+    for (int i = 0; i < 512; i++) sec[i] = 0;
+    if (mbr_parse(sec, p) != -1) return 1;               // no 0x55AA -> -1
+    sec[510] = 0x55; sec[511] = 0xAA;
+    if (mbr_parse(sec, p) != 0) return 2;                // sig present, empty table -> 0
+    uint8_t* e = sec + 0x1BE;
+    e[0] = 0x80; e[4] = 0x83; e[8] = 0x00; e[9] = 0x08; e[12] = 0x00; e[13] = 0x70;   // Linux, LBA 2048, 28672 sec
+    uint8_t* e2 = e + 16;
+    e2[4] = 0xEF; e2[8] = 0x00; e2[9] = 0x80; e2[12] = 0x00; e2[13] = 0x10;           // EFI, LBA 32768, 4096 sec
+    int n = mbr_parse(sec, p);
+    if (n != 2) return 3;
+    if (p[0].type != 0x83 || p[0].status != 0x80 || p[0].lba_start != 2048 || p[0].sectors != 28672) return 4;
+    if (p[1].type != 0xEF || p[1].lba_start != 32768 || p[1].sectors != 4096) return 5;
+    return 0;
+}
+
+static void cmd_disks(int argc, char** argv) {
+    (void)argc; (void)argv;
+    ata_init();
+    static uint16_t id[256];
+    static uint8_t sec[512];
+    int found = 0;
+    for (int d = 0; d < 2; d++) {                        // primary master / slave
+        if (ata_identify((uint8_t)d, id) != 0) continue;
+        found++;
+        char model[42];
+        ata_id_model(id, model, sizeof(model));
+        uint64_t sectors = ata_id_sectors(id);
+        char hb[24];
+        du_human(sectors * 512ULL, hb, sizeof(hb));
+        printf("Disk %d: %s  %s (%u sectors)\n", d, model[0] ? model : "(unknown)", hb, (uint32_t)sectors);
+        if (ata_read_sectors((uint8_t)d, 0, 1, sec) < 0) { printf("  (cannot read sector 0)\n"); continue; }
+        mbr_part_t p[4];
+        int np = mbr_parse(sec, p);
+        if (np < 0)      { printf("  no MBR table (raw / GPT / unpartitioned)\n"); continue; }
+        if (np == 0)     { printf("  MBR present, empty partition table\n"); continue; }
+        for (int i = 0; i < np; i++) {
+            char pb[24];
+            du_human((uint64_t)p[i].sectors * 512ULL, pb, sizeof(pb));
+            printf("  p%d  0x%02x %-14s start %-9u %s%s\n", i + 1, p[i].type, mbr_type_name(p[i].type),
+                   p[i].lba_start, pb, (p[i].status & 0x80) ? "  [boot]" : "");
+        }
+    }
+    if (!found) printf("disks: no ATA disks detected\n");
 }
 
 static char* env_vars[16];
@@ -5471,6 +5582,7 @@ static void run_selftests(void) {
         {"clipboard",    clipboard_selftest},
         {"term-paste",   term_paste_selftest},
         {"du",           du_selftest},
+        {"mbr",          mbr_selftest},
         {"notify",       notify_selftest},
         {"stack-canary", stack_canary_selftest},
         {"numparse",     numparse_selftest},        {"hkdf",          hkdf_selftest},

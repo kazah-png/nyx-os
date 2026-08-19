@@ -7,7 +7,7 @@
 <p align="center">
   <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.9.0-LTS"><img src="https://img.shields.io/badge/release-v5.9.0--LTS-825AD2?style=flat" /></a>
   &nbsp;
-  <img src="https://img.shields.io/badge/version-v6.4.247-825AD2?style=flat" />
+  <img src="https://img.shields.io/badge/version-v6.4.248-825AD2?style=flat" />
   &nbsp;
   <img src="https://img.shields.io/badge/arch-x86__64-825AD2?style=flat" />
   &nbsp;
@@ -68,7 +68,7 @@ nyx:root$ nyxfetch
        .:::o:o#:.           nyx@nyxos
     .:oo.. :o.              -----------------
   :oo:.oo.o:                OS:         NyxOS x86_64
- .#o:.   :.                 Kernel:     NyxOS 6.4.247
+ .#o:.   :.                 Kernel:     NyxOS 6.4.248
  #:::....:                  Uptime:     00:00:11
 o#::. . o.                  Resolution: 1024 x 768
 o#.o:   :o                  CPU:        QEMU Virtual CPU (1)
@@ -222,7 +222,11 @@ Join the **[NyxOS Discord](https://dsc.gg/nyxos)** to follow development, ask qu
 
 ## License
 
-Free software under the **GNU General Public License, version 2 or later**. The kernel links against doomgeneric (Chocolate Doom–derived), which is also GPL-2.0+. See [LICENSE](LICENSE) for the full text.
+Free software under the **GNU General Public License, version 2 or later**. See [LICENSE](LICENSE) for the full text.
+
+NyxOS bundles third-party components under their own licenses — doomgeneric (GPL-2.0+), the TinyCC toolchain (LGPL-2.1), the web fonts (OFL-1.1), and public-domain cryptography references. Each is credited, with its license, in [THIRD-PARTY-NOTICES.md](THIRD-PARTY-NOTICES.md). NyxOS does **not** distribute any DOOM game data — supply your own WAD.
+
+NyxOS is experimental hobby software, provided **as is**, with no warranty of any kind (see LICENSE §11–12). Don't run it on hardware or data you can't afford to lose.
 
 ---
 

@@ -18,7 +18,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.4.247"
+#define KERNEL_VERSION "6.4.248"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -1050,6 +1050,8 @@ void initramfs_boot(void);
 void init_ext2(void);
 int  ata_init(void);
 int  ata_read_sectors(uint8_t drive, uint32_t lba, uint8_t count, void* buf);
+int  ata_write_sectors(uint8_t drive, uint32_t lba, uint8_t count, const void* buf);
+int  ata_identify(uint8_t drive, uint16_t* buf);
 int  ext2_mount(uint8_t drive, uint32_t part_lba);
 uint32_t ext2_resolve(const char* path);
 uint32_t ext2_get_size(const char* path);
