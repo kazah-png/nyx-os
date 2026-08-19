@@ -21,9 +21,10 @@
 #define NVME_REG_ACQ   0x30   // Admin Completion Queue base (64-bit)
 #define NVME_REG_DBS   0x1000 // Doorbell registers base
 
-int nvme_init(void);      // probe + reset + enable + admin queue; 0 on success, <0 on failure
-int nvme_identify(void);  // admin IDENTIFY controller + namespace -> model/serial/capacity/LBA size
-int nvme_present(void);   // non-zero once a controller has been brought up
-int nvme_selftest(void);  // KAT the pure register-math (CAP decode + doorbell + IDENTIFY parse)
+int nvme_init(void);             // probe + reset + enable + admin queue; 0 on success, <0 on failure
+int nvme_identify(void);         // admin IDENTIFY controller + namespace -> model/serial/capacity/LBA size
+int nvme_create_io_queues(void); // set-features + create one I/O SQ/CQ pair (qid 1)
+int nvme_present(void);          // non-zero once a controller has been brought up
+int nvme_selftest(void);         // KAT the pure register-math (CAP/doorbell/IDENTIFY/queue-create SQEs)
 
 #endif

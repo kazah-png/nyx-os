@@ -37,7 +37,13 @@ typedef struct {
     uint64_t nsze;                 // namespace size in logical blocks
     uint32_t lba_size;             // bytes per logical block
     char     model[41], serial[21];
+    // I/O queue pair (qid 1)
+    int      io_ready;
+    uint64_t io_sq_phys, io_cq_phys;
+    uint32_t io_sq_tail, io_cq_head, io_cq_phase;
 } nvme_dev_t;
+
+#define NVME_IOQ_DEPTH 8               // I/O queue entries (SQ 64B/entry, CQ 16B/entry; fits one page)
 static nvme_dev_t nvme_dev = {0};
 
 // Little-endian scalar reads out of a DMA'd identify buffer.
@@ -63,6 +69,35 @@ static uint32_t ns_lba_size(const uint8_t* d) {
     uint32_t lbaf  = rd32(d + 128 + idx * 4);
     uint32_t lbads = (lbaf >> 16) & 0xFF;                   // LBA data size exponent
     return (lbads < 32) ? (1u << lbads) : 0;
+}
+
+// SET FEATURES (opcode 0x09) FID 0x07 = Number of Queues: request nsq+1 IO
+// submission and ncq+1 completion queues (the fields are 0-based). Pure/KAT'd.
+static void build_set_nqueues(uint32_t* sqe, uint32_t nsq0, uint32_t ncq0, uint16_t cid) {
+    for (int i = 0; i < 16; i++) sqe[i] = 0;
+    sqe[0]  = 0x09u | ((uint32_t)cid << 16);   // CDW0: SET FEATURES
+    sqe[10] = 0x07u;                           // CDW10: FID = Number of Queues
+    sqe[11] = (ncq0 << 16) | (nsq0 & 0xFFFF);  // CDW11: NCQR:NSQR (0-based)
+}
+// CREATE I/O COMPLETION QUEUE (opcode 0x05): PRP1=CQ page, CDW10=(qsize0<<16)|qid,
+// CDW11 PC=1 (contiguous), IEN=0 (polled). Pure/KAT'd.
+static void build_create_io_cq(uint32_t* sqe, uint64_t prp1, uint16_t qid, uint16_t qsize0, uint16_t cid) {
+    for (int i = 0; i < 16; i++) sqe[i] = 0;
+    sqe[0]  = 0x05u | ((uint32_t)cid << 16);
+    sqe[6]  = (uint32_t)prp1;
+    sqe[7]  = (uint32_t)(prp1 >> 32);
+    sqe[10] = ((uint32_t)qsize0 << 16) | qid;
+    sqe[11] = 0x1u;                             // PC=1, IEN=0
+}
+// CREATE I/O SUBMISSION QUEUE (opcode 0x01): PRP1=SQ page, CDW10=(qsize0<<16)|qid,
+// CDW11=(cqid<<16)|PC. Pure/KAT'd.
+static void build_create_io_sq(uint32_t* sqe, uint64_t prp1, uint16_t qid, uint16_t qsize0, uint16_t cqid, uint16_t cid) {
+    for (int i = 0; i < 16; i++) sqe[i] = 0;
+    sqe[0]  = 0x01u | ((uint32_t)cid << 16);
+    sqe[6]  = (uint32_t)prp1;
+    sqe[7]  = (uint32_t)(prp1 >> 32);
+    sqe[10] = ((uint32_t)qsize0 << 16) | qid;
+    sqe[11] = ((uint32_t)cqid << 16) | 0x1u;   // CQID, PC=1
 }
 
 // Spin until CSTS.RDY matches `want` (1=ready, 0=idle), or the controller faults
@@ -232,6 +267,42 @@ int nvme_identify(void) {
     return 0;
 }
 
+// Rung 3: create one I/O SQ/CQ queue pair (qid 1) via admin commands — SET
+// FEATURES (number of queues) -> CREATE IO CQ -> CREATE IO SQ. The queue pages are
+// identity-mapped alloc_page()s (their pointer IS the DMA physical address).
+int nvme_create_io_queues(void) {
+    if (!nvme_dev.present) { printf("nvme: controller not up (run nvme first)\n"); return -1; }
+    if (nvme_dev.io_ready) { printf("nvme: I/O queue pair already up (qid 1, depth %u)\n", NVME_IOQ_DEPTH); return 0; }
+
+    uint32_t sqe[16];
+    build_set_nqueues(sqe, 0, 0, 0x10);                     // request 1 IO SQ + 1 IO CQ (0-based)
+    int st = nvme_admin_submit(sqe);
+    if (st != 0) { printf("nvme: SET FEATURES (num queues) failed (status=%d)\n", st); return -1; }
+
+    void* cq = alloc_page();
+    void* sq = alloc_page();
+    if (!cq || !sq) { printf("nvme: I/O queue page alloc failed\n"); return -1; }
+    __builtin_memset(cq, 0, 4096);
+    __builtin_memset(sq, 0, 4096);
+    nvme_dev.io_cq_phys = (uint64_t)cq;
+    nvme_dev.io_sq_phys = (uint64_t)sq;
+
+    // the CQ must exist before the SQ that targets it
+    build_create_io_cq(sqe, nvme_dev.io_cq_phys, 1, NVME_IOQ_DEPTH - 1, 0x11);
+    st = nvme_admin_submit(sqe);
+    if (st != 0) { printf("nvme: CREATE IO CQ failed (status=%d)\n", st); return -1; }
+
+    build_create_io_sq(sqe, nvme_dev.io_sq_phys, 1, NVME_IOQ_DEPTH - 1, 1, 0x12);
+    st = nvme_admin_submit(sqe);
+    if (st != 0) { printf("nvme: CREATE IO SQ failed (status=%d)\n", st); return -1; }
+
+    nvme_dev.io_sq_tail = 0; nvme_dev.io_cq_head = 0; nvme_dev.io_cq_phase = 1;
+    nvme_dev.io_ready = 1;
+    printf("nvme: I/O queue pair created (qid 1, depth %u, SQ1 db 0x%x CQ1 db 0x%x)\n",
+           NVME_IOQ_DEPTH, sq_db_off(1, nvme_dev.dstrd), cq_db_off(1, nvme_dev.dstrd));
+    return 0;
+}
+
 int nvme_present(void) { return nvme_dev.present; }
 
 // KAT: exercise the pure register math against hand-computed vectors. The MMIO
@@ -272,5 +343,21 @@ int nvme_selftest(void) {
     ns[26] = 1;                                            // FLBAS -> LBA format 1
     ns[134] = 0x0C;                                        // LBAF[1] LBADS=12 -> 4096 B
     if (ns_lba_size(ns) != 4096u)       return 20;
+
+    // rung 3: I/O queue-creation SQE encodings
+    build_set_nqueues(sqe, 0, 0, 0x10);
+    if (sqe[0]  != 0x00100009u) return 21;   // SET FEATURES | CID 0x10
+    if (sqe[10] != 0x07u)       return 22;   // FID = Number of Queues
+    if (sqe[11] != 0u)          return 23;   // request 1 SQ + 1 CQ (0-based)
+    build_create_io_cq(sqe, 0x00000001CAFE0000ULL, 1, 7, 0x11);
+    if (sqe[0]  != 0x00110005u) return 24;   // CREATE IO CQ | CID 0x11
+    if (sqe[6]  != 0xCAFE0000u) return 25;   // PRP1 low
+    if (sqe[7]  != 0x00000001u) return 26;   // PRP1 high
+    if (sqe[10] != 0x00070001u) return 27;   // qsize0=7 | qid=1
+    if (sqe[11] != 0x1u)        return 28;   // PC=1
+    build_create_io_sq(sqe, 0x00000002BEEF0000ULL, 1, 7, 1, 0x12);
+    if (sqe[0]  != 0x00120001u) return 29;   // CREATE IO SQ | CID 0x12
+    if (sqe[10] != 0x00070001u) return 30;   // qsize0=7 | qid=1
+    if (sqe[11] != 0x00010001u) return 31;   // cqid=1 | PC=1
     return 0;
 }
