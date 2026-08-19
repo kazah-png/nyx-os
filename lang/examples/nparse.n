@@ -1,32 +1,32 @@
 // nparse.n — the M5 chain, token-native end to end: a complete toy
-//   compiler with FUNCTIONS. lex → parse → emit → run, in N's own
-//   surface syntax:
-//       fn f(n) { r := 1; if n > 1 { r := n * f(n - 1); } r } f(5)
+//   compiler with FUNCTIONS and REAL IDENTIFIERS. lex → parse → emit →
+//   run, in N's own surface syntax:
+//       fn fact(n) { r := 1; if n > 1 { r := n * fact(n - 1); } r } fact(5)
 //   The lexer fills a token buffer (sbrk'd i64 arrays, v0.16 index
 //   stores); the parser consumes TOKENS and emits stack code; the VM
-//   runs it. The grammar now covers the whole toy language:
+//   runs it. The grammar covers the whole toy language:
 //     program := { fndef } { stmt } cmp
 //     fndef   := 'fn' name '(' name ')' '{' { stmt } cmp '}'
 //     stmt    := name ':=' cmp ';' | 'if' cmp block | 'while' cmp block
+//   Identifiers are INTERNED, the way ncc's own VARS table works: the
+//   lexer keeps a symbol table (a names byte-buffer plus per-symbol
+//   start/len), looks every alpha span up by byte comparison, appends
+//   the ones it has never seen, and the token's value IS the symbol
+//   index. Everything downstream — variable slots, function entry and
+//   parameter tables — keys off symbol indexes, so the parser did not
+//   change at all when names grew from one letter to words: that is
+//   the token architecture paying rent. Keywords (if/while/fn) are
+//   exact-matched before interning.
 //   A function body has the same shape as a program — statements, then
-//   the value it returns. Compilation order is the classic one: a JMP
-//   emitted at the top with a placeholder target hops over the function
-//   bodies and is PATCHED to where the main statements start; each
-//   function's entry address is recorded BEFORE its body compiles, so
-//   self-recursion resolves. Calls use a CALLER-SAVE discipline over
-//   the toy's single variable table: the call site saves the callee's
-//   parameter slot (LOAD), binds the argument (STORE), CALLs, then
-//   restores the slot (SWAP + STORE) around the returned value — which
-//   is exactly why recursive calls work with no frame machinery at all.
-//   `if`/`while` compile with branch patching (JZ placeholder, compile
-//   the body, patch; `while` adds the back-JMP). State rides return
-//   values in the EP{pos,cp} pair — N has no globals, so the token and
-//   code cursors (and the two function tables) thread through every rule.
-//   Token encoding: kind 0 = number (val = its value), 1 = name (single
-//   letter a–z, val = its slot), 2 = operator/punct (val = its byte),
+//   the value it returns. A JMP patched over the fndefs starts
+//   execution at the main statements; entries are recorded BEFORE
+//   bodies compile (self-recursion resolves); calls are CALLER-SAVE
+//   over the flat table (save, bind, CALL, SWAP-restore), which is why
+//   recursion — and shared parameter names across functions — work
+//   with no frame machinery. `if`/`while` compile with branch patching.
+//   Token encoding: kind 0 = number (val = its value), 1 = identifier
+//   (val = its SYMBOL INDEX), 2 = operator/punct (val = its byte),
 //   3 = '==', 4 = ':=', 5 = 'if', 6 = 'while', 7 = 'fn', 9 = end.
-//   The only multi-letter words are the three keywords; names are one
-//   letter by design (a toy lexer's symbol table is the alphabet).
 //   Opcodes: 0 HALT · 1 PUSH arg · 2 ADD · 3 SUB · 4 MUL · 5 DIV ·
 //   6 MOD · 7 NEG · 8 LT · 9 GT · 10 EQ · 11 LOAD slot · 12 STORE slot
 //   · 13 JZ target · 14 JMP target · 15 CALL target (pushes the return
@@ -48,16 +48,26 @@ fn alloc_words(n: i64) -> *i64 {
     sys_sbrk(n * 8) as *i64
 }
 
+#[caps(syscall)]
+fn alloc_bytes(n: i64) -> *u8 {
+    sys_sbrk(n) as *u8
+}
+
 fn is_digit(b: i64) -> bool { b >= 48 && b <= 57 }
 fn is_letter(b: i64) -> bool { b >= 97 && b <= 122 }
 
 // Scan src into the two token arrays; returns the token count. The
 // last token is always the end marker (kind 9), so the parser can
-// stop without carrying the count around.
-fn lex(src: str, k: *i64, v: *i64) -> i64 {
+// stop without carrying the count around. Identifiers intern into the
+// symbol table (nb = names bytes, ss/sl = per-symbol start/len): a
+// span already seen yields its existing index, a new one is appended —
+// the same move ncc's vars_find/vars_add makes over its VARS table.
+fn lex(src: str, k: *i64, v: *i64, nb: *u8, ss: *i64, sl: *i64) -> i64 {
     n := src.len as i64;
     mut i := 0;
     mut t := 0;
+    mut ns := 0;                           // interned symbol count
+    mut nl := 0;                           // names buffer length
     while i < n {
         b := src[i] as i64;
         if b == 32 {                       // space
@@ -73,7 +83,7 @@ fn lex(src: str, k: *i64, v: *i64) -> i64 {
             k[t] = 0; v[t] = val; t += 1;
             continue;
         }
-        if is_letter(b) {                  // keyword or one-letter name
+        if is_letter(b) {                  // keyword or identifier
             st := i;
             mut j := i;
             while j < n && is_letter(src[j] as i64) {
@@ -81,17 +91,48 @@ fn lex(src: str, k: *i64, v: *i64) -> i64 {
             }
             len := j - st;
             mut kind := 1;
-            mut val := b - 97;
             if len == 2 && src[st] as i64 == 105 && src[st + 1] as i64 == 102 {
-                kind = 5; val = 0;         // if
+                kind = 5;                  // if
             }
             if len == 2 && src[st] as i64 == 102 && src[st + 1] as i64 == 110 {
-                kind = 7; val = 0;         // fn
+                kind = 7;                  // fn
             }
             if len == 5 && src[st] as i64 == 119 && src[st + 1] as i64 == 104
                 && src[st + 2] as i64 == 105 && src[st + 3] as i64 == 108
                 && src[st + 4] as i64 == 101 {
-                kind = 6; val = 0;         // while
+                kind = 6;                  // while
+            }
+            mut val := 0;
+            if kind == 1 {                 // intern: look the span up ...
+                mut idx := -1;
+                mut s := 0;
+                while s < ns {
+                    if sl[s] == len {
+                        mut eq := true;
+                        mut q := 0;
+                        while q < len {
+                            if nb[ss[s] + q] as i64 != src[st + q] as i64 {
+                                eq = false;
+                            }
+                            q += 1;
+                        }
+                        if eq && idx < 0 { idx = s; }
+                    }
+                    s += 1;
+                }
+                if idx < 0 {               // ... or append a new symbol
+                    ss[ns] = nl;
+                    sl[ns] = len;
+                    mut q := 0;
+                    while q < len {
+                        nb[nl + q] = src[st + q];
+                        q += 1;
+                    }
+                    nl += len;
+                    idx = ns;
+                    ns += 1;
+                }
+                val = idx;
             }
             k[t] = kind; v[t] = val; t += 1;
             i = j;
@@ -374,8 +415,9 @@ fn run(prog: *i64, stk: *i64, vars: *i64) -> i64 {
 }
 
 // The whole pipeline in one call: tokens in, code out, value from the VM.
-fn show(src: str, k: *i64, v: *i64, code: *i64, stk: *i64, vars: *i64, fe: *i64, fp: *i64) {
-    lex(src, k, v);
+fn show(src: str, k: *i64, v: *i64, code: *i64, stk: *i64, vars: *i64,
+        fe: *i64, fp: *i64, nb: *u8, ss: *i64, sl: *i64) {
+    lex(src, k, v, nb, ss, sl);
     r := parse_program(k, v, fe, fp, 0, code, 0);
     words := emit1(code, r.cp, 0);         // HALT closes the program
     val := run(code, stk, vars);
@@ -387,13 +429,19 @@ fn main() -> i64 {
     v := alloc_words(96);
     code := alloc_words(256);
     stk := alloc_words(64);
-    vars := alloc_words(26);
-    fe := alloc_words(26);
-    fp := alloc_words(26);
-    put("functions, recursion, loops - lex -> parse -> emit -> run:\n");
+    vars := alloc_words(64);               // slots are symbol indexes now
+    fe := alloc_words(64);
+    fp := alloc_words(64);
+    nb := alloc_bytes(256);                // the interned-names buffer
+    ss := alloc_words(64);
+    sl := alloc_words(64);
+    put("real identifiers, functions, recursion - lex -> parse -> emit -> run:\n");
     // Braces are escaped so they read as text, not interpolation (§2.5).
-    show("fn d(a) \{ a * 2 \} d(21)", k, v, code, stk, vars, fe, fp);
-    show("fn f(n) \{ r := 1; if n > 1 \{ r := n * f(n - 1); \} r \} f(5)", k, v, code, stk, vars, fe, fp);
-    show("fn s(n) \{ t := 0; i := n; while i > 0 \{ t := t + i; i := i - 1; \} t \} s(10)", k, v, code, stk, vars, fe, fp);
+    show("fn fact(n) \{ r := 1; if n > 1 \{ r := n * fact(n - 1); \} r \} fact(5)",
+         k, v, code, stk, vars, fe, fp, nb, ss, sl);
+    show("sum := 0; count := 3; while count > 0 \{ sum := sum + count * count; count := count - 1; \} sum",
+         k, v, code, stk, vars, fe, fp, nb, ss, sl);
+    show("fn double(value) \{ value * 2 \} fn quad(value) \{ double(double(value)) \} quad(11)",
+         k, v, code, stk, vars, fe, fp, nb, ss, sl);
     0
 }
