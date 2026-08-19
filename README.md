@@ -196,7 +196,7 @@ command, a render demo, a wallpaper, or a CI self-test — see
 | Role | GitHub |
 |------|--------|
 | **Main Developer** | [@kazah-png](https://github.com/kazah-png) |
-| **Core Dev** | [@ScarDeveloper444](https://github.com/ScarDeveloper444) |
+| **Website Dev** | [@ScarDeveloper444](https://github.com/ScarDeveloper444) |
 | **Bug Finder** | [@Voliox86](https://github.com/Voliox86) |
 | **Art & Design** | [@kurawi-debug](https://github.com/kurawi-debug) |
 | **Junior Dev** | [@0plimplim0](https://github.com/0plimplim0) |
