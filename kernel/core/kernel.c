@@ -171,6 +171,7 @@ static void cmd_du(int argc, char** argv);
 static void cmd_disks(int argc, char** argv);
 static void cmd_nyxpart(int argc, char** argv);
 static void cmd_mkfs(int argc, char** argv);
+static void cmd_nyxinstall(int argc, char** argv);
 static void cmd_env(int argc, char** argv);
 static void cmd_export(int argc, char** argv);
 static void cmd_find(int argc, char** argv);
@@ -317,6 +318,7 @@ static const command_t commands[] = {
     {"lsblk",     cmd_disks,     "Alias for disks", false},
     {"nyxpart",   cmd_nyxpart,   "Write an MBR partition table: nyxpart <drive> new [size_MB]", false},
     {"mkfs",      cmd_mkfs,      "Format ext2 on a disk: mkfs <drive> [part_lba] [size_MB]", false},
+    {"nyxinstall",cmd_nyxinstall,"Install NyxOS to a disk: nyxinstall <drive> confirm [srcdir]", false},
     {"env",       cmd_env,       "Show environment variables", false},
     {"export",    cmd_export,    "Set env variable: export <name>=<value>", false},
     {"find",      cmd_find,      "Find files by name: find <name> [path]", false},
@@ -608,7 +610,7 @@ void execute_command(const char* cmd_line) {
 // ever dropped even if a new command isn't categorised here yet.
 typedef struct { const char* title; const char* const* names; } help_cat_t;
 static const char* const HC_shell[] = {"help","man","version","clear","history","exec","spawn","jobs","wait","nice","renice",0};
-static const char* const HC_files[] = {"ls","cd","pwd","cat","file","tar","iniget","open","touch","mkdir","rm","cp","mv","tree","find","which","basename","dirname","files","df","du","disks","lsblk","nyxpart","mkfs","mount","ext2ls","ext2cat",0};
+static const char* const HC_files[] = {"ls","cd","pwd","cat","file","tar","iniget","open","touch","mkdir","rm","cp","mv","tree","find","which","basename","dirname","files","df","du","disks","lsblk","nyxpart","mkfs","nyxinstall","mount","ext2ls","ext2cat",0};
 static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","fold","nl","expand","unexpand","factor","seq","paste","clip","cut","uniq","join","comm","printf","wc","write","hexdump",0};
 static const char* const HC_sys[]   = {"ps","kill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat","screenshot","stackcheck",0};
 static const char* const HC_user[]  = {"useradd","users",0};
@@ -747,6 +749,7 @@ static const man_page_t man_pages[] = {
     {"tree",     "Print the directory rooted at [path] (the current directory by default) as an indented tree, showing each subdirectory's immediate children."},
     {"disks",    "List the physical disks attached to the machine and their partitions (aliased as `lsblk`). For each ATA disk it reads the drive's IDENTIFY data (model name + capacity) and then sector 0, parsing the MBR partition table: for every non-empty entry it prints the partition number, type byte + a human label (Linux/EFI System/FAT32/NTFS/...), the starting LBA, the size, and a [boot] flag for an active partition. Read-only — the first rung of the `nyxinstall` disk-management work; partitioning, formatting and installing come later. A raw or GPT-only disk reports that it has no MBR table."},
     {"mkfs",     "Format a fresh ext2 filesystem onto a disk (the 3rd nyxinstall rung, after nyxpart). `mkfs <drive> [part_lba] [size_MB]` writes a valid single-block-group ext2 (1024-byte blocks) at part_lba (default LBA 2048, matching `nyxpart`): superblock, block-group descriptor, block + inode bitmaps, inode table, the root directory and lost+found. The layout is byte-for-byte a real ext2 (verified against Linux `fsck.ext2` at 1 through 13 block groups). Multi-block-group is supported (a superblock + descriptor-table backup at the start of every group), so volumes up to 256 MB work; beyond that is capped for now. Destructive — it erases the target area. After it finishes, `mount <drive> <part_lba>` mounts the new filesystem on /mnt. Typical install flow: `nyxpart 0 new` -> `mkfs 0 2048` -> `mount 0 2048`."},
+    {"nyxinstall","Guided installer that puts NyxOS onto a disk in one command — the `archinstall`-style capstone of the disk-management tools. `nyxinstall <drive> confirm [srcdir]` runs the whole flow: [1] write a fresh MBR with one bootable Linux partition spanning the disk, [2] mkfs a multi-block-group ext2 filesystem on it, [3] mount it at /mnt, [4] recursively copy the source tree (srcdir, default /bin) onto it with `cp -r`. Each step prints progress and the run ends with a file/directory count. DESTRUCTIVE: it erases the whole target drive, so it refuses to run unless the literal word `confirm` is given as the second argument. The individual steps are also available on their own (`disks`, `nyxpart`, `mkfs`, `mount`, `cp -r`). Installing a bootloader so the disk boots standalone, and drivers for modern SATA/NVMe hardware, are separate later steps."},
     {"nyxpart",  "Write a fresh MBR partition table to a disk (the first WRITE step of nyxinstall's disk management). `nyxpart <drive> new [size_MB]` erases the drive's existing partition table and writes a single bootable Linux (0x83) partition, 1 MiB-aligned (starting at LBA 2048), spanning the whole disk or the given size in megabytes. The destructive action requires the explicit `new` keyword. Pair it with `disks`/`lsblk` to see the result. WARNING: this overwrites the partition table on the selected drive — only run it on a disk you intend to repartition."},
     {"du",       "Disk usage: sum the sizes of every file in the subtree rooted at [path] (the current directory by default) and print the total, both human-readable (B/K/M/G) and in exact bytes, with a file and directory count. The walk is iterative with a bounded off-stack frontier (the 4 KB kernel task stack forbids deep recursion); a subtree wider than that many pending directories reports the total as a floor. Complements `df`, which reports whole-filesystem free space rather than per-directory usage."},
     {"find",     "Search for files whose name matches <name>, starting at [path] (the current directory by default), and print the path of every match."},
@@ -5253,6 +5256,62 @@ static void cmd_cp(int argc, char** argv) {
     if (argc < 3) { printf("Usage: cp [-r] <src> <dst>\n"); return; }
     if (!path_last_component_ok(argv[2])) { printf("cp: invalid destination name '%s'\n", argv[2]); return; }
     if (vfs_cp(argv[1], argv[2]) < 0) printf("cp: failed to copy %s to %s\n", argv[1], argv[2]);
+}
+
+// nyxinstall <drive> confirm [srcdir] — the guided installer. Ties together the
+// disk pieces into one flow: partition (MBR) -> mkfs ext2 -> mount /mnt -> copy
+// the OS tree (srcdir, default /bin) onto it. DESTRUCTIVE: wipes the drive, so it
+// demands the literal `confirm` keyword. Calls the primitives directly (no nested
+// execute_command). Bootloader install + real-HW drivers are later rungs.
+static void cmd_nyxinstall(int argc, char** argv) {
+    if (argc < 3 || strcmp(argv[2], "confirm") != 0) {
+        printf("Usage: nyxinstall <drive> confirm [srcdir]\n");
+        printf("  Installs NyxOS to a disk: partition -> mkfs ext2 -> mount -> copy the OS tree.\n");
+        printf("  WARNING: this ERASES all data on the target drive.\n");
+        printf("  Re-run with the literal word 'confirm' as the 2nd argument to proceed.\n");
+        return;
+    }
+    int drive = atoi(argv[1]);
+    const char* src = (argc >= 4) ? argv[3] : "/bin";
+    if (strcmp(src, "/") == 0 || strncmp(src, "/mnt", 4) == 0) {
+        printf("nyxinstall: refusing srcdir '%s' (would recurse into the install target)\n", src);
+        return;
+    }
+    ata_init();
+    static uint16_t id[256];
+    if (ata_identify((uint8_t)drive, id) != 0) { printf("nyxinstall: no disk at drive %d\n", drive); return; }
+    uint64_t total = ata_id_sectors(id);
+    char model[42]; ata_id_model(id, model, sizeof(model));
+    char hb[24]; du_human(total * 512ULL, hb, sizeof(hb));
+    printf("=== nyxinstall: target drive %d  [%s  %s] ===\n", drive, model[0] ? model : "disk", hb);
+
+    uint32_t part_lba = 2048;
+    if (total <= part_lba + 128) { printf("nyxinstall: disk too small\n"); return; }
+    uint32_t part_sectors = (uint32_t)(total - part_lba);
+    uint32_t blocks = part_sectors / 2;
+    if (blocks > 32u * 8192 + 1) blocks = 32u * 8192 + 1;               // mkfs single-drive cap
+
+    printf("[1/4] Partitioning (MBR: 1x bootable Linux @ LBA %u)...\n", part_lba);
+    mbr_part_t p = { .status = 0x80, .type = 0x83, .lba_start = part_lba, .sectors = part_sectors };
+    static uint8_t sec[512];
+    mbr_build(&p, 1, sec);
+    if (ata_write_sectors((uint8_t)drive, 0, 1, sec) < 0) { printf("nyxinstall: partition write failed\n"); return; }
+
+    du_human((uint64_t)blocks * 1024ULL, hb, sizeof(hb));
+    printf("[2/4] Formatting ext2 (%s)...\n", hb);
+    if (ext2_format((uint8_t)drive, part_lba, blocks) != 0) { printf("nyxinstall: mkfs failed\n"); return; }
+
+    printf("[3/4] Mounting at /mnt...\n");
+    if (ext2_mount((uint8_t)drive, part_lba) != 0) { printf("nyxinstall: mount failed\n"); return; }
+    if (vfs_mount("/mnt", FS_TYPE_EXT2, NULL) < 0) { printf("nyxinstall: VFS mount failed\n"); return; }
+
+    printf("[4/4] Copying %s -> /mnt ...\n", src);
+    int dirs = 0, files = 0, err = 0;
+    cptree_walk(src, "/mnt", cpt_vfs_enum, cpt_vfs_mkdir, cpt_vfs_cp, 0, &dirs, &files, &err);
+
+    printf("=== nyxinstall done: %d file(s) across %d director(y/ies) written to drive %d%s ===\n",
+           files, dirs, drive, err ? " (with errors)" : "");
+    printf("  Filesystem mounted at /mnt. (Bootloader install is a later step.)\n");
 }
 
 static void cmd_mv(int argc, char** argv) {
