@@ -15,6 +15,7 @@
 #include "../net/tcp.h"
 #include "../drivers/audio/sb16.h"
 #include "../fs/ext2.h"
+#include "../fs/grub_blobs.h"
 #include "../fs/tar.h"
 #include "datefmt.h"
 #include "ini.h"
@@ -174,6 +175,7 @@ static void cmd_du(int argc, char** argv);
 static void cmd_disks(int argc, char** argv);
 static void cmd_lspci(int argc, char** argv);
 static void cmd_nvme(int argc, char** argv);
+static void cmd_nyxgrub(int argc, char** argv);
 static void cmd_nyxpart(int argc, char** argv);
 static void cmd_mkfs(int argc, char** argv);
 static void cmd_nyxinstall(int argc, char** argv);
@@ -326,6 +328,7 @@ static const command_t commands[] = {
     {"nyxpart",   cmd_nyxpart,   "Write an MBR partition table: nyxpart <drive> new [size_MB]", false},
     {"mkfs",      cmd_mkfs,      "Format ext2 on a disk: mkfs <drive> [part_lba] [size_MB]", false},
     {"nyxinstall",cmd_nyxinstall,"Install NyxOS to a disk: nyxinstall <drive> confirm [srcdir]", false},
+    {"nyxgrub",   cmd_nyxgrub,   "Install GRUB boot sectors so a disk boots standalone: nyxgrub <drive>", false},
     {"env",       cmd_env,       "Show environment variables", false},
     {"export",    cmd_export,    "Set env variable: export <name>=<value>", false},
     {"find",      cmd_find,      "Find files by name: find <name> [path]", false},
@@ -617,7 +620,7 @@ void execute_command(const char* cmd_line) {
 // ever dropped even if a new command isn't categorised here yet.
 typedef struct { const char* title; const char* const* names; } help_cat_t;
 static const char* const HC_shell[] = {"help","man","version","clear","history","exec","spawn","jobs","wait","nice","renice",0};
-static const char* const HC_files[] = {"ls","cd","pwd","cat","file","tar","iniget","open","touch","mkdir","rm","cp","mv","tree","find","which","basename","dirname","files","df","du","disks","lsblk","lspci","nvme","nyxpart","mkfs","nyxinstall","mount","ext2ls","ext2cat",0};
+static const char* const HC_files[] = {"ls","cd","pwd","cat","file","tar","iniget","open","touch","mkdir","rm","cp","mv","tree","find","which","basename","dirname","files","df","du","disks","lsblk","lspci","nvme","nyxpart","mkfs","nyxinstall","nyxgrub","mount","ext2ls","ext2cat",0};
 static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","fold","nl","expand","unexpand","factor","seq","paste","clip","cut","uniq","join","comm","printf","wc","write","hexdump",0};
 static const char* const HC_sys[]   = {"ps","kill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat","screenshot","stackcheck",0};
 static const char* const HC_user[]  = {"useradd","users",0};
@@ -5348,11 +5351,86 @@ static void cmd_cp(int argc, char** argv) {
     if (vfs_cp(argv[1], argv[2]) < 0) printf("cp: failed to copy %s to %s\n", argv[1], argv[2]);
 }
 
+// ---- in-OS GRUB bootloader install ----------------------------------------
+// Makes an installed NyxOS disk boot standalone (no host addgrub.sh). Embeds the
+// real GRUB boot.img + core.img (grub_blobs.h) and writes them the way the proven
+// host recipe does — patched core.img to the MBR gap, boot code to sector 0.
+#define GRUB_CORE_SECTORS ((GRUB_CORE_IMG_SIZE + 511) / 512)
+
+// Patch core.img's diskboot blocklist (@0x1f4): the rest of core.img is at disk
+// LBA 2, length = core_sectors-1 (512-B sectors), load segment 0x0820. Pure (KAT'd).
+static void grub_set_blocklist(uint8_t* core, uint32_t core_sectors) {
+    uint32_t len = core_sectors - 1;
+    for (int i = 0; i < 8; i++) core[0x1f4 + i] = (i == 0) ? 2 : 0;   // start LBA = 2 (8-B LE)
+    core[0x1fc] = (uint8_t)(len & 0xFF);
+    core[0x1fd] = (uint8_t)((len >> 8) & 0xFF);                       // length (2-B LE)
+    core[0x1fe] = 0x20; core[0x1ff] = 0x08;                           // segment 0x0820
+}
+// Patch boot.img (@0x5c) with the LBA of core.img's first sector (1). Pure (KAT'd).
+static void grub_set_core_lba(uint8_t* boot) {
+    for (int i = 0; i < 8; i++) boot[0x5c + i] = (i == 0) ? 1 : 0;
+}
+
+// Write GRUB's boot sectors to `dev`: the patched core.img to the MBR gap (LBA
+// 1..), then boot.img's boot code to sector 0 preserving the partition table.
+// Routes through blockdev (ATA or NVMe). Returns 0 on success.
+static int install_grub_to(uint8_t dev) {
+    static uint8_t core_work[GRUB_CORE_SECTORS * 512];
+    __builtin_memset(core_work, 0, sizeof(core_work));
+    __builtin_memcpy(core_work, grub_core_img, GRUB_CORE_IMG_SIZE);
+    grub_set_blocklist(core_work, GRUB_CORE_SECTORS);
+    if (blk_write(dev, 1, GRUB_CORE_SECTORS, core_work) != 0) return -1;
+
+    static uint8_t boot_work[512];
+    __builtin_memcpy(boot_work, grub_boot_img, 512);
+    grub_set_core_lba(boot_work);
+    static uint8_t sec0[512];
+    if (blk_read1(dev, 0, sec0) != 0) return -2;
+    __builtin_memcpy(sec0, boot_work, 446);            // boot code only; keep the MBR table [446..511]
+    if (blk_write1(dev, 0, sec0) != 0) return -3;
+    if (dev != BLK_NVME0) ata_flush();
+    return 0;
+}
+
+// nyxgrub <drive> — install GRUB's boot sectors so an installed disk boots on its
+// own. Non-destructive to the partition table; pair it after nyxinstall.
+static void cmd_nyxgrub(int argc, char** argv) {
+    if (argc < 2) {
+        printf("Usage: nyxgrub <drive>\n");
+        printf("  Installs GRUB boot sectors so an installed NyxOS disk boots standalone.\n");
+        printf("  Writes sector 0's boot code + LBA 1..%u (keeps the partition table).\n", GRUB_CORE_SECTORS);
+        return;
+    }
+    uint8_t dev = parse_blk_dev(argv[1]);
+    if (blk_dev_sectors(dev) == 0) { printf("nyxgrub: %s not available\n", argv[1]); return; }
+    printf("nyxgrub: installing GRUB to %s (core.img %u sectors -> LBA 1..)...\n", argv[1], GRUB_CORE_SECTORS);
+    int r = install_grub_to(dev);
+    if (r != 0) { printf("nyxgrub: install failed (rc=%d)\n", r); return; }
+    printf("nyxgrub: done. The disk should boot standalone (BIOS/CSM). Partition table preserved.\n");
+}
+
+// KAT the pure blocklist / core-LBA patch math against the proven byte layout.
+static int nyxgrub_selftest(void) {
+    static uint8_t c[512];
+    for (int i = 0; i < 512; i++) c[i] = 0xAA;
+    grub_set_blocklist(c, 303);
+    if (c[0x1f4] != 2) return 1;
+    for (int i = 0x1f5; i <= 0x1fb; i++) if (c[i] != 0) return 2;
+    if (c[0x1fc] != 0x2E || c[0x1fd] != 0x01) return 3;   // len 302 = 0x012E (LE)
+    if (c[0x1fe] != 0x20 || c[0x1ff] != 0x08) return 4;   // seg 0x0820 (LE)
+    static uint8_t b[512];
+    for (int i = 0; i < 512; i++) b[i] = 0xAA;
+    grub_set_core_lba(b);
+    if (b[0x5c] != 1) return 5;
+    for (int i = 0x5d; i <= 0x63; i++) if (b[i] != 0) return 6;
+    return 0;
+}
+
 // nyxinstall <drive> confirm [srcdir] — the guided installer. Ties together the
 // disk pieces into one flow: partition (MBR) -> mkfs ext2 -> mount /mnt -> copy
-// the OS tree (srcdir, default /bin) onto it. DESTRUCTIVE: wipes the drive, so it
-// demands the literal `confirm` keyword. Calls the primitives directly (no nested
-// execute_command). Bootloader install + real-HW drivers are later rungs.
+// the OS tree (srcdir, default /bin) onto it -> install GRUB. DESTRUCTIVE: wipes
+// the drive, so it demands the literal `confirm` keyword. Calls the primitives
+// directly (no nested execute_command).
 static void cmd_nyxinstall(int argc, char** argv) {
     if (argc < 3 || strcmp(argv[2], "confirm") != 0) {
         printf("Usage: nyxinstall <drive> confirm [srcdir]\n");
@@ -5379,7 +5457,7 @@ static void cmd_nyxinstall(int argc, char** argv) {
     uint32_t blocks = part_sectors / 2;
     if (blocks > 32u * 8192 + 1) blocks = 32u * 8192 + 1;               // mkfs single-drive cap
 
-    printf("[1/5] Partitioning (MBR: 1x bootable Linux @ LBA %u)...\n", part_lba);
+    printf("[1/6] Partitioning (MBR: 1x bootable Linux @ LBA %u)...\n", part_lba);
     mbr_part_t p = { .status = 0x80, .type = 0x83, .lba_start = part_lba, .sectors = part_sectors };
     static uint8_t sec[512];
     mbr_build(&p, 1, sec);
@@ -5387,21 +5465,21 @@ static void cmd_nyxinstall(int argc, char** argv) {
     if (dev != BLK_NVME0) ata_flush();
 
     du_human((uint64_t)blocks * 1024ULL, hb, sizeof(hb));
-    printf("[2/5] Formatting ext2 (%s)...\n", hb);
+    printf("[2/6] Formatting ext2 (%s)...\n", hb);
     if (ext2_format(dev, part_lba, blocks) != 0) { printf("nyxinstall: mkfs failed\n"); return; }
 
-    printf("[3/5] Mounting at /mnt...\n");
+    printf("[3/6] Mounting at /mnt...\n");
     if (ext2_mount(dev, part_lba) != 0) { printf("nyxinstall: mount failed\n"); return; }
     if (vfs_mount("/mnt", FS_TYPE_EXT2, NULL) < 0) { printf("nyxinstall: VFS mount failed\n"); return; }
 
-    printf("[4/5] Copying %s -> /mnt ...\n", src);
+    printf("[4/6] Copying %s -> /mnt ...\n", src);
     int dirs = 0, files = 0, err = 0;
     cptree_walk(src, "/mnt", cpt_vfs_enum, cpt_vfs_mkdir, cpt_vfs_cp, 0, &dirs, &files, &err);
 
     // Write the GRUB boot config the disk's bootloader will use. A GRUB installed
     // to this disk (boot.img in the MBR + core.img in the gap) reads this to load
     // the multiboot2 kernel — the recipe verified to boot standalone in QEMU.
-    printf("[5/5] Writing boot files (kernel + grub.cfg)...\n");
+    printf("[5/6] Writing boot files (kernel + grub.cfg)...\n");
     vfs_mkdir("/mnt/boot", 0755);
     vfs_mkdir("/mnt/boot/grub", 0755);
     static const char* gcfg =
@@ -5423,12 +5501,18 @@ static void cmd_nyxinstall(int argc, char** argv) {
         printf("  (no /nyxkernel.bin module; add /boot/nyx-kernel.bin manually)\n");
     }
 
+    printf("[6/6] Installing GRUB boot sectors (core.img %u sectors -> gap)...\n", GRUB_CORE_SECTORS);
+    int grub_ok = (have_kernel && install_grub_to(dev) == 0);
+    if (grub_ok) printf("  GRUB installed to the MBR/gap - the disk boots standalone.\n");
+    else if (!have_kernel) printf("  (skipped: no kernel on disk to boot)\n");
+    else printf("  (GRUB install failed)\n");
+
     printf("=== nyxinstall done: %d file(s) across %d director(y/ies) written to %s%s ===\n",
            files, dirs, argv[1], err ? " (with errors)" : "");
     printf("  /mnt now holds %s+ /boot/grub/grub.cfg.\n",
            have_kernel ? "/boot/nyx-kernel.bin " : "the OS tree ");
-    printf("  Remaining to boot standalone: install GRUB's boot sectors to the disk MBR\n");
-    printf("  (proven recipe; in-OS automation is the next rung).\n");
+    if (grub_ok) printf("  Reboot from this disk (BIOS/CSM) to run the installed NyxOS.\n");
+    else printf("  Run 'nyxgrub %s' to install the bootloader for standalone boot.\n", argv[1]);
 }
 
 static void cmd_mv(int argc, char** argv) {
@@ -5991,6 +6075,7 @@ static void run_selftests(void) {
         {"du",           du_selftest},
         {"pci",          pci_selftest},
         {"nvme",         nvme_selftest},
+        {"nyxgrub",      nyxgrub_selftest},
         {"mbr",          mbr_selftest},
         {"mbrbuild",     mbr_build_selftest},
         {"mkfs-ext2",    ext2_format_selftest},

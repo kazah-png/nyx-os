@@ -27,19 +27,31 @@ int blk_write1(uint8_t dev, uint32_t lba, const void* buf) {
 }
 
 int blk_read(uint8_t dev, uint32_t lba, uint32_t count, void* buf) {
-    if (dev != BLK_NVME0)                          // ATA reads a whole run in one PIO burst
-        return ata_read_sectors(dev, lba, (uint8_t)count, buf) < 0 ? -1 : 0;
     uint8_t* p = (uint8_t*)buf;
-    for (uint32_t i = 0; i < count; i++)
-        if (blk_read1(dev, lba + i, p + (uint64_t)i * 512) != 0) return -1;
+    if (dev == BLK_NVME0) {
+        for (uint32_t i = 0; i < count; i++)
+            if (blk_read1(dev, lba + i, p + (uint64_t)i * 512) != 0) return -1;
+        return 0;
+    }
+    while (count) {                                // ATA: <=128-sector PIO bursts (count is a uint8_t on the wire)
+        uint32_t n = count > 128 ? 128 : count;
+        if (ata_read_sectors(dev, lba, (uint8_t)n, p) < 0) return -1;
+        lba += n; p += (uint64_t)n * 512; count -= n;
+    }
     return 0;
 }
 
 int blk_write(uint8_t dev, uint32_t lba, uint32_t count, const void* buf) {
-    if (dev != BLK_NVME0)
-        return ata_write_sectors(dev, lba, (uint8_t)count, buf) < 0 ? -1 : 0;
     const uint8_t* p = (const uint8_t*)buf;
-    for (uint32_t i = 0; i < count; i++)
-        if (blk_write1(dev, lba + i, p + (uint64_t)i * 512) != 0) return -1;
+    if (dev == BLK_NVME0) {
+        for (uint32_t i = 0; i < count; i++)
+            if (blk_write1(dev, lba + i, p + (uint64_t)i * 512) != 0) return -1;
+        return 0;
+    }
+    while (count) {                                // ATA: <=128-sector PIO bursts
+        uint32_t n = count > 128 ? 128 : count;
+        if (ata_write_sectors(dev, lba, (uint8_t)n, p) < 0) return -1;
+        lba += n; p += (uint64_t)n * 512; count -= n;
+    }
     return 0;
 }
