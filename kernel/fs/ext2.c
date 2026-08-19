@@ -178,6 +178,11 @@ int ext2_mount(uint8_t drive, uint32_t part_lba) {
     ext2_fs.drive = drive;
     ext2_fs.part_start_lba = part_lba;
 
+    // The sector-cache tags are FS-relative LBAs, so lines from a previous mount
+    // (a different drive/partition, or a fresh mkfs written raw underneath us)
+    // are stale for this one — invalidate them so the superblock read hits disk.
+    for (int i = 0; i < SC_LINES; i++) sc_valid[i] = 0;
+
     uint8_t sb_buf[1024];
     read_sectors(2, 2, sb_buf);
     __builtin_memcpy(&ext2_fs.sb, sb_buf, sizeof(ext2_superblock_t));
@@ -1352,5 +1357,130 @@ int ext2_unlink(const char* path) {
     ext2_write_inode(parent_ino, &parent_inode);
     if (inode.mode & EXT2_S_IFDIR) bgd_adjust_dir_count(-1);
     ext2_sync_superblock();
+    return 0;
+}
+
+// ===========================================================================
+// mkfs — format a fresh single-block-group ext2 (1024-byte blocks) (v6.4.250).
+// Layout validated on the host with fsck.ext2 -fn (exit 0). ext2_format_cb
+// builds every metadata block and emits it through an injected write callback,
+// so the same builder serves the disk formatter (ext2_format) and the KAT
+// (ext2_format_selftest, which emits into RAM). Self-contained: writes raw via
+// the callback, independent of any mounted fs. Single group caps at ~8 MB;
+// multi-group is a later rung.
+// ===========================================================================
+typedef int (*ext2_wb_fn)(void* ctx, uint32_t block, const uint8_t* buf);
+
+static void e2f_dirent(uint8_t* p, uint32_t ino, uint16_t rec_len, const char* name, uint8_t ftype) {
+    uint32_t nl = 0; while (name[nl]) nl++;
+    p[0] = (uint8_t)ino; p[1] = (uint8_t)(ino >> 8); p[2] = (uint8_t)(ino >> 16); p[3] = (uint8_t)(ino >> 24);
+    p[4] = (uint8_t)rec_len; p[5] = (uint8_t)(rec_len >> 8);
+    p[6] = (uint8_t)nl; p[7] = ftype;
+    for (uint32_t i = 0; i < nl; i++) p[8 + i] = name[i];
+}
+
+int ext2_format_cb(uint32_t total_blocks, ext2_wb_fn wb, void* ctx) {
+    if (total_blocks < 64) return -1;
+    if (total_blocks > 8193) total_blocks = 8193;        // single group: block 0 + up to 8192 group blocks
+    uint32_t N = total_blocks / 4;                       // ~1 inode per 4 blocks
+    N = (N + 7) & ~7u; if (N < 16) N = 16; if (N > 8192) N = 8192;
+    uint32_t itb = N / 8;                                // inode-table blocks (8 inodes / 1024 block)
+    uint32_t b_bbmp = 3, b_ibmp = 4, b_itab = 5;
+    uint32_t b_root = b_itab + itb;
+    uint32_t b_lf   = b_root + 1;
+    uint32_t used_blocks = b_lf + 1;
+    uint32_t free_blocks = total_blocks - used_blocks;
+    uint32_t free_inodes = N - 11;                       // inodes 1..11 used
+    uint32_t bpg = 1024u * 8;                            // blocks_per_group = 8192
+
+    static uint8_t B[1024];
+
+    memset_asm(B, 0, 1024); if (wb(ctx, 0, B) < 0) return -2;   // block 0: boot
+
+    memset_asm(B, 0, 1024);                                     // block 1: superblock
+    ext2_superblock_t* sb = (ext2_superblock_t*)B;
+    sb->total_inodes = N; sb->total_blocks = total_blocks; sb->free_blocks = free_blocks;
+    sb->free_inodes = free_inodes; sb->first_data_block = 1;
+    sb->blocks_per_group = bpg; sb->frags_per_group = bpg; sb->inodes_per_group = N;
+    sb->magic = EXT2_SUPER_MAGIC; sb->state = 1; sb->errors = 1; sb->rev_level = 1;
+    sb->first_ino = 11; sb->inode_size = 128; sb->max_mnt_count = 0xFFFF;
+    sb->feature_incompat = 0x0002;                             // FILETYPE
+    if (wb(ctx, 1, B) < 0) return -2;
+
+    memset_asm(B, 0, 1024);                                     // block 2: block group descriptor
+    ext2_bgd_t* bgd = (ext2_bgd_t*)B;
+    bgd->block_bitmap = b_bbmp; bgd->inode_bitmap = b_ibmp; bgd->inode_table = b_itab;
+    bgd->free_blocks_count = (uint16_t)free_blocks; bgd->free_inodes_count = (uint16_t)free_inodes;
+    bgd->used_dirs_count = 2;
+    if (wb(ctx, 2, B) < 0) return -2;
+
+    memset_asm(B, 0, 1024);                                     // block 3: block bitmap
+    for (uint32_t b = 1; b < used_blocks; b++) B[(b - 1) >> 3] |= 1u << ((b - 1) & 7);
+    for (uint32_t b = total_blocks; b <= bpg; b++)  B[(b - 1) >> 3] |= 1u << ((b - 1) & 7);  // pad non-existent
+    if (wb(ctx, 3, B) < 0) return -2;
+
+    memset_asm(B, 0, 1024);                                     // block 4: inode bitmap
+    for (uint32_t i = 1; i <= 11; i++) B[(i - 1) >> 3] |= 1u << ((i - 1) & 7);
+    for (uint32_t i = N + 1; i <= bpg; i++) B[(i - 1) >> 3] |= 1u << ((i - 1) & 7);
+    if (wb(ctx, 4, B) < 0) return -2;
+
+    for (uint32_t k = 0; k < itb; k++) {                       // inode table
+        memset_asm(B, 0, 1024);
+        if (k == 0) {                                          // inode 2 (root) at offset 128
+            ext2_inode_t* ri = (ext2_inode_t*)(B + 128);
+            ri->mode = EXT2_S_IFDIR | 0755; ri->links_count = 3; ri->size = 1024; ri->blocks_512 = 2; ri->block[0] = b_root;
+        }
+        if (k == 1) {                                          // inode 11 (lost+found) at offset 256
+            ext2_inode_t* li = (ext2_inode_t*)(B + 256);
+            li->mode = EXT2_S_IFDIR | 0700; li->links_count = 2; li->size = 1024; li->blocks_512 = 2; li->block[0] = b_lf;
+        }
+        if (wb(ctx, b_itab + k, B) < 0) return -2;
+    }
+
+    memset_asm(B, 0, 1024);                                     // root dir data
+    { uint32_t off = 0;
+      e2f_dirent(B + off, 2, 12, ".", 2);  off += 12;
+      e2f_dirent(B + off, 2, 12, "..", 2); off += 12;
+      e2f_dirent(B + off, 11, (uint16_t)(1024 - off), "lost+found", 2); }
+    if (wb(ctx, b_root, B) < 0) return -2;
+
+    memset_asm(B, 0, 1024);                                     // lost+found dir data
+    { uint32_t off = 0;
+      e2f_dirent(B + off, 11, 12, ".", 2); off += 12;
+      e2f_dirent(B + off, 2, (uint16_t)(1024 - off), "..", 2); }
+    if (wb(ctx, b_lf, B) < 0) return -2;
+
+    return 0;
+}
+
+typedef struct { uint8_t drive; uint32_t part_lba; } e2f_disk_ctx_t;
+static int e2f_disk_wb(void* c, uint32_t block, const uint8_t* buf) {
+    e2f_disk_ctx_t* d = (e2f_disk_ctx_t*)c;
+    return ata_write_sectors(d->drive, d->part_lba + block * 2, 2, buf) < 0 ? -1 : 0;  // 2 sectors / 1024 block
+}
+int ext2_format(uint8_t drive, uint32_t part_lba, uint32_t total_blocks) {
+    e2f_disk_ctx_t c = { drive, part_lba };
+    return ext2_format_cb(total_blocks, e2f_disk_wb, &c);
+}
+
+static uint8_t e2f_test_img[64 * 1024];                        // 64-block scratch fs for the KAT
+static int e2f_mem_wb(void* c, uint32_t block, const uint8_t* buf) {
+    (void)c; if (block >= 64) return -1;
+    __builtin_memcpy(e2f_test_img + block * 1024, buf, 1024); return 0;
+}
+int ext2_format_selftest(void) {
+    memset_asm(e2f_test_img, 0, sizeof(e2f_test_img));
+    if (ext2_format_cb(64, e2f_mem_wb, 0) != 0) return 1;
+    ext2_superblock_t* sb = (ext2_superblock_t*)(e2f_test_img + 1024);
+    if (sb->magic != EXT2_SUPER_MAGIC) return 2;
+    if (sb->total_blocks != 64 || sb->inodes_per_group != 16) return 3;   // 64/4 = 16 inodes
+    if (sb->first_data_block != 1 || sb->feature_incompat != 0x0002) return 4;
+    if (sb->free_blocks != 64 - 9 || sb->free_inodes != 16 - 11) return 5; // used = b_lf+1 = 9
+    ext2_inode_t* ri = (ext2_inode_t*)(e2f_test_img + 5 * 1024 + 128);     // root inode (2)
+    if ((ri->mode & 0xF000) != EXT2_S_IFDIR || ri->block[0] != 7) return 6; // itb=2 -> b_root=7
+    uint8_t* rd = e2f_test_img + 7 * 1024;                                  // root dir block
+    if (*(uint32_t*)rd != 2 || rd[6] != 1 || rd[8] != '.') return 7;        // "."
+    uint8_t* lfe = rd + 24;                                                 // 3rd dirent = lost+found
+    if (*(uint32_t*)lfe != 11 || lfe[6] != 10) return 8;
     return 0;
 }

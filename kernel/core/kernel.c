@@ -170,6 +170,7 @@ static void cmd_tree(int argc, char** argv);
 static void cmd_du(int argc, char** argv);
 static void cmd_disks(int argc, char** argv);
 static void cmd_nyxpart(int argc, char** argv);
+static void cmd_mkfs(int argc, char** argv);
 static void cmd_env(int argc, char** argv);
 static void cmd_export(int argc, char** argv);
 static void cmd_find(int argc, char** argv);
@@ -213,6 +214,7 @@ static void cmd_stackcheck(int argc, char** argv);
 extern int stack_canary_sweep(void);      // process.c — scan task-stack canaries
 extern int stack_canary_selftest(void);   // process.c — canary KAT
 extern int term_paste_selftest(void);      // gui/apps/terminal_win.c — Ctrl+V paste KAT
+extern int ext2_format_selftest(void);      // fs/ext2.c — mkfs.ext2 layout KAT
 extern int notify_selftest(void);           // gui/core/compositor.c — toast ring KAT
 static void cmd_snake(int argc, char** argv);
 static void cmd_tetris(int argc, char** argv);
@@ -313,6 +315,7 @@ static const command_t commands[] = {
     {"disks",     cmd_disks,     "List physical disks + their MBR partitions", false},
     {"lsblk",     cmd_disks,     "Alias for disks", false},
     {"nyxpart",   cmd_nyxpart,   "Write an MBR partition table: nyxpart <drive> new [size_MB]", false},
+    {"mkfs",      cmd_mkfs,      "Format ext2 on a disk: mkfs <drive> [part_lba] [size_MB]", false},
     {"env",       cmd_env,       "Show environment variables", false},
     {"export",    cmd_export,    "Set env variable: export <name>=<value>", false},
     {"find",      cmd_find,      "Find files by name: find <name> [path]", false},
@@ -604,7 +607,7 @@ void execute_command(const char* cmd_line) {
 // ever dropped even if a new command isn't categorised here yet.
 typedef struct { const char* title; const char* const* names; } help_cat_t;
 static const char* const HC_shell[] = {"help","man","version","clear","history","exec","spawn","jobs","wait","nice","renice",0};
-static const char* const HC_files[] = {"ls","cd","pwd","cat","file","tar","iniget","open","touch","mkdir","rm","cp","mv","tree","find","which","basename","dirname","files","df","du","disks","lsblk","nyxpart","mount","ext2ls","ext2cat",0};
+static const char* const HC_files[] = {"ls","cd","pwd","cat","file","tar","iniget","open","touch","mkdir","rm","cp","mv","tree","find","which","basename","dirname","files","df","du","disks","lsblk","nyxpart","mkfs","mount","ext2ls","ext2cat",0};
 static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","fold","nl","expand","unexpand","factor","seq","paste","clip","cut","uniq","join","comm","printf","wc","write","hexdump",0};
 static const char* const HC_sys[]   = {"ps","kill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat","screenshot","stackcheck",0};
 static const char* const HC_user[]  = {"useradd","users",0};
@@ -742,6 +745,7 @@ static const man_page_t man_pages[] = {
     {"tail",     "Write the last lines of <file> to standard output (10 by default, or a count given as the second argument)."},
     {"tree",     "Print the directory rooted at [path] (the current directory by default) as an indented tree, showing each subdirectory's immediate children."},
     {"disks",    "List the physical disks attached to the machine and their partitions (aliased as `lsblk`). For each ATA disk it reads the drive's IDENTIFY data (model name + capacity) and then sector 0, parsing the MBR partition table: for every non-empty entry it prints the partition number, type byte + a human label (Linux/EFI System/FAT32/NTFS/...), the starting LBA, the size, and a [boot] flag for an active partition. Read-only — the first rung of the `nyxinstall` disk-management work; partitioning, formatting and installing come later. A raw or GPT-only disk reports that it has no MBR table."},
+    {"mkfs",     "Format a fresh ext2 filesystem onto a disk (the 3rd nyxinstall rung, after nyxpart). `mkfs <drive> [part_lba] [size_MB]` writes a valid single-block-group ext2 (1024-byte blocks) at part_lba (default LBA 2048, matching `nyxpart`): superblock, block-group descriptor, block + inode bitmaps, inode table, the root directory and lost+found. The layout is byte-for-byte the same as `mkfs.ext2` produces for a small volume (verified against Linux `fsck.ext2`). A single group caps the volume at ~8 MB for now; multi-group support is a later rung. Destructive — it erases the target area. After it finishes, `mount <drive> <part_lba>` mounts the new filesystem on /mnt. Typical install flow: `nyxpart 0 new` -> `mkfs 0 2048` -> `mount 0 2048`."},
     {"nyxpart",  "Write a fresh MBR partition table to a disk (the first WRITE step of nyxinstall's disk management). `nyxpart <drive> new [size_MB]` erases the drive's existing partition table and writes a single bootable Linux (0x83) partition, 1 MiB-aligned (starting at LBA 2048), spanning the whole disk or the given size in megabytes. The destructive action requires the explicit `new` keyword. Pair it with `disks`/`lsblk` to see the result. WARNING: this overwrites the partition table on the selected drive — only run it on a disk you intend to repartition."},
     {"du",       "Disk usage: sum the sizes of every file in the subtree rooted at [path] (the current directory by default) and print the total, both human-readable (B/K/M/G) and in exact bytes, with a file and directory count. The walk is iterative with a bounded off-stack frontier (the 4 KB kernel task stack forbids deep recursion); a subtree wider than that many pending directories reports the total as a floor. Complements `df`, which reports whole-filesystem free space rather than per-directory usage."},
     {"find",     "Search for files whose name matches <name>, starting at [path] (the current directory by default), and print the path of every match."},
@@ -2575,6 +2579,36 @@ static void cmd_nyxpart(int argc, char** argv) {
     du_human((uint64_t)want * 512ULL, hb, sizeof(hb));
     printf("nyxpart: drive %d partitioned - 1x Linux %s at LBA %u [boot]\n", drive, hb, start);
     printf("  run 'disks' to confirm.\n");
+}
+
+// mkfs <drive> [part_lba] [size_MB] — format a fresh ext2 (single block group,
+// 1024-byte blocks) onto a disk at part_lba (default LBA 2048, matching nyxpart).
+// Destructive. 3rd nyxinstall rung; pairs with nyxpart + mount.
+static void cmd_mkfs(int argc, char** argv) {
+    if (argc < 2) {
+        printf("Usage: mkfs <drive> [part_lba] [size_MB]\n");
+        printf("  Formats a fresh ext2 filesystem. WARNING: erases the target area.\n");
+        return;
+    }
+    int drive = atoi(argv[1]);
+    uint32_t part_lba = (argc >= 3) ? (uint32_t)atoi(argv[2]) : 2048;
+    ata_init();
+    static uint16_t id[256];
+    if (ata_identify((uint8_t)drive, id) != 0) { printf("mkfs: no disk at drive %d\n", drive); return; }
+    uint64_t total_sectors = ata_id_sectors(id);
+    if (total_sectors <= part_lba) { printf("mkfs: part_lba past end of disk\n"); return; }
+    uint32_t blocks = (uint32_t)((total_sectors - part_lba) / 2);   // 1024-byte blocks
+    if (argc >= 4) {
+        uint32_t b = (uint32_t)atoi(argv[3]) * 1024u;               // MB -> 1024-byte blocks
+        if (b > 0 && b < blocks) blocks = b;
+    }
+    if (blocks < 64) { printf("mkfs: target too small\n"); return; }
+    if (blocks > 8193) { blocks = 8193; printf("mkfs: capping to one 8 MB block group (multi-group is a later rung)\n"); }
+    char hb[24];
+    du_human((uint64_t)blocks * 1024ULL, hb, sizeof(hb));
+    printf("mkfs: formatting drive %d @ LBA %u as ext2 (%s)...\n", drive, part_lba, hb);
+    if (ext2_format((uint8_t)drive, part_lba, blocks) != 0) { printf("mkfs: format failed\n"); return; }
+    printf("mkfs: done. mount it with:  mount %d %u\n", drive, part_lba);
 }
 
 static char* env_vars[16];
@@ -5667,6 +5701,7 @@ static void run_selftests(void) {
         {"du",           du_selftest},
         {"mbr",          mbr_selftest},
         {"mbrbuild",     mbr_build_selftest},
+        {"mkfs-ext2",    ext2_format_selftest},
         {"notify",       notify_selftest},
         {"stack-canary", stack_canary_selftest},
         {"numparse",     numparse_selftest},        {"hkdf",          hkdf_selftest},

@@ -138,6 +138,12 @@ uint32_t ext2_alloc_block(void);
 uint32_t ext2_alloc_inode(void);
 int  ext2_write_file(const char* path, const void* buf, uint32_t len);
 int  ext2_create_file(const char* path);
+
+// mkfs: write a fresh single-block-group ext2 (1024-byte blocks) onto a disk at
+// part_lba (raw, via ata_write_sectors). total_blocks = size in 1024-byte blocks
+// (capped to one ~8 MB group). Returns 0 on success. ext2_format_selftest KATs it.
+int  ext2_format(uint8_t drive, uint32_t part_lba, uint32_t total_blocks);
+int  ext2_format_selftest(void);
 int  ext2_mkdir(const char* path);
 int  ext2_unlink(const char* path);
 
