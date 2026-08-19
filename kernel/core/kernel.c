@@ -169,6 +169,7 @@ static void cmd_json(int argc, char** argv);
 static void cmd_tree(int argc, char** argv);
 static void cmd_du(int argc, char** argv);
 static void cmd_disks(int argc, char** argv);
+static void cmd_nyxpart(int argc, char** argv);
 static void cmd_env(int argc, char** argv);
 static void cmd_export(int argc, char** argv);
 static void cmd_find(int argc, char** argv);
@@ -311,6 +312,7 @@ static const command_t commands[] = {
     {"du",        cmd_du,        "Disk usage: du [path] sums file sizes over a subtree", false},
     {"disks",     cmd_disks,     "List physical disks + their MBR partitions", false},
     {"lsblk",     cmd_disks,     "Alias for disks", false},
+    {"nyxpart",   cmd_nyxpart,   "Write an MBR partition table: nyxpart <drive> new [size_MB]", false},
     {"env",       cmd_env,       "Show environment variables", false},
     {"export",    cmd_export,    "Set env variable: export <name>=<value>", false},
     {"find",      cmd_find,      "Find files by name: find <name> [path]", false},
@@ -602,7 +604,7 @@ void execute_command(const char* cmd_line) {
 // ever dropped even if a new command isn't categorised here yet.
 typedef struct { const char* title; const char* const* names; } help_cat_t;
 static const char* const HC_shell[] = {"help","man","version","clear","history","exec","spawn","jobs","wait","nice","renice",0};
-static const char* const HC_files[] = {"ls","cd","pwd","cat","file","tar","iniget","open","touch","mkdir","rm","cp","mv","tree","find","which","basename","dirname","files","df","du","disks","lsblk","mount","ext2ls","ext2cat",0};
+static const char* const HC_files[] = {"ls","cd","pwd","cat","file","tar","iniget","open","touch","mkdir","rm","cp","mv","tree","find","which","basename","dirname","files","df","du","disks","lsblk","nyxpart","mount","ext2ls","ext2cat",0};
 static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","fold","nl","expand","unexpand","factor","seq","paste","clip","cut","uniq","join","comm","printf","wc","write","hexdump",0};
 static const char* const HC_sys[]   = {"ps","kill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat","screenshot","stackcheck",0};
 static const char* const HC_user[]  = {"useradd","users",0};
@@ -740,6 +742,7 @@ static const man_page_t man_pages[] = {
     {"tail",     "Write the last lines of <file> to standard output (10 by default, or a count given as the second argument)."},
     {"tree",     "Print the directory rooted at [path] (the current directory by default) as an indented tree, showing each subdirectory's immediate children."},
     {"disks",    "List the physical disks attached to the machine and their partitions (aliased as `lsblk`). For each ATA disk it reads the drive's IDENTIFY data (model name + capacity) and then sector 0, parsing the MBR partition table: for every non-empty entry it prints the partition number, type byte + a human label (Linux/EFI System/FAT32/NTFS/...), the starting LBA, the size, and a [boot] flag for an active partition. Read-only — the first rung of the `nyxinstall` disk-management work; partitioning, formatting and installing come later. A raw or GPT-only disk reports that it has no MBR table."},
+    {"nyxpart",  "Write a fresh MBR partition table to a disk (the first WRITE step of nyxinstall's disk management). `nyxpart <drive> new [size_MB]` erases the drive's existing partition table and writes a single bootable Linux (0x83) partition, 1 MiB-aligned (starting at LBA 2048), spanning the whole disk or the given size in megabytes. The destructive action requires the explicit `new` keyword. Pair it with `disks`/`lsblk` to see the result. WARNING: this overwrites the partition table on the selected drive — only run it on a disk you intend to repartition."},
     {"du",       "Disk usage: sum the sizes of every file in the subtree rooted at [path] (the current directory by default) and print the total, both human-readable (B/K/M/G) and in exact bytes, with a file and directory count. The walk is iterative with a bounded off-stack frontier (the 4 KB kernel task stack forbids deep recursion); a subtree wider than that many pending directories reports the total as a floor. Complements `df`, which reports whole-filesystem free space rather than per-directory usage."},
     {"find",     "Search for files whose name matches <name>, starting at [path] (the current directory by default), and print the path of every match."},
     {"touch",    "Create <file> as a new, empty file if it does not already exist."},
@@ -2413,6 +2416,31 @@ static int mbr_parse(const uint8_t* sec, mbr_part_t out[4]) {
     return n;
 }
 
+// Build a 512-byte MBR boot sector from up to 4 partition specs (v6.4.249).
+// Zeroes the sector, writes each entry at 0x1BE + i*16 (status, LBA-sentinel
+// CHS, type, LBA-start LE, sector-count LE), stamps the 0x55AA signature. Pure —
+// KAT'd via a build->parse round-trip. The write side of the partition table.
+static void mbr_build(const mbr_part_t* parts, int nparts, uint8_t* sec) {
+    for (int i = 0; i < 512; i++) sec[i] = 0;
+    if (nparts > 4) nparts = 4;
+    for (int i = 0; i < nparts; i++) {
+        uint8_t* e = sec + 0x1BE + i * 16;
+        e[0] = parts[i].status;
+        e[1] = 0xFE; e[2] = 0xFF; e[3] = 0xFF;           // CHS start: "too large, use LBA" sentinel
+        e[4] = parts[i].type;
+        e[5] = 0xFE; e[6] = 0xFF; e[7] = 0xFF;           // CHS end: same
+        e[8]  = (uint8_t)(parts[i].lba_start);
+        e[9]  = (uint8_t)(parts[i].lba_start >> 8);
+        e[10] = (uint8_t)(parts[i].lba_start >> 16);
+        e[11] = (uint8_t)(parts[i].lba_start >> 24);
+        e[12] = (uint8_t)(parts[i].sectors);
+        e[13] = (uint8_t)(parts[i].sectors >> 8);
+        e[14] = (uint8_t)(parts[i].sectors >> 16);
+        e[15] = (uint8_t)(parts[i].sectors >> 24);
+    }
+    sec[510] = 0x55; sec[511] = 0xAA;
+}
+
 static const char* mbr_type_name(uint8_t t) {
     switch (t) {
         case 0x83: return "Linux";
@@ -2464,6 +2492,27 @@ int mbr_selftest(void) {
     return 0;
 }
 
+int mbr_build_selftest(void) {
+    static uint8_t sec[512];
+    mbr_part_t in[2] = {
+        { .status = 0x80, .type = 0x83, .lba_start = 2048,  .sectors = 20480 },
+        { .status = 0x00, .type = 0xEF, .lba_start = 24576, .sectors = 6144  },
+    };
+    mbr_build(in, 2, sec);
+    if (sec[510] != 0x55 || sec[511] != 0xAA) return 1;  // signature stamped
+    mbr_part_t out[4];
+    int n = mbr_parse(sec, out);                         // round-trip through the parser
+    if (n != 2) return 2;
+    for (int i = 0; i < 2; i++)
+        if (out[i].status != in[i].status || out[i].type != in[i].type ||
+            out[i].lba_start != in[i].lba_start || out[i].sectors != in[i].sectors) return 3 + i;
+    // a fresh build over a dirty sector must clear stale entries
+    mbr_part_t one = { .status = 0x80, .type = 0x83, .lba_start = 2048, .sectors = 100 };
+    mbr_build(&one, 1, sec);
+    if (mbr_parse(sec, out) != 1) return 5;
+    return 0;
+}
+
 static void cmd_disks(int argc, char** argv) {
     (void)argc; (void)argv;
     ata_init();
@@ -2492,6 +2541,40 @@ static void cmd_disks(int argc, char** argv) {
         }
     }
     if (!found) printf("disks: no ATA disks detected\n");
+}
+
+// nyxpart <drive> new [size_MB] — write a fresh MBR with one bootable Linux
+// (0x83) partition (whole disk, or size_MB), 1 MiB-aligned. ERASES the drive's
+// existing partition table. First WRITE rung of nyxinstall; the installer TUI
+// will drive this later. Destructive, so it needs the explicit `new` keyword.
+static void cmd_nyxpart(int argc, char** argv) {
+    if (argc < 3 || strcmp(argv[2], "new") != 0) {
+        printf("Usage: nyxpart <drive> new [size_MB]\n");
+        printf("  Writes a fresh MBR: one bootable Linux (0x83) partition.\n");
+        printf("  WARNING: this ERASES the drive's existing partition table.\n");
+        return;
+    }
+    int drive = atoi(argv[1]);
+    ata_init();
+    static uint16_t id[256];
+    if (ata_identify((uint8_t)drive, id) != 0) { printf("nyxpart: no disk at drive %d\n", drive); return; }
+    uint64_t total = ata_id_sectors(id);
+    uint32_t start = 2048;                               // 1 MiB alignment
+    if (total <= start) { printf("nyxpart: disk too small\n"); return; }
+    uint32_t avail = (uint32_t)(total - start);
+    uint32_t want = avail;
+    if (argc >= 4) {
+        uint32_t s = (uint32_t)atoi(argv[3]) * 2048u;    // MB -> 512-byte sectors
+        if (s > 0 && s < avail) want = s;
+    }
+    mbr_part_t p = { .status = 0x80, .type = 0x83, .lba_start = start, .sectors = want };
+    static uint8_t sec[512];
+    mbr_build(&p, 1, sec);
+    if (ata_write_sectors((uint8_t)drive, 0, 1, sec) < 0) { printf("nyxpart: write to drive %d failed\n", drive); return; }
+    char hb[24];
+    du_human((uint64_t)want * 512ULL, hb, sizeof(hb));
+    printf("nyxpart: drive %d partitioned - 1x Linux %s at LBA %u [boot]\n", drive, hb, start);
+    printf("  run 'disks' to confirm.\n");
 }
 
 static char* env_vars[16];
@@ -5583,6 +5666,7 @@ static void run_selftests(void) {
         {"term-paste",   term_paste_selftest},
         {"du",           du_selftest},
         {"mbr",          mbr_selftest},
+        {"mbrbuild",     mbr_build_selftest},
         {"notify",       notify_selftest},
         {"stack-canary", stack_canary_selftest},
         {"numparse",     numparse_selftest},        {"hkdf",          hkdf_selftest},
