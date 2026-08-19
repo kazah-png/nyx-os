@@ -1,0 +1,99 @@
+/* ==========================================================================
+   INTERACTIVE COMPONENTS, TOASTS, TOOLTIPS & MICRO-UI
+   ========================================================================== */
+
+/* Toast Notification */
+.toast-container {
+  position: fixed;
+  bottom: 2rem;
+  right: 2rem;
+  z-index: 10000;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  pointer-events: none;
+}
+
+.toast-message {
+  background: var(--bg-elevated);
+  border: 1px solid var(--accent-lunar-border);
+  color: #ffffff;
+  padding: 0.75rem 1.25rem;
+  border-radius: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.8rem;
+  box-shadow: var(--shadow-lg), 0 0 20px rgba(16, 185, 129, 0.2);
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  transform: translateY(20px);
+  opacity: 0;
+  transition: all 0.3s cubic-bezier(0.16, 1, 0.3, 1);
+  pointer-events: auto;
+}
+
+.toast-message.is-visible {
+  transform: translateY(0);
+  opacity: 1;
+}
+
+.toast-icon {
+  color: var(--accent-lunar-bright);
+}
+
+/* Copy Button Micro-interaction */
+.copy-btn {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-hairline);
+  color: var(--text-muted);
+  padding: 0.3rem 0.6rem;
+  border-radius: 3px;
+  cursor: pointer;
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  display: inline-flex;
+  align-items: center;
+  gap: 0.35rem;
+  transition: all var(--transition-fast);
+}
+
+.copy-btn:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: #fff;
+  border-color: var(--border-medium);
+}
+
+.copy-btn.copied {
+  background: var(--accent-lunar-faint);
+  border-color: var(--accent-lunar-border);
+  color: var(--accent-lunar-bright);
+}
+
+/* Audio / Visual Tactile Click Ripple */
+.tactile-ripple {
+  position: relative;
+  overflow: hidden;
+}
+
+.tactile-ripple::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 5px;
+  height: 5px;
+  background: rgba(255, 255, 255, 0.4);
+  opacity: 0;
+  border-radius: 50%;
+  transform: scale(1) translate(-50%, -50%);
+  transform-origin: 50% 50%;
+}
+
+.tactile-ripple:active::after {
+  animation: ripple-effect 0.4s ease-out;
+}
+
+@keyframes ripple-effect {
+  0% { transform: scale(0) translate(-50%, -50%); opacity: 0.6; }
+  100% { transform: scale(40) translate(-50%, -50%); opacity: 0; }
+}

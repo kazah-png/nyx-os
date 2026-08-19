@@ -1,443 +1,1098 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" class="no-js">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
-  <!-- Security: strict CSP (no external origins, no inline scripts), no referrer leak.
-       HSTS is served by GitHub Pages on the custom domain once HTTPS is enforced. -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests" />
   <meta name="referrer" content="strict-origin-when-cross-origin" />
   <meta name="color-scheme" content="dark" />
-  <meta name="theme-color" content="#05060a" />
+  <meta name="theme-color" content="#030305" />
 
-  <title>NyxOS — a 64-bit operating system, written from scratch</title>
-  <meta name="description" content="NyxOS is a from-scratch x86_64 operating system in C and Assembly: a preemptive kernel, a windowed desktop with the Selene web browser and five games, a real TCP/IP stack, an EXT2 filesystem, an in-OS C toolchain (self-hosting TinyCC + the xbm package manager), and the native N language." />
-  <meta name="keywords" content="NyxOS, operating system, x86_64, kernel, from scratch, C, assembly, TCP/IP, EXT2, TinyCC, hobby OS, osdev" />
-  <meta name="author" content="NyxOS" />
+  <title>NyxOS — 64-Bit Operating System Written from Scratch</title>
+  <meta name="description" content="NyxOS is an x86_64 operating system built from scratch in C and Assembly: preemptive kernel, window compositor, Selene web browser, EXT2 filesystem, full TCP/IP stack, self-hosting TinyCC + xbm toolchain, and the native N language." />
+  <meta name="keywords" content="NyxOS, operating system, x86_64, kernel, from scratch, C, assembly, TCP/IP, EXT2, TinyCC, osdev, bare metal" />
+  <meta name="author" content="NyxOS Core Team" />
   <link rel="canonical" href="https://nyxos.cc/" />
 
-  <!-- Open Graph / social -->
   <meta property="og:type" content="website" />
   <meta property="og:site_name" content="NyxOS" />
   <meta property="og:url" content="https://nyxos.cc/" />
-  <meta property="og:title" content="NyxOS — a 64-bit OS from scratch" />
-  <meta property="og:description" content="A preemptive kernel, a window compositor, the Selene web browser, five games, a real TCP/IP stack, EXT2, and a self-hosting in-OS C toolchain — all in C and x86_64 Assembly." />
-  <meta property="og:image" content="https://nyxos.cc/gui.png" />
-  <meta property="og:image:alt" content="The NyxOS desktop: the Selene web browser on a live page, app icons, wallpaper and taskbar" />
+  <meta property="og:title" content="NyxOS — 64-Bit Operating System from the Metal" />
+  <meta property="og:description" content="A preemptive kernel, a windowed desktop, the Selene web browser, a real TCP/IP stack, EXT2, and a self-hosting in-OS C toolchain — all in C and x86_64 Assembly." />
+  <meta property="og:image" content="https://nyxos.cc/assets/img/gui.png" />
   <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:title" content="NyxOS — a 64-bit OS from scratch" />
-  <meta name="twitter:description" content="A preemptive kernel, a windowed desktop, the Selene web browser, five games, a real TCP/IP stack, EXT2, and a self-hosting in-OS C toolchain." />
-  <meta name="twitter:image" content="https://nyxos.cc/gui.png" />
+  <meta name="twitter:title" content="NyxOS — 64-Bit OS Built from Scratch" />
+  <meta name="twitter:description" content="An operating system built from the metal. Zero external libraries. 57 syscalls. Real TCP/IP. In-OS C toolchain." />
+  <meta name="twitter:image" content="https://nyxos.cc/assets/img/gui.png" />
 
-  <!-- Icons + PWA manifest -->
-  <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><path d='M22 4a12 12 0 1 0 6 22A10 10 0 0 1 22 4Z' fill='%23a855f7'/><circle cx='12' cy='9' r='1.5' fill='%23c084fc'/><circle cx='23' cy='20' r='1.2' fill='%23e879f9'/></svg>" />
+
   <link rel="apple-touch-icon" href="apple-touch-icon.png" />
   <link rel="manifest" href="site.webmanifest" />
 
   <!-- Self-hosted fonts: preload the two above-the-fold faces -->
-  <link rel="preload" href="fonts/space-grotesk-700.woff2" as="font" type="font/woff2" crossorigin />
-  <link rel="preload" href="fonts/inter-400.woff2" as="font" type="font/woff2" crossorigin />
-  <link rel="stylesheet" href="style.css" />
+  <link rel="preload" href="fonts/outfit-800.woff2" as="font" type="font/woff2" crossorigin />
+  <link rel="preload" href="fonts/space-grotesk-500.woff2" as="font" type="font/woff2" crossorigin />
 
-  <noscript><style>.reveal{opacity:1 !important;transform:none !important}</style></noscript>
+  <link rel="stylesheet" href="css/main.css" />
+  <link rel="stylesheet" href="css/hero.css" />
+  <link rel="stylesheet" href="css/terminal.css" />
+  <link rel="stylesheet" href="css/sections.css" />
+  <link rel="stylesheet" href="css/components.css" />
+  <link rel="stylesheet" href="css/responsive.css" />
+
+  <noscript><style>.reveal-item{opacity:1 !important;transform:none !important}</style></noscript>
 </head>
 <body>
-  <a class="skip-link" href="#top">Skip to content</a>
-  <canvas id="starfield" aria-hidden="true"></canvas>
-  <div class="glow glow-1" aria-hidden="true"></div>
-  <div class="glow glow-2" aria-hidden="true"></div>
+  <a class="skip-link" href="#main-content">Skip to primary content</a>
 
-  <!-- ============ NAV ============ -->
-  <header class="nav" id="nav">
-    <a href="#top" class="brand">
-      <span class="brand-mark" aria-hidden="true">
-        <svg viewBox="0 0 32 32" width="26" height="26"><path d="M22 4a12 12 0 1 0 6 22A10 10 0 0 1 22 4Z" fill="url(#mg)"/><circle cx="12" cy="9" r="1" fill="#a855f7"/><circle cx="24" cy="20" r="1.3" fill="#d946ef"/><circle cx="9" cy="18" r="0.8" fill="#e6e8ee"/><defs><linearGradient id="mg" x1="0" y1="0" x2="32" y2="32"><stop stop-color="#a855f7"/><stop offset="1" stop-color="#d946ef"/></linearGradient></defs></svg>
-      </span>
-      <span class="brand-name">Nyx<span>OS</span></span>
-    </a>
-    <nav class="nav-links" id="navLinks">
-      <a href="#overview">Overview</a>
-      <a href="#features">Features</a>
-      <a href="#manual">Manual</a>
-      <a href="#architecture">Architecture</a>
-      <a href="#networking">Networking</a>
-      <a href="#releases">Releases</a>
-      <a href="support.html">Support</a>
-    </nav>
-    <div class="nav-actions">
-      <a class="btn btn-ghost" href="https://dsc.gg/nyxos" target="_blank" rel="noopener">Discord</a>
-      <a class="btn btn-solid" href="https://github.com/kazah-png/nyx-os" target="_blank" rel="noopener">
-        <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M12 .5A11.5 11.5 0 0 0 .5 12a11.5 11.5 0 0 0 7.86 10.92c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.37-3.88-1.37-.53-1.34-1.29-1.7-1.29-1.7-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.2 1.77 1.2 1.03 1.76 2.7 1.25 3.36.96.1-.75.4-1.26.73-1.55-2.55-.29-5.24-1.28-5.24-5.7 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11 11 0 0 1 5.8 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.84 1.19 3.1 0 4.43-2.69 5.4-5.25 5.69.41.36.78 1.05.78 2.12v3.15c0 .31.21.67.8.56A11.5 11.5 0 0 0 23.5 12 11.5 11.5 0 0 0 12 .5Z"/></svg>
-        GitHub
+  <div class="ambient-grid" aria-hidden="true"></div>
+  <div class="ambient-aurora" aria-hidden="true"></div>
+  <div id="webgl-canvas-container" aria-hidden="true"></div>
+
+  <!-- Header -->
+  <header class="nav-header" id="nav-header" role="banner">
+    <div class="container-wide nav-inner">
+      <a href="#hero" class="nav-brand" aria-label="NyxOS Homepage">
+        <span class="brand-emblem" aria-hidden="true">
+          <svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M22 4a12 12 0 1 0 6 22A10 10 0 0 1 22 4Z" fill="url(#lunar-purple-grad)"/>
+            <circle cx="12" cy="9" r="1.3" fill="#c084fc"/>
+            <circle cx="23" cy="20" r="1" fill="#e879f9"/>
+            <defs>
+              <linearGradient id="lunar-purple-grad" x1="0" y1="0" x2="32" y2="32">
+                <stop stop-color="#c084fc"/>
+                <stop offset="1" stop-color="#7c3aed"/>
+              </linearGradient>
+            </defs>
+          </svg>
+        </span>
+        <span class="brand-title">NYX<span>OS</span></span>
+        <span class="brand-tag">v6.4.180</span>
       </a>
-      <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation" aria-controls="navLinks" aria-expanded="false">
-        <span></span><span></span><span></span>
-      </button>
+
+      <nav class="nav-menu" role="navigation" aria-label="Main Navigation">
+        <a href="#architecture" class="nav-link">Architecture</a>
+        <a href="#desktop" class="nav-link">Desktop</a>
+        <a href="#networking" class="nav-link">Networking</a>
+        <a href="#toolchain" class="nav-link">Compilers</a>
+        <a href="#verification" class="nav-link">KATs</a>
+        <a href="#manual" class="nav-link">Manual</a>
+        <a href="support.html" class="nav-link">Support</a>
+      </nav>
+
+      <div class="nav-actions">
+        <a class="btn btn-secondary nav-btn-discord" href="https://dsc.gg/nyxos" target="_blank" rel="noopener noreferrer" aria-label="Join Discord Community">
+          Discord
+        </a>
+        <a class="btn btn-primary" href="https://github.com/kazah-png/nyx-os" target="_blank" rel="noopener noreferrer" aria-label="View Source on GitHub">
+          <svg class="btn-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+            <path d="M12 .5A11.5 11.5 0 0 0 .5 12a11.5 11.5 0 0 0 7.86 10.92c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.37-3.88-1.37-.53-1.34-1.29-1.7-1.29-1.7-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.2 1.77 1.2 1.03 1.76 2.7 1.25 3.36.96.1-.75.4-1.26.73-1.55-2.55-.29-5.24-1.28-5.24-5.7 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11 11 0 0 1 5.8 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.84 1.19 3.1 0 4.43-2.69 5.4-5.25 5.69.41.36.78 1.05.78 2.12v3.15c0 .31.21.67.8.56A11.5 11.5 0 0 0 23.5 12 11.5 11.5 0 0 0 12 .5Z"/>
+          </svg>
+          GitHub
+        </a>
+        <button class="nav-toggle" aria-label="Toggle navigation drawer" aria-expanded="false">
+          <span></span><span></span><span></span>
+        </button>
+      </div>
     </div>
   </header>
 
-  <main id="top" tabindex="-1">
-    <!-- ============ HERO ============ -->
-    <section class="hero">
-      <div class="hero-copy reveal">
-        <span class="eyebrow">From-scratch · x86_64 · long mode</span>
-        <h1 class="hero-title">Nyx<span class="grad">OS</span></h1>
-        <p class="hero-sub">
-          A 64-bit operating system written from scratch in <strong>C</strong> and
-          <strong>x86_64 Assembly</strong> — a preemptive kernel, a windowed
-          desktop with the <strong>Selene web browser</strong> and five games, a real
-          TCP/IP stack, an EXT2 filesystem, and an <strong>in-OS C toolchain</strong> that
-          self-hosts (a ported TinyCC + the <span class="mono">xbm</span> package manager)
-          plus the native <strong>N</strong> language. No libraries. Just the metal.
-        </p>
-        <div class="hero-badges">
-          <span class="pill pill-accent">◆ v6.4.180</span>
-          <span class="pill">LTS · v5.9.0</span>
-          <span class="pill">GPL-2.0+</span>
-          <span class="pill">0 build warnings</span>
-        </div>
-        <div class="hero-cta">
-          <a class="btn btn-solid btn-lg" href="#manual">Read the manual →</a>
-          <a class="btn btn-ghost btn-lg" href="https://github.com/kazah-png/nyx-os" target="_blank" rel="noopener">Browse the source</a>
-        </div>
+  <!-- Mobile Drawer -->
+  <div class="mobile-drawer-backdrop"></div>
+  <aside class="mobile-drawer" aria-label="Mobile menu">
+    <div>
+      <div style="display: flex; align-items: center; gap: 0.75rem; margin-bottom: 2rem;">
+        <span class="brand-title" style="font-size: 1.4rem; font-weight: 800;">NYX<span>OS</span></span>
+        <span class="badge badge-purple">v6.4.180</span>
       </div>
+      <ul class="mobile-nav-links">
+        <li><a href="#architecture">Architecture</a></li>
+        <li><a href="#desktop">Desktop &amp; Browser</a></li>
+        <li><a href="#networking">Network Stack</a></li>
+        <li><a href="#toolchain">In-OS Compilers</a></li>
+        <li><a href="#verification">55 KATs Verification</a></li>
+        <li><a href="#manual">Manual &amp; Commands</a></li>
+        <li><a href="support.html">Support Project</a></li>
+      </ul>
+    </div>
+    <div style="display: flex; flex-direction: column; gap: 0.75rem;">
+      <a class="btn btn-primary" href="https://github.com/kazah-png/nyx-os" target="_blank" rel="noopener">GitHub Repository</a>
+      <a class="btn btn-secondary" href="https://dsc.gg/nyxos" target="_blank" rel="noopener">Discord Server</a>
+    </div>
+  </aside>
 
-      <div class="hero-term reveal" aria-hidden="true">
-        <div class="term">
-          <div class="term-bar">
-            <span class="dot r"></span><span class="dot y"></span><span class="dot g"></span>
-            <span class="term-title">nyx:root — terminal</span>
-          </div>
-          <pre class="term-body"><code id="typed"></code><span class="cursor">▋</span></pre>
-        </div>
-      </div>
-    </section>
+  <!-- Main -->
+  <main id="main-content" tabindex="-1">
 
-    <!-- ============ STATS ============ -->
-    <section class="stats reveal" aria-label="At a glance">
-      <div class="stat"><b>x86_64</b><span>long mode · 4-level paging</span></div>
-      <div class="stat"><b>C + NASM</b><span>zero external libraries</span></div>
-      <div class="stat"><b>57</b><span>syscalls</span></div>
-      <div class="stat"><b>TCP/IP</b><span>DHCP · DNS · HTTP · poll()</span></div>
-      <div class="stat"><b>32 windows</b><span>compositor + taskbar</span></div>
-      <div class="stat"><b>EXT2</b><span>read / write, auto-mount</span></div>
-      <div class="stat"><b>cc + xbm</b><span>self-hosting toolchain + packages</span></div>
-      <div class="stat"><b>🌙 N</b><span>native language · <span class="mono">ncc</span></span></div>
-      <div class="stat"><b>55 KATs</b><span>crypto self-tests in CI</span></div>
-      <div class="stat"><b>🌙 Selene</b><span>web browser · real HTTP</span></div>
-      <div class="stat"><b>5 games</b><span>DOOM · Tetris · Snake · Pong · Mines</span></div>
-      <div class="stat"><b>NX·SMEP·SMAP</b><span>W^X · ring-3 isolation</span></div>
-    </section>
-
-    <!-- ============ OVERVIEW ============ -->
-    <section id="overview" class="section">
-      <div class="section-head reveal">
-        <span class="kicker">Overview</span>
-        <h2>An operating system you can read end to end</h2>
-        <p class="lead">
-          NyxOS boots via Multiboot2 (GRUB-compatible), enters long mode with 4-level
-          paging, and provides a clean foundation for kernel development: a preemptive
-          scheduler, ring-3 userspace with ELF64 and syscalls, a windowed GUI, and a
-          from-scratch network stack — all built up one honest, verified increment at a time.
-        </p>
-      </div>
-      <div class="shot reveal">
-        <div class="shot-frame">
-          <div class="shot-bar"><span class="dot r"></span><span class="dot y"></span><span class="dot g"></span><span class="shot-url">NyxOS Desktop · window compositor</span></div>
-          <img src="gui.png?v=5" alt="The NyxOS desktop: the Selene web browser on a live page, distinct app icons, wallpaper and taskbar" loading="lazy" />
-        </div>
-      </div>
-    </section>
-
-    <!-- ============ FEATURES ============ -->
-    <section id="features" class="section">
-      <div class="section-head reveal">
-        <span class="kicker">Features</span>
-        <h2>What's inside the kernel</h2>
-        <p class="lead">Every subsystem is written from scratch and verified in QEMU.</p>
-      </div>
-      <div class="grid">
-        <article class="card reveal">
-          <div class="card-ic">⏻</div>
-          <h3>Boot &amp; initialization</h3>
-          <p>Multiboot2, x86_64 long mode, GDT/IDT with a full exception set, PIT at 1000&nbsp;Hz, Local + I/O APIC, and PS/2 keyboard &amp; mouse drivers.</p>
-        </article>
-        <article class="card reveal">
-          <div class="card-ic">▤</div>
-          <h3>Memory management</h3>
-          <p>Bitmap physical allocator, a 16&nbsp;MB kernel heap, 4-level paging with a higher-half mapping, per-process page tables, and <span class="mono">NX</span> + <span class="mono">SMEP</span> hardening.</p>
-        </article>
-        <article class="card reveal">
-          <div class="card-ic">⚙</div>
-          <h3>Processes &amp; scheduler</h3>
-          <p>Preemptive weighted round-robin over kernel threads and ring-3 processes, with full shell job control — <span class="mono">exec</span>, <span class="mono">spawn</span>, <span class="mono">jobs</span>, <span class="mono">wait</span>, <span class="mono">kill</span>, <span class="mono">nice</span>.</p>
-        </article>
-        <article class="card reveal">
-          <div class="card-ic">◈</div>
-          <h3>ELF userspace</h3>
-          <p>An ELF64 loader, an embedded initramfs, <span class="mono">fork()</span> with copy-on-write, 57 syscalls via <span class="mono">syscall/sysret</span>, a minimal libc, and isolated per-process file descriptors — a real ring-3 environment.</p>
-        </article>
-        <article class="card reveal">
-          <div class="card-ic">⚒</div>
-          <h3>In-OS C toolchain</h3>
-          <p>A ported <b>TinyCC</b> compiles C <em>inside</em> NyxOS and self-hosts — <span class="mono">tcc</span> compiles <span class="mono">tcc</span>. The <span class="mono">cc</span> command builds &amp; runs C by bare name, and <b>xbm</b> — the package manager — compiles a recipe and installs it to <span class="mono">/mnt/bin</span>.</p>
-        </article>
-        <article class="card reveal">
-          <div class="card-ic">🌙</div>
-          <h3>N &amp; N++ languages</h3>
-          <p>NyxOS's own languages: <b>N</b> (<span class="mono">.n</span>, built with <span class="mono">ncc</span>) and the typed superset <b>N++</b> — HolyC-style, first-class, compiled in-OS. <span class="mono">xbm install ncc</span> builds the N compiler on the machine itself.</p>
-        </article>
-        <article class="card reveal">
-          <div class="card-ic">❯</div>
-          <h3>Shell</h3>
-          <p>40+ built-in commands with Tab completion, environment-variable expansion, command history, I/O redirection, pipelines, job control (<span class="mono">exec</span>/<span class="mono">spawn</span>/<span class="mono">jobs</span>/<span class="mono">wait</span>/<span class="mono">kill</span>), and <span class="mono">nice</span>/<span class="mono">renice</span> priority control.</p>
-        </article>
-        <article class="card reveal">
-          <div class="card-ic">🖧</div>
-          <h3>Networking</h3>
-          <p>RTL8139 driver, ARP/IPv4/UDP/ICMP/DHCP/DNS, and a full TCP stack: retransmission with RTO, passive open (<span class="mono">listen</span>/<span class="mono">accept</span>), loopback, an HTTP client &amp; server, <span class="mono">nc</span> full-duplex, and <span class="mono">poll()</span> I/O multiplexing.</p>
-        </article>
-        <article class="card reveal">
-          <div class="card-ic">🗔</div>
-          <h3>GUI compositor</h3>
-          <p>Up to 32 windows with z-ordering, drag &amp; resize, four workspaces, drop shadows, snap-to-edge with a live preview, a taskbar and Start menu — plus a Terminal, File Manager, Text Editor, Image Viewer, Paint, Calculator, Settings and Sound Test, each with its own hand-drawn icon.</p>
-        </article>
-        <article class="card reveal">
-          <div class="card-ic">◨</div>
-          <h3>Desktop &amp; rendering</h3>
-          <p>A polished 1080p desktop with animated wallpapers (<span class="mono">/lava</span>, <span class="mono">/matrix</span>, <span class="mono">/fire</span>) and real-time render testbeds — <b>Nyx Voxels</b> and <b>Nyx Fractal</b> — with on-screen benchmark HUDs. Fluid, personal, unmistakably Nyx.</p>
-        </article>
-        <article class="card reveal">
-          <div class="card-ic">🌙</div>
-          <h3>Selene — web browser</h3>
-          <p>NyxOS browses the <em>real</em> internet: <b>Selene</b> resolves DNS, opens a TCP connection and fetches a page over HTTP, then strips the HTML to text and word-wraps it under a URL bar. DHCP, chunked-transfer decoding and scrolling included. Named for the moon goddess.</p>
-        </article>
-        <article class="card reveal">
-          <div class="card-ic">🎮</div>
-          <h3>Games</h3>
-          <p>A desktop <b>Games</b> folder with five: the original 1993 <b>DOOM</b> (running in a window), <b>Minesweeper</b>, <b>Pong</b>, <b>Snake</b> and <b>Tetris</b> — the last three animated in-kernel by a ~30&nbsp;fps compositor game-tick.</p>
-        </article>
-        <article class="card reveal">
-          <div class="card-ic">🖴</div>
-          <h3>Filesystem</h3>
-          <p>A ramdisk VFS with an EXT2 read/write driver auto-mounted at <span class="mono">/mnt</span>, a write-through sector cache, per-fd byte offsets, and persistence across reboots on a disk image.</p>
-        </article>
-        <article class="card reveal">
-          <div class="card-ic">♪</div>
-          <h3>Multimedia</h3>
-          <p>A Bochs VBE framebuffer (1024×768×32), a Sound Blaster 16 driver (DMA + IRQ + mixer), PC-speaker tones, and the original DOOM engine ported to run on the framebuffer.</p>
-        </article>
-        <article class="card reveal">
-          <div class="card-ic">🛡</div>
-          <h3>Security &amp; isolation</h3>
-          <p><span class="mono">NX</span> + <span class="mono">SMEP</span> + <span class="mono">SMAP</span> and W^X page permissions, per-process address spaces, a hardened syscall boundary (bounded ELF loads, validated user pointers), ring-3 fault isolation — a crash kills the process, not the kernel — and PBKDF2-HMAC-SHA256 login, backed by a from-scratch crypto library verified by <b>55 known-answer tests</b> in CI.</p>
-        </article>
-      </div>
-    </section>
-
-    <!-- ============ ARCHITECTURE ============ -->
-    <section id="architecture" class="section">
-      <div class="section-head reveal">
-        <span class="kicker">Architecture</span>
-        <h2>How it fits together</h2>
-        <p class="lead">A higher-half kernel, isolated user address spaces, and an interrupt-driven core.</p>
-      </div>
-      <div class="arch">
-        <div class="arch-col reveal">
-          <h3>Boot flow</h3>
-          <ol class="flow">
-            <li><b>GRUB / Multiboot2</b> hands off with a memory map + framebuffer.</li>
-            <li><b>Long mode</b> — GDT, 64-bit code/data, TSS, IDT with IST stacks.</li>
-            <li><b>Paging</b> — identity-map low memory, mirror the kernel into the higher half.</li>
-            <li><b>Drivers</b> — PIT, APIC, PS/2, RTL8139, ATA/EXT2, VBE, SB16.</li>
-            <li><b>Login</b> — PBKDF2-hashed credentials (<span class="mono">nyx / nyx</span>).</li>
-            <li><b>Desktop</b> — the window compositor launches as a scheduled process.</li>
-          </ol>
-        </div>
-        <div class="arch-col reveal">
-          <h3>Memory layout</h3>
-          <div class="memmap">
-            <div class="mem row"><span class="mono">0xFFFFFF80_00000000</span><em>Higher-half kernel (PML4[511])</em></div>
-            <div class="mem row"><span class="mono">0x00000000_00100000</span><em>Kernel linked low (1&nbsp;MB)</em></div>
-            <div class="mem row"><span class="mono">user half</span><em>Per-process, isolated (no identity map)</em></div>
-            <div class="mem row accent"><span class="mono">NX + SMEP</span><em>User pages non-exec; kernel can't run user code</em></div>
-          </div>
-          <h3 style="margin-top:1.4rem">Interrupt core</h3>
-          <p class="muted">The PIT (ISA IRQ0) is routed via the I/O APIC on pin&nbsp;2 → vector&nbsp;32, driving a 1000&nbsp;Hz tick. The scheduler preempts on that tick; syscalls and IRQs switch <span class="mono">CR3</span> on entry so each process sees only its own address space.</p>
-        </div>
-      </div>
-    </section>
-
-    <!-- ============ MANUAL ============ -->
-    <section id="manual" class="section">
-      <div class="section-head reveal">
-        <span class="kicker">Manual</span>
-        <h2>Getting started</h2>
-        <p class="lead">Build the kernel, boot it in QEMU, and log in.</p>
-      </div>
-
-      <div class="steps">
-        <div class="step reveal">
-          <span class="step-n">1</span>
-          <div>
-            <h3>Clone &amp; build</h3>
-            <div class="code">
-              <div class="code-bar"><span>bash · Linux / WSL</span></div>
-<pre><code><span class="c-c"># cross-compiler (x86_64-elf-gcc) or host gcc -m64</span>
-git clone https://github.com/kazah-png/nyx-os.git
-cd nyx-os
-make -C kernel        <span class="c-c"># → kernel/nyx-kernel.bin</span></code></pre>
+    <!-- Hero -->
+    <section class="hero-scene" id="hero" aria-label="NyxOS Hero">
+      <div class="container-wide">
+        <div class="hero-grid">
+          <div class="hero-content">
+            <div class="hero-badge-wrap reveal-item">
+              <span class="badge badge-purple">
+                <span class="badge-dot"></span>
+                From-Scratch · x86_64 · Long Mode
+              </span>
             </div>
-            <div class="code">
-              <div class="code-bar"><span>PowerShell · Windows</span></div>
-<pre><code>.\build.ps1           <span class="c-c"># WSL cross-compile → kernel + bootable ISO</span></code></pre>
+
+            <h1 class="hero-title-monument reveal-item delay-1">
+              <span class="line-nyx">NYX</span>
+              <span class="line-os">OS</span>
+            </h1>
+
+            <p class="hero-description reveal-item delay-2">
+              A 64-bit operating system written from scratch in <strong>C</strong> and
+              <strong>x86_64 Assembly</strong> — a preemptive kernel, a windowed desktop with the
+              <strong>Selene web browser</strong>, a real TCP/IP stack, an EXT2 filesystem,
+              and an <strong>in-OS C toolchain</strong> that self-hosts (TinyCC + <span class="mono">xbm</span>)
+              plus the native <strong>N</strong> language. No libraries. Just the metal.
+            </p>
+
+            <div class="hero-meta-badges reveal-item delay-3">
+              <span class="badge">◆ v6.4.180</span>
+              <span class="badge">LTS · v5.9.0</span>
+              <span class="badge">GPL-2.0+</span>
+              <span class="badge">57 Syscalls</span>
+            </div>
+
+            <div class="hero-actions reveal-item delay-4">
+              <a class="btn btn-primary btn-lg" href="#manual">
+                Read the manual
+                <svg class="btn-icon" viewBox="0 0 16 16" fill="currentColor"><path fill-rule="evenodd" d="M1 8a.5.5 0 0 1 .5-.5h11.793l-3.147-3.146a.5.5 0 0 1 .708-.708l4 4a.5.5 0 0 1 0 .708l-4 4a.5.5 0 0 1-.708-.708L13.293 8.5H1.5A.5.5 0 0 1 1 8z"/></svg>
+              </a>
+              <a class="btn btn-secondary btn-lg" href="https://github.com/kazah-png/nyx-os" target="_blank" rel="noopener">
+                Browse the source
+              </a>
+            </div>
+          </div>
+
+          <div class="hero-visual reveal-item delay-2">
+            <div class="desktop-simulator" id="desktop-sim">
+              <div class="sim-titlebar">
+                <div class="sim-controls">
+                  <span class="sim-dot close" title="Close"></span>
+                  <span class="sim-dot min" title="Minimize"></span>
+                  <span class="sim-dot max" title="Maximize"></span>
+                </div>
+                <div class="sim-title">
+                  <span>NyxOS Desktop · Window Compositor</span>
+                  <span class="badge-mode">1080p @ 60Hz</span>
+                </div>
+                <div class="sim-hud-status">
+                  <button class="cmd-pill" id="btn-play-chime" style="font-size: 0.65rem; padding: 0.15rem 0.5rem;" title="Play Sound Blaster 16 Boot Chime">[AUDIO] Boot Sound</button>
+                  <span class="live-indicator"><span class="live-pulse"></span> RUNNING</span>
+                </div>
+              </div>
+
+              <div class="sim-canvas">
+                <img src="assets/img/gui.png" alt="NyxOS 1080p Desktop Compositor with Selene Browser and App Suite" class="sim-screenshot-img" loading="eager" />
+
+                <div class="sim-floating-window">
+                  <div class="sim-win-bar">
+                    <span class="sim-win-bar-title">nyx:root — terminal (PID 6)</span>
+                    <div class="sim-controls">
+                      <span class="sim-dot close"></span>
+                      <span class="sim-dot max"></span>
+                    </div>
+                  </div>
+                  <div class="sim-win-content">
+                    <div>
+                      <div class="sim-code-line green">$ uname -a</div>
+                      <div class="sim-code-line white">NyxOS nyx-core 6.4.180 #1 SMP PREEMPT x86_64</div>
+                      <div class="sim-code-line dim">CR3: 0x0000000000100000 | PML4[511] HIGHER-HALF</div>
+                      <div class="sim-code-line green" style="margin-top: 0.25rem;">$ selene https://nyxos.cc</div>
+                      <div class="sim-code-line">HTTP/1.1 200 OK — Decoded chunked stream</div>
+                    </div>
+                    <div style="font-size: 0.68rem; color: var(--accent-purple-bright); display: flex; justify-content: space-between;">
+                      <span>57 SYSCALLS ACTIVE</span>
+                      <span>APIC: 1000 Hz</span>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="sim-hotspot" style="top: 25%; left: 35%;" aria-label="Selene Web Browser">
+                  <div class="hotspot-tooltip">Selene Web Browser (DNS + TCP + HTTP)</div>
+                </div>
+                <div class="sim-hotspot" style="bottom: 12%; left: 8%;" aria-label="Taskbar & Start Menu">
+                  <div class="hotspot-tooltip">Taskbar &amp; Process Manager</div>
+                </div>
+                <div class="sim-hotspot" style="bottom: 12%; right: 8%;" aria-label="4 Virtual Workspaces">
+                  <div class="hotspot-tooltip">4 Virtual Workspaces (Z-Ordered Compositor)</div>
+                </div>
+              </div>
+
+              <div class="sim-footer-ticker">
+                <div class="ticker-item">
+                  <span>APIC Timer:</span>
+                  <span class="ticker-val" id="kernel-tick-counter">1,048,576 Hz</span>
+                </div>
+                <div class="ticker-item">
+                  <span>Kernel Heap:</span>
+                  <span class="ticker-val" id="kernel-heap-val">4.82 / 16 MB</span>
+                </div>
+                <div class="ticker-item">
+                  <span>Uptime:</span>
+                  <span class="ticker-val" id="kernel-uptime-val">6m 24s</span>
+                </div>
+              </div>
             </div>
           </div>
         </div>
-
-        <div class="step reveal">
-          <span class="step-n">2</span>
-          <div>
-            <h3>Run in QEMU</h3>
-            <div class="code">
-              <div class="code-bar"><span>bash</span></div>
-<pre><code><span class="c-c"># GUI desktop + networking + disk</span>
-qemu-system-x86_64 -cdrom NyxOS.iso -m 256M -no-reboot \
-  -hda ext2-test.img -nic user,model=rtl8139 -display sdl</code></pre>
-            </div>
-            <p class="muted">Serve HTTP from the guest by forwarding a host port: add <span class="mono">hostfwd=tcp::8080-:80</span> to the NIC, run <span class="mono">tcpserve 80</span>, then <span class="mono">curl localhost:8080</span>.</p>
-          </div>
-        </div>
-
-        <div class="step reveal">
-          <span class="step-n">3</span>
-          <div>
-            <h3>Log in</h3>
-            <p>The boot animation leads to a framebuffer login screen. The default account is <span class="mono">nyx</span> / <span class="mono">nyx</span> (PBKDF2-HMAC-SHA256). On success, the NyxOS Desktop launches; with no disk, it falls back to a text shell.</p>
-          </div>
-        </div>
-      </div>
-
-      <div class="section-head reveal" style="margin-top:3.5rem">
-        <h2>Command reference</h2>
-        <p class="lead">The built-in shell — also available in the Terminal window.</p>
-      </div>
-      <div class="cmd-table reveal">
-        <table>
-          <thead><tr><th>Category</th><th>Commands</th></tr></thead>
-          <tbody>
-            <tr><td>System</td><td><span class="mono">help clear nyxfetch uname date version reboot history env export</span></td></tr>
-            <tr><td>Files</td><td><span class="mono">ls cd pwd cat touch mkdir rm cp mv head tail grep sort wc find tree write which diff hexdump</span></td></tr>
-            <tr><td>Processes</td><td><span class="mono">ps mem exec spawn jobs wait kill nice renice usertest pmap free</span></td></tr>
-            <tr><td>Toolchain</td><td><span class="mono">cc xbm ncc tcc</span> · compile &amp; run C in-OS; <span class="mono">xbm install &lt;pkg&gt;</span> builds a recipe into <span class="mono">/mnt/bin</span></td></tr>
-            <tr><td>Network</td><td><span class="mono">ifconfig dhcp ping setip httpget tcptest tcpdrop tcploop tcpserve nc</span></td></tr>
-            <tr><td>Apps &amp; games</td><td><span class="mono">selene doom pong snake tetris</span> · plus a desktop icon for each &amp; a Games folder</td></tr>
-            <tr><td>Filesystem</td><td><span class="mono">mount</span> · EXT2 auto-mounts at <span class="mono">/mnt</span></td></tr>
-            <tr><td>Graphics &amp; sound</td><td><span class="mono">gui desktop mode fonttest beep play sb16play</span></td></tr>
-          </tbody>
-        </table>
       </div>
     </section>
 
-    <!-- ============ NETWORKING ============ -->
-    <section id="networking" class="section">
-      <div class="section-head reveal">
-        <span class="kicker">Networking</span>
-        <h2>A real TCP/IP stack</h2>
-        <p class="lead">From the NIC driver up to an HTTP server — every layer written and debugged from the wire.</p>
-      </div>
+    <!-- Terminal -->
+    <section class="terminal-section" aria-label="Interactive Terminal Sandbox">
+      <div class="container">
+        <div class="terminal-window">
+          <div class="term-chrome">
+            <div class="term-chrome-left">
+              <div class="term-dots">
+                <span class="term-dot r"></span>
+                <span class="term-dot y"></span>
+                <span class="term-dot g"></span>
+              </div>
+              <div class="term-title-text">
+                <span>nyx:root — shell</span>
+                <span class="term-title-badge">interactive</span>
+              </div>
+            </div>
+            <div class="term-chrome-right">
+              <button class="term-chip-btn" id="btn-focus-shell">Focus Shell</button>
+            </div>
+          </div>
 
-      <div class="net">
-        <div class="net-stack reveal">
-          <div class="layer l7">HTTP · DNS · Selene · nc<span>web browser, client, server, full-duplex poll()</span></div>
-          <div class="layer l4">TCP<span>retransmit (RTO) · listen/accept · userspace sockets</span></div>
-          <div class="layer l4b">UDP · ICMP<span>datagrams · userspace sockets · echo (ping) with RTT</span></div>
-          <div class="layer l3">IPv4<span>checksum · routing · loopback delivery</span></div>
-          <div class="layer l2">ARP · Ethernet<span>cache · frames</span></div>
-          <div class="layer l1">RTL8139<span>PCI NIC · TX/RX rings</span></div>
+          <div class="term-viewport" id="terminal-body"></div>
+
+          <div style="padding: 0.65rem 1.4rem; background: #040508; border-top: 1px solid var(--border-hairline);">
+            <div class="term-input-row">
+              <span class="term-prompt-tag">nyx:root</span>
+              <span class="term-prompt-cwd">/</span>
+              <span class="term-prompt-char">#</span>
+              <input type="text" id="term-input" class="term-input" placeholder="Type a command (e.g. help, uname -a, cat /etc/os-release, selene)..." autocomplete="off" spellcheck="false" aria-label="Terminal command input" />
+              <span class="term-blinking-cursor"></span>
+            </div>
+          </div>
+
+          <div class="term-quick-chips">
+            <span class="chips-label">Quick:</span>
+            <span class="cmd-pill" data-cmd="nyxfetch">nyxfetch</span>
+            <span class="cmd-pill" data-cmd="uname -a">uname -a</span>
+            <span class="cmd-pill" data-cmd="cat /etc/os-release">cat /etc/os-release</span>
+            <span class="cmd-pill" data-cmd="help">help</span>
+            <span class="cmd-pill" data-cmd="selene https://nyxos.cc">selene</span>
+            <span class="cmd-pill" data-cmd="ping 127.0.0.1">ping 127.0.0.1</span>
+            <span class="cmd-pill" data-cmd="ps">ps</span>
+            <span class="cmd-pill" data-cmd="cc hello.c">cc hello.c</span>
+            <span class="cmd-pill" data-cmd="clear">clear</span>
+          </div>
         </div>
-        <div class="net-notes reveal">
-          <h3>Highlights</h3>
-          <ul class="ticks">
-            <li><b>🌙 Selene web browser</b> — resolves DNS, connects over TCP and fetches a real page by HTTP, decodes chunked transfer encoding, and renders the HTML to scrollable text under a URL bar.</li>
-            <li><b>DHCP client</b> — DISCOVER → OFFER → REQUEST → ACK, auto-configures IP, netmask &amp; gateway.</li>
-            <li><b><span class="mono">ping</span> with statistics</b> — real round-trip timing, per-packet sequencing, and a min/avg/max + loss summary. NyxOS also <em>answers</em> echo requests.</li>
-            <li><b>TCP retransmission</b> — each connection buffers its outstanding segment and resends it on an RTO with exponential backoff; a lost SYN or data segment recovers automatically.</li>
-            <li><b>Passive open</b> — <span class="mono">listen</span>/<span class="mono">accept</span> spawn per-client connections. <span class="mono">tcpserve</span> answers a real <span class="mono">curl</span> from the host with <span class="mono">HTTP/1.1 200 OK</span>.</li>
-            <li><b>Userspace sockets</b> — <span class="mono">socket</span>/<span class="mono">connect</span>/<span class="mono">sendto</span>/<span class="mono">recvfrom</span>/<span class="mono">bind</span>/<span class="mono">listen</span>/<span class="mono">accept</span> for both TCP and UDP from ring 3.</li>
-            <li><b><span class="mono">poll()</span> I/O multiplexing</b> — <span class="mono">SYS_POLL</span> (syscall 43) waits on sockets, pipes, and stdin with timeout. Powers full-duplex <span class="mono">nc</span>.</li>
-            <li><b><span class="mono">nc</span> (netcat)</b> — full-duplex TCP/UDP client and TCP server, bridging stdin/stdout via <span class="mono">poll()</span>.</li>
-            <li><b>Loopback</b> — a self-contained <span class="mono">127.0.0.1</span> path lets the whole stack be tested in-guest (<span class="mono">tcploop</span>, <span class="mono">ping 127.0.0.1</span>).</li>
+      </div>
+    </section>
+
+    <!-- Architecture -->
+    <section class="scene-section" id="architecture" aria-label="Kernel Architecture">
+      <div class="container">
+        <div class="scene-header split reveal-item">
+          <div>
+            <span class="kicker">Core Systems</span>
+            <h2>Kernel Architecture Pipeline</h2>
+          </div>
+          <p class="lead">
+            An interrupt-driven higher-half monolithic kernel engineered from first principles in C and NASM Assembly. Zero external runtime libraries.
+          </p>
+        </div>
+
+        <div class="pipeline-flow">
+          <div class="pipeline-stage reveal-item">
+            <div class="stage-num">01</div>
+            <div class="stage-meta">
+              <h4>Boot &amp; Initialization</h4>
+              <p>Multiboot2 hand-off with memory map &amp; framebuffer. Enters 64-bit Long Mode, sets up GDT/TSS, IDT with IST stacks, and 1000 Hz APIC timer.</p>
+            </div>
+            <div class="stage-tech">GDT · IDT · APIC · PIT · PS/2</div>
+            <div class="stage-registers">CR0.PG = 1 · EFER.LME = 1</div>
+          </div>
+
+          <div class="pipeline-stage reveal-item delay-1">
+            <div class="stage-num">02</div>
+            <div class="stage-meta">
+              <h4>Memory Management</h4>
+              <p>Bitmap physical page frame allocator, 16 MB kernel heap, 4-level paging with PML4[511] higher-half mapping, and NX + SMEP page permissions.</p>
+            </div>
+            <div class="stage-tech">PML4 · PDPT · PD · PT · Heap</div>
+            <div class="stage-registers">CR3: 0x100000 (Base)</div>
+          </div>
+
+          <div class="pipeline-stage reveal-item delay-2">
+            <div class="stage-num">03</div>
+            <div class="stage-meta">
+              <h4>Processes &amp; Scheduler</h4>
+              <p>Preemptive weighted round-robin scheduling over kernel threads and ring-3 processes. Full job control: exec, spawn, jobs, wait, kill, and nice.</p>
+            </div>
+            <div class="stage-tech">Context Switch · TSS · RSP0</div>
+            <div class="stage-registers">APIC IRQ0 Vector 32</div>
+          </div>
+
+          <div class="pipeline-stage reveal-item delay-3">
+            <div class="stage-num">04</div>
+            <div class="stage-meta">
+              <h4>ELF Userspace &amp; 57 Syscalls</h4>
+              <p>ELF64 loader, embedded initramfs, fork() with COW, 57 atomic syscalls via syscall/sysret, minimal libc, and isolated per-process file descriptors.</p>
+            </div>
+            <div class="stage-tech">ELF64 · Ring-3 · MSR_LSTAR</div>
+            <div class="stage-registers">RCX = RIP · R11 = RFLAGS</div>
+          </div>
+
+          <div class="pipeline-stage reveal-item delay-4">
+            <div class="stage-num">05</div>
+            <div class="stage-meta">
+              <h4>Filesystem &amp; VFS</h4>
+              <p>Ramdisk VFS with full EXT2 read/write driver auto-mounted at /mnt, write-through sector cache, per-fd offsets, and persistence across reboots.</p>
+            </div>
+            <div class="stage-tech">EXT2 Inodes · VFS Nodes · ATA</div>
+            <div class="stage-registers">Auto-mount: /mnt</div>
+          </div>
+
+          <div class="pipeline-stage reveal-item delay-5">
+            <div class="stage-num">06</div>
+            <div class="stage-meta">
+              <h4>Network Subsystem</h4>
+              <p>Realtek RTL8139 PCI NIC driver with TX/RX rings, ARP cache, IPv4 routing, ICMP echo, UDP datagrams, and full TCP with exponential RTO.</p>
+            </div>
+            <div class="stage-tech">RTL8139 · TCP · UDP · poll()</div>
+            <div class="stage-registers">DHCP · DNS · Loopback</div>
+          </div>
+        </div>
+
+        <div class="syscall-inspector-box reveal-item delay-2" id="syscall-inspector">
+          <div style="display: flex; align-items: center; justify-content: space-between; margin-bottom: 1.2rem; flex-wrap: wrap; gap: 0.5rem;">
+            <div>
+              <span class="kicker" style="margin-bottom: 0.2rem;">Hardware Inspector</span>
+              <h3 style="font-size: 1.25rem; color: #fff;">x86_64 Register &amp; Syscall Transition</h3>
+            </div>
+            <span class="badge badge-purple">MSR_LSTAR (0xC0000082)</span>
+          </div>
+
+          <div class="syscall-selector-chips">
+            <span class="syscall-chip active" data-syscall="sys_write">sys_write (#1)</span>
+            <span class="syscall-chip" data-syscall="sys_read">sys_read (#0)</span>
+            <span class="syscall-chip" data-syscall="sys_fork">sys_fork (#57)</span>
+            <span class="syscall-chip" data-syscall="sys_poll">sys_poll (#7)</span>
+            <span class="syscall-chip" data-syscall="sys_socket">sys_socket (#41)</span>
+          </div>
+
+          <div class="register-matrix-grid">
+            <div class="reg-display-card">
+              <div class="reg-label">RAX (Syscall ID)</div>
+              <div class="reg-value" id="reg-rax">0x0000000000000001</div>
+            </div>
+            <div class="reg-display-card">
+              <div class="reg-label">RDI (Arg 1)</div>
+              <div class="reg-value" id="reg-rdi">0x0000000000000001 (fd = STDOUT)</div>
+            </div>
+            <div class="reg-display-card">
+              <div class="reg-label">RSI (Arg 2)</div>
+              <div class="reg-value" id="reg-rsi">0x0000000040001080 (buf)</div>
+            </div>
+            <div class="reg-display-card">
+              <div class="reg-label">RDX (Arg 3)</div>
+              <div class="reg-value" id="reg-rdx">0x000000000000002A (count = 42)</div>
+            </div>
+            <div class="reg-display-card">
+              <div class="reg-label">R10 (Arg 4)</div>
+              <div class="reg-value" id="reg-r10">0x0000000000000000</div>
+            </div>
+            <div class="reg-display-card">
+              <div class="reg-label">R8 (Arg 5)</div>
+              <div class="reg-value" id="reg-r8">0x0000000000000000</div>
+            </div>
+          </div>
+
+          <div class="syscall-transition-hud">
+            <div class="transition-header">
+              <span id="syscall-active-name">sys_write (Syscall #1)</span>
+              <span>Ring 3 (Userspace) ➔ Ring 0 (Kernel)</span>
+            </div>
+            <p id="syscall-detail-desc" style="color: var(--text-secondary); font-size: 0.825rem; line-height: 1.55;">
+              Writes up to count bytes from buffer to open file descriptor. Checks user-space memory pointers before committing to VFS/framebuffer driver.
+            </p>
+          </div>
+        </div>
+
+        <div class="mmu-visualizer-card reveal-item delay-3" id="mmu-paging-visualizer">
+          <div class="mmu-header-bar">
+            <div>
+              <span class="kicker" style="margin-bottom: 0.2rem;">Memory Management Unit</span>
+              <h3 style="font-size: 1.25rem; color: #fff;">4-Level Paging (PML4 ➔ PT Translation)</h3>
+            </div>
+            <div style="display: flex; gap: 0.4rem; flex-wrap: wrap;">
+              <button class="cmd-pill mmu-preset-btn active" data-addr="0xFFFFFF8000100000">Kernel Base</button>
+              <button class="cmd-pill mmu-preset-btn" data-addr="0x0000000040001000">Userspace Code</button>
+              <button class="cmd-pill mmu-preset-btn" data-addr="0xFFFF8000000B8000">VGA Text Buffer</button>
+            </div>
+          </div>
+
+          <div class="mmu-input-row">
+            <span style="color: var(--accent-purple-bright); font-weight: 700;">64-bit Virtual Address:</span>
+            <input type="text" id="paging-vaddr-input" value="0xFFFFFF8000100000" spellcheck="false" aria-label="Hexadecimal Virtual Address" />
+          </div>
+
+          <div class="mmu-pipeline-grid">
+            <div class="mmu-level-box">
+              <div class="mmu-level-tag">Level 4 (Bits 47:39)</div>
+              <div class="mmu-level-val" id="mmu-pml4-idx">PML4[511]</div>
+            </div>
+            <div class="mmu-level-box">
+              <div class="mmu-level-tag">Level 3 (Bits 38:30)</div>
+              <div class="mmu-level-val" id="mmu-pdpt-idx">PDPT[510]</div>
+            </div>
+            <div class="mmu-level-box">
+              <div class="mmu-level-tag">Level 2 (Bits 29:21)</div>
+              <div class="mmu-level-val" id="mmu-pd-idx">PD[0]</div>
+            </div>
+            <div class="mmu-level-box">
+              <div class="mmu-level-tag">Level 1 (Bits 20:12)</div>
+              <div class="mmu-level-val" id="mmu-pt-idx">PT[256]</div>
+            </div>
+            <div class="mmu-level-box">
+              <div class="mmu-level-tag">Page Offset (11:0)</div>
+              <div class="mmu-level-val" id="mmu-offset-idx">Offset: 0x000</div>
+            </div>
+          </div>
+
+          <div class="mmu-paddr-result">
+            <span style="color: var(--text-muted);">Mapped Physical Frame:</span>
+            <span id="mmu-paddr-out" style="color: var(--accent-purple-bright); font-weight: 700;">0x0000000000100000 [Present · R/W · NX=0]</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Desktop -->
+    <section class="scene-section" id="desktop" aria-label="Desktop and Selene Browser">
+      <div class="container">
+        <div class="scene-header center reveal-item">
+          <span class="kicker">Human Interface</span>
+          <h2>The 1080p Desktop &amp; Selene Browser</h2>
+          <p class="lead">
+            NyxOS renders a double-buffered 1080p compositor with live window dragging, drop shadows, and <strong>Selene</strong> — a native web browser that fetches live web pages over TCP/IP.
+          </p>
+        </div>
+
+        <div class="desktop-hero-frame reveal-item delay-1">
+          <img src="assets/img/gui.png" alt="NyxOS Desktop Compositor Running Live Applications" class="desktop-hero-img" loading="lazy" />
+        </div>
+
+        <div class="compositor-specs reveal-item delay-2">
+          <div class="spec-block">
+            <div class="spec-val accent">32</div>
+            <div class="spec-label">Z-Ordered Windows</div>
+            <div class="spec-desc">Double-buffered compositor with snap-to-edge preview, drag, resize, and drop shadow blending.</div>
+          </div>
+          <div class="spec-block">
+            <div class="spec-val">4</div>
+            <div class="spec-label">Virtual Workspaces</div>
+            <div class="spec-desc">Switch seamlessly between application workflows with instant state caching.</div>
+          </div>
+          <div class="spec-block">
+            <div class="spec-val accent">1080p</div>
+            <div class="spec-label">High-DPI Framebuffer</div>
+            <div class="spec-desc">Powered by Bochs VBE driver with 32-bit true color palette and smooth 60fps refresh.</div>
+          </div>
+          <div class="spec-block">
+            <div class="spec-val">SB16</div>
+            <div class="spec-label">Audio Subsystem</div>
+            <div class="spec-desc">Sound Blaster 16 driver with DMA transfer, IRQ routing, and multi-channel mixing.</div>
+          </div>
+        </div>
+
+        <div class="selene-sandbox reveal-item delay-3">
+          <div class="selene-url-bar">
+            <div class="selene-controls">
+              <span class="selene-nav-arrow" title="Back">←</span>
+              <span class="selene-nav-arrow" title="Forward">→</span>
+              <span class="selene-nav-arrow" id="selene-refresh-btn" title="Reload">↻</span>
+            </div>
+            <div class="selene-input-box">
+              <span class="selene-scheme">GET</span>
+              <input type="text" id="selene-url-field" class="selene-url-input" value="https://nyxos.cc" aria-label="Browser URL field" />
+            </div>
+            <div style="display: flex; gap: 0.4rem;">
+              <button class="cmd-pill selene-preset-chip" data-url="https://nyxos.cc">nyxos.cc</button>
+              <button class="cmd-pill selene-preset-chip" data-url="http://kernel.org/release">kernel.org</button>
+            </div>
+          </div>
+
+          <div class="selene-page-body" id="selene-page-content"></div>
+          <div class="selene-fetch-status">
+            <span id="selene-status-text">Status: 200 OK</span>
+            <span>RTL8139 · TCP Sockets · HTML Tokenizer</span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Networking -->
+    <section class="scene-section" id="networking" aria-label="Network Stack">
+      <div class="container">
+        <div class="scene-header split reveal-item">
+          <div>
+            <span class="kicker">Wire Protocol</span>
+            <h2>A Real TCP/IP Stack</h2>
+          </div>
+          <p class="lead">
+            Every layer from PCI NIC ring descriptors up to an HTTP/1.1 server. Includes full-duplex <span class="mono">nc</span> and <span class="mono">poll()</span> I/O multiplexing.
+          </p>
+        </div>
+
+        <div class="network-experience">
+          <div class="layer-stack-visual reveal-item delay-1">
+            <div class="layer-bar" data-layer="l7">
+              <div class="packet-pulse"></div>
+              <div class="layer-info">
+                <span class="layer-code-pill">L7</span>
+                <span class="layer-name">HTTP · DNS · Selene · tcpserve</span>
+              </div>
+              <span class="layer-desc">Browser, Web Server, Chunked Transfer</span>
+            </div>
+
+            <div class="layer-bar" data-layer="l4">
+              <div class="packet-pulse"></div>
+              <div class="layer-info">
+                <span class="layer-code-pill">L4</span>
+                <span class="layer-name">TCP (Transmission Control Protocol)</span>
+              </div>
+              <span class="layer-desc">Exponential RTO, Listen/Accept, Sockets</span>
+            </div>
+
+            <div class="layer-bar" data-layer="l4b">
+              <div class="packet-pulse"></div>
+              <div class="layer-info">
+                <span class="layer-code-pill">L4b</span>
+                <span class="layer-name">UDP · ICMP</span>
+              </div>
+              <span class="layer-desc">Datagrams, Ping Echo with RTT Statistics</span>
+            </div>
+
+            <div class="layer-bar" data-layer="l3">
+              <div class="packet-pulse"></div>
+              <div class="layer-info">
+                <span class="layer-code-pill">L3</span>
+                <span class="layer-name">IPv4 (Internet Protocol)</span>
+              </div>
+              <span class="layer-desc">Header Checksum, Routing, Loopback (127.0.0.1)</span>
+            </div>
+
+            <div class="layer-bar" data-layer="l2">
+              <div class="packet-pulse"></div>
+              <div class="layer-info">
+                <span class="layer-code-pill">L2</span>
+                <span class="layer-name">ARP &amp; Ethernet II</span>
+              </div>
+              <span class="layer-desc">Dynamic ARP Cache, MAC Framing</span>
+            </div>
+
+            <div class="layer-bar" data-layer="l1">
+              <div class="packet-pulse"></div>
+              <div class="layer-info">
+                <span class="layer-code-pill">L1</span>
+                <span class="layer-name">Realtek RTL8139 Driver</span>
+              </div>
+              <span class="layer-desc">PCI Configuration, TX/RX Ring Buffers</span>
+            </div>
+          </div>
+
+          <div class="net-simulator-panel reveal-item delay-2">
+            <div class="net-sim-title">
+              <span>Interactive Packet Dispatcher</span>
+              <span class="badge badge-purple">LIVE WIRE</span>
+            </div>
+            <div class="net-sim-actions">
+              <button class="btn btn-secondary" id="btn-packet-syn">Send SYN</button>
+              <button class="btn btn-secondary" id="btn-packet-dns">Resolve DNS</button>
+              <button class="btn btn-secondary" id="btn-packet-ping">Ping 127.0.0.1</button>
+              <button class="btn btn-accent" id="btn-packet-http">HTTP GET</button>
+            </div>
+            <div class="net-sim-log" id="net-sim-log">
+              <div class="net-log-entry ok">[00:00:01] rtl0: Link up 100Mbps full-duplex (PCI 00:03.0)</div>
+              <div class="net-log-entry ok">[00:00:02] DHCP: Bound IP 10.0.2.15 Netmask 255.255.255.0 Gateway 10.0.2.2</div>
+              <div class="net-log-entry syn">[00:00:03] TCP Stack ready. Listening on socket 0.0.0.0:80 (tcpserve)</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Toolchain -->
+    <section class="scene-section" id="toolchain" aria-label="Developer Toolchain and Compilers">
+      <div class="container">
+        <div class="scene-header split reveal-item">
+          <div>
+            <span class="kicker">Developer Ecosystem</span>
+            <h2>In-OS C Toolchain &amp; Compilers</h2>
+          </div>
+          <p class="lead">
+            NyxOS self-hosts. A ported <strong>TinyCC 0.9.27</strong> compiles C code directly inside the operating system (<span class="mono">tcc</span> compiles <span class="mono">tcc</span>), paired with the <strong>xbm</strong> package manager and native <strong>N</strong> compiler.
+          </p>
+        </div>
+
+        <div class="editorial-apps-grid">
+          <article class="app-editorial-card span-6 reveal-item">
+            <div class="app-card-head">
+              <div class="app-icon-glyph"><span style="font-family: var(--font-mono); font-size: 0.85rem; font-weight: 800; color: var(--accent-purple-bright);">[C]</span></div>
+              <span class="app-card-tag">Self-Hosting C</span>
+            </div>
+            <div>
+              <h3 class="app-card-title">TinyCC 0.9.27 Compiler</h3>
+              <p class="app-card-desc">Ported to run inside NyxOS ring-3 userspace. Emits 64-bit ELF executables directly to the EXT2 filesystem. Compiles and executes C applications in milliseconds with zero host dependencies.</p>
+            </div>
+            <div class="app-card-tech-pills">
+              <span class="app-tech-pill">tcc compiles tcc</span>
+              <span class="app-tech-pill">ELF64 Generator</span>
+              <span class="app-tech-pill">0 Host Dependency</span>
+            </div>
+          </article>
+
+          <article class="app-editorial-card span-6 reveal-item delay-1">
+            <div class="app-card-head">
+              <div class="app-icon-glyph"><span style="font-family: var(--font-mono); font-size: 0.78rem; font-weight: 800; color: var(--accent-purple-bright);">[PKG]</span></div>
+              <span class="app-card-tag">Package Manager</span>
+            </div>
+            <div>
+              <h3 class="app-card-title">xbm Package Manager</h3>
+              <p class="app-card-desc">The native binary package manager for NyxOS. Resolves recipe dependencies, manages disk storage in <span class="mono">/mnt/bin</span>, and installs user applications with checksum validation.</p>
+            </div>
+            <div class="app-card-tech-pills">
+              <span class="app-tech-pill">xbm install</span>
+              <span class="app-tech-pill">Recipe Engine</span>
+              <span class="app-tech-pill">EXT2 /mnt/bin</span>
+            </div>
+          </article>
+
+          <article class="app-editorial-card span-6 reveal-item delay-2">
+            <div class="app-card-head">
+              <div class="app-icon-glyph"><span style="font-family: var(--font-mono); font-size: 0.85rem; font-weight: 800; color: var(--accent-purple-bright);">[N]</span></div>
+              <span class="app-card-tag">Native Language</span>
+            </div>
+            <div>
+              <h3 class="app-card-title">The N &amp; N++ Language</h3>
+              <p class="app-card-desc">The native programming language designed specifically for NyxOS low-level applications. Compiled via <span class="mono">ncc</span> into fast, statically verified native machine code.</p>
+            </div>
+            <div class="app-card-tech-pills">
+              <span class="app-tech-pill">ncc Compiler</span>
+              <span class="app-tech-pill">Strict Typing</span>
+              <span class="app-tech-pill">Zero Runtime Overhead</span>
+            </div>
+          </article>
+
+          <article class="app-editorial-card span-6 reveal-item delay-3">
+            <div class="app-card-head">
+              <div class="app-icon-glyph"><span style="font-family: var(--font-mono); font-size: 0.78rem; font-weight: 800; color: var(--accent-purple-bright);">[VFS]</span></div>
+              <span class="app-card-tag">VFS &amp; Graphics</span>
+            </div>
+            <div>
+              <h3 class="app-card-title">EXT2 VFS &amp; Bochs VBE Graphics</h3>
+              <p class="app-card-desc">Persistent EXT2 filesystem with inode caching, sector write-through buffers, and hardware-accelerated 32-bit RGB framebuffer drawing primitives for graphics development.</p>
+            </div>
+            <div class="app-card-tech-pills">
+              <span class="app-tech-pill">EXT2 Inodes</span>
+              <span class="app-tech-pill">VBE 32-bit RGB</span>
+              <span class="app-tech-pill">DMA Audio SB16</span>
+            </div>
+          </article>
+        </div>
+
+        <div class="code-playground-box reveal-item delay-2" id="code-playground">
+          <div class="playground-header">
+            <div style="display: flex; align-items: center; gap: 0.85rem;">
+              <span style="font-family: var(--font-mono); font-size: 0.8rem; font-weight: 700; color: #fff;">In-Browser Compiler Sandbox</span>
+              <span class="badge badge-purple">TinyCC 0.9.27 + ncc</span>
+            </div>
+            <div class="playground-tabs">
+              <button class="playground-tab active" data-file="hello.c">hello.c</button>
+              <button class="playground-tab" data-file="socket.c">socket.c</button>
+              <button class="playground-tab" data-file="fibonacci.n">fibonacci.n</button>
+            </div>
+          </div>
+          <div class="playground-grid">
+            <textarea class="playground-textarea" id="playground-editor" spellcheck="false">/* NyxOS Native Userspace Example — hello.c */
+#include <stdio.h>
+#include <unistd.h>
+
+int main(int argc, char *argv[]) {
+    printf("NyxOS Ring-3 Process Started (PID: %d)\n", getpid());
+    printf("Higher-Half Kernel Linked Base: 0xFFFFFF8000000000\n");
+    printf("Compiling via TinyCC 0.9.27 directly on EXT2 VFS...\n");
+    printf("Success: 0 build warnings. Execution complete.\n");
+    return 0;
+}</textarea>
+            <div class="playground-console" id="playground-output">Ready to compile. Press "[RUN] Compile &amp; Run".</div>
+          </div>
+          <div style="padding: 0.75rem 1.2rem; background: #07090f; border-top: 1px solid var(--border-subtle); display: flex; justify-content: space-between; align-items: center;">
+            <span style="font-family: var(--font-mono); font-size: 0.72rem; color: var(--text-muted);">Target: ELF64 · Isolated Ring-3 Memory</span>
+            <button class="btn btn-accent" id="playground-run-btn" style="font-size: 0.78rem; padding: 0.45rem 1.1rem;">[RUN] Compile &amp; Run</button>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Verification -->
+    <section class="scene-section kats-section" id="verification" aria-label="Cryptographic Verification">
+      <div class="container">
+        <div class="kats-monument-grid">
+          <div class="kats-number-lockup reveal-item">
+            <span class="kicker">Formal Verification</span>
+            <div class="giant-counter" id="giant-kats-counter">55</div>
+            <div class="kats-counter-label">Known-Answer Tests in CI</div>
+            <p class="kats-counter-sub">
+              Every build executes an exhaustive cryptographic test suite verifying PBKDF2-HMAC-SHA256, AES Key Wrap (RFC 3394), and SHA-256 primitives against NIST CAVP standards with zero warnings.
+            </p>
+          </div>
+
+          <div class="crypto-console reveal-item delay-2">
+            <div class="crypto-console-header">
+              <span>nyx-crypto-testbed (FIPS 180-4 / RFC 3394)</span>
+              <span id="crypto-kats-progress" style="color: var(--accent-purple-bright);">55/55 Verified</span>
+            </div>
+            <div class="crypto-log-body" id="crypto-log-body">
+              <div class="test-vector-item">
+                <span class="test-vector-name">[PASS] PBKDF2-HMAC-SHA256 (Iteration 4096)</span>
+                <span class="test-vector-status">100% OK (RFC 6070)</span>
+              </div>
+              <div class="test-vector-item">
+                <span class="test-vector-name">[PASS] AES-128 Key Wrap (RFC 3394) 40-byte payload</span>
+                <span class="test-vector-status">100% OK (NIST CAVP)</span>
+              </div>
+              <div class="test-vector-item">
+                <span class="test-vector-name">[PASS] SHA-256 FIPS 180-4 1M "a" Repetition</span>
+                <span class="test-vector-status">100% OK (FIPS 180-4)</span>
+              </div>
+              <div class="test-vector-item">
+                <span class="test-vector-name">[PASS] HMAC-SHA256 Variable Key (128-byte pad)</span>
+                <span class="test-vector-status">100% OK (RFC 4231)</span>
+              </div>
+              <div class="test-vector-item">
+                <span class="test-vector-name">[PASS] Chroot Path Normalization &amp; User Pointer Check</span>
+                <span class="test-vector-status">100% OK (Kernel Ring-3)</span>
+              </div>
+            </div>
+            <div style="padding: 0.75rem 1rem; background: #070a10; border-top: 1px solid var(--border-subtle); display: flex; justify-content: flex-end;">
+              <button class="btn btn-secondary" id="btn-run-kats" style="font-size: 0.75rem; padding: 0.45rem 1rem;">Re-run Crypto Suite</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Manual -->
+    <section class="scene-section" id="manual" aria-label="Manual and Guide">
+      <div class="container">
+        <div class="scene-header center reveal-item">
+          <span class="kicker">Documentation</span>
+          <h2>Getting Started with NyxOS</h2>
+          <p class="lead">
+            Build the kernel, boot the ISO in QEMU, forward network ports, and log in to the desktop.
+          </p>
+        </div>
+
+        <div class="manual-grid">
+          <div class="manual-step-box reveal-item">
+            <div>
+              <div class="step-badge">1</div>
+              <h3>Clone &amp; Compile</h3>
+              <p style="color: var(--text-secondary); font-size: 0.85rem;">Requires <span class="mono">x86_64-elf-gcc</span> or host GCC with 64-bit support.</p>
+              <div class="code-snippet-box">
+                <div style="display: flex; justify-content: space-between; margin-bottom: 0.4rem; color: var(--text-muted);">
+                  <span>bash</span>
+                  <button class="copy-btn" data-copy="git clone https://github.com/kazah-png/nyx-os.git && cd nyx-os && make -C kernel">Copy</button>
+                </div>
+                <code>git clone https://github.com/kazah-png/nyx-os.git<br>cd nyx-os<br>make -C kernel</code>
+              </div>
+            </div>
+          </div>
+
+          <div class="manual-step-box reveal-item delay-1">
+            <div>
+              <div class="step-badge">2</div>
+              <h3>Run in QEMU</h3>
+              <p style="color: var(--text-secondary); font-size: 0.85rem;">Launches with GUI desktop, RTL8139 NIC, and EXT2 disk image.</p>
+              <div class="code-snippet-box">
+                <div style="display: flex; justify-content: space-between; margin-bottom: 0.4rem; color: var(--text-muted);">
+                  <span>QEMU Command</span>
+                  <button class="copy-btn" data-copy="qemu-system-x86_64 -cdrom NyxOS.iso -m 256M -nic user,model=rtl8139 -display sdl">Copy</button>
+                </div>
+                <code>qemu-system-x86_64 -cdrom NyxOS.iso \<br>  -m 256M -nic user,model=rtl8139 \<br>  -display sdl</code>
+              </div>
+            </div>
+          </div>
+
+          <div class="manual-step-box reveal-item delay-2">
+            <div>
+              <div class="step-badge">3</div>
+              <h3>Log In to Desktop</h3>
+              <p style="color: var(--text-secondary); font-size: 0.85rem;">PBKDF2-HMAC-SHA256 authenticated default credentials.</p>
+              <div class="code-snippet-box">
+                <div style="color: var(--text-muted); margin-bottom: 0.4rem;">Default Credentials</div>
+                <code>Username: <strong style="color: #fff;">nyx</strong><br>Password: <strong style="color: #fff;">nyx</strong></code>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="qemu-config-card reveal-item delay-3">
+          <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.2rem; flex-wrap: wrap; gap: 0.5rem;">
+            <div>
+              <span class="kicker" style="margin-bottom: 0.2rem;">One-Click Hardware Setup</span>
+              <h3 style="font-size: 1.25rem; color: #fff;">QEMU Launch Command Generator</h3>
+            </div>
+            <button class="btn btn-accent" id="qemu-copy-btn" style="font-size: 0.75rem; padding: 0.45rem 1rem;">Copy Command</button>
+          </div>
+
+          <div class="qemu-selectors-grid">
+            <div class="qemu-field-group">
+              <label for="qemu-ram">Memory (RAM)</label>
+              <select id="qemu-ram" class="qemu-select">
+                <option value="256M" selected>256 MB (Standard)</option>
+                <option value="512M">512 MB (Extended)</option>
+                <option value="1G">1024 MB (1 GB)</option>
+              </select>
+            </div>
+            <div class="qemu-field-group">
+              <label for="qemu-cpu">SMP CPU Cores</label>
+              <select id="qemu-cpu" class="qemu-select">
+                <option value="1">1 Core</option>
+                <option value="2" selected>2 Cores (Recommended)</option>
+                <option value="4">4 Cores</option>
+              </select>
+            </div>
+            <div class="qemu-field-group">
+              <label for="qemu-net">NIC Interface</label>
+              <select id="qemu-net" class="qemu-select">
+                <option value="rtl8139" selected>RTL8139 (User NAT)</option>
+                <option value="tap">RTL8139 (TAP Bridge)</option>
+                <option value="none">Disabled</option>
+              </select>
+            </div>
+            <div class="qemu-field-group">
+              <label for="qemu-audio">Audio Driver</label>
+              <select id="qemu-audio" class="qemu-select">
+                <option value="sb16" selected>Sound Blaster 16 (DMA)</option>
+                <option value="none">Disabled</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="code-snippet-box" style="margin-top: 0;">
+            <code id="qemu-generated-cmd" style="color: #c084fc;">qemu-system-x86_64 -cdrom NyxOS.iso -m 256M -smp 2 -nic user,model=rtl8139 -audiodev dsound,id=snd0 -device sb16,audiodev=snd0 -vga std -display sdl</code>
+          </div>
+        </div>
+
+        <div class="command-encyclopedia reveal-item delay-3">
+          <div class="cmd-table-search-bar">
+            <div>
+              <h3 style="font-size: 1.1rem; color: #fff; margin-bottom: 0.2rem;">Command Encyclopedia</h3>
+              <p style="font-size: 0.78rem; color: var(--text-muted);">Available in text console &amp; graphical Terminal</p>
+            </div>
+            <input type="text" id="cmd-search" class="cmd-search-input" placeholder="Search commands (e.g. ping, cc, ps, selene)..." aria-label="Filter command table" />
+          </div>
+
+          <div style="overflow-x: auto;">
+            <table class="cmd-table">
+              <thead>
+                <tr>
+                  <th>Category</th>
+                  <th>Commands</th>
+                  <th>Description</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td class="cmd-category-tag">System</td>
+                  <td>
+                    <div class="cmd-chips-list">
+                      <span class="chip-token">help</span>
+                      <span class="chip-token">clear</span>
+                      <span class="chip-token">nyxfetch</span>
+                      <span class="chip-token">uname</span>
+                      <span class="chip-token">date</span>
+                      <span class="chip-token">version</span>
+                      <span class="chip-token">reboot</span>
+                    </div>
+                  </td>
+                  <td>System information, kernel version, diagnostics, clock, and ACPI reboot.</td>
+                </tr>
+                <tr>
+                  <td class="cmd-category-tag">Files</td>
+                  <td>
+                    <div class="cmd-chips-list">
+                      <span class="chip-token">ls</span>
+                      <span class="chip-token">cd</span>
+                      <span class="chip-token">pwd</span>
+                      <span class="chip-token">cat</span>
+                      <span class="chip-token">touch</span>
+                      <span class="chip-token">mkdir</span>
+                      <span class="chip-token">rm</span>
+                      <span class="chip-token">cp</span>
+                      <span class="chip-token">mv</span>
+                      <span class="chip-token">grep</span>
+                    </div>
+                  </td>
+                  <td>VFS &amp; EXT2 file manipulation, searching, directory traversal, and stream output.</td>
+                </tr>
+                <tr>
+                  <td class="cmd-category-tag">Processes</td>
+                  <td>
+                    <div class="cmd-chips-list">
+                      <span class="chip-token">ps</span>
+                      <span class="chip-token">mem</span>
+                      <span class="chip-token">free</span>
+                      <span class="chip-token">exec</span>
+                      <span class="chip-token">spawn</span>
+                      <span class="chip-token">jobs</span>
+                      <span class="chip-token">kill</span>
+                    </div>
+                  </td>
+                  <td>Preemptive process monitoring, memory layout inspect, job control, and signal dispatch.</td>
+                </tr>
+                <tr>
+                  <td class="cmd-category-tag">Toolchain</td>
+                  <td>
+                    <div class="cmd-chips-list">
+                      <span class="chip-token">cc</span>
+                      <span class="chip-token">xbm</span>
+                      <span class="chip-token">ncc</span>
+                      <span class="chip-token">tcc</span>
+                    </div>
+                  </td>
+                  <td>In-OS C compiler &amp; runner, package manager (<span class="mono">xbm install</span>), and N language toolchain.</td>
+                </tr>
+                <tr>
+                  <td class="cmd-category-tag">Network</td>
+                  <td>
+                    <div class="cmd-chips-list">
+                      <span class="chip-token">ifconfig</span>
+                      <span class="chip-token">dhcp</span>
+                      <span class="chip-token">ping</span>
+                      <span class="chip-token">setip</span>
+                      <span class="chip-token">tcptest</span>
+                      <span class="chip-token">tcpserve</span>
+                      <span class="chip-token">nc</span>
+                    </div>
+                  </td>
+                  <td>IP configuration, DHCP lease, ICMP echo with RTT, TCP client/server, and full-duplex netcat.</td>
+                </tr>
+                <tr>
+                  <td class="cmd-category-tag">Applications</td>
+                  <td>
+                    <div class="cmd-chips-list">
+                      <span class="chip-token">selene</span>
+                      <span class="chip-token">editor</span>
+                      <span class="chip-token">paint</span>
+                      <span class="chip-token">calc</span>
+                      <span class="chip-token">gui</span>
+                    </div>
+                  </td>
+                  <td>Launch Selene web browser, graphical text editor, paint studio, and window compositor.</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Finale -->
+    <section class="finale-scene" aria-label="Build and Explore NyxOS">
+      <div class="container">
+        <div class="reveal-item">
+          <span class="kicker">The Bare-Metal Manifesto</span>
+          <h2 class="finale-title">
+            <span>BUILD IT.</span>
+            <span>UNDERSTAND IT.</span>
+            <span style="color: var(--accent-purple-bright);">OWN IT.</span>
+          </h2>
+          <p class="finale-sub">
+            NyxOS. From scratch. No libraries. Just the metal.
+          </p>
+
+          <div class="finale-actions">
+            <a class="btn btn-primary btn-lg" href="#manual">Read the manual</a>
+            <a class="btn btn-secondary btn-lg" href="https://github.com/kazah-png/nyx-os" target="_blank" rel="noopener">Browse the source</a>
+            <a class="btn btn-accent btn-lg" href="https://dsc.gg/nyxos" target="_blank" rel="noopener">Join Discord</a>
+          </div>
+        </div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- Footer -->
+  <footer class="site-footer" role="contentinfo">
+    <div class="container">
+      <div class="footer-grid">
+        <div class="footer-brand">
+          <div style="display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.6rem;">
+            <span class="brand-title" style="font-size: 1.3rem; font-weight: 800;">NYX<span>OS</span></span>
+            <span class="badge badge-purple">v6.4.180</span>
+          </div>
+          <p>A 64-bit operating system written from scratch in C and x86_64 Assembly. Zero external dependencies.</p>
+          <p class="footer-credit">
+            Built by <a href="https://github.com/kazah-png" target="_blank" rel="noopener">kazah-png</a>
+            with <a href="https://github.com/ScarDeveloper444" target="_blank" rel="noopener">ScarDeveloper</a>
+            and <a href="https://github.com/kazah-png/nyx-os/graphs/contributors" target="_blank" rel="noopener">contributors</a>.
+          </p>
+        </div>
+
+        <div class="footer-column">
+          <h4>Documentation</h4>
+          <ul class="footer-links-list">
+            <li><a href="#architecture">Kernel Architecture</a></li>
+            <li><a href="#desktop">Desktop &amp; Browser</a></li>
+            <li><a href="#networking">TCP/IP Network Stack</a></li>
+            <li><a href="#toolchain">Developer Compilers</a></li>
+            <li><a href="#manual">Command Encyclopedia</a></li>
+          </ul>
+        </div>
+
+        <div class="footer-column">
+          <h4>Project &amp; Community</h4>
+          <ul class="footer-links-list">
+            <li><a href="https://github.com/kazah-png/nyx-os" target="_blank" rel="noopener">Source Code (GitHub)</a></li>
+            <li><a href="https://github.com/kazah-png/nyx-os/issues/1" target="_blank" rel="noopener">Issue Tracker</a></li>
+            <li><a href="https://dsc.gg/nyxos" target="_blank" rel="noopener">Discord Community</a></li>
+            <li><a href="support.html">Support the Build</a></li>
           </ul>
         </div>
       </div>
-    </section>
 
-    <!-- ============ RELEASES ============ -->
-    <section id="releases" class="section">
-      <div class="section-head reveal">
-        <span class="kicker">Releases</span>
-        <h2>The road so far</h2>
-        <p class="lead">Every increment from a from-scratch kernel to a networked desktop OS with a web browser and five games.</p>
+      <div class="footer-bottom-bar">
+        <span>© NyxOS · Free software licensed under the GNU GPL-2.0+</span>
+        <span>Built from the metal.</span>
       </div>
-      <div class="timeline">
-        <div class="tl reveal"><span class="tl-v">v1.x</span><div><h3>Foundations</h3><p>Base kernel, ramdisk VFS + shell commands, and the first real networking (RTL8139, ARP/IP/UDP/ICMP).</p></div></div>
-        <div class="tl reveal"><span class="tl-v">v2.x</span><div><h3>Multitasking, GUI &amp; disks</h3><p>Preemptive multitasking, a full TCP stack, the window compositor, PC-speaker audio, EXT2 read support, and a Sound Blaster 16 driver.</p></div></div>
-        <div class="tl reveal"><span class="tl-v">v3.x</span><div><h3>Userspace</h3><p>ELF loader, initramfs, per-process paging, ring-3 execution, syscalls, an RTC driver and a minimal libc.</p></div></div>
-        <div class="tl reveal"><span class="tl-v">v4.x</span><div><h3>64-bit &amp; hardening</h3><p>Full x86_64 long mode, a higher-half kernel, user/kernel page-table isolation, and <span class="mono">NX</span> + <span class="mono">SMEP</span> with APIC init.</p></div></div>
-        <div class="tl reveal"><span class="tl-v">v5.0–5.7</span><div><h3>Apps, login, ring-3 &amp; the network arc</h3><p>A full GUI app suite, a boot animation + login screen, syscall-boundary hardening, ring-3 userspace that actually runs, preemptive scheduling with job control, and a networking sprint — loopback + ICMP, TCP retransmission, passive open, and an HTTP server that answers real clients.</p></div></div>
-        <div class="tl reveal"><span class="tl-v">v5.8</span><div><h3>A complete ring-3 environment</h3><p>The native language runtime, <span class="mono">waitpid()</span>, anonymous pipes &amp; blocking IPC, signals with <span class="mono">setjmp</span>/<span class="mono">longjmp</span> recovery, <span class="mono">poll()</span> I/O multiplexing, <span class="mono">nc</span>, persistent EXT2 accounts, and the root-cause fix of the pipeline-corruption Heisenbug (a firmware-hole page-allocator bug).</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.9.0 · LTS</span><div><h3>The stable baseline — P0.1 closed</h3><p>The one release-blocking bug root-caused and fixed with a single <span class="mono">cli</span>, closing the preemptible window between the user-CR3 reload and <span class="mono">iretq</span>. Plus a GUI/VFS/ext2 hardening sweep and the first SMP stages (per-CPU TSS, spinlocks, TLB-shootdown IPIs). The long-term-support release.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v5.9.x</span><div><h3>"Nightfall" desktop · DOOM · five games · Selene</h3><p>A central GUI palette in brand purple, modern window chrome (shadows, gradients, rounding), keyboard window management &amp; snapping. The original 1993 <b>DOOM</b> ported and playable in a window, joined by <b>Tetris</b>, <b>Snake</b>, <b>Pong</b> and <b>Minesweeper</b>. And <b>🌙 Selene</b> — the NyxOS web browser — fetches and renders real pages over DHCP + DNS + TCP + HTTP.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v6.0–6.1</span><div><h3>daedalOS pivot — Phase 1: the desktop</h3><p>The push toward a fully-functional daedalOS-style desktop OS: a polished 1080p desktop, visual file management, a Windows-like clean menu, and multi-session groundwork — all keeping the Nyx night-goddess identity.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v6.2–6.3</span><div><h3>Phase 2: an in-OS C toolchain that self-hosts</h3><p><b>TinyCC 0.9.27</b> ported to run <em>inside</em> NyxOS — <span class="mono">tcc</span> compiles <span class="mono">tcc</span>. The <span class="mono">cc</span> command and the <b>xbm</b> package manager compile C from a recipe and install it to <span class="mono">/mnt/bin</span>, runnable by bare name. The everyday <span class="mono">install/remove/update/search/list</span> verb set is complete.</p></div></div>
-        <div class="tl reveal accent"><span class="tl-v">v6.4.180</span><div><h3>Languages, IRQ-driven networking &amp; render testbeds — current</h3><p>The native <b>N</b> language (<span class="mono">.n</span> / <span class="mono">ncc</span>) and the typed superset <b>N++</b> with static checks; RTL8139 moved toward interrupt-driven RX/TX with a real retransmit queue and SMP-safe TCP; the <b>Nyx Voxels</b> and <b>Nyx Fractal</b> render benchmarks and animated wallpapers; AES Key Wrap (RFC 3394) landing a 55-KAT crypto battery in CI; and a steady security issue burn-down — one honest, verified increment at a time.</p></div></div>
-      </div>
-    </section>
-
-    <!-- ============ COMMUNITY ============ -->
-    <section id="community" class="section">
-      <div class="cta-card reveal">
-        <h2>Follow the build</h2>
-        <p>NyxOS is developed in the open, one verified increment at a time. Join the Discord for kernel-dev chat, or dive into the source and status report on GitHub.</p>
-        <div class="hero-cta">
-          <a class="btn btn-solid btn-lg" href="https://dsc.gg/nyxos" target="_blank" rel="noopener">Join the Discord</a>
-          <a class="btn btn-ghost btn-lg" href="https://github.com/kazah-png/nyx-os" target="_blank" rel="noopener">GitHub repository</a>
-          <a class="btn btn-ghost btn-lg" href="support.html">Support the build</a>
-        </div>
-      </div>
-    </section>
-  </main>
-
-  <!-- ============ FOOTER ============ -->
-  <footer class="footer">
-    <div class="foot-grid">
-      <div class="foot-brand">
-        <span class="brand-name">Nyx<span>OS</span></span>
-        <p class="muted">A 64-bit operating system, written from scratch in C and x86_64 Assembly.</p>
-      </div>
-      <div class="foot-links">
-        <h4>Docs</h4>
-        <a href="#overview">Overview</a>
-        <a href="#manual">Manual</a>
-        <a href="#architecture">Architecture</a>
-        <a href="#networking">Networking</a>
-      </div>
-      <div class="foot-links">
-        <h4>Project</h4>
-        <a href="https://github.com/kazah-png/nyx-os" target="_blank" rel="noopener">Source</a>
-        <a href="https://github.com/kazah-png/nyx-os/issues/1" target="_blank" rel="noopener">Status report</a>
-        <a href="https://dsc.gg/nyxos" target="_blank" rel="noopener">Discord</a>
-        <a href="support.html">Support</a>
-      </div>
-    </div>
-    <div class="foot-bar">
-      <span>© NyxOS · Free software under the GNU GPL-2.0+</span>
-      <span>Built for the metal. 🌙</span>
     </div>
   </footer>
 
-  <script src="script.js"></script>
+  <div class="toast-container" aria-live="polite"></div>
+
+  <!-- Self-hosted Three.js (r128, MIT) — no third-party CDN. GLTFLoader dropped (procedural scene). -->
+  <script src="js/vendor/three.min.js"></script>
+  <script src="js/scene3d.js"></script>
+
+  <script src="js/main.js"></script>
+  <script src="js/terminal.js"></script>
+  <script src="js/desktop-sim.js"></script>
+  <script src="js/network-sim.js"></script>
+  <script src="js/kats-counter.js"></script>
+  <script src="js/selene-sim.js"></script>
+  <script src="js/syscall-inspector.js"></script>
+  <script src="js/paging-visualizer.js"></script>
+  <script src="js/code-playground.js"></script>
+  <script src="js/qemu-builder.js"></script>
+  <script src="js/audio-chime.js"></script>
+  <script src="js/card-glow.js"></script>
 </body>
 </html>

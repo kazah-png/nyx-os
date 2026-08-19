@@ -1,0 +1,117 @@
+/* ==========================================================================
+   RESPONSIVE, DEVICE-SPECIFIC FINE-TUNING & ACCESSIBILITY
+   ========================================================================== */
+
+/* Mobile Phones (320px to 480px) */
+@media (max-width: 480px) {
+  :root {
+    --space-2xl: 2.5rem;
+    --space-3xl: 4rem;
+  }
+
+  .hero-title-monument {
+    font-size: 3.4rem;
+    line-height: 0.96;
+  }
+
+  .hero-actions {
+    flex-direction: column;
+    width: 100%;
+  }
+
+  .hero-actions .btn {
+    width: 100%;
+  }
+
+  .sim-canvas {
+    aspect-ratio: 4 / 3;
+  }
+
+  .sim-floating-window {
+    width: 90%;
+    height: 75%;
+    left: 5%;
+    top: 10%;
+  }
+
+  .term-viewport {
+    padding: 1rem;
+    font-size: 0.78rem;
+    min-height: 320px;
+  }
+
+  .scratch-nucleus-canvas {
+    max-width: 320px;
+  }
+
+  .satellite-node {
+    padding: 0.5rem 0.75rem;
+  }
+
+  .satellite-node .node-title {
+    font-size: 0.75rem;
+  }
+
+  .giant-counter {
+    font-size: 5.5rem;
+  }
+
+  .cmd-table th, .cmd-table td {
+    padding: 0.75rem 0.8rem;
+  }
+
+  .footer-bottom-bar {
+    text-align: center;
+  }
+}
+
+/* Tablets (481px to 840px) */
+@media (min-width: 481px) and (max-width: 840px) {
+  .hero-grid {
+    gap: 3.5rem;
+  }
+
+  .scratch-container {
+    gap: 3.5rem;
+  }
+}
+
+/* Ultrawide Displays (2000px+) */
+@media (min-width: 2000px) {
+  :root {
+    --container-max: 1680px;
+    --container-wide: 1920px;
+  }
+
+  body {
+    font-size: 18px;
+  }
+}
+
+/* Accessibility: High-Contrast & Focus States */
+:focus-visible {
+  outline: 2px solid var(--accent-lunar-bright);
+  outline-offset: 3px;
+}
+
+/* Prefers Reduced Motion */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+
+  .orbit-ring {
+    animation: none !important;
+  }
+
+  .live-pulse {
+    animation: none !important;
+  }
+
+  .term-blinking-cursor {
+    animation: none !important;
+  }
+}

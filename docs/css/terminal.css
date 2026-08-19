@@ -1,0 +1,262 @@
+/* ==========================================================================
+   INTERACTIVE TERMINAL SANDBOX STYLES (PURPLE PHOSPHOR ACCENT & VIEWPORT FIT)
+   ========================================================================== */
+
+.terminal-section {
+  position: relative;
+  padding: clamp(3rem, 6vh, 5rem) 0;
+}
+
+.terminal-window {
+  width: 100%;
+  max-width: 1040px;
+  margin: 0 auto;
+  background: #040508;
+  border: 1px solid var(--border-medium);
+  border-radius: 8px;
+  overflow: hidden;
+  box-shadow: var(--shadow-lg), 0 0 45px rgba(168, 85, 247, 0.1);
+  display: flex;
+  flex-direction: column;
+  position: relative;
+  transition: border-color var(--transition-base), box-shadow var(--transition-base);
+}
+
+.terminal-window:focus-within,
+.terminal-window:hover {
+  border-color: rgba(168, 85, 247, 0.45);
+  box-shadow: var(--shadow-lg), 0 0 65px rgba(168, 85, 247, 0.2);
+}
+
+/* Terminal Chrome Bar */
+.term-chrome {
+  background: #0c0e16;
+  padding: 0.65rem 1rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--border-subtle);
+  user-select: none;
+}
+
+.term-chrome-left {
+  display: flex;
+  align-items: center;
+  gap: 0.85rem;
+}
+
+.term-dots {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.term-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+}
+.term-dot.r { background: #e06c75; }
+.term-dot.y { background: #e5c07b; }
+.term-dot.g { background: #98c379; }
+
+.term-title-text {
+  font-family: var(--font-mono);
+  font-size: 0.78rem;
+  font-weight: 600;
+  color: var(--text-metal);
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.term-title-badge {
+  font-size: 0.65rem;
+  background: rgba(168, 85, 247, 0.15);
+  color: var(--accent-purple-bright);
+  padding: 0.1rem 0.45rem;
+  border-radius: 3px;
+}
+
+.term-chrome-right {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+}
+
+.term-chip-btn {
+  background: rgba(255, 255, 255, 0.04);
+  border: 1px solid var(--border-hairline);
+  color: var(--text-secondary);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  padding: 0.25rem 0.65rem;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+}
+
+.term-chip-btn:hover {
+  background: var(--accent-purple-faint);
+  border-color: var(--accent-purple-border);
+  color: var(--accent-purple-bright);
+}
+
+/* Terminal Body Area */
+.term-viewport {
+  padding: 1.4rem 1.6rem;
+  font-family: var(--font-mono);
+  font-size: 0.88rem;
+  line-height: 1.65;
+  color: #cbd5e1;
+  min-height: 320px;
+  max-height: 420px;
+  overflow-y: auto;
+  position: relative;
+  background: radial-gradient(circle at 50% 0%, rgba(168, 85, 247, 0.05) 0%, transparent 60%), #040508;
+}
+
+/* Output Typography */
+.term-line {
+  margin-bottom: 0.35rem;
+  word-break: break-all;
+}
+
+.term-line.prompt-line {
+  color: var(--accent-purple-bright);
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+}
+
+.term-prompt-tag {
+  color: #c084fc;
+  font-weight: 700;
+  user-select: none;
+}
+
+.term-prompt-cwd {
+  color: #e2e8f0;
+}
+
+.term-prompt-char {
+  color: var(--accent-purple-bright);
+  font-weight: 700;
+}
+
+.term-cmd-text {
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.term-output-block {
+  margin: 0.4rem 0 1rem 0;
+  padding-left: 0.2rem;
+}
+
+.term-ascii-logo {
+  color: var(--accent-purple-bright);
+  font-weight: bold;
+  line-height: 1.15;
+  margin-bottom: 0.8rem;
+  white-space: pre;
+  font-size: 0.85rem;
+}
+
+.term-stat-table {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.25rem 1.2rem;
+}
+
+.term-stat-key {
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.term-stat-val {
+  color: #ffffff;
+  font-weight: 600;
+}
+
+.term-stat-val.accent {
+  color: var(--accent-purple-bright);
+}
+
+/* Interactive Input Line */
+.term-input-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.5rem;
+}
+
+.term-input {
+  flex: 1;
+  background: transparent;
+  border: none;
+  color: #ffffff;
+  font-family: var(--font-mono);
+  font-size: 0.88rem;
+  outline: none;
+  padding: 0;
+  caret-color: var(--accent-purple-bright);
+}
+
+.term-blinking-cursor {
+  display: inline-block;
+  width: 8px;
+  height: 16px;
+  background: var(--accent-purple-bright);
+  vertical-align: middle;
+  animation: blink 1s step-end infinite;
+  box-shadow: 0 0 8px var(--accent-purple);
+}
+
+@keyframes blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+/* Suggested Quick Chips Bar */
+.term-quick-chips {
+  padding: 0.75rem 1.25rem;
+  background: #07090f;
+  border-top: 1px solid var(--border-subtle);
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+}
+
+.chips-label {
+  font-family: var(--font-mono);
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  margin-right: 0.2rem;
+  font-weight: 600;
+}
+
+.cmd-pill {
+  background: rgba(255, 255, 255, 0.035);
+  border: 1px solid var(--border-hairline);
+  color: var(--text-metal);
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  padding: 0.25rem 0.65rem;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: all var(--transition-fast);
+  user-select: none;
+  font-weight: 500;
+}
+
+.cmd-pill:hover {
+  background: rgba(168, 85, 247, 0.16);
+  border-color: var(--accent-purple-border);
+  color: var(--accent-purple-bright);
+  transform: translateY(-1px);
+  box-shadow: 0 4px 12px rgba(168, 85, 247, 0.25);
+}

@@ -3,8 +3,7 @@ All three families are free/open-source and licensed under the SIL Open Font
 License 1.1 (OFL-1.1), which permits self-hosting and redistribution with the
 software/website. Full license text: https://openfontlicense.org
 
-- Inter          © The Inter Project Authors — https://github.com/rsms/inter
-                 (github.com/rsms/inter/blob/master/LICENSE.txt)
+- Outfit         © The Outfit Project Authors — https://github.com/Outfitio/Outfit-Fonts
 - Space Grotesk  © The Space Grotesk Project Authors
                  (github.com/floriankarsten/space-grotesk)
 - JetBrains Mono © 2020 The JetBrains Mono Project Authors

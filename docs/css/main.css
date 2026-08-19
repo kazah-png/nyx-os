@@ -1,0 +1,472 @@
+/* ==========================================================================
+   NYXOS — OFFICIAL PURPLE NEBULA DESIGN SYSTEM (2026)
+   Aesthetic: Low-Level Bare-Metal Unix + Nightfall Purple Volumetric Atmosphere
+   ========================================================================== */
+
+/* Self-hosted fonts (latin subset, woff2) — OFL, see fonts/LICENSES.txt.
+   Replaces the Google Fonts @import: zero third-party requests + strict CSP. */
+@font-face{font-family:'Outfit';font-style:normal;font-weight:400;font-display:swap;src:url('../fonts/outfit-400.woff2') format('woff2');}
+@font-face{font-family:'Outfit';font-style:normal;font-weight:500;font-display:swap;src:url('../fonts/outfit-500.woff2') format('woff2');}
+@font-face{font-family:'Outfit';font-style:normal;font-weight:600;font-display:swap;src:url('../fonts/outfit-600.woff2') format('woff2');}
+@font-face{font-family:'Outfit';font-style:normal;font-weight:700;font-display:swap;src:url('../fonts/outfit-700.woff2') format('woff2');}
+@font-face{font-family:'Outfit';font-style:normal;font-weight:800;font-display:swap;src:url('../fonts/outfit-800.woff2') format('woff2');}
+@font-face{font-family:'Outfit';font-style:normal;font-weight:900;font-display:swap;src:url('../fonts/outfit-900.woff2') format('woff2');}
+@font-face{font-family:'Space Grotesk';font-style:normal;font-weight:400;font-display:swap;src:url('../fonts/space-grotesk-400.woff2') format('woff2');}
+@font-face{font-family:'Space Grotesk';font-style:normal;font-weight:500;font-display:swap;src:url('../fonts/space-grotesk-500.woff2') format('woff2');}
+@font-face{font-family:'Space Grotesk';font-style:normal;font-weight:600;font-display:swap;src:url('../fonts/space-grotesk-600.woff2') format('woff2');}
+@font-face{font-family:'Space Grotesk';font-style:normal;font-weight:700;font-display:swap;src:url('../fonts/space-grotesk-700.woff2') format('woff2');}
+@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:300;font-display:swap;src:url('../fonts/jetbrains-mono-300.woff2') format('woff2');}
+@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:400;font-display:swap;src:url('../fonts/jetbrains-mono-400.woff2') format('woff2');}
+@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:500;font-display:swap;src:url('../fonts/jetbrains-mono-500.woff2') format('woff2');}
+@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:600;font-display:swap;src:url('../fonts/jetbrains-mono-600.woff2') format('woff2');}
+@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:700;font-display:swap;src:url('../fonts/jetbrains-mono-700.woff2') format('woff2');}
+@font-face{font-family:'JetBrains Mono';font-style:normal;font-weight:800;font-display:swap;src:url('../fonts/jetbrains-mono-800.woff2') format('woff2');}
+
+:root {
+  /* Obsidian & Cosmic Void */
+  --bg-void: #030305;
+  --bg-primary: #06070a;
+  --bg-secondary: #0a0c12;
+  --bg-surface: #0f121a;
+  --bg-elevated: #151924;
+  --bg-card: rgba(15, 18, 26, 0.82);
+  --bg-card-hover: rgba(22, 27, 39, 0.95);
+
+  /* Typography Colors */
+  --text-primary: #f8fafc;
+  --text-secondary: #94a3b8;
+  --text-muted: #64748b;
+  --text-faint: #334155;
+  --text-metal: #cbd5e1;
+
+  /* Nightfall Purple & Nebula Palette */
+  --accent-purple: #a855f7;
+  --accent-purple-bright: #c084fc;
+  --accent-purple-light: #e879f9;
+  --accent-purple-deep: #7c3aed;
+  --accent-purple-glow: rgba(168, 85, 247, 0.3);
+  --accent-purple-faint: rgba(168, 85, 247, 0.08);
+  --accent-purple-border: rgba(168, 85, 247, 0.4);
+
+  /* Precise Hairline Borders */
+  --border-hairline: rgba(255, 255, 255, 0.07);
+  --border-subtle: rgba(255, 255, 255, 0.12);
+  --border-medium: rgba(255, 255, 255, 0.2);
+  --border-strong: rgba(255, 255, 255, 0.35);
+
+  /* Elevation & Shadows */
+  --shadow-sm: 0 2px 10px rgba(0, 0, 0, 0.6);
+  --shadow-md: 0 10px 30px -4px rgba(0, 0, 0, 0.8);
+  --shadow-lg: 0 24px 60px -8px rgba(0, 0, 0, 0.95);
+  --shadow-glow: 0 0 50px rgba(168, 85, 247, 0.2);
+
+  /* Typography Families */
+  --font-display: 'Space Grotesk', -apple-system, BlinkMacSystemFont, sans-serif;
+  --font-hero: 'Outfit', 'Space Grotesk', sans-serif;
+  --font-mono: 'JetBrains Mono', monospace;
+  --font-sans: 'Space Grotesk', -apple-system, BlinkMacSystemFont, sans-serif;
+
+  /* Compact Scaled Spacing */
+  --container-max: 1320px;
+  --container-wide: 1440px;
+
+  /* Easing */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --transition-fast: 140ms var(--ease-out);
+  --transition-base: 260ms var(--ease-out);
+}
+
+/* ==========================================================================
+   Base Reset & HTML Structure
+   ========================================================================== */
+
+*, *::before, *::after {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html {
+  font-size: 15px; /* Tuned base size so everything fits properly */
+  scroll-behavior: smooth;
+  color-scheme: dark;
+  background-color: var(--bg-void);
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: var(--bg-void);
+  color: var(--text-primary);
+  line-height: 1.65;
+  overflow-x: hidden;
+  position: relative;
+  min-height: 100vh;
+}
+
+/* Skip link for accessibility */
+.skip-link {
+  position: absolute;
+  top: -9999px;
+  left: 50%;
+  transform: translateX(-50%);
+  background: var(--bg-elevated);
+  color: var(--accent-purple-bright);
+  padding: 0.75rem 1.5rem;
+  z-index: 10000;
+  border: 1px solid var(--accent-purple);
+  font-family: var(--font-mono);
+  font-size: 0.85rem;
+  text-decoration: none;
+  border-radius: 4px;
+}
+.skip-link:focus {
+  top: 1rem;
+}
+
+/* Ambient Grid & Purple Nebula Aura */
+.ambient-grid {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  pointer-events: none;
+  z-index: 1;
+  background-image: 
+    linear-gradient(to right, rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+    linear-gradient(to bottom, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+  background-size: 80px 80px;
+  mask-image: radial-gradient(ellipse at 50% 25%, rgba(0,0,0,1) 20%, rgba(0,0,0,0) 80%);
+  -webkit-mask-image: radial-gradient(ellipse at 50% 25%, rgba(0,0,0,1) 20%, rgba(0,0,0,0) 80%);
+}
+
+.ambient-aurora {
+  position: fixed;
+  top: -15vh;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 90vw;
+  height: 60vh;
+  background: radial-gradient(circle, rgba(168, 85, 247, 0.12) 0%, rgba(124, 58, 237, 0.08) 40%, transparent 70%);
+  filter: blur(80px);
+  pointer-events: none;
+  z-index: 1;
+  opacity: 0.9;
+}
+
+#webgl-canvas-container {
+  position: fixed;
+  top: 0;
+  left: 0;
+  width: 100vw;
+  height: 100vh;
+  z-index: 1;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+#webgl-canvas-container canvas {
+  width: 100% !important;
+  height: 100% !important;
+  display: block;
+}
+
+/* Custom Scrollbar */
+::-webkit-scrollbar {
+  width: 7px;
+}
+::-webkit-scrollbar-track {
+  background: var(--bg-void);
+}
+::-webkit-scrollbar-thumb {
+  background: #1e172e;
+  border-radius: 3px;
+  border: 1px solid var(--border-hairline);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3b2064;
+}
+
+/* Selection */
+::selection {
+  background: rgba(168, 85, 247, 0.4);
+  color: #fff;
+}
+
+/* ==========================================================================
+   Typography Hierarchy & System
+   ========================================================================== */
+
+h1, h2, h3, h4, h5, h6 {
+  font-family: var(--font-display);
+  color: var(--text-primary);
+  font-weight: 700;
+  line-height: 1.15;
+  letter-spacing: -0.025em;
+}
+
+h1 {
+  font-size: clamp(3.2rem, 7vw, 6.2rem);
+  font-weight: 850;
+  letter-spacing: -0.04em;
+}
+
+h2 {
+  font-size: clamp(2.2rem, 4.2vw, 3.6rem);
+  font-weight: 750;
+  letter-spacing: -0.03em;
+}
+
+h3 {
+  font-size: clamp(1.35rem, 2.4vw, 1.85rem);
+  font-weight: 650;
+  letter-spacing: -0.02em;
+}
+
+p {
+  color: var(--text-secondary);
+  font-size: 1.05rem;
+  line-height: 1.7;
+}
+
+.mono {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+}
+
+.kicker {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-family: var(--font-mono);
+  font-size: 0.75rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.16em;
+  color: var(--accent-purple-bright);
+  margin-bottom: 1rem;
+}
+
+.kicker::before {
+  content: '';
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  background: var(--accent-purple);
+  border-radius: 50%;
+  box-shadow: 0 0 10px var(--accent-purple-bright);
+}
+
+.lead {
+  font-size: clamp(1.1rem, 1.6vw, 1.3rem);
+  line-height: 1.65;
+  color: var(--text-secondary);
+  max-width: 48ch;
+}
+
+/* ==========================================================================
+   Structural Layout Containers
+   ========================================================================== */
+
+.container {
+  width: 100%;
+  max-width: var(--container-max);
+  margin-left: auto;
+  margin-right: auto;
+  padding-left: clamp(1.25rem, 3.5vw, 2.5rem);
+  padding-right: clamp(1.25rem, 3.5vw, 2.5rem);
+  position: relative;
+  z-index: 2;
+}
+
+.container-wide {
+  width: 100%;
+  max-width: var(--container-wide);
+  margin-left: auto;
+  margin-right: auto;
+  padding-left: clamp(1.25rem, 3.5vw, 3rem);
+  padding-right: clamp(1.25rem, 3.5vw, 3rem);
+  position: relative;
+  z-index: 2;
+}
+
+/* Balanced Section Spacing */
+.scene-section {
+  padding-top: clamp(5rem, 10vh, 8.5rem);
+  padding-bottom: clamp(5rem, 10vh, 8.5rem);
+  position: relative;
+  z-index: 2;
+  border-bottom: 1px solid var(--border-hairline);
+}
+
+.scene-section:last-of-type {
+  border-bottom: none;
+}
+
+.scene-header {
+  margin-bottom: clamp(2.5rem, 5vw, 4.5rem);
+}
+
+.scene-header.center {
+  text-align: center;
+}
+.scene-header.center .lead {
+  margin-left: auto;
+  margin-right: auto;
+}
+
+.scene-header.split {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 2rem;
+}
+
+@media (min-width: 900px) {
+  .scene-header.split {
+    grid-template-columns: 1.2fr 1fr;
+    align-items: flex-end;
+    justify-content: space-between;
+  }
+}
+
+/* ==========================================================================
+   Buttons & Micro-interactions
+   ========================================================================== */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 0.65rem;
+  font-family: var(--font-mono);
+  font-size: 0.8125rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  text-decoration: none;
+  padding: 0.85rem 1.65rem;
+  border-radius: 4px;
+  cursor: pointer;
+  position: relative;
+  overflow: hidden;
+  transition: transform var(--transition-fast), background var(--transition-base), border-color var(--transition-base), box-shadow var(--transition-base), color var(--transition-base);
+  user-select: none;
+  outline: none;
+}
+
+.btn:active {
+  transform: translateY(1px) scale(0.99);
+}
+
+.btn:focus-visible {
+  outline: 2px solid var(--accent-purple-bright);
+  outline-offset: 2px;
+}
+
+.btn-primary {
+  background: #ffffff;
+  color: #000;
+  border: 1px solid #ffffff;
+  box-shadow: 0 4px 16px rgba(255, 255, 255, 0.1);
+}
+
+.btn-primary:hover {
+  background: #ffffff;
+  color: #000;
+  transform: translateY(-2px);
+  box-shadow: 0 8px 25px rgba(255, 255, 255, 0.22);
+}
+
+.btn-secondary {
+  background: rgba(255, 255, 255, 0.04);
+  color: var(--text-primary);
+  border: 1px solid var(--border-subtle);
+  backdrop-filter: blur(10px);
+}
+
+.btn-secondary:hover {
+  background: rgba(255, 255, 255, 0.08);
+  border-color: var(--accent-purple-border);
+  color: #fff;
+  transform: translateY(-2px);
+}
+
+.btn-accent {
+  background: var(--accent-purple);
+  color: #ffffff;
+  border: 1px solid var(--accent-purple-bright);
+  box-shadow: 0 4px 20px rgba(168, 85, 247, 0.35);
+}
+
+.btn-accent:hover {
+  background: var(--accent-purple-bright);
+  color: #000;
+  transform: translateY(-2px);
+  box-shadow: 0 8px 32px rgba(168, 85, 247, 0.55);
+}
+
+.btn-lg {
+  padding: 1rem 2rem;
+  font-size: 0.875rem;
+}
+
+.btn-icon {
+  width: 16px;
+  height: 16px;
+  transition: transform var(--transition-fast);
+}
+
+.btn:hover .btn-icon {
+  transform: translateX(3px);
+}
+
+/* Badges */
+.badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-family: var(--font-mono);
+  font-size: 0.72rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  padding: 0.35rem 0.75rem;
+  border-radius: 9999px;
+  border: 1px solid var(--border-subtle);
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--text-secondary);
+}
+
+.badge-purple {
+  background: var(--accent-purple-faint);
+  border-color: var(--accent-purple-border);
+  color: var(--accent-purple-bright);
+}
+
+.badge-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent-purple-bright);
+  box-shadow: 0 0 8px var(--accent-purple);
+}
+
+/* Reveal Animations */
+.reveal-item {
+  opacity: 0;
+  transform: translateY(24px);
+  transition: opacity 0.75s cubic-bezier(0.16, 1, 0.3, 1), transform 0.75s cubic-bezier(0.16, 1, 0.3, 1);
+  will-change: opacity, transform;
+}
+
+.reveal-item.is-revealed {
+  opacity: 1;
+  transform: translateY(0);
+}
+
+.delay-1 { transition-delay: 80ms; }
+.delay-2 { transition-delay: 160ms; }
+.delay-3 { transition-delay: 240ms; }
+.delay-4 { transition-delay: 320ms; }

@@ -4,261 +4,321 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
 
-  <!-- Security: strict CSP (no external origins, no inline scripts), no referrer leak. -->
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'; connect-src 'self'; manifest-src 'self'; base-uri 'self'; form-action 'self'; upgrade-insecure-requests" />
   <meta name="referrer" content="strict-origin-when-cross-origin" />
   <meta name="color-scheme" content="dark" />
-  <meta name="theme-color" content="#05060a" />
+  <meta name="theme-color" content="#030305" />
 
-  <title>Support NyxOS — keep a from-scratch OS running</title>
-  <meta name="description" content="NyxOS is free software under the GPL-2.0 and always will be. If it is worth something to you, you can fund the domain and the test hardware through GitHub Sponsors, Ko-fi or Open Collective — or help for free by testing it on real metal." />
+  <title>Support NyxOS — Keep a From-Scratch OS Running</title>
+  <meta name="description" content="NyxOS is free software under the GPL-2.0 and always will be. Support the domain and real x86 test hardware via GitHub Sponsors, Ko-fi or Open Collective." />
   <link rel="canonical" href="https://nyxos.cc/support.html" />
 
-  <!-- Open Graph / social -->
-  <meta property="og:type" content="website" />
-  <meta property="og:site_name" content="NyxOS" />
-  <meta property="og:url" content="https://nyxos.cc/support.html" />
-  <meta property="og:title" content="Support NyxOS" />
-  <meta property="og:description" content="A from-scratch x86_64 OS, free under the GPL-2.0. Fund the domain and the hardware — or help for free by booting it on real metal and telling us what breaks." />
-  <meta property="og:image" content="https://nyxos.cc/gui.png" />
-  <meta property="og:image:alt" content="The NyxOS desktop: the Selene web browser on a live page, app icons, wallpaper and taskbar" />
-  <meta name="twitter:card" content="summary_large_image" />
-  <meta name="twitter:title" content="Support NyxOS" />
-  <meta name="twitter:description" content="A from-scratch x86_64 OS, free under the GPL-2.0. Fund the build, or help for free by testing it on real hardware." />
-  <meta name="twitter:image" content="https://nyxos.cc/gui.png" />
+  <!-- Favicon -->
+  <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><path d='M22 4a12 12 0 1 0 6 22A10 10 0 0 1 22 4Z' fill='%23a855f7'/><circle cx='12' cy='9' r='1.5' fill='%23c084fc'/><circle cx='23' cy='20' r='1.2' fill='%23e879f9'/></svg>" />
 
-  <!-- Icons + PWA manifest -->
-  <link rel="icon" href="favicon.svg" type="image/svg+xml" />
   <link rel="apple-touch-icon" href="apple-touch-icon.png" />
   <link rel="manifest" href="site.webmanifest" />
 
-  <!-- Self-hosted fonts: preload the two above-the-fold faces -->
-  <link rel="preload" href="fonts/space-grotesk-700.woff2" as="font" type="font/woff2" crossorigin />
-  <link rel="preload" href="fonts/inter-400.woff2" as="font" type="font/woff2" crossorigin />
-  <link rel="stylesheet" href="style.css" />
+  <link rel="preload" href="fonts/space-grotesk-500.woff2" as="font" type="font/woff2" crossorigin />
 
-  <noscript><style>.reveal{opacity:1 !important;transform:none !important}</style></noscript>
+  <!-- Modular Stylesheets -->
+  <link rel="stylesheet" href="css/main.css" />
+  <link rel="stylesheet" href="css/hero.css" />
+  <link rel="stylesheet" href="css/sections.css" />
+  <link rel="stylesheet" href="css/components.css" />
+  <link rel="stylesheet" href="css/responsive.css" />
+
+  <noscript><style>.reveal-item{opacity:1 !important;transform:none !important}</style></noscript>
 </head>
 <body>
-  <a class="skip-link" href="#top">Skip to content</a>
-  <canvas id="starfield" aria-hidden="true"></canvas>
-  <div class="glow glow-1" aria-hidden="true"></div>
-  <div class="glow glow-2" aria-hidden="true"></div>
+  <a class="skip-link" href="#main-content">Skip to primary content</a>
 
-  <!-- ============ NAV ============ -->
-  <header class="nav" id="nav">
-    <a href="index.html" class="brand">
-      <span class="brand-mark" aria-hidden="true">
-        <svg viewBox="0 0 32 32" width="26" height="26"><path d="M22 4a12 12 0 1 0 6 22A10 10 0 0 1 22 4Z" fill="url(#mg)"/><circle cx="12" cy="9" r="1" fill="#a855f7"/><circle cx="24" cy="20" r="1.3" fill="#d946ef"/><circle cx="9" cy="18" r="0.8" fill="#e6e8ee"/><defs><linearGradient id="mg" x1="0" y1="0" x2="32" y2="32"><stop stop-color="#a855f7"/><stop offset="1" stop-color="#d946ef"/></linearGradient></defs></svg>
-      </span>
-      <span class="brand-name">Nyx<span>OS</span></span>
-    </a>
-    <nav class="nav-links" id="navLinks">
-      <a href="index.html#overview">Overview</a>
-      <a href="index.html#features">Features</a>
-      <a href="index.html#manual">Manual</a>
-      <a href="index.html#architecture">Architecture</a>
-      <a href="index.html#releases">Releases</a>
-      <a href="support.html" aria-current="page">Support</a>
-    </nav>
-    <div class="nav-actions">
-      <a class="btn btn-ghost" href="https://dsc.gg/nyxos" target="_blank" rel="noopener">Discord</a>
-      <a class="btn btn-solid" href="https://github.com/kazah-png/nyx-os" target="_blank" rel="noopener">
-        <svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M12 .5A11.5 11.5 0 0 0 .5 12a11.5 11.5 0 0 0 7.86 10.92c.58.1.79-.25.79-.56v-2c-3.2.7-3.88-1.37-3.88-1.37-.53-1.34-1.29-1.7-1.29-1.7-1.05-.72.08-.7.08-.7 1.16.08 1.77 1.2 1.77 1.2 1.03 1.76 2.7 1.25 3.36.96.1-.75.4-1.26.73-1.55-2.55-.29-5.24-1.28-5.24-5.7 0-1.26.45-2.29 1.19-3.1-.12-.29-.52-1.46.11-3.05 0 0 .97-.31 3.18 1.18a11 11 0 0 1 5.8 0c2.2-1.49 3.17-1.18 3.17-1.18.63 1.59.23 2.76.11 3.05.74.81 1.19 1.84 1.19 3.1 0 4.43-2.69 5.4-5.25 5.69.41.36.78 1.05.78 2.12v3.15c0 .31.21.67.8.56A11.5 11.5 0 0 0 23.5 12 11.5 11.5 0 0 0 12 .5Z"/></svg>
-        GitHub
+  <div class="ambient-grid" aria-hidden="true"></div>
+  <div class="ambient-aurora" aria-hidden="true"></div>
+
+  <!-- Navigation Header -->
+  <header class="nav-header" id="nav-header">
+    <div class="container-wide nav-inner">
+      <a href="index.html" class="nav-brand">
+        <span class="brand-emblem" aria-hidden="true">
+          <svg viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <path d="M22 4a12 12 0 1 0 6 22A10 10 0 0 1 22 4Z" fill="url(#lunar-purple-grad)"/>
+            <circle cx="12" cy="9" r="1.2" fill="#c084fc"/>
+            <circle cx="23" cy="20" r="1" fill="#e879f9"/>
+            <defs>
+              <linearGradient id="lunar-purple-grad" x1="0" y1="0" x2="32" y2="32">
+                <stop stop-color="#c084fc"/>
+                <stop offset="1" stop-color="#7c3aed"/>
+              </linearGradient>
+            </defs>
+          </svg>
+        </span>
+        <span class="brand-title">NYX<span>OS</span></span>
+        <span class="brand-tag">v6.4.180</span>
       </a>
-      <button class="nav-toggle" id="navToggle" aria-label="Toggle navigation" aria-controls="navLinks" aria-expanded="false">
-        <span></span><span></span><span></span>
-      </button>
+
+      <nav class="nav-menu">
+        <a href="index.html#architecture" class="nav-link">Architecture</a>
+        <a href="index.html#desktop" class="nav-link">Desktop</a>
+        <a href="index.html#networking" class="nav-link">Networking</a>
+        <a href="index.html#manual" class="nav-link">Manual</a>
+        <a href="support.html" class="nav-link active">Support</a>
+      </nav>
+
+      <div class="nav-actions">
+        <a class="btn btn-secondary nav-btn-discord" href="https://dsc.gg/nyxos" target="_blank" rel="noopener">Discord</a>
+        <a class="btn btn-primary" href="https://github.com/kazah-png/nyx-os" target="_blank" rel="noopener">GitHub</a>
+        <button class="nav-toggle" aria-label="Toggle navigation drawer" aria-expanded="false">
+          <span></span><span></span><span></span>
+        </button>
+      </div>
     </div>
   </header>
 
-  <main id="top" tabindex="-1">
+  <!-- Mobile Drawer -->
+  <div class="mobile-drawer-backdrop"></div>
+  <aside class="mobile-drawer" aria-label="Mobile menu">
+    <div>
+      <div style="display: flex; align-items: center; gap: 0.75rem; margin-bottom: 2rem;">
+        <span class="brand-title" style="font-size: 1.4rem; font-weight: 800;">NYX<span>OS</span></span>
+        <span class="badge badge-purple">v6.4.180</span>
+      </div>
+      <ul class="mobile-nav-links">
+        <li><a href="index.html#architecture">Architecture</a></li>
+        <li><a href="index.html#desktop">Desktop &amp; GUI</a></li>
+        <li><a href="index.html#networking">Network Stack</a></li>
+        <li><a href="index.html#manual">Manual</a></li>
+        <li><a href="support.html" class="active">Support Project</a></li>
+      </ul>
+    </div>
+    <div style="display: flex; flex-direction: column; gap: 0.75rem;">
+      <a class="btn btn-primary" href="https://github.com/kazah-png/nyx-os" target="_blank" rel="noopener">GitHub</a>
+      <a class="btn btn-secondary" href="https://dsc.gg/nyxos" target="_blank" rel="noopener">Discord</a>
+    </div>
+  </aside>
 
-    <!-- ============ HERO ============ -->
-    <section class="section">
-      <div class="section-head reveal">
-        <span class="kicker">Support</span>
-        <h2>NyxOS is free, and stays free</h2>
-        <p class="lead">Every line of NyxOS is GPL-2.0 and always will be — the kernel, the desktop, the browser, the compiler. Nothing is paywalled, nothing is planned to be. This page exists for the people who want to chip in anyway, and for the ones who would rather help without spending a cent.</p>
-      </div>
-    </section>
-
-    <!-- ============ WHERE THE MONEY GOES ============ -->
-    <section id="where" class="section">
-      <div class="section-head reveal">
-        <span class="kicker">Transparency</span>
-        <h2>Where the money actually goes</h2>
-        <p class="lead">A small, boring list — because that is the honest one. There is no company behind NyxOS, no salary, no roadmap that unlocks if a goal is hit.</p>
-      </div>
-      <div class="grid">
-        <article class="card reveal">
-          <div class="card-ic">🌐</div>
-          <h3>The domain</h3>
-          <p><span class="mono">nyxos.cc</span> and its renewal. The site itself is static and hosted free on GitHub Pages, so the domain is the whole hosting bill.</p>
-        </article>
-        <article class="card reveal">
-          <div class="card-ic">🖥</div>
-          <h3>Real hardware to break</h3>
-          <p>QEMU is not metal. Cheap second-hand x86 boxes, USB sticks and a serial cable are what turn "boots in an emulator" into "boots on your laptop".</p>
-        </article>
-        <article class="card reveal">
-          <div class="card-ic">🧾</div>
-          <h3>Every expense, in public</h3>
-          <p>Spending goes through <a href="https://opencollective.com/NyxOSdev" target="_blank" rel="noopener">Open Collective</a>, where the ledger is public by design. If money comes in, you can see exactly where it went.</p>
-        </article>
-      </div>
-    </section>
-
-    <!-- ============ CHANNELS ============ -->
-    <section id="ways" class="section">
-      <div class="section-head reveal">
-        <span class="kicker">If you want to fund it</span>
-        <h2>Three ways, all of them small</h2>
-        <p class="lead">One euro is a real contribution here, not a token one. Pick whichever platform annoys you least.</p>
-      </div>
-      <div class="grid">
-        <article class="card reveal">
-          <div class="card-ic">♥</div>
-          <h3>GitHub Sponsors</h3>
-          <p>Recurring, from $1 a month, right where the code lives. Cancel any time. This is the one that makes development predictable.</p>
-          <p><a class="btn btn-solid" href="https://github.com/sponsors/kazah-png" target="_blank" rel="noopener">Sponsor on GitHub</a></p>
-        </article>
-        <article class="card reveal">
-          <div class="card-ic">☕</div>
-          <h3>Ko-fi</h3>
-          <p>A one-off tip, no account and no subscription. The fastest option if you just booted NyxOS, liked it, and want to say so.</p>
-          <p><a class="btn btn-solid" href="https://ko-fi.com/nyxos" target="_blank" rel="noopener">Tip on Ko-fi</a></p>
-        </article>
-        <article class="card reveal">
-          <div class="card-ic">🧮</div>
-          <h3>Open Collective</h3>
-          <p>For anyone who wants the receipts. Contributions and expenses are both public, line by line, on a ledger nobody can quietly edit.</p>
-          <p><a class="btn btn-solid" href="https://opencollective.com/NyxOSdev" target="_blank" rel="noopener">Fund transparently</a></p>
-        </article>
-      </div>
-    </section>
-
-    <!-- ============ WALLPAPER PACK ============ -->
-    <section id="wallpapers" class="section">
-      <div class="cta-card reveal">
-        <span class="kicker">Free, no strings</span>
-        <h2>Take the wallpapers with you</h2>
-        <p>NyxOS paints its desktop background from code — integer arithmetic only, no image files, no floating point anywhere in the kernel. We compiled that exact painter against an ordinary framebuffer and rendered every combination: <strong>144 wallpapers</strong>, twelve styles across eleven base colours, at 1920&times;1080 and a natively-rendered 4K set. Not screenshots — the same pixels the OS puts on screen.</p>
-        <p>Free, GPL-2.0, 2&nbsp;MB, no email required. If you end up keeping one on your desktop, you know where the tip jar is.</p>
-        <div class="hero-cta">
-          <a class="btn btn-solid btn-lg" href="NyxOS-Wallpaper-Pack.zip" download>Download the pack (2&nbsp;MB)</a>
-          <a class="btn btn-ghost btn-lg" href="WALLPAPERS.md">How they are drawn</a>
+  <!-- Main Content -->
+  <main id="main-content" tabindex="-1">
+    <!-- Hero Support Header -->
+    <section class="scene-section" style="padding-top: clamp(6rem, 12vh, 8.5rem);" aria-label="Support NyxOS">
+      <div class="container">
+        <div class="scene-header center reveal-item">
+          <span class="kicker">Free &amp; Open Source</span>
+          <h1>NyxOS is Free, and Stays Free</h1>
+          <p class="lead">
+            Every line of NyxOS is GPL-2.0 and always will be — the kernel, the desktop, the browser, and the compiler. Nothing is paywalled, and nothing ever will be. This page exists for those who want to fund real hardware and hosting.
+          </p>
         </div>
       </div>
     </section>
 
-    <!-- ============ FREE HELP ============ -->
-    <section id="free" class="section">
-      <div class="section-head reveal">
-        <span class="kicker">Costs nothing</span>
-        <h2>The help that is actually worth more</h2>
-        <p class="lead">An OS with no users is a demo. These are ranked by how much they genuinely move the project — and every one of them is free.</p>
-      </div>
-      <div class="steps">
-        <div class="step reveal">
-          <span class="step-n">1</span>
+    <!-- Transparency Breakdown -->
+    <section class="scene-section" aria-label="Where money goes">
+      <div class="container">
+        <div class="scene-header split reveal-item">
           <div>
-            <h3>Boot it on real hardware</h3>
-            <p>Write <span class="mono">NyxOS.iso</span> to a USB stick and boot a machine you do not care about. Then tell us where it stopped — the first line that did not appear is the whole bug report. Real-metal reports are the single most valuable thing anyone sends.</p>
+            <span class="kicker">Transparency</span>
+            <h2>Where the Money Actually Goes</h2>
+          </div>
+          <p class="lead">
+            A small, honest ledger. There is no corporate overhead, no hidden salaries, and no locked features.
+          </p>
+        </div>
+
+        <div class="editorial-apps-grid">
+          <article class="app-editorial-card span-4 reveal-item">
+            <div class="app-card-head">
+              <div class="app-icon-glyph"><span style="font-family: var(--font-mono); font-size: 0.78rem; font-weight: 800; color: var(--accent-purple-bright);">[DNS]</span></div>
+              <span class="app-card-tag">Domain</span>
+            </div>
+            <h3 class="app-card-title">The Domain</h3>
+            <p class="app-card-desc"><span class="mono">nyxos.cc</span> registration and annual renewal. The site itself is static and hosted on GitHub Pages, so the domain is the sole hosting cost.</p>
+          </article>
+
+          <article class="app-editorial-card span-4 reveal-item delay-1">
+            <div class="app-card-head">
+              <div class="app-icon-glyph"><span style="font-family: var(--font-mono); font-size: 0.78rem; font-weight: 800; color: var(--accent-purple-bright);">[HW]</span></div>
+              <span class="app-card-tag">Hardware</span>
+            </div>
+            <h3 class="app-card-title">Real Hardware to Test</h3>
+            <p class="app-card-desc">QEMU is not bare metal. Second-hand x86 machines, USB test media, and serial cables are what turn "boots in emulator" into "boots on your physical laptop."</p>
+          </article>
+
+          <article class="app-editorial-card span-4 reveal-item delay-2">
+            <div class="app-card-head">
+              <div class="app-icon-glyph"><span style="font-family: var(--font-mono); font-size: 0.78rem; font-weight: 800; color: var(--accent-purple-bright);">[ACC]</span></div>
+              <span class="app-card-tag">Public Ledger</span>
+            </div>
+            <h3 class="app-card-title">Public Expenses</h3>
+            <p class="app-card-desc">All finances run through <a href="https://opencollective.com/NyxOSdev" target="_blank" rel="noopener" style="color: var(--accent-purple-bright);">Open Collective</a>. Every receipt and dollar spent is visible on a public, immutable ledger.</p>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- Funding Channels -->
+    <section class="scene-section" aria-label="Funding options">
+      <div class="container">
+        <div class="scene-header center reveal-item">
+          <span class="kicker">Direct Support</span>
+          <h2>Three Ways to Fund the Project</h2>
+          <p class="lead">Pick whichever platform is most convenient for you.</p>
+        </div>
+
+        <div class="editorial-apps-grid">
+          <!-- GitHub Sponsors -->
+          <article class="app-editorial-card span-4 reveal-item">
+            <div class="app-card-head">
+              <div class="app-icon-glyph"><span style="font-family: var(--font-mono); font-size: 0.78rem; font-weight: 800; color: var(--accent-purple-bright);">[GH]</span></div>
+              <span class="app-card-tag">Recurring</span>
+            </div>
+            <div>
+              <h3 class="app-card-title">GitHub Sponsors</h3>
+              <p class="app-card-desc">Recurring from $1/month directly on GitHub where the source code lives. Cancel anytime. Makes continuous hardware acquisition predictable.</p>
+            </div>
+            <div style="margin-top: 1.2rem;">
+              <a class="btn btn-primary" href="https://github.com/sponsors/kazah-png" target="_blank" rel="noopener" style="width: 100%;">Sponsor on GitHub</a>
+            </div>
+          </article>
+
+          <!-- Ko-fi -->
+          <article class="app-editorial-card span-4 reveal-item delay-1">
+            <div class="app-card-head">
+              <div class="app-icon-glyph"><span style="font-family: var(--font-mono); font-size: 0.78rem; font-weight: 800; color: var(--accent-purple-bright);">[TIP]</span></div>
+              <span class="app-card-tag">One-off</span>
+            </div>
+            <div>
+              <h3 class="app-card-title">Ko-fi Tip</h3>
+              <p class="app-card-desc">A quick one-time tip with no mandatory account or recurring subscription. Ideal if you booted NyxOS in QEMU, enjoyed it, and want to say thanks.</p>
+            </div>
+            <div style="margin-top: 1.2rem;">
+              <a class="btn btn-secondary" href="https://ko-fi.com/nyxos" target="_blank" rel="noopener" style="width: 100%;">Tip on Ko-fi</a>
+            </div>
+          </article>
+
+          <!-- Open Collective -->
+          <article class="app-editorial-card span-4 reveal-item delay-2">
+            <div class="app-card-head">
+              <div class="app-icon-glyph"><span style="font-family: var(--font-mono); font-size: 0.78rem; font-weight: 800; color: var(--accent-purple-bright);">[OC]</span></div>
+              <span class="app-card-tag">Transparent</span>
+            </div>
+            <div>
+              <h3 class="app-card-title">Open Collective</h3>
+              <p class="app-card-desc">For anyone who wants complete transparent receipts. Contributions and expenditures are documented line-by-line in public.</p>
+            </div>
+            <div style="margin-top: 1.2rem;">
+              <a class="btn btn-secondary" href="https://opencollective.com/NyxOSdev" target="_blank" rel="noopener" style="width: 100%;">Open Collective</a>
+            </div>
+          </article>
+        </div>
+      </div>
+    </section>
+
+    <!-- Free Help Section -->
+    <section class="scene-section" aria-label="Free ways to help">
+      <div class="container">
+        <div class="scene-header split reveal-item">
+          <div>
+            <span class="kicker">Zero Cost</span>
+            <h2>Help That Is Worth More Than Money</h2>
+          </div>
+          <p class="lead">
+            An operating system with no test reports is just a toy demo. These actions move NyxOS forward significantly — and cost nothing.
+          </p>
+        </div>
+
+        <div class="manual-grid">
+          <div class="manual-step-box reveal-item">
+            <div>
+              <div class="step-badge">1</div>
+              <h3>Boot on Physical Hardware</h3>
+              <p style="color: var(--text-secondary); font-size: 0.85rem;">Burn <span class="mono">NyxOS.iso</span> to a USB flash drive and boot a secondary PC. Report where initialization halts.</p>
+            </div>
+          </div>
+
+          <div class="manual-step-box reveal-item delay-1">
+            <div>
+              <div class="step-badge">2</div>
+              <h3>File Actionable Issues</h3>
+              <p style="color: var(--text-secondary); font-size: 0.85rem;">Open a <a href="https://github.com/kazah-png/nyx-os/issues" target="_blank" rel="noopener" style="color: var(--accent-purple-bright);">GitHub Issue</a> including QEMU arguments and serial UART logs.</p>
+            </div>
+          </div>
+
+          <div class="manual-step-box reveal-item delay-2">
+            <div>
+              <div class="step-badge">3</div>
+              <h3>Star &amp; Send Patches</h3>
+              <p style="color: var(--text-secondary); font-size: 0.85rem;">Give the repository a star on GitHub, share screenshots, or submit a pull request.</p>
+            </div>
           </div>
         </div>
-        <div class="step reveal">
-          <span class="step-n">2</span>
-          <div>
-            <h3>File the bug properly</h3>
-            <p>An <a href="https://github.com/kazah-png/nyx-os/issues" target="_blank" rel="noopener">issue</a> with the QEMU command line or the machine model, plus the serial output, gets fixed. A screenshot of a frozen screen usually does not.</p>
-          </div>
-        </div>
-        <div class="step reveal">
-          <span class="step-n">3</span>
-          <div>
-            <h3>Star and share it</h3>
-            <p>A <a href="https://github.com/kazah-png/nyx-os" target="_blank" rel="noopener">star</a> costs one click and is how anyone else ever finds this. Posting a screenshot of the desktop somewhere is worth more than a euro, measurably.</p>
-          </div>
-        </div>
-        <div class="step reveal">
-          <span class="step-n">4</span>
-          <div>
-            <h3>Send a patch</h3>
-            <p>A driver, a shell command, a wallpaper style, a typo in the docs — all of it counts, and contributors are credited in the log. Start from <span class="mono">CONTRIBUTING.md</span>.</p>
-          </div>
-        </div>
       </div>
     </section>
 
-    <!-- ============ FAQ ============ -->
-    <section id="faq" class="section">
-      <div class="section-head reveal">
-        <span class="kicker">Straight answers</span>
-        <h2>The obvious questions</h2>
-      </div>
-      <div class="grid">
-        <article class="card reveal">
-          <h3>Will any of this ever go paid?</h3>
-          <p>No. NyxOS is GPL-2.0. The licence is not going to change, there will be no "pro" build, and the ISO stays a free download. Funding buys speed, never access.</p>
-        </article>
-        <article class="card reveal">
-          <h3>Do sponsors get to steer the roadmap?</h3>
-          <p>No, and that is deliberate — a hobby OS stops being fun the moment it has clients. Sponsors get thanks and the same public issue tracker as everyone else.</p>
-        </article>
-        <article class="card reveal">
-          <h3>What if nobody ever donates?</h3>
-          <p>Then NyxOS carries on exactly as it has for its whole life so far, just slower on the hardware side. This page is an option, not a dependency.</p>
-        </article>
-        <article class="card reveal">
-          <h3>Is this a company?</h3>
-          <p>It is one person and a compiler. Contributions are personal support for a hobby project, not a purchase, and they come with no warranty or obligation attached.</p>
-        </article>
-      </div>
-    </section>
-
-    <!-- ============ CTA ============ -->
-    <section class="section">
-      <div class="cta-card reveal">
-        <h2>Or just come and watch it get built</h2>
-        <p>NyxOS is developed in the open, one verified increment at a time. The Discord is where the kernel-dev chat happens, and the repository is where every increment lands.</p>
-        <div class="hero-cta">
-          <a class="btn btn-solid btn-lg" href="https://dsc.gg/nyxos" target="_blank" rel="noopener">Join the Discord</a>
-          <a class="btn btn-ghost btn-lg" href="https://github.com/kazah-png/nyx-os" target="_blank" rel="noopener">GitHub repository</a>
+    <!-- Final Callout -->
+    <section class="finale-scene" aria-label="Join Community">
+      <div class="container">
+        <div class="reveal-item">
+          <span class="kicker">Community</span>
+          <h2 class="finale-title">
+            <span>FOLLOW THE BUILD</span>
+          </h2>
+          <p class="finale-sub">
+            NyxOS is developed entirely in the open. Join our kernel dev discussions on Discord.
+          </p>
+          <div class="finale-actions">
+            <a class="btn btn-accent btn-lg" href="https://dsc.gg/nyxos" target="_blank" rel="noopener">Join the Discord</a>
+            <a class="btn btn-secondary btn-lg" href="https://github.com/kazah-png/nyx-os" target="_blank" rel="noopener">GitHub Repository</a>
+          </div>
         </div>
       </div>
     </section>
   </main>
 
-  <!-- ============ FOOTER ============ -->
-  <footer class="footer">
-    <div class="foot-grid">
-      <div class="foot-brand">
-        <span class="brand-name">Nyx<span>OS</span></span>
-        <p class="muted">A 64-bit operating system, written from scratch in C and x86_64 Assembly.</p>
+  <!-- Minimalist Footer -->
+  <footer class="site-footer" role="contentinfo">
+    <div class="container">
+      <div class="footer-grid">
+        <div class="footer-brand">
+          <div style="display: flex; align-items: center; gap: 0.6rem; margin-bottom: 0.6rem;">
+            <span class="brand-title" style="font-size: 1.3rem; font-weight: 800;">NYX<span>OS</span></span>
+            <span class="badge badge-purple">v6.4.180</span>
+          </div>
+          <p>A 64-bit operating system written from scratch in C and x86_64 Assembly. Zero external dependencies.</p>
+          <p class="footer-credit">
+            Built by <a href="https://github.com/kazah-png" target="_blank" rel="noopener">kazah-png</a>
+            with <a href="https://github.com/ScarDeveloper444" target="_blank" rel="noopener">ScarDeveloper</a>
+            and <a href="https://github.com/kazah-png/nyx-os/graphs/contributors" target="_blank" rel="noopener">contributors</a>.
+          </p>
+        </div>
+
+        <div class="footer-column">
+          <h4>Docs</h4>
+          <ul class="footer-links-list">
+            <li><a href="index.html#architecture">Architecture</a></li>
+            <li><a href="index.html#desktop">Desktop</a></li>
+            <li><a href="index.html#networking">Networking</a></li>
+            <li><a href="index.html#manual">Manual</a></li>
+          </ul>
+        </div>
+
+        <div class="footer-column">
+          <h4>Project</h4>
+          <ul class="footer-links-list">
+            <li><a href="https://github.com/kazah-png/nyx-os" target="_blank" rel="noopener">Source Code</a></li>
+            <li><a href="https://dsc.gg/nyxos" target="_blank" rel="noopener">Discord</a></li>
+            <li><a href="support.html">Support</a></li>
+          </ul>
+        </div>
       </div>
-      <div class="foot-links">
-        <h4>Docs</h4>
-        <a href="index.html#overview">Overview</a>
-        <a href="index.html#manual">Manual</a>
-        <a href="index.html#architecture">Architecture</a>
-        <a href="index.html#networking">Networking</a>
+
+      <div class="footer-bottom-bar">
+        <span>© NyxOS · Free software licensed under GNU GPL-2.0+</span>
+        <span>Built from the metal.</span>
       </div>
-      <div class="foot-links">
-        <h4>Project</h4>
-        <a href="https://github.com/kazah-png/nyx-os" target="_blank" rel="noopener">Source</a>
-        <a href="https://github.com/kazah-png/nyx-os/issues/1" target="_blank" rel="noopener">Status report</a>
-        <a href="https://dsc.gg/nyxos" target="_blank" rel="noopener">Discord</a>
-        <a href="support.html">Support</a>
-      </div>
-    </div>
-    <div class="foot-bar">
-      <span>© NyxOS · Free software under the GNU GPL-2.0+</span>
-      <span>Built for the metal. 🌙</span>
     </div>
   </footer>
 
-  <script src="script.js"></script>
+  <script src="js/main.js"></script>
 </body>
 </html>
