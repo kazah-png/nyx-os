@@ -5067,6 +5067,41 @@ static void add_history(const char* cmd) {
     hist_count++;
 }
 
+static int hx_all_digits(const char* s) {
+    if (!*s) return 0;
+    while (*s) { if (*s < '0' || *s > '9') return 0; s++; }
+    return 1;
+}
+
+// bash-style history expansion of a WHOLE-line reference into `out` (verbatim copy for
+// anything else, so a normal command is untouched):
+//   !!   -> the most recent command
+//   !N   -> command N as numbered by `history` (1-based within the retained window)
+//   !-N  -> the Nth command counting back from the most recent (!-1 == !!)
+// Returns 1 if a reference was expanded, else 0. `hist` is the ring buffer, `count` the
+// monotonic entry count (live index = i % HIST_MAX). Pure given (hist,count) — KAT'd.
+static int history_expand(const char* line, char hist[][256], int count, char* out, int outsz) {
+    int target = -1;
+    if (line[0] == '!' && count > 0) {
+        int start = count > HIST_MAX ? count - HIST_MAX : 0;
+        if (line[1] == '!' && line[2] == '\0') {                 // !!
+            target = count - 1;
+        } else if (line[1] == '-' && hx_all_digits(line + 2)) {  // !-N
+            int k = atoi(line + 2);
+            if (k >= 1) target = count - k;
+        } else if (hx_all_digits(line + 1)) {                    // !N
+            int k = atoi(line + 1);
+            if (k >= 1) target = start + (k - 1);
+        }
+        if (target < start || target >= count) target = -1;      // out of the retained window
+    }
+    const char* src = (target >= 0) ? hist[target % HIST_MAX] : line;
+    int i = 0;
+    for (; src[i] && i < outsz - 1; i++) out[i] = src[i];
+    out[i] = '\0';
+    return target >= 0 ? 1 : 0;
+}
+
 static void cmd_mem(int argc, char** argv) {
     (void)argc; (void)argv;
     printf("Physical memory: %d MB total, %d MB used, %d MB free\n",
@@ -6477,6 +6512,35 @@ static int snprintf_selftest(void) {
     return 0;
 }
 
+// KAT for the shell's `!!`/`!N`/`!-N` history expansion: exercise the references, the
+// out-of-range/verbatim cases (so a normal command is never mangled), and the ring-buffer
+// wrap (count > HIST_MAX). Pure — feeds a synthetic history.
+static int history_expand_selftest(void) {
+    static char h[HIST_MAX][256];
+    char out[256];
+    // count <= HIST_MAX: entries at indices 0..2
+    strcpy(h[0], "ls"); strcpy(h[1], "pwd"); strcpy(h[2], "echo hi");
+    if (history_expand("!!",   h, 3, out, sizeof(out)) != 1 || strcmp(out, "echo hi") != 0) return 1;
+    if (history_expand("!1",   h, 3, out, sizeof(out)) != 1 || strcmp(out, "ls") != 0)      return 2;
+    if (history_expand("!2",   h, 3, out, sizeof(out)) != 1 || strcmp(out, "pwd") != 0)     return 3;
+    if (history_expand("!3",   h, 3, out, sizeof(out)) != 1 || strcmp(out, "echo hi") != 0) return 4;
+    if (history_expand("!-1",  h, 3, out, sizeof(out)) != 1 || strcmp(out, "echo hi") != 0) return 5;
+    if (history_expand("!-2",  h, 3, out, sizeof(out)) != 1 || strcmp(out, "pwd") != 0)     return 6;
+    // out of range / not a reference -> verbatim, return 0 (normal command untouched)
+    if (history_expand("!5",    h, 3, out, sizeof(out)) != 0 || strcmp(out, "!5") != 0)      return 7;
+    if (history_expand("!0",    h, 3, out, sizeof(out)) != 0 || strcmp(out, "!0") != 0)      return 8;
+    if (history_expand("!",     h, 3, out, sizeof(out)) != 0 || strcmp(out, "!") != 0)       return 9;
+    if (history_expand("!!x",   h, 3, out, sizeof(out)) != 0 || strcmp(out, "!!x") != 0)     return 10;
+    if (history_expand("ls -l", h, 3, out, sizeof(out)) != 0 || strcmp(out, "ls -l") != 0)   return 11;
+    if (history_expand("!!",    h, 0, out, sizeof(out)) != 0 || strcmp(out, "!!") != 0)       return 12; // empty history
+    // ring wrap: count=12 (> HIST_MAX=10), retained window = entries 2..11, entry e at h[e%10]
+    for (int e = 2; e < 12; e++) snprintf(h[e % HIST_MAX], 256, "cmd%d", e);
+    if (history_expand("!!", h, 12, out, sizeof(out)) != 1 || strcmp(out, "cmd11") != 0) return 13; // entry 11 -> h[1]
+    if (history_expand("!3", h, 12, out, sizeof(out)) != 1 || strcmp(out, "cmd4") != 0)  return 14; // start=2, !3 -> entry 4 -> h[4]
+    if (history_expand("!1", h, 12, out, sizeof(out)) != 1 || strcmp(out, "cmd2") != 0)  return 15; // entry 2 -> h[2]
+    return 0;
+}
+
 // Run the whole offline self-test battery, print a machine-readable summary, and
 // halt. Triggered ONLY by the "selftest" multiboot command line (used by CI); a
 // normal boot never calls this, so ordinary startup is unaffected. Each test is a
@@ -6549,6 +6613,7 @@ static void run_selftests(void) {
         {"elf",          elf_selftest},
         {"numparse",     numparse_selftest},        {"hkdf",          hkdf_selftest},
         {"snprintf",     snprintf_selftest},
+        {"histexpand",   history_expand_selftest},
         {"chacha20",     chacha20_selftest},        {"siphash",       siphash_selftest},
         {"poly1305",     poly1305_selftest},        {"chachapoly",    chacha20poly1305_selftest},
         {"blake2s",      blake2s_selftest},         {"cmac",          aes_cmac_selftest},
@@ -7115,6 +7180,18 @@ void launch_shell(void) {
                     cmd_line[idx++] = c;
                     putchar(c);
                 }
+            }
+        }
+
+        // bash-style history expansion (!!, !N, !-N). A no-op for normal commands, so
+        // ordinary input is untouched; on a hit, echo the expanded line (like bash) and
+        // run + store that instead of the reference.
+        {
+            char hx[256];
+            if (history_expand(cmd_line, history, hist_count, hx, sizeof(hx))) {
+                printf("%s\n", hx);
+                strncpy(cmd_line, hx, sizeof(cmd_line) - 1);
+                cmd_line[sizeof(cmd_line) - 1] = '\0';
             }
         }
 
