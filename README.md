@@ -65,21 +65,26 @@
 ```
 nyx:root$ nyxfetch
 
-       .:::o:o#:.           nyx@nyxos
-    .:oo.. :o.              -----------------
-  :oo:.oo.o:                OS:         NyxOS x86_64
- .#o:.   :.                 Kernel:     NyxOS 6.4.288
- #:::....:                  Uptime:     00:00:11
-o#::. . o.                  Resolution: 1024 x 768
-o#.o:   :o                  CPU:        QEMU Virtual CPU (1)
-o###o   o#                  Memory:     255 MiB
-:#oo::  .oo.                Disk:       16M EXT2 at /mnt
- o#o:o..  :o:.              Network:    10.0.2.15 (DHCP)
-  o#ooo::.:::#::        .:. Shell:      NyxOS Terminal
-  .:o#oo::.: ..:oo::.o:#o.
-     :o#####:#::o:.::o:
-        .::oo####::.
+       .:::o:o#:.            nyx@nyxos
+    .:oo.. :o.               ---------
+  :oo:.oo.o:                 OS:         NyxOS x86_64
+ .#o:.   :.                  Host:       QEMU Standard PC
+ #:::....:                   Kernel:     NyxOS 6.4.288 (GUI Suite)
+o#::. . o.                   Uptime:     00:00:12
+o#.o:   :o                   Shell:      nyxsh
+o###o   o#                   Resolution: 1024 x 768
+:#oo::  .oo.                 Desktop:    Hemera
+ o#o:o..  :o:.               Terminal:   Erebus
+  o#ooo::.:::#::        .:.  CPU:        QEMU Virtual CPU (1)
+  .:o#oo::.: ..:oo::.o:#o.   Memory:     255 / 511 MiB (49%)
+     :o#####:#::o:.::o:      Processes:  4
+        .::oo####::.         Disk:       11679 / 16384 KiB
+                             Network:    10.0.2.15 (DHCP)
+                             Keymap:     Spanish (ES)
+                             Time:       2026-08-20 22:00:12
 ```
+
+> **`nyxfetch`** beside the Nyx crescent-moon logo, then a two-row 16-colour palette footer (rendered in colour in the screenshot above). The desktop components share the Nyx family: **Hemera** (compositor), **Erebus** (terminal), **Selene** (browser), and the `nyxsh` shell.
 
 ---
 
