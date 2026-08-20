@@ -34,6 +34,7 @@ int         nvme_io_ready(void);        // non-zero once the I/O queue is up
 const char* nvme_model_str(void);       // IDENTIFY model string (valid after nvme_identify)
 uint64_t    nvme_capacity_blocks(void); // namespace size in logical blocks
 uint32_t    nvme_block_size(void);      // bytes per logical block (512 or 4096)
+int         nvme_vwc(void);             // 1 if the controller has a volatile write cache (Flush is meaningful)
 int nvme_flush(void);            // NVM Flush: force the write cache to the medium (real SSDs need this)
 int nvme_present(void);          // non-zero once a controller has been brought up
 int nvme_selftest(void);         // KAT the pure register-math (CAP/doorbell/IDENTIFY/queue/IO SQEs)

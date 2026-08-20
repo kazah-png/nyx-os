@@ -2670,6 +2670,80 @@ static void cmd_nvme(int argc, char** argv) {
         printf("nvme writetest: %u/%u blocks OK, %u BAD\n", ok, count, bad);
         return;
     }
+    // `nvme persisttest write|verify` — CROSS-POWER-CYCLE diagnostic. `writetest`
+    // reads back in the SAME boot (sees the controller's write cache); the real
+    // install failed only AFTER a reboot. This proves whether single-block writes
+    // (exactly ext2's path) survive a full power-off. Two phases:
+    //   write : stamp+flush N blocks, same-boot read-back (write path + volume),
+    //           then the user POWER-CYCLES the machine.
+    //   verify: after the power cycle, read them back -> real NAND persistence.
+    // WRITES a scratch region (LBA 800000..) — disposable disk only.
+    if (argc >= 2 && strcmp(argv[1], "persisttest") == 0) {
+        const uint32_t base = 800000u, count = 8192u;      // 4 MiB, ~kernel-sized
+        int do_write  = (argc >= 3 && strcmp(argv[2], "write")  == 0);
+        int do_verify = (argc >= 3 && strcmp(argv[2], "verify") == 0);
+        if (!do_write && !do_verify) {
+            printf("Usage: nvme persisttest write | verify\n");
+            printf("  write : stamp+flush %u blocks @ LBA %u, then FULLY POWER OFF the machine.\n", count, base);
+            printf("  verify: after the power cycle + reboot, read them back (real NAND persistence).\n");
+            return;
+        }
+        static uint8_t wb[512], rb[512];
+        if (do_write) {
+            printf("nvme persisttest: controller VWC (volatile write cache) present: %s\n",
+                   nvme_vwc() ? "YES (Flush is required for persistence)" : "no (writes should be persistent)");
+            printf("nvme persisttest: writing %u stamped blocks @ LBA %u..\n", count, base);
+            for (uint32_t i = 0; i < count; i++) {
+                for (int j = 0; j < 512; j++) wb[j] = (uint8_t)(i * 7 + j);
+                wb[0] = 0x4E; wb[1] = 0x59;                 // "NY" magic
+                wb[2] = (uint8_t)(i & 0xFF); wb[3] = (uint8_t)((i >> 8) & 0xFF);
+                if (blk_write1(BLK_NVME0, base + i, wb) != 0) { printf("  WRITE error at block %u\n", i); return; }
+            }
+            int fl = blk_flush(BLK_NVME0);
+            printf("nvme persisttest: flush returned %d (0=ok)\n", fl);
+            uint32_t ok = 0;                                // same-boot read-back = write-path + volume check
+            for (uint32_t i = 0; i < count; i++) {
+                __builtin_memset(rb, 0, 512);
+                blk_read1(BLK_NVME0, base + i, rb);
+                int good = 1;
+                for (int j = 0; j < 512; j++) {
+                    uint8_t want = j==0 ? 0x4E : j==1 ? 0x59 : j==2 ? (uint8_t)(i & 0xFF)
+                                 : j==3 ? (uint8_t)((i >> 8) & 0xFF) : (uint8_t)(i * 7 + j);
+                    if (rb[j] != want) { good = 0; break; }
+                }
+                if (good) ok++;
+            }
+            printf("nvme persisttest: same-boot read-back %u/%u OK\n", ok, count);
+            printf("\n  >>> NOW FULLY POWER OFF the laptop (hold the power button until it's dark),\n");
+            printf("      then boot the NyxOS USB again and run:  nvme persisttest verify\n");
+            return;
+        }
+        printf("nvme persisttest: reading back %u blocks @ LBA %u (post power-cycle)..\n", count, base);
+        uint32_t ok = 0, bad = 0, shown = 0;
+        for (uint32_t i = 0; i < count; i++) {
+            __builtin_memset(rb, 0, 512);
+            blk_read1(BLK_NVME0, base + i, rb);
+            int good = 1;
+            for (int j = 0; j < 512; j++) {
+                uint8_t want = j==0 ? 0x4E : j==1 ? 0x59 : j==2 ? (uint8_t)(i & 0xFF)
+                             : j==3 ? (uint8_t)((i >> 8) & 0xFF) : (uint8_t)(i * 7 + j);
+                if (rb[j] != want) { good = 0; break; }
+            }
+            if (good) ok++;
+            else {
+                bad++;
+                if (shown < 6) {
+                    printf("  LOST block %u (LBA %u): got %02x %02x %02x %02x (want 4e 59 %02x %02x)\n",
+                           i, base + i, rb[0], rb[1], rb[2], rb[3], (uint8_t)(i & 0xFF), (uint8_t)((i >> 8) & 0xFF));
+                    shown++;
+                }
+            }
+        }
+        printf("nvme persisttest: %u/%u survived the power cycle, %u LOST\n", ok, count, bad);
+        if (bad == 0) printf("  -> writes PERSIST: the install bug is in ext2/copy logic, not NVMe persistence.\n");
+        else          printf("  -> writes DON'T persist across power-off: write-cache/flush issue on this controller.\n");
+        return;
+    }
 }
 
 // Parse a drive selector for the installer commands: "n0"/"nvme"/"nvme0" -> the

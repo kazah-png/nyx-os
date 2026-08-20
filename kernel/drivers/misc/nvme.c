@@ -36,6 +36,7 @@ typedef struct {
     int      identified;
     uint64_t nsze;                 // namespace size in logical blocks
     uint32_t lba_size;             // bytes per logical block
+    uint8_t  vwc;                  // Identify-Controller VWC bit 0: volatile write cache present
     char     model[41], serial[21];
     // I/O queue pair (qid 1)
     int      io_ready;
@@ -287,6 +288,7 @@ int nvme_identify(void) {
     if (st != 0) { printf("nvme: IDENTIFY controller failed (status=%d)\n", st); return -1; }
     copy_ident_str(nvme_dev.serial, d + 4, 20);
     copy_ident_str(nvme_dev.model,  d + 24, 40);
+    nvme_dev.vwc = (uint8_t)(d[525] & 1u);          // VWC (byte 525, bit 0): volatile write cache present
 
     // IDENTIFY namespace 1 (CNS=0, NSID=1)
     __builtin_memset(buf, 0, 4096);
@@ -453,6 +455,7 @@ int         nvme_io_ready(void)        { return nvme_dev.io_ready; }
 const char* nvme_model_str(void)       { return nvme_dev.model; }
 uint64_t    nvme_capacity_blocks(void) { return nvme_dev.nsze; }
 uint32_t    nvme_block_size(void)      { return nvme_dev.lba_size ? nvme_dev.lba_size : 512; }
+int         nvme_vwc(void)             { return nvme_dev.vwc; }   // 1 = controller has a volatile write cache (Flush matters)
 
 // QEMU functional check ONLY (needs a real `-device nvme`; NOT in the boot KAT
 // battery). Writes a known pattern to a scratch LBA, reads it back, compares.
