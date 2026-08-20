@@ -142,6 +142,7 @@ static void cmd_file(int argc, char** argv);
 static void cmd_tar(int argc, char** argv);
 static void cmd_iniget(int argc, char** argv);
 static void cmd_factor(int argc, char** argv);
+static void cmd_strings(int argc, char** argv);
 static void cmd_semver(int argc, char** argv);
 static void cmd_fnv(int argc, char** argv);
 static void cmd_seq(int argc, char** argv);
@@ -349,6 +350,7 @@ static const command_t commands[] = {
     {"fold",      cmd_fold,      "Wrap long lines to a width: fold [-w width] <file>", false},
     {"nl",        cmd_nl,        "Number lines: nl [-b a|t|n] [-w N] [-s SEP] <file>", false},
     {"factor",    cmd_factor,    "Prime factorization: factor N [N ...]", false},
+    {"strings",   cmd_strings,   "Print printable-character runs in a file: strings [-n MIN] <file>", false},
     {"seq",       cmd_seq,       "Integer sequence: seq [FIRST [STEP]] LAST", false},
     {"paste",     cmd_paste,     "Merge lines of files: paste [-s] [-d LIST] <file ...>", false},
     {"clip",      cmd_clip,      "Clipboard: clip <text> to copy, clip to paste, clip -c to clear", false},
@@ -630,7 +632,7 @@ void execute_command(const char* cmd_line) {
 typedef struct { const char* title; const char* const* names; } help_cat_t;
 static const char* const HC_shell[] = {"help","man","version","clear","history","exec","spawn","jobs","wait","nice","renice",0};
 static const char* const HC_files[] = {"ls","cd","pwd","cat","file","tar","iniget","open","touch","mkdir","rm","cp","mv","tree","find","which","basename","dirname","files","df","du","disks","lsblk","lspci","nvme","nyxpart","mkfs","nyxinstall","nyxgrub","mount","ext2ls","ext2cat",0};
-static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","fold","nl","expand","unexpand","factor","seq","paste","clip","cut","uniq","join","comm","printf","wc","write","hexdump",0};
+static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","fold","nl","expand","unexpand","factor","strings","seq","paste","clip","cut","uniq","join","comm","printf","wc","write","hexdump",0};
 static const char* const HC_sys[]   = {"ps","kill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat","screenshot","stackcheck",0};
 static const char* const HC_user[]  = {"useradd","users",0};
 static const char* const HC_net[]   = {"ifconfig","dhcp","dns","ping","setip","httpget","tls","ipcalc",0};
@@ -718,6 +720,7 @@ static const man_page_t man_pages[] = {
     {"fold",     "Wrap the lines of <file> so no output line is longer than the given width (80 by default, or -w width). A line longer than the width is broken with a hard newline at exactly that many characters; shorter lines and existing line breaks are left alone."},
     {"nl",       "Number the lines of <file>. By default only non-empty lines are numbered (-b t); -b a numbers every line and -b n numbers none. Each line number is right-justified in a field N columns wide (6 by default, or -w N) and followed by a separator (a tab by default, or -s SEP), then the line text."},
     {"factor",   "Print the prime factorization of each integer argument, one per line, as `N: p1 p2 ...` with factors ascending and repeated by multiplicity (e.g. `factor 90` prints `90: 2 3 3 5`). 0 and 1 print just `N:`. Accepts any 64-bit unsigned value; a non-numeric or negative argument is reported and skipped."},
+    {"strings",  "Print each run of at least MIN (default 4, or -n MIN) consecutive printable characters found in <file>, one run per line — the classic way to read the text embedded in a binary (an ELF, an image, a package). A printable character is a space through `~` (0x20-0x7E) or a tab; any other byte ends the current run. The file is streamed in fixed chunks, so even a large binary needs no whole-file buffer."},
     {"vfsstat",  "Report VFS node-pool usage: how many of the fixed node slots are live, free, and the linear high-water mark, plus a breakdown of the transient mount-backed (ext2 /mnt mirror) nodes into those still held by an open fd versus idle-but-unfreed. A diagnostic for node-pool exhaustion under sustained in-OS file I/O (issue #66): if `mount held` climbs and never falls across a compile session, an fd is leaking; watch it before/after `cc`/`xbm` runs."},
     {"comm",     "Compare two files that are each already sorted, line by line, in three columns: lines only in <file1> (column 1), lines only in <file2> (column 2, indented one tab), and lines common to both (column 3, indented two tabs). `-1`/`-2`/`-3` suppress the respective column (and drop its indentation from the later columns), so e.g. `comm -12 a b` prints just the lines common to both. Input is assumed sorted in byte order."},
     {"semver",   "Parse and compare Semantic Versioning 2.0.0 strings (MAJOR.MINOR.PATCH[-prerelease][+build]). With one argument, validate it and print the parsed fields. With two, print their precedence relation (`A < B`, `A = B`, or `A > B`) per the semver spec: core numbers compared numerically, a prerelease ranks below the same version without one, and build metadata is ignored. Useful for comparing package versions."},
@@ -1129,6 +1132,73 @@ static void cmd_iniget(int argc, char** argv) {
 // factor N [N ...] — print the prime factorization of each integer, GNU factor style:
 // "N: p1 p2 ..." (ascending, with multiplicity). Strict parse via parse_u64(); the
 // factoring core is factor_one() (kernel/core/factor.c).
+// --- strings: streaming printable-run extractor (shared by `strings` + its KAT) ---
+// A "printable" byte is 0x20..0x7E or TAB; any other byte ends the current run,
+// which is emitted (via the sink callback) only if it reached `minlen`. Runs longer
+// than the fixed buffer are split at the cap and continued, so nothing is lost and
+// the buffer stays bounded — the state can stream a file in arbitrary-sized chunks
+// with an in-progress run carried across calls (strings_finish flushes the tail).
+#define STRINGS_MAX_RUN 512
+typedef struct {
+    char  run[STRINGS_MAX_RUN];
+    int   run_len;
+    int   minlen;
+    void (*emit)(const char* s, void* ctx);
+    void* ctx;
+} strings_state_t;
+
+static void strings_feed(strings_state_t* s, const uint8_t* buf, uint32_t len) {
+    for (uint32_t i = 0; i < len; i++) {
+        uint8_t c = buf[i];
+        if ((c >= 0x20 && c <= 0x7E) || c == '\t') {
+            s->run[s->run_len++] = (char)c;
+            if (s->run_len >= STRINGS_MAX_RUN - 1) {          // cap reached: emit + continue
+                s->run[s->run_len] = 0;
+                if (s->run_len >= s->minlen) s->emit(s->run, s->ctx);
+                s->run_len = 0;
+            }
+        } else {
+            if (s->run_len >= s->minlen) { s->run[s->run_len] = 0; s->emit(s->run, s->ctx); }
+            s->run_len = 0;
+        }
+    }
+}
+static void strings_finish(strings_state_t* s) {
+    if (s->run_len >= s->minlen) { s->run[s->run_len] = 0; s->emit(s->run, s->ctx); }
+    s->run_len = 0;
+}
+
+static void strings_emit_print(const char* s, void* ctx) { (void)ctx; printf("%s\n", s); }
+
+// strings [-n MIN] <file> — print each run of >=MIN (default 4) printable characters
+// in a file, one per line: the classic way to eyeball text inside a binary (an ELF,
+// an image, a package). Streams the file in fixed chunks so even a large binary needs
+// no whole-file buffer; an in-progress run carries across chunk boundaries.
+static void cmd_strings(int argc, char** argv) {
+    const char* path = 0; int minlen = 4;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-n") == 0 && i + 1 < argc) {
+            minlen = atoi(argv[++i]); if (minlen < 1) minlen = 1;
+        } else if (!path) path = argv[i];
+    }
+    if (!path) { printf("Usage: strings [-n MIN] <file>\n"); return; }
+    int fd = vfs_open(path, 0, 0);
+    if (fd < 0) { printf("strings: %s: cannot open\n", path); return; }
+    static strings_state_t st;
+    static uint8_t buf[512];
+    st.run_len = 0; st.minlen = minlen; st.emit = strings_emit_print; st.ctx = 0;
+    // vfs_pread is offset-aware (0 at EOF); advance the offset ourselves. Cap the
+    // total so an endless special (/dev/zero, /dev/random) can't loop forever.
+    uint32_t off = 0; const uint32_t cap = 64u * 1024u * 1024u;
+    int n;
+    while (off < cap && (n = vfs_pread(fd, buf, sizeof(buf), off)) > 0) {
+        strings_feed(&st, buf, (uint32_t)n);
+        off += (uint32_t)n;
+    }
+    strings_finish(&st);
+    vfs_close(fd);
+}
+
 static void cmd_factor(int argc, char** argv) {
     if (argc < 2) { printf("Usage: factor N [N ...]\n"); return; }
     for (int i = 1; i < argc; i++) {
@@ -6310,6 +6380,42 @@ static int crc32c_selftest(void) {
     return 0;
 }
 
+// KAT for the `strings` extractor: feed a buffer with embedded printable runs and
+// junk — split across TWO chunks mid-run — and check the emitted runs exactly. Covers
+// the minlen threshold (a run of exactly minlen emits; one shorter is dropped), an
+// embedded TAB as printable, the cross-chunk carry of an in-progress run, and the
+// EOF tail flush.
+static char strings_kat_out[16][STRINGS_MAX_RUN];
+static int  strings_kat_n;
+static void strings_emit_kat(const char* s, void* ctx) {
+    (void)ctx;
+    if (strings_kat_n < 16) {
+        int i = 0; for (; s[i] && i < STRINGS_MAX_RUN - 1; i++) strings_kat_out[strings_kat_n][i] = s[i];
+        strings_kat_out[strings_kat_n][i] = 0; strings_kat_n++;
+    }
+}
+static int strings_selftest(void) {
+    static const uint8_t in[] = {
+        0x00,0x01,'H','e','l','l','o',0x00,          // "Hello" (5>=4) -> emit
+        'a','b',0x00,                                 // "ab"    (2<4)  -> drop
+        'W','o','r','l',                              // start of "World123"...
+        'd','1','2','3',0xFF,                         // ...ends here -> "World123" (8) -> emit
+        'x','\t','y','z',0x00,                        // "x\tyz" (4, TAB counts) -> emit
+        'A','B','C',0x00,                             // "ABC"   (3<4)  -> drop
+        'e','n','d','!'                               // "end!"  (4) at EOF -> emit on finish
+    };
+    static strings_state_t st;
+    st.run_len = 0; st.minlen = 4; st.emit = strings_emit_kat; st.ctx = 0;
+    strings_kat_n = 0;
+    strings_feed(&st, in, 15);                       // chunk 1 ends mid-"World123" (run="Worl")
+    strings_feed(&st, in + 15, (uint32_t)sizeof(in) - 15);
+    strings_finish(&st);
+    static const char* const exp[] = { "Hello", "World123", "x\tyz", "end!" };
+    if (strings_kat_n != 4) return 1;
+    for (int i = 0; i < 4; i++) if (strcmp(strings_kat_out[i], exp[i]) != 0) return 10 + i;
+    return 0;
+}
+
 // Run the whole offline self-test battery, print a machine-readable summary, and
 // halt. Triggered ONLY by the "selftest" multiboot command line (used by CI); a
 // normal boot never calls this, so ordinary startup is unaffected. Each test is a
@@ -6324,6 +6430,7 @@ static void run_selftests(void) {
         {"tar",          tar_selftest},            {"datefmt",       datefmt_selftest},
         {"iniparse",     ini_selftest},
         {"factor",       factor_selftest},
+        {"strings",      strings_selftest},
         {"semver",       semver_selftest},
         {"tls_prf",      tls_prf_selftest},       {"tls_keysched",  tls_keyschedule_selftest},
         {"tls_record",   tls_record_selftest},    {"tls_ske_p384",  tls_ske_p384_selftest},
