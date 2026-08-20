@@ -102,13 +102,125 @@ ordinary consuming function as the destructor — spec §4.6.)
 
 ### 2.5 OS integration: GUI and tasks
 
-The compositor and scheduler get language-level bindings (over the syscall
-surface as it grows):
+The compositor and scheduler get language-level bindings. This section is
+the **binding-surface draft**: concrete enough that the kernel side can be
+built toward it, honest about what runs today.
 
-```npp
-win := gui.Window.new("Clock", w: 220, h: 120)?;
-win.on(Event.Click, fn(e) { put("click at {e.x},{e.y}\n"); });
+#### What the kernel has, and why it does not cross the boundary
+
+NyxOS windows today are **kernel-side constructs**: `window_create()` takes
+a *draw callback*, and every app (terminal, editor, games) lives inside the
+kernel, painting through `window_draw_fn` and receiving input through
+`on_key`/`on_click`/`on_tick` function pointers (`kernel/gui/core/
+compositor.h`). Function pointers cannot cross a syscall boundary, so a
+user-space window needs the model **inverted**:
+
+- the *process* owns its pixels — a plain buffer in user memory;
+- the *kernel* composites them — a present call blits the buffer into the
+  window's client area;
+- input arrives as **data, not callbacks** — the process polls a
+  per-window event queue whenever it likes.
+
+The precedent already exists in-tree: `SYS_FBINFO`/`SYS_FBPRESENT`/
+`SYS_GETKEYEVENT` (54–56) do exactly this for fullscreen programs (DOOM).
+Windowed is the same idea with an id and a queue.
+
+#### Proposed syscall surface (57–60)
+
+| # | Call | Signature (kernel view) | Notes |
+|---|---|---|---|
+| 57 | `win_create` | `(w, h, title_ptr, title_len) -> id` (or −1) | client-area size; title copied at the crossing |
+| 58 | `win_destroy` | `(id) -> 0/-1` | idempotent close |
+| 59 | `win_present` | `(id, buf, w, h) -> 0/-1` | full client-area blit of a `u32` XRGB buffer; kernel validates the user range (`user_ptr_ok`) and clips |
+| 60 | `win_poll_event` | `(id, ev_ptr) -> 1/0/-1` | copies one event out, or 0 if the queue is empty |
+
+The event record is four `i64` words — `{ kind, a, b, c }` — with kinds:
+`1` key (a = keycode), `2` click (a = x, b = y, c = button), `3` move
+(a = x, b = y, c = buttons), `4` close-requested, `5` resize (a = w,
+b = h). A fixed small queue per window (say 32 events, oldest dropped)
+keeps the kernel side allocation-free.
+
+Deliberate non-goals for v1: no damage rectangles (present is whole-area),
+no shared memory mapping (present copies — correctness first), no
+callbacks, no vsync contract beyond "present blits when called".
+
+#### The N-side binding — the P5 pieces meet
+
+The handle model is the `own` story arriving at its destination: a window
+is an `own struct` and its destructor is `win_destroy` — leaking a window
+becomes a compile error, dropping one closes it.
+
+```n
+#[caps(syscall)]
+extern syscall {
+    fn win_create(w: i64, h: i64, t: #[user] *u8, tl: isize) -> i64 = 57
+    fn win_destroy(id: i64) -> i64                                  = 58
+    fn win_present(id: i64, buf: #[user] *u32, w: i64, h: i64) -> i64 = 59
+    fn win_poll_event(id: i64, ev: #[user] *i64) -> i64             = 60
+}
+
+#[drop(close_window)]
+own struct Window { id: i64 }
+
+fn close_window(win: Window) {
+    win_destroy(win.id);
+}
 ```
+
+An event loop in **current N syntax** (this compiles today against the
+extern block above — `while`, indexing, `#[user]` crossings and `own`
+all exist):
+
+```n
+fn event_loop(win: Window, fb: *u32, w: i64, h: i64) {
+    mut running := true;
+    while running {
+        ev := alloc_words(4);
+        while win_poll_event(win.id, ev as #[user] *i64) > 0 {
+            if ev[0] == 4 {                 // close requested
+                running = false;
+            }
+            if ev[0] == 2 {                 // click: paint a dot
+                fb[ev[2] * w + ev[1]] = 0xFFFFFF;
+            }
+        }
+        win_present(win.id, fb as #[user] *u32, w, h);
+    }
+    close_window(win);      // a held param is the callee's manual duty (sink rule)
+}
+```
+
+The auto-close reads best at the birth site. Note how the capability
+gate composes with the handle: only the audited `open_window` wrapper
+touches the syscall — `main` holds no capability, cannot call
+`win_create` directly (the checker refuses), and still cannot leak the
+window:
+
+```n
+#[caps(syscall)]
+fn open_window(w: i64, h: i64, title: str) -> Window {
+    Window{ id: win_create(w, h, title.ptr as #[user] *u8, title.len as isize) }
+}
+
+fn main() -> i64 {
+    win := open_window(220, 120, "hello");
+    put("window {win.id} open\n");          // field reads peek, no move
+    0
+}                                           // ← win was LIVE: #[drop] closes it
+```
+
+The `gui.Window.new(...)? / win.on(Event.Click, fn(e) …)` sugar stays
+`n++`-front-end territory (closures, `Result`); the binding above is the
+floor it lowers to.
+
+#### Staging — honest
+
+| Piece | Status |
+|---|---|
+| N language surface (extern block, `own` + `#[drop]` handle, event loop) | **compiles today** — every construct shipped v0.12–v0.19 |
+| Kernel syscalls 57–60 | **do not exist** — the ask above |
+| Compositor support | needs a *user-buffer window* variant: a `window_t` whose draw callback blits from the owning process's presented buffer, plus a per-window event queue filled where `on_key`/`on_click` fire today |
+| P5 gate ("a windowed N++ app on the NyxOS desktop") | unblocked the day 57–60 land |
 
 Structured concurrency (`task` blocks whose children cannot outlive them)
 maps onto NyxOS's preemptive scheduler — design follows once the kernel's
@@ -134,7 +246,7 @@ feature is debuggable by reading the generated C.
 | P2 | ✅ **complete**: `struct` (v0.5) · `defer` (v0.6) · `enum` + `match` (v0.7) · `impl` methods (v0.8, static dispatch) | structs.n, defer.n, enums.n, methods.n |
 | P3 | ✅ **complete** (bootstrap side): match-as-expression (v0.9) · `?` over structural Ok/Err result enums (v0.10 — same-type pass-through, cross-type Err rewrap, defers honored) · fs bindings sketch (`fsio.n`: the negative-return→Result boundary conversion of §2.2, `?` chains, deferred close). Generic `Result<T, E>` and the idiomatic `.npp` rewrite move to the `n++` front-end (P5 era) | `fsio.n` runs the §2.2 shape end-to-end |
 | P4 | ✅ **complete** (bootstrap side): `#[user]` pointer flavor (v0.12 — hard no-implicit-conversion boundary, `as` as the audited crossing) · `pageflags` W^X bitset (v0.13 — total compile-time W^X proof, live-mmap verified) · capabilities (v0.14 — `#[caps(syscall)]` gates extern blocks, direct callers must hold the cap, wrapper = audited boundary). The canonical-half range proof, further capability names (`mmio`, `ports`), and ring heights move to the `n++` front-end and kernel-side modules | a kernel-module example checked at `ring0` |
-| P5 | 🔨 **started**: `own` structs shipped (v0.17 — move-not-copy, must-consume; leaks/double-use/discards are compile errors), the tracking is **branch-aware** (v0.18 — `if`/`else` arms may consume, both exits must agree, a `return`-ending arm is exempt; moves stay refused in loops, `while` conditions, and match arms), and **destructors shipped** (v0.19 — `#[drop(fn)]` wires an ordinary consuming fn; live values auto-drop at scope end, defers first then drops LIFO, held params never auto-drop, no drop flags). The own-types contract of §2.4 is complete. Remaining: GUI bindings (wait on kernel window syscalls) | a windowed N++ app on the NyxOS desktop |
+| P5 | 🔨 **started**: `own` structs shipped (v0.17 — move-not-copy, must-consume; leaks/double-use/discards are compile errors), the tracking is **branch-aware** (v0.18 — `if`/`else` arms may consume, both exits must agree, a `return`-ending arm is exempt; moves stay refused in loops, `while` conditions, and match arms), and **destructors shipped** (v0.19 — `#[drop(fn)]` wires an ordinary consuming fn; live values auto-drop at scope end, defers first then drops LIFO, held params never auto-drop, no drop flags). The own-types contract of §2.4 is complete. Remaining: GUI bindings — the binding surface is now DRAFTED (§2.5: syscalls 57–60 proposed in [#77](https://github.com/kazah-png/nyx-os/issues/77), the N-side extern block and `own`+`#[drop]` Window handle compile today); waits only on the kernel side | a windowed N++ app on the NyxOS desktop |
 
 P1 is the enabling investment: everything later depends on the checker
 existing. It also immediately improves plain N (better errors from `ncc`).
