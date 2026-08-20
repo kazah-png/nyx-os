@@ -132,6 +132,7 @@ static void cmd_mv(int argc, char** argv);
 static void cmd_useradd(int argc, char** argv);
 static void cmd_users(int argc, char** argv);
 static void cmd_ifconfig(int argc, char** argv);
+static void cmd_arp(int argc, char** argv);
 static void cmd_ping(int argc, char** argv);
 static void cmd_kill(int argc, char** argv);
 static void cmd_which(int argc, char** argv);
@@ -319,6 +320,7 @@ static const command_t commands[] = {
     {"useradd",   cmd_useradd,   "Add a user account: useradd <user> <pass>", false},
     {"users",     cmd_users,     "List user accounts", false},
     {"ifconfig",  cmd_ifconfig,  "Show network interfaces", false},
+    {"arp",       cmd_arp,       "Show the ARP cache (IPv4 -> MAC neighbours)", false},
     {"dns",       cmd_dns,       "DNS resolve: dns <hostname>", false},
     {"ping",      cmd_ping,      "Ping a host: ping <ip|hostname>", false},
     {"kill",      cmd_kill,      "Kill a process: kill <pid>", false},
@@ -657,7 +659,7 @@ static const char* const HC_files[] = {"ls","cd","pwd","cat","file","tar","inige
 static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","fold","nl","expand","unexpand","factor","isprime","strings","sha256sum","seq","paste","clip","cut","uniq","join","comm","printf","wc","write","hexdump",0};
 static const char* const HC_sys[]   = {"ps","kill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat","screenshot","stackcheck",0};
 static const char* const HC_user[]  = {"useradd","users",0};
-static const char* const HC_net[]   = {"ifconfig","dhcp","dns","ping","setip","httpget","tls","ipcalc",0};
+static const char* const HC_net[]   = {"ifconfig","arp","dhcp","dns","ping","setip","httpget","tls","ipcalc",0};
 static const char* const HC_dev[]   = {"cc","xbm","semver","fnv","urlcode","crc32c","fletcher","murmur","base58","bech32","deflate","gzip","calc","json","hmac",0};
 static const char* const HC_media[] = {"play","sb16play","imageview","selene",0};
 static const char* const HC_games[] = {"doom","pong","voxel","fire","matrix","lava","fractal","julia","particles","snake","tetris",0};
@@ -823,6 +825,7 @@ static const man_page_t man_pages[] = {
     {"cpus",     "List the logical CPU cores the kernel started (SMP), with each core's id and state."},
     {"hexdump",  "Print a side-by-side hex and ASCII dump of memory, starting at <addr> for [bytes] bytes (256 by default)."},
     {"ifconfig", "Show each network interface with its IPv4 address, netmask and gateway. Configure one with dhcp or setip."},
+    {"arp",      "Show the ARP cache: the IPv4 -> MAC address mappings the stack has resolved for neighbours on the local link (the DHCP gateway, a `ping`/`dns`/`httpget` target). Entries are filled on demand by ARP resolution and looked up when sending each frame; a host that has not been contacted yet will not appear. Read-only view of what `arp -a` shows on Linux."},
     {"dhcp",     "Obtain an IPv4 address, netmask and gateway for the network interface automatically from a DHCP server."},
     {"dns",      "Resolve the hostname <hostname> to an IPv4 address using the configured DNS server."},
     {"ping",     "Send ICMP echo requests to <ip|hostname> and report the replies, to check whether a host is reachable."},
@@ -6097,6 +6100,29 @@ static void cmd_ifconfig(int argc, char** argv) {
                 IP4_OCTETS(net_interfaces[i].ip));
         }
     }
+}
+
+// arp — show the ARP cache (resolved IPv4 -> MAC neighbours), like `arp -a`. Filled as the
+// stack resolves hosts: the DHCP gateway, a ping/DNS/HTTP target. Read-only; the table is
+// static in net/arp.c and reached through its arp_cache_size/arp_cache_entry accessors.
+static void cmd_arp(int argc, char** argv) {
+    (void)argc; (void)argv;
+    extern int arp_cache_size(void);
+    extern int arp_cache_entry(int idx, uint32_t* ip, uint8_t* mac);
+    printf("Address");
+    for (int p = 7; p < 18; p++) putchar(' ');
+    printf("HWaddress\n");
+    int shown = 0;
+    for (int i = 0; i < arp_cache_size(); i++) {
+        uint32_t ip; uint8_t mac[6];
+        if (!arp_cache_entry(i, &ip, mac)) continue;
+        char ips[16]; snprintf(ips, sizeof(ips), "%d.%d.%d.%d", IP4_OCTETS(ip));
+        printf("%s", ips);
+        for (int p = (int)strlen(ips); p < 18; p++) putchar(' ');
+        printf("%02x:%02x:%02x:%02x:%02x:%02x\n", mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]);
+        shown++;
+    }
+    if (!shown) printf("(arp cache empty)\n");
 }
 
 static void cmd_dns(int argc, char** argv) {

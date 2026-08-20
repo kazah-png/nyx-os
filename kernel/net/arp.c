@@ -62,6 +62,16 @@ static void arp_cache_add(uint32_t ip, const uint8_t* mac) {
     arp_cache[0].ip = ip;
 }
 
+// Read-only accessors for the `arp` command (kernel.c). Iterate 0..arp_cache_size()-1;
+// arp_cache_entry() fills *ip/mac for a VALID slot and returns 1, else returns 0.
+int arp_cache_size(void) { return ARP_CACHE_SIZE; }
+int arp_cache_entry(int idx, uint32_t* ip, uint8_t* mac) {
+    if (idx < 0 || idx >= ARP_CACHE_SIZE || !arp_cache[idx].valid) return 0;
+    if (ip)  *ip  = arp_cache[idx].ip;
+    if (mac) memcpy(mac, arp_cache[idx].mac, 6);
+    return 1;
+}
+
 void arp_send_request(uint32_t target_ip, int iface_idx) {
     arp_packet_t arp;
     arp.htype = htons(ARP_HTYPE_ETHERNET);
