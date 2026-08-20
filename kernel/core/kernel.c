@@ -142,6 +142,7 @@ static void cmd_file(int argc, char** argv);
 static void cmd_tar(int argc, char** argv);
 static void cmd_iniget(int argc, char** argv);
 static void cmd_factor(int argc, char** argv);
+static void cmd_isprime(int argc, char** argv);
 static void cmd_strings(int argc, char** argv);
 static void cmd_sha256sum(int argc, char** argv);
 static void cmd_semver(int argc, char** argv);
@@ -351,6 +352,7 @@ static const command_t commands[] = {
     {"fold",      cmd_fold,      "Wrap long lines to a width: fold [-w width] <file>", false},
     {"nl",        cmd_nl,        "Number lines: nl [-b a|t|n] [-w N] [-s SEP] <file>", false},
     {"factor",    cmd_factor,    "Prime factorization: factor N [N ...]", false},
+    {"isprime",   cmd_isprime,   "Test primality of each integer: isprime N [N ...]", false},
     {"strings",   cmd_strings,   "Print printable-character runs in a file: strings [-n MIN] <file>", false},
     {"sha256sum", cmd_sha256sum, "Print the SHA-256 digest of each file: sha256sum <file>...", false},
     {"seq",       cmd_seq,       "Integer sequence: seq [FIRST [STEP]] LAST", false},
@@ -634,7 +636,7 @@ void execute_command(const char* cmd_line) {
 typedef struct { const char* title; const char* const* names; } help_cat_t;
 static const char* const HC_shell[] = {"help","man","version","clear","history","exec","spawn","jobs","wait","nice","renice",0};
 static const char* const HC_files[] = {"ls","cd","pwd","cat","file","tar","iniget","open","touch","mkdir","rm","cp","mv","tree","find","which","basename","dirname","files","df","du","disks","lsblk","lspci","nvme","nyxpart","mkfs","nyxinstall","nyxgrub","mount","ext2ls","ext2cat",0};
-static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","fold","nl","expand","unexpand","factor","strings","sha256sum","seq","paste","clip","cut","uniq","join","comm","printf","wc","write","hexdump",0};
+static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","fold","nl","expand","unexpand","factor","isprime","strings","sha256sum","seq","paste","clip","cut","uniq","join","comm","printf","wc","write","hexdump",0};
 static const char* const HC_sys[]   = {"ps","kill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat","screenshot","stackcheck",0};
 static const char* const HC_user[]  = {"useradd","users",0};
 static const char* const HC_net[]   = {"ifconfig","dhcp","dns","ping","setip","httpget","tls","ipcalc",0};
@@ -721,7 +723,8 @@ static const man_page_t man_pages[] = {
     {"tr",       "Translate, delete or squeeze characters read from <file>. With two sets, each character of <file> that appears in SET1 is replaced by the character at the same position in SET2 (a shorter SET2 repeats its last character). -d deletes every SET1 character instead; -s collapses each run of a repeated result character into one. Sets may use ascending ranges such as a-z or 0-9."},
     {"fold",     "Wrap the lines of <file> so no output line is longer than the given width (80 by default, or -w width). A line longer than the width is broken with a hard newline at exactly that many characters; shorter lines and existing line breaks are left alone."},
     {"nl",       "Number the lines of <file>. By default only non-empty lines are numbered (-b t); -b a numbers every line and -b n numbers none. Each line number is right-justified in a field N columns wide (6 by default, or -w N) and followed by a separator (a tab by default, or -s SEP), then the line text."},
-    {"factor",   "Print the prime factorization of each integer argument, one per line, as `N: p1 p2 ...` with factors ascending and repeated by multiplicity (e.g. `factor 90` prints `90: 2 3 3 5`). 0 and 1 print just `N:`. Accepts any 64-bit unsigned value; a non-numeric or negative argument is reported and skipped."},
+    {"factor",   "Print the prime factorization of each integer argument, one per line, as `N: p1 p2 ...` with factors ascending and repeated by multiplicity (e.g. `factor 90` prints `90: 2 3 3 5`). 0 and 1 print just `N:`. Accepts any 64-bit unsigned value; a non-numeric or negative argument is reported and skipped. Small factors are peeled by trial division and the rest by Miller-Rabin + Pollard's rho, so even a large 64-bit semiprime factors quickly."},
+    {"isprime",  "Test each integer argument for primality and print `N is prime` or `N is not prime`. Uses an exact deterministic Miller-Rabin (the twelve witnesses 2..37, proven correct for all 64-bit N), so the answer is definitive — not probabilistic — and it correctly rejects Carmichael numbers that fool a naive Fermat test. Much faster than `factor` for a large prime, since it never has to find the factors. A non-numeric or negative argument is reported and skipped."},
     {"strings",  "Print each run of at least MIN (default 4, or -n MIN) consecutive printable characters found in <file>, one run per line — the classic way to read the text embedded in a binary (an ELF, an image, a package). A printable character is a space through `~` (0x20-0x7E) or a tab; any other byte ends the current run. The file is streamed in fixed chunks, so even a large binary needs no whole-file buffer."},
     {"sha256sum","Print the SHA-256 digest of each file argument as `<64-hex-digits>  <name>` (two spaces between, the GNU sha256sum format), the standard way to check a file's integrity — e.g. that a downloaded package matches a published hash. Each file is streamed through the hash in fixed chunks, so a large binary needs no whole-file buffer, and the total is capped so an endless special like /dev/zero cannot spin forever. A file that cannot be opened is reported and skipped."},
     {"vfsstat",  "Report VFS node-pool usage: how many of the fixed node slots are live, free, and the linear high-water mark, plus a breakdown of the transient mount-backed (ext2 /mnt mirror) nodes into those still held by an open fd versus idle-but-unfreed. A diagnostic for node-pool exhaustion under sustained in-OS file I/O (issue #66): if `mount held` climbs and never falls across a compile session, an fd is leaking; watch it before/after `cc`/`xbm` runs."},
@@ -1237,9 +1240,25 @@ static void cmd_factor(int argc, char** argv) {
         }
         uint64_t f[64];
         int k = factor_one(n, f, 64);
-        printf("%lu:", (unsigned long)n);
-        for (int j = 0; j < k; j++) printf(" %lu", (unsigned long)f[j]);
+        printf("%llu:", (unsigned long long)n);                      // %llu: n/factors span the full 64-bit range
+        for (int j = 0; j < k; j++) printf(" %llu", (unsigned long long)f[j]);
         printf("\n");
+    }
+}
+
+// isprime N [N ...] — test each argument for primality with the exact 64-bit
+// deterministic Miller-Rabin (is_prime_u64, factor.c): "N is prime" / "N is not
+// prime". Fast even for large 64-bit values where `factor` (which must find the
+// factors) would be slow.
+static void cmd_isprime(int argc, char** argv) {
+    if (argc < 2) { printf("Usage: isprime N [N ...]\n"); return; }
+    for (int i = 1; i < argc; i++) {
+        uint64_t n;
+        if (parse_u64(argv[i], &n) != 0) {
+            printf("isprime: '%s' is not a valid positive integer\n", argv[i]);
+            continue;
+        }
+        printf("%llu is %s\n", (unsigned long long)n, is_prime_u64(n) ? "prime" : "not prime");
     }
 }
 
@@ -6291,52 +6310,8 @@ extern int dhcp_options_selftest(void);
 // mulmod is the binary (shift-add) method so it never needs a 128-bit intermediate
 // (and thus no __int128 / libgcc __umodti3 the freestanding kernel can't link),
 // keeping it float-free and dependency-free like the rest of the kernel.
-static uint64_t addmod64(uint64_t a, uint64_t b, uint64_t m) {
-    a %= m; b %= m;                         // a,b < m; a+b may overflow 64 bits
-    if (a >= m - b) return a - (m - b);     // a+b >= m -> a-(m-b), computed without overflow
-    return a + b;
-}
-static uint64_t mulmod64(uint64_t a, uint64_t b, uint64_t m) {
-    uint64_t r = 0;
-    a %= m;
-    while (b) {
-        if (b & 1) r = addmod64(r, a, m);
-        a = addmod64(a, a, m);              // double
-        b >>= 1;
-    }
-    return r;
-}
-static uint64_t powmod64(uint64_t base, uint64_t e, uint64_t m) {
-    uint64_t r = 1 % m;
-    base %= m;
-    while (e) {
-        if (e & 1) r = mulmod64(r, base, m);
-        base = mulmod64(base, base, m);
-        e >>= 1;
-    }
-    return r;
-}
-int is_prime_u64(uint64_t n) {
-    static const uint64_t W[12] = {2,3,5,7,11,13,17,19,23,29,31,37};
-    if (n < 2) return 0;
-    for (int i = 0; i < 12; i++) {          // trivially prime, or a small factor
-        if (n == W[i]) return 1;
-        if (n % W[i] == 0) return 0;
-    }
-    uint64_t d = n - 1; int s = 0;          // n-1 = d * 2^s, d odd
-    while ((d & 1) == 0) { d >>= 1; s++; }
-    for (int i = 0; i < 12; i++) {
-        uint64_t x = powmod64(W[i], d, n);
-        if (x == 1 || x == n - 1) continue;
-        int composite = 1;
-        for (int r = 1; r < s; r++) {
-            x = mulmod64(x, x, n);
-            if (x == n - 1) { composite = 0; break; }
-        }
-        if (composite) return 0;
-    }
-    return 1;
-}
+// (is_prime_u64 + the Pollard-rho factor engine moved to kernel/core/factor.c, shared
+// via factor.h with the `factor` and `isprime` commands.)
 // KAT: edge cases, small primes/composites, Carmichael numbers (composite yet
 // Fermat-pseudoprime to every coprime base), and large 64-bit primes/composites.
 static int mathx_selftest(void) {
