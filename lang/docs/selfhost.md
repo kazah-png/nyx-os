@@ -41,7 +41,7 @@ pipeline is proven on target, end to end.
 | Attributes `#[...]` | ✗ | ✓ |
 | **Interpolation mode stack** (`T_STR_HEAD/MID/TAIL`) | ✗ | ✓ — the hardest lexer feature |
 | Line/column tracking for diagnostics | ✗ | ✓ |
-| **Input from a file** | ✗ — fixed demo strings | ✓ |
+| **Input from a file** | ✓ — rung 1 landed | ✓ |
 
 The last row is the cheapest and the most symbolic: the toy has never
 lexed anything it did not carry as a literal. `fsio.n` already proved
@@ -83,10 +83,12 @@ Mostly yes — the language grew its self-host muscles deliberately:
 
 ## The next three rungs, ranked
 
-1. **File-driven lexing** — feed a real `.n` file from disk through the
-   toy lexer inside NyxOS (fsio's `open`/`read` + ntokens' scanner;
-   count tokens, print a summary). First artifact that lexes N it did
-   not embed. Small, closes the lexer's biggest ✗.
+1. **File-driven lexing** — ✅ **landed**: ntokens.n now opens a real
+   `.n` file (hello.n), reads it into sbrk memory through an audited
+   `#[caps]` wrapper, and lexes the buffer — 77 tokens counted by kind.
+   The design finding held: N cannot wrap a pointer + length back into
+   a `str`, so the file scanner walks `p[i]` pointer reads — exactly
+   ncc's own `SRC` walk. First artifact that lexes N it did not embed.
 2. **`else` + diagnostics in the toy** — grammar completeness and a
    `die()` path with line numbers. A parser is not real until wrong
    input gets a message instead of undefined behavior.

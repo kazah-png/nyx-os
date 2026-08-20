@@ -8,11 +8,24 @@
 //   comments, string literals (with backslash escapes skipped, so an
 //   embedded \" cannot end the scan early), and the two-character
 //   operators := -> == != <= >= .. += -= that pepper any real N source.
+//   FILE-DRIVEN since the selfhost road's rung 1: the second half opens
+//   a real .n source file, reads it into sbrk memory, and lexes it —
+//   the first time this scanner touches N it did not carry as a
+//   literal. Design finding, kept honest: N cannot build a `str` from a
+//   pointer + length (no constructor — an owning string is n++
+//   territory), so the file scanner walks the raw buffer with p[i]
+//   pointer reads instead of s[i]... which is exactly what ncc's own
+//   lexer does with its SRC pointer. The limitation pushed the toy
+//   toward the real shape.
 //   When this scanner grows a parser and a C emitter, ncc self-hosts.
 
 #[caps(syscall)]
 extern syscall {
     fn write(fd: i32, buf: #[user] *u8, len: isize) -> i64 = 1
+    fn sys_open(path: *u8, flags: i64, mode: i64) -> i64   = 3
+    fn sys_read(fd: i64, buf: *u8, len: isize) -> i64      = 4
+    fn sys_close(fd: i64) -> i64                           = 5
+    fn sys_sbrk(incr: i64) -> i64                          = 7
 }
 
 #[caps(syscall)]
@@ -94,6 +107,91 @@ fn is_kw(s: str, start: i64, len: i64) -> bool {
     false
 }
 
+// The buffer twins: file bytes live behind a *u8 (N has no way to wrap
+// a pointer + length back into a str), so the file path re-implements
+// the span compare over p[i] reads — the same walk ncc does over SRC.
+fn bspan_is(p: *u8, start: i64, len: i64, kw: str) -> bool {
+    if len != kw.len as i64 {
+        return false;
+    }
+    for k in 0..len {
+        if p[start + k] as i64 != kw[k] as i64 {
+            return false;
+        }
+    }
+    true
+}
+
+fn is_kw_buf(p: *u8, start: i64, len: i64) -> bool {
+    if bspan_is(p, start, len, "fn")     { return true; }
+    if bspan_is(p, start, len, "mut")    { return true; }
+    if bspan_is(p, start, len, "return") { return true; }
+    if bspan_is(p, start, len, "if")     { return true; }
+    if bspan_is(p, start, len, "else")   { return true; }
+    if bspan_is(p, start, len, "while")  { return true; }
+    if bspan_is(p, start, len, "for")    { return true; }
+    if bspan_is(p, start, len, "in")     { return true; }
+    if bspan_is(p, start, len, "own")    { return true; }
+    false
+}
+
+// Lex n bytes of N source sitting behind p; print per-kind counts.
+// Same decisions as the embedded demo's scanner, over pointer reads.
+fn lex_count(p: *u8, n: i64) {
+    mut kw := 0; mut ident := 0; mut num := 0; mut lit := 0;
+    mut cmnt := 0; mut op := 0; mut punct := 0;
+    mut i := 0;
+    while i < n {
+        b := p[i] as i64;
+        if is_space(b) || b == 13 {
+            i += 1;
+            continue;
+        }
+        if b == 47 && i + 1 < n && p[i + 1] as i64 == 47 {
+            while i < n && p[i] as i64 != 10 {
+                i += 1;
+            }
+            cmnt += 1;
+            continue;
+        }
+        if b == 34 {
+            mut j := i + 1;
+            while j < n && p[j] as i64 != 34 {
+                if p[j] as i64 == 92 { j += 2; } else { j += 1; }
+            }
+            lit += 1;
+            i = j + 1;
+            continue;
+        }
+        if is_digit(b) {
+            while i < n && is_digit(p[i] as i64) {
+                i += 1;
+            }
+            num += 1;
+            continue;
+        }
+        if is_alpha(b) {
+            st := i;
+            mut j := i;
+            while j < n && is_alnum(p[j] as i64) {
+                j += 1;
+            }
+            if is_kw_buf(p, st, j - st) { kw += 1; } else { ident += 1; }
+            i = j;
+            continue;
+        }
+        if i + 1 < n && is_op2(b, p[i + 1] as i64) {
+            op += 1;
+            i += 2;
+            continue;
+        }
+        punct += 1;
+        i += 1;
+    }
+    total := kw + ident + num + lit + cmnt + op + punct;
+    put("{total} tokens: {kw} kw, {ident} ident, {num} num, {lit} str, {cmnt} cmnt, {op} op, {punct} punct\n");
+}
+
 fn main() -> i64 {
     // Braces and quotes are escaped so they read as text (§2.5) — the
     // snippet exercises a comment, ->, :=, >=, and a string literal.
@@ -159,5 +257,27 @@ fn main() -> i64 {
         emit(Kind.Punct, src, i, 1);      // single-char punctuation
         i += 1;
     }
+    // Rung 1 of the selfhost road: lex N source THIS PROGRAM DID NOT
+    // EMBED — a real .n file, read from disk into sbrk memory. (The
+    // in-OS copy of this file reads /mnt/n_lex_demo.n instead.)
+    lex_file("/tmp/n_lex_demo.n");
     0
+}
+
+// The audited boundary for the file demo: opening, reading and closing
+// are kernel crossings, so they live in one capability-holding wrapper.
+#[caps(syscall)]
+fn lex_file(path: str) {
+    fd := sys_open(path.ptr as *u8, 0, 0);
+    if fd < 0 {
+        put("(no lex demo file - file demo skipped)\n");
+        return;
+    }
+    buf := sys_sbrk(4096) as *u8;
+    len := sys_read(fd, buf, 4096);
+    sys_close(fd);
+    if len > 0 {
+        put("lexing hello.n from disk: ");
+        lex_count(buf, len);
+    }
 }

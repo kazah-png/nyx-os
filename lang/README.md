@@ -139,7 +139,7 @@ lang/
     ├── pageflags.n      ← v0.13 pageflags: W^X proven at compile time, live mmap
     ├── caps.n           ← v0.14 capabilities: #[caps(syscall)]-gated crossings
     ├── bytes.n          ← v0.15 indexing: s[i]/p[i] reads, FNV-1a in pure N
-    ├── ntokens.n        ← M5 link 1: an N lexer in N (comments, strings, 2-char ops)
+    ├── ntokens.n        ← M5 link 1: an N lexer in N — lexes real .n files from disk
     ├── ncalc.n          ← M5 link 2: precedence parser + evaluator in N
     ├── nemit.n          ← M5 link 3: stack-code emitter in N (read→parse→emit)
     ├── nstack.n         ← v0.16 index writes: a VM in N runs nemit's code
