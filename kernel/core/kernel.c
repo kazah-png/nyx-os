@@ -135,6 +135,8 @@ static void cmd_ifconfig(int argc, char** argv);
 static void cmd_arp(int argc, char** argv);
 static void cmd_ping(int argc, char** argv);
 static void cmd_kill(int argc, char** argv);
+static void cmd_pgrep(int argc, char** argv);
+static void cmd_pkill(int argc, char** argv);
 static void cmd_which(int argc, char** argv);
 static void cmd_basename(int argc, char** argv);
 static void cmd_dirname(int argc, char** argv);
@@ -324,6 +326,8 @@ static const command_t commands[] = {
     {"dns",       cmd_dns,       "DNS resolve: dns <hostname>", false},
     {"ping",      cmd_ping,      "Ping a host: ping <ip|hostname>", false},
     {"kill",      cmd_kill,      "Kill a process: kill <pid>", false},
+    {"pgrep",     cmd_pgrep,     "Find PIDs by name: pgrep [-l] <pattern>", false},
+    {"pkill",     cmd_pkill,     "Kill processes by name: pkill <pattern>", false},
     {"which",     cmd_which,     "Show path of a command: which <name>", false},
     {"basename",  cmd_basename,  "Strip directory (and suffix) from a path: basename <path> [suffix]", false},
     {"dirname",   cmd_dirname,   "Strip the last component from a path: dirname <path>", false},
@@ -657,7 +661,7 @@ typedef struct { const char* title; const char* const* names; } help_cat_t;
 static const char* const HC_shell[] = {"help","man","version","clear","history","exec","spawn","jobs","wait","nice","renice",0};
 static const char* const HC_files[] = {"ls","cd","pwd","cat","file","tar","iniget","open","touch","mkdir","rm","cp","mv","tree","find","which","basename","dirname","files","df","du","disks","lsblk","lspci","nvme","nyxpart","mkfs","nyxinstall","nyxgrub","mount","ext2ls","ext2cat",0};
 static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","fold","nl","expand","unexpand","factor","isprime","strings","sha256sum","seq","paste","clip","cut","uniq","join","comm","printf","wc","write","hexdump",0};
-static const char* const HC_sys[]   = {"ps","kill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat","screenshot","stackcheck",0};
+static const char* const HC_sys[]   = {"ps","kill","pgrep","pkill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat","screenshot","stackcheck",0};
 static const char* const HC_user[]  = {"useradd","users",0};
 static const char* const HC_net[]   = {"ifconfig","arp","dhcp","dns","ping","setip","httpget","tls","ipcalc",0};
 static const char* const HC_dev[]   = {"cc","xbm","semver","fnv","urlcode","crc32c","fletcher","murmur","base58","bech32","deflate","gzip","calc","json","hmac",0};
@@ -812,6 +816,8 @@ static const man_page_t man_pages[] = {
     {"export",   "Set an environment variable: `export NAME=value`. Exported variables are passed on to the programs the shell runs."},
     {"ps",       "List the running processes with their PID, scheduler state and name. Use kill to stop one."},
     {"kill",     "Terminate the process with the given <pid>. Run ps first to find the pid you want."},
+    {"pgrep",    "List the PIDs of processes whose name contains <pattern> (a substring match, like ps | grep). With -l also print each name. Prints one PID per line so you can act on them; reports when nothing matches."},
+    {"pkill",    "Terminate every process whose name contains <pattern> (substring match). Kernel threads (init/idle/compositor) are protected and refused, exactly like kill. Reports how many were signalled."},
     {"mem",      "Show a summary of physical memory: how much is in use, how much is free, and the total the kernel manages."},
     {"df",       "Report the total, used and available space of the mounted ext2 filesystem on /mnt."},
     {"screenshot","Save a snapshot of the whole screen to an image file: `screenshot [path]` (default /tmp/screenshot.png; pass /mnt/shot.png to keep it on disk). If the path ends in .png the image is written as a real PNG (8-bit RGB, DEFLATE-compressed - small and universally viewable); any other extension writes an uncompressed binary PPM (Netpbm P6). Captured from the framebuffer the compositor last presented, at the current resolution."},
@@ -6203,6 +6209,56 @@ static void cmd_kill(int argc, char** argv) {
     }
     destroy_process(pid);
     printf("kill: process %d terminated\n", pid);
+}
+
+// pgrep [-l] <pattern> — print the PIDs of processes whose name contains <pattern>
+// (a substring match, like `ps | grep`). With -l also print the name. Read-only
+// companion to ps: pair it with kill, or use pkill to act directly.
+static void cmd_pgrep(int argc, char** argv) {
+    int list = 0, ai = 1;
+    if (argc > ai && strcmp(argv[ai], "-l") == 0) { list = 1; ai++; }
+    if (argc <= ai) { printf("Usage: pgrep [-l] <pattern>\n"); return; }
+    const char* pat = argv[ai];
+    int found = 0;
+    for (int i = 0; i < MAX_PROCESSES; i++) {
+        process_t* p = process_table[i];
+        if (!p) continue;
+        if (!strstr(p->comm, pat)) continue;
+        if (list) printf("%d %s\n", p->pid, p->comm);
+        else      printf("%d\n", p->pid);
+        found++;
+    }
+    if (!found) printf("pgrep: no process matches '%s'\n", pat);
+}
+
+// pkill <pattern> — terminate every process whose name contains <pattern>. Kernel
+// threads (init/idle/compositor/mtdemo — no address space of their own) are
+// protected and refused, exactly like kill; freeing their stacks under the
+// scheduler would crash the system. destroy_process frees the process_t, so
+// capture pid+name BEFORE the call and never touch p afterwards.
+static void cmd_pkill(int argc, char** argv) {
+    if (argc < 2) { printf("Usage: pkill <pattern>\n"); return; }
+    const char* pat = argv[1];
+    int killed = 0, refused = 0;
+    for (int i = 0; i < MAX_PROCESSES; i++) {
+        process_t* p = process_table[i];
+        if (!p) continue;
+        if (!strstr(p->comm, pat)) continue;
+        if (p->page_directory == NULL) { refused++; continue; }  // kernel thread — never kill
+        uint32_t pid = p->pid;
+        char nm[32];
+        strncpy(nm, p->comm, sizeof(nm) - 1);
+        nm[sizeof(nm) - 1] = '\0';
+        destroy_process(pid);   // frees p; must not dereference it after this
+        printf("pkill: killed %d (%s)\n", pid, nm);
+        killed++;
+    }
+    if (!killed) {
+        if (refused) printf("pkill: '%s' matches only protected kernel threads\n", pat);
+        else         printf("pkill: no process matches '%s'\n", pat);
+    } else {
+        printf("pkill: signalled %d process(es)\n", killed);
+    }
 }
 
 // ============================================================
