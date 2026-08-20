@@ -1,6 +1,6 @@
 # The N Language — Specification
 
-**Version:** v0.20 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
+**Version:** v0.21 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
 
 This document specifies N exactly as implemented by the bootstrap compiler
 `ncc`. It is a *descriptive* spec: everything here compiles today. Planned
@@ -89,20 +89,37 @@ integer and formatted in decimal. The result is a `str` built in a 256-byte
 function-scope buffer (§7.3); text beyond the buffer capacity is truncated,
 never overflowed. Use `\{` and `\}` for literal braces.
 
-**Format specs (since v0.20):** a `:x` or `:X` suffix on the expression —
-`{addr:x}`, `{addr:X}` — formats an **integer** in lowercase or uppercase
-hexadecimal instead of decimal. Hex shows the raw bit pattern: the value
-crosses as `u64`, so a negative integer prints as its two's-complement
-image — the reading a systems programmer expects. `:x` on a `str` is a
-compile error (a str interpolates as text), and any other suffix is an
-*unknown format spec* error — the space after `:` is reserved for future
-specs. A colon inside a nested construct (say, a struct literal's field)
-is not a format spec; only a `:x`/`:X` immediately before the closing
+**Format specs (since v0.20, width/padding since v0.21):** a `:spec`
+suffix on the expression formats an **integer**:
+
+| Spec | Meaning |
+|---|---|
+| `:x` / `:X` | lowercase / uppercase hexadecimal |
+| `:wN` | right-align in N columns, space-padded |
+| `:zN` | right-align in N columns, zero-padded |
+| `:wNx` `:zNX` … | width and hex compose (width first, then x/X) |
+
+Hex shows the raw bit pattern: the value crosses as `u64`, so a negative
+integer prints as its two's-complement image — the reading a systems
+programmer expects. In decimal, zero padding puts the sign first
+(`-0042`), space padding keeps it with the digits (`  -42`); width is a
+minimum, never a cut. Any spec on a `str` is a compile error (a str
+interpolates as text), and an unrecognized suffix is an *unknown format
+spec* error — the space after `:` is reserved.
+
+A spec is always a **single identifier**, which is why width starts with
+a letter: N identifiers may contain digits after the first letter, so
+`z12x` reaches the parser as one token and the lexer needs no special
+mode (a bare `:08x` would lex as an integer that forgets its leading
+zero — or trip the `0x` hex-literal prefix). A colon inside a nested
+construct is not a format spec; only one immediately before the closing
 `}` is.
 
 ```n
 h := 0xdeadbeef;
 put("hash = {h} ({h:x} / {h:X})\n");   // hash = 3735928559 (deadbeef / DEADBEEF)
+put("[{h:w12}]\n");                    // [  3735928559]
+put("[{h:z12x}]\n");                   // [0000deadbeef]
 ```
 
 ### 2.6 Operators and punctuation
@@ -1050,31 +1067,28 @@ N++/type-checker phase:
 1. **No flow analysis.** Expression-level checking is complete (§6.5), but
    whether every control path of a typed function actually returns defers to
    the C compiler on the generated file.
-2. **Interpolation has no width/padding controls.** `str` inserts text,
-   integers format as signed decimal or — since v0.20 — hex via the
-   `:x`/`:X` format specs (§2.5); field width, alignment, and zero-padding
-   are still open.
-3. **Missing constructs:** closures, modules/`use`, generic
+2. **Missing constructs:** closures, modules/`use`, generic
    `Result<T, E>` — all specified in the N++ design document. (`struct`
    landed in v0.5, `defer` in v0.6, `enum` + `match` in v0.7, `impl`
    methods in v0.8 — completing the N++ P2 stage — match-as-expression
    in v0.9, `?` over structural result enums in v0.10, and counted `for`
    loops in v0.11.)
-4. **Match-expression and `?` positions are limited** (§5.6.1, §5.9):
+3. **Match-expression and `?` positions are limited** (§5.6.1, §5.9):
    statement value positions only — no general expression nesting
    until the lowering needs it.
-5. **No allocator-backed slice type yet** (§6.6): buffers are raw
+4. **No allocator-backed slice type yet** (§6.6): buffers are raw
    `sbrk`/`mmap` pointers with programmer-contract bounds; a
    length-carrying checked slice is n++ territory. (Raw index *writes*
    landed in v0.16.)
-6. Fixed implementation caps (per file: 64 functions, 64 syscalls; per call:
+5. Fixed implementation caps (per file: 64 functions, 64 syscalls; per call:
    16 arguments; per function: 256 live locals) — generous for the bootstrap,
    diagnosed clearly when exceeded.
 
 Resolved since v0.1: `:=` bindings now get concrete types with `i64` as the
 integer default; interpolation dispatches by type; `mut` is enforced; the
 generated C is strict C99 with no GNU extensions (TinyCC-compatible — this
-removed `__auto_type`, which tcc does not support).
+removed `__auto_type`, which tcc does not support). Interpolation format
+controls landed across v0.20 (hex) and v0.21 (width and zero-padding).
 
 ## 10. Toolchain
 

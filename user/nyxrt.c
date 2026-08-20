@@ -45,6 +45,43 @@ void __nyx_fmt_i64(nyx_str* d, char* buf, nyx_u64 cap, nyx_i64 v) {
     nyx_append(d, buf, cap, out, (nyx_u64)oi);
 }
 
+/* v0.21 "{expr:wN}" / "{expr:zN}" (optionally composed with x/X): format
+ * the number, then right-align it in `width` columns. Zero padding puts
+ * the sign FIRST ("-0042", the convention every C formatter follows);
+ * space padding puts it with the digits ("  -42"). Hex still shows the
+ * u64 bit pattern, so no sign appears in hex mode. A value wider than
+ * the field is printed in full — width is a minimum, never a cut. */
+void __nyx_fmt_num(nyx_str* d, char* buf, nyx_u64 cap, nyx_i64 v,
+                   int hex, int upper, int width, int zero) {
+    const char* dig = upper ? "0123456789ABCDEF" : "0123456789abcdef";
+    char tmp[24];
+    int  ti = 0;
+    int  neg = 0;
+    nyx_u64 uv;
+    if (hex) {
+        uv = (nyx_u64)v;
+        if (uv == 0) tmp[ti++] = '0';
+        while (uv) { tmp[ti++] = dig[uv & 15]; uv >>= 4; }
+    } else {
+        if (v < 0) { neg = 1; uv = (nyx_u64)(-(v + 1)) + 1; }  /* INT64_MIN-safe */
+        else         uv = (nyx_u64)v;
+        if (uv == 0) tmp[ti++] = '0';
+        while (uv) { tmp[ti++] = (char)('0' + (int)(uv % 10)); uv /= 10; }
+    }
+    char out[160];
+    int  oi = 0;
+    int  pad = width - ti - neg;
+    if (zero) {
+        if (neg) out[oi++] = '-';
+        while (pad > 0) { out[oi++] = '0'; pad--; }
+    } else {
+        while (pad > 0) { out[oi++] = ' '; pad--; }
+        if (neg) out[oi++] = '-';
+    }
+    while (ti) out[oi++] = tmp[--ti];   /* reverse the digits */
+    nyx_append(d, buf, cap, out, (nyx_u64)oi);
+}
+
 /* v0.20 "{expr:x}" / "{expr:X}": hex shows the raw bit pattern, so the
  * value arrives as u64 — a negative i64 prints as its two's-complement
  * image, the reading a systems programmer expects from hex. */

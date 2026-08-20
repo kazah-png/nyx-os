@@ -51,5 +51,9 @@ fn main() -> i64 {
     // v0.20 format specs: ":x"/":X" print the bit pattern in hex.
     h := fnv1a(name);
     put("in hex: {h:x} (upper {h:X})\n");
+    // v0.21 width specs: ":wN" right-aligns with spaces, ":zN" pads with
+    // zeros, and either composes with a trailing x/X for hex columns.
+    put("aligned: [{h:w12}] [{first:w6}]\n");
+    put("padded:  [{first:z6}] [{h:z12x}]\n");
     0
 }

@@ -3,14 +3,15 @@
  * Hosted tool (runs on the dev machine); single file, no dependencies.
  * See lang/docs/spec-n.md for the language specification this implements.
  *
- * Supported subset (currently N v0.20):
+ * Supported subset (currently N v0.21):
  *   - extern syscall { fn name(params) [-> T] = N }
  *   - fn decls with block bodies, params, return types
  *   - statements: let (:=, mut), assignment (= += -=), return, while,
  *     if/else, break, continue, expression statements, block tail-expr
  *   - expressions: int (dec/hex), bool, string literals, string
  *     interpolation "{expr}" (typed: str inserts text, integers decimal;
- *     "{expr:x}"/"{expr:X}" = hex on integers, v0.20),
+ *     "{expr:x}"/"{expr:X}" = hex, v0.20; ":wN"/":zN" = width / zero-pad,
+ *     composable with x/X, v0.21 — all on integers),
  *     path, call, field access, unary - !, binary arith/cmp/logic/bit,
  *     `as` casts, parens
  *   - types: primitive names, *T, raw *T
@@ -434,9 +435,16 @@ typedef enum { E_INT, E_BOOL, E_STR, E_INTERP, E_PATH, E_CALL, E_FIELD,
                E_UN, E_BIN, E_CAST, E_SLIT, E_ELIT,
                E_INDEX } EK;               /* v0.15: e[i] byte/element read */
 
-typedef struct { char* text; int tlen; Expr* e; int fmt; } Frag;
+typedef struct { char* text; int tlen; Expr* e; int fmt; int width; int zero; } Frag;
 /* Frag.fmt (v0.20): 0 = default (str as text, integers decimal),
- * 1 = ":x" lowercase hex, 2 = ":X" uppercase hex. */
+ * 1 = ":x" lowercase hex, 2 = ":X" uppercase hex.
+ * Frag.width/zero (v0.21): ":wN" right-aligns in N columns with spaces,
+ * ":zN" pads with zeros; either composes with a trailing x/X. A spec is
+ * always ONE identifier token — that is why width starts with a letter:
+ * N identifiers may contain digits after the first letter, so the lexer
+ * hands the whole spec over as a single T_IDENT and needs no changes
+ * (a bare ":08x" would lex as an integer that forgets its leading zero,
+ * or worse, trip the 0x hex-literal prefix). */
 #define FMT_DEC  0
 #define FMT_HEXL 1
 #define FMT_HEXU 2
@@ -590,28 +598,44 @@ static Expr* parse_interp(void) {
     Frag* fr = xmalloc(sizeof(Frag) * 64);
     int nf = 0;
     Tok h = padv();                       /* T_STR_HEAD */
-    fr[nf].text = h.s; fr[nf].tlen = h.slen; fr[nf].e = NULL; fr[nf].fmt = FMT_DEC; nf++;
+    fr[nf].text = h.s; fr[nf].tlen = h.slen; fr[nf].e = NULL;
+    fr[nf].fmt = FMT_DEC; fr[nf].width = 0; fr[nf].zero = 0; nf++;
     for (;;) {
         if (nf + 2 >= 64) die("%s:%d: too many interpolations", FILENAME, e->line);
-        fr[nf].text = NULL; fr[nf].tlen = 0; fr[nf].fmt = FMT_DEC;
+        fr[nf].text = NULL; fr[nf].tlen = 0;
+        fr[nf].fmt = FMT_DEC; fr[nf].width = 0; fr[nf].zero = 0;
         fr[nf].e = parse_expr();
-        if (pacc(T_COLON)) {              /* v0.20: "{expr:x}" format spec */
+        if (pacc(T_COLON)) {              /* v0.20/v0.21: "{expr:spec}" —
+                                           * spec := [wN|zN][x|X] | x | X   */
             Tok ft = pexp(T_IDENT, "format spec after ':'");
-            if (ft.slen == 1 && ft.s[0] == 'x')      fr[nf].fmt = FMT_HEXL;
-            else if (ft.slen == 1 && ft.s[0] == 'X') fr[nf].fmt = FMT_HEXU;
-            else die("%s:%d: unknown format spec ':%s' — the format specs are :x and :X (hex)",
-                     FILENAME, e->line, ft.s);
+            const char* s = ft.s;
+            int i = 0;
+            if (s[0] == 'w' || s[0] == 'z') {
+                fr[nf].zero = (s[0] == 'z');
+                i = 1;
+                int wd = 0;
+                while (s[i] >= '0' && s[i] <= '9') { wd = wd * 10 + (s[i] - '0'); i++; }
+                if (i == 1 || wd <= 0 || wd > 128) wd = -1;   /* no/absurd digits */
+                fr[nf].width = wd;
+            }
+            if (s[i] == 'x')      { fr[nf].fmt = FMT_HEXL; i++; }
+            else if (s[i] == 'X') { fr[nf].fmt = FMT_HEXU; i++; }
+            if (i != ft.slen || fr[nf].width < 0)
+                die("%s:%d: unknown format spec ':%s' — the format specs are :x, :X (hex), :wN (width), :zN (zero-pad), and wN/zN composed with a trailing x or X",
+                    FILENAME, e->line, ft.s);
         }
         nf++;
         pexp(T_INTERP_R, "'}' closing interpolation");
         if (pchk(T_STR_MID)) {
             Tok m = padv();
-            fr[nf].text = m.s; fr[nf].tlen = m.slen; fr[nf].e = NULL; fr[nf].fmt = FMT_DEC; nf++;
+            fr[nf].text = m.s; fr[nf].tlen = m.slen; fr[nf].e = NULL;
+            fr[nf].fmt = FMT_DEC; fr[nf].width = 0; fr[nf].zero = 0; nf++;
             continue;
         }
         if (pchk(T_STR_TAIL)) {
             Tok t2 = padv();
-            fr[nf].text = t2.s; fr[nf].tlen = t2.slen; fr[nf].e = NULL; fr[nf].fmt = FMT_DEC; nf++;
+            fr[nf].text = t2.s; fr[nf].tlen = t2.slen; fr[nf].e = NULL;
+            fr[nf].fmt = FMT_DEC; fr[nf].width = 0; fr[nf].zero = 0; nf++;
             break;
         }
         die("%s:%d: expected string continuation after interpolation", FILENAME, CUR.line);
@@ -1794,8 +1818,8 @@ static void check_expr(Expr* e) {
                     if (!ty_is(ft, "str") && !ty_is_int(ft))
                         die("%s:%d: cannot interpolate a %s value (only str and integers)",
                             FILENAME, e->line, ty_str(ft));
-                    if (e->frags[i].fmt != FMT_DEC && !ty_is_int(ft))
-                        die("%s:%d: ':x' formats integers — a str interpolates as text",
+                    if ((e->frags[i].fmt != FMT_DEC || e->frags[i].width > 0) && !ty_is_int(ft))
+                        die("%s:%d: format specs apply to integers — a str interpolates as text",
                             FILENAME, e->line);
                 }
             break;
@@ -1966,6 +1990,14 @@ static void gen_preludes(Expr* e, int ind) {
                         fprintf(OUT, "__nyx_fmt_str(&__s%d, __b%d, 256, ", e->iid, e->iid);
                         gen_expr(f->e);
                         fputs(");\n", OUT);
+                    } else if (f->width > 0) {              /* v0.21 width/zero-pad,
+                                                             * decimal or hex */
+                        fprintf(OUT, "__nyx_fmt_num(&__s%d, __b%d, 256, (nyx_i64)(", e->iid, e->iid);
+                        gen_expr(f->e);
+                        fprintf(OUT, "), %d, %d, %d, %d);\n",
+                                f->fmt != FMT_DEC ? 1 : 0,
+                                f->fmt == FMT_HEXU ? 1 : 0,
+                                f->width, f->zero);
                     } else if (f->fmt != FMT_DEC) {         /* v0.20 ":x"/":X" — hex
                                                              * shows the BIT PATTERN:
                                                              * the value crosses as u64 */

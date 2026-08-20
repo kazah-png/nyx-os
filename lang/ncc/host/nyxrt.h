@@ -81,5 +81,7 @@ nyx_str __nyx_fmt_begin(char* buf, nyx_u64 cap);
 void    __nyx_fmt_str(nyx_str* dst, char* buf, nyx_u64 cap, nyx_str s);
 void    __nyx_fmt_i64(nyx_str* dst, char* buf, nyx_u64 cap, nyx_i64 v);
 void    __nyx_fmt_hex(nyx_str* dst, char* buf, nyx_u64 cap, nyx_u64 v, int upper);
+void    __nyx_fmt_num(nyx_str* dst, char* buf, nyx_u64 cap, nyx_i64 v,
+                      int hex, int upper, int width, int zero);
 
 #endif /* NYXRT_H */
