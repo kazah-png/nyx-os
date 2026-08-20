@@ -41,7 +41,7 @@
 **NyxOS** is a from-scratch x86_64 operating system written in C and x86_64 Assembly, with no external libraries. It boots via Multiboot (GRUB) into long mode with 4-level paging and full user/kernel isolation, and provides a preemptive multitasking kernel, a ring-3 POSIX-style userspace, a real TCP/IP network stack, a windowed desktop, and an in-OS C compiler that builds — and rebuilds itself — entirely inside the running system.
 
 <div align="center">
-  <img src="gui.png?v=7" alt="NyxOS desktop running nyxfetch in the terminal" width="700" />
+  <img src="media/gui.png?v=7" alt="NyxOS desktop running nyxfetch in the terminal" width="700" />
   <p><em>The NyxOS desktop — the terminal running <code>nyxfetch</code>, the Nightfall wallpaper, and the taskbar</em></p>
 </div>
 

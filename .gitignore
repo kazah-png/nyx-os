@@ -106,6 +106,20 @@ g2.png
 j*.png
 w*.png
 
+# === Root-level render / test artifacts ===
+# The repository root holds ONLY source, build scripts and metadata. Loose images,
+# raw renders and scratch disk images belong in media/, docs/ or scratchpad/ — these
+# anchored (leading-slash) patterns keep ad-hoc screendump/wallgen output out of root
+# without touching the real assets committed under media/ and docs/.
+/*.ppm
+/*.img
+/audit_*.png
+/btn*.png
+/desk*.png
+/night*.png
+/nf*.png
+/devnull
+
 # === Scratchpad (session temp files: build logs, patches, screendumps) ===
 scratchpad/
 
