@@ -7046,6 +7046,40 @@ void kernel_main(uint64_t magic, void* mboot_ptr) {
 // ============================================================
 // nyxfetch
 // ============================================================
+// Render one row of the 16-colour terminal palette as fastfetch-style blocks: 8 blocks
+// of 3 cells each, aligned under the info column. The GUI terminal parses ANSI, so emit
+// background SGR (40-47 normal / 100-107 bright); the boot VGA-text console does NOT parse
+// escapes, so set the cell colour via set_terminal_color() and print spaces. A coloured
+// SPACE is the only way to fill a cell — the write path drops glyphs >= 0x80, so a real
+// block character would vanish (same reason the logo is an ASCII shade ramp).
+static void nyxfetch_block_row(int gui, int bright) {
+    static const uint8_t a2v[8] = { 0, 4, 2, 6, 1, 5, 3, 7 };   // ANSI colour index -> VGA nibble
+    for (int s = 0; s < NYX_LOGO_COLS + 2; s++) putchar(' ');   // indent under the info column
+    for (int i = 0; i < 8; i++) {
+        if (gui) {
+            printf("\x1b[%dm   ", (bright ? 100 : 40) + i);
+        } else {
+            uint8_t bg = bright ? (uint8_t)(a2v[i] | 0x08) : a2v[i];
+            set_terminal_color(vga_entry_color(VGA_BLACK, (enum vga_color)bg));
+            printf("   ");
+        }
+    }
+    if (gui) printf("\x1b[0m");
+    else     set_terminal_color(vga_entry_color(VGA_LIGHT_GREY, VGA_BLACK));
+    putchar('\n');
+}
+
+// Write one info line: the colour-tinted label left-padded to 12 columns, then the value.
+// (vsnprintf has no "%-12s" left-justify, so pad the label by hand.)
+static void nyxfetch_field(char* dst, const char* key_c, const char* rst_c,
+                           const char* label, const char* value) {
+    char lab[16]; int ll = 0;
+    while (label[ll] && ll < 12) { lab[ll] = label[ll]; ll++; }
+    while (ll < 12) lab[ll++] = ' ';
+    lab[ll] = '\0';
+    snprintf(dst, 96, "%s%s%s%s", key_c, lab, rst_c, value);
+}
+
 void nyxfetch(void) {
     clear_screen();
 
@@ -7054,7 +7088,7 @@ void nyxfetch(void) {
      * compositor is up, and tint the boot splash with set_terminal_color(). */
     int gui = compositor_is_running();
     const char* LOGO_C = gui ? "\x1b[95m" : "";   /* fox: NyxOS purple      */
-    const char* KEY_C  = gui ? "\x1b[96m" : "";   /* field labels: cyan     */
+    const char* KEY_C  = gui ? "\x1b[95m" : "";   /* field labels: purple   */
     const char* ACC_C  = gui ? "\x1b[95m" : "";   /* accents: user@host     */
     const char* RST_C  = gui ? "\x1b[0m"  : "";
     set_terminal_color(vga_entry_color(VGA_LIGHT_MAGENTA, VGA_BLACK));
@@ -7120,26 +7154,40 @@ void nyxfetch(void) {
         snprintf(disk_str, sizeof(disk_str), "%llu KiB / %llu KiB", free_kb, total_kb);
     }
 
-    /* ---- Build the info column (index-aligned with the fox rows) ---- */
-    char info[16][96];
+    const char* keymap = keyboard_layout == 0 ? "US (QWERTY)" : "Spanish (ES)";
+
+    /* ---- Build the info column (index-aligned with the fox rows). fastfetch layout:
+       user@host, a separator, then label:value fields. `info` is static (not on the
+       4 KB kernel stack — this array alone is ~1.9 KB). ---- */
+    static char info[20][96];
+    char val[80];
     int n = 0;
     snprintf(info[n++], 96, "%snyx%s@%snyxos%s", ACC_C, RST_C, ACC_C, RST_C);
-    snprintf(info[n++], 96, "-----------------");
-    snprintf(info[n++], 96, "%sOS:%s         %s x86_64", KEY_C, RST_C, KERNEL_NAME);
-    snprintf(info[n++], 96, "%sHost:%s       QEMU Standard PC", KEY_C, RST_C);
-    snprintf(info[n++], 96, "%sKernel:%s     %s %s (%s)", KEY_C, RST_C, KERNEL_NAME, KERNEL_VERSION, KERNEL_CODENAME);
-    snprintf(info[n++], 96, "%sUptime:%s     %s", KEY_C, RST_C, uptime);
-    snprintf(info[n++], 96, "%sResolution:%s %s", KEY_C, RST_C, res_str);
-    snprintf(info[n++], 96, "%sCPU:%s        %s (%d)", KEY_C, RST_C, cpu_brand, cpu_count);
-    snprintf(info[n++], 96, "%sMemory:%s     %llu / %llu MiB (%u%%)", KEY_C, RST_C,
+    snprintf(info[n++], 96, "%s---------%s", ACC_C, RST_C);   /* separator ~ width of "nyx@nyxos" */
+    snprintf(val, sizeof(val), "%s x86_64", KERNEL_NAME);
+    nyxfetch_field(info[n++], KEY_C, RST_C, "OS:", val);
+    nyxfetch_field(info[n++], KEY_C, RST_C, "Host:", "QEMU Standard PC");
+    snprintf(val, sizeof(val), "%s %s (%s)", KERNEL_NAME, KERNEL_VERSION, KERNEL_CODENAME);
+    nyxfetch_field(info[n++], KEY_C, RST_C, "Kernel:", val);
+    nyxfetch_field(info[n++], KEY_C, RST_C, "Uptime:", uptime);
+    nyxfetch_field(info[n++], KEY_C, RST_C, "Shell:", "nyxsh");
+    nyxfetch_field(info[n++], KEY_C, RST_C, "Resolution:", res_str);
+    nyxfetch_field(info[n++], KEY_C, RST_C, "Desktop:", "Nyx Compositor");
+    nyxfetch_field(info[n++], KEY_C, RST_C, "Terminal:", "NyxOS Terminal");
+    snprintf(val, sizeof(val), "%s (%d)", cpu_brand, cpu_count);
+    nyxfetch_field(info[n++], KEY_C, RST_C, "CPU:", val);
+    snprintf(val, sizeof(val), "%llu / %llu MiB (%u%%)",
              free_mem / (1024*1024), memory_total / (1024*1024), mem_pct);
-    snprintf(info[n++], 96, "%sProcesses:%s  %d", KEY_C, RST_C, process_count);
-    snprintf(info[n++], 96, "%sDisk:%s       %s", KEY_C, RST_C, disk_str);
-    snprintf(info[n++], 96, "%sNetwork:%s    %s", KEY_C, RST_C, ip_str);
-    snprintf(info[n++], 96, "%sShell:%s      NyxOS Terminal", KEY_C, RST_C);
-    snprintf(info[n++], 96, "%sTime:%s       %u-%02u-%02u %02u:%02u:%02u", KEY_C, RST_C,
+    nyxfetch_field(info[n++], KEY_C, RST_C, "Memory:", val);
+    snprintf(val, sizeof(val), "%d", process_count);
+    nyxfetch_field(info[n++], KEY_C, RST_C, "Processes:", val);
+    nyxfetch_field(info[n++], KEY_C, RST_C, "Disk:", disk_str);
+    nyxfetch_field(info[n++], KEY_C, RST_C, "Network:", ip_str);
+    nyxfetch_field(info[n++], KEY_C, RST_C, "Keymap:", keymap);
+    snprintf(val, sizeof(val), "%u-%02u-%02u %02u:%02u:%02u",
              (unsigned int)rtc.year, (unsigned int)rtc.month, (unsigned int)rtc.day,
              (unsigned int)rtc.hour, (unsigned int)rtc.minute, (unsigned int)rtc.second);
+    nyxfetch_field(info[n++], KEY_C, RST_C, "Time:", val);
 
     /* ---- Render: fox on the left, facts on the right, line by line ---- */
     static const char* blank_row = "                           "; /* 27 spaces */
@@ -7149,6 +7197,10 @@ void nyxfetch(void) {
         const char* r = (i < n)     ? info[i] : "";
         printf("%s%s%s  %s\n", LOGO_C, l, RST_C, r);
     }
+    /* ---- the fastfetch palette blocks: two rows (normal + bright) under the info ---- */
+    putchar('\n');
+    nyxfetch_block_row(gui, 0);   /* ANSI colours 0-7  */
+    nyxfetch_block_row(gui, 1);   /* ANSI colours 8-15 */
     set_terminal_color(vga_entry_color(VGA_LIGHT_GREEN, VGA_BLACK));
 }
 
