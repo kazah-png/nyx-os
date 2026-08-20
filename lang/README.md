@@ -144,7 +144,7 @@ lang/
     ├── nemit.n          ← M5 link 3: stack-code emitter in N (read→parse→emit)
     ├── nstack.n         ← v0.16 index writes: a VM in N runs nemit's code
     ├── own.n            ← own structs: leaks/double-use refused, #[drop] auto-close
-    └── nparse.n         ← M5: a complete toy compiler — multi-param functions, recursion
+    └── nparse.n         ← M5: a complete toy compiler — else, diagnostics, recursion
 ```
 
 The runtime N programs link against lives with the rest of user space:

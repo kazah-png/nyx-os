@@ -54,12 +54,12 @@ kernel `open`/`read` from N — wiring the two together makes the first
 |---|---|---|
 | Precedence expression grammar + unary | ✓ (3 tiers) | ✓ (full table) |
 | Statements, `if`/`while`, functions, recursion | ✓ | ✓ |
-| `else` | ✗ | ✓ |
+| `else` | ✓ — rung 2 landed | ✓ |
 | **An AST** | ✗ — emits during the descent | ✓ — parse → check → gen |
 | Types (everything is `i64` in the toy) | ✗ | full checker |
 | structs / enums / match / defer / own / caps | ✗ | ✓ |
 | `str` values and string literals as data | ✗ | ✓ |
-| Error diagnostics (`file:line: message`) | ✗ — malformed input is undefined | ✓ everywhere |
+| Error diagnostics (`line N: message`) | ✓ at the parser's expect points — rung 2 | ✓ everywhere |
 
 The structural gap is the AST row. On-the-fly emission works because the
 toy checks nothing; a checker needs to *look at* the program before code
@@ -89,9 +89,12 @@ Mostly yes — the language grew its self-host muscles deliberately:
    The design finding held: N cannot wrap a pointer + length back into
    a `str`, so the file scanner walks `p[i]` pointer reads — exactly
    ncc's own `SRC` walk. First artifact that lexes N it did not embed.
-2. **`else` + diagnostics in the toy** — grammar completeness and a
-   `die()` path with line numbers. A parser is not real until wrong
-   input gets a message instead of undefined behavior.
+2. **`else` + diagnostics in the toy** — ✅ **landed**: `if cmp block
+   else block` compiles as the classic diamond (JZ patched to the else
+   entry, the then-arm's JMP patched past it all), every token records
+   its source line, and the parser's expect points (`)`, `;`, braces,
+   trailing input) refuse bad input with `line N: error: ...` — first
+   error wins. A parser became real: wrong input gets a message.
 3. **A postorder AST in nparse** — parse expressions into node arrays,
    emit from the tree. The architecture leap that makes a toy *checker*
    possible, and the last structural difference from `ncc`'s pipeline.
