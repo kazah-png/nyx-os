@@ -18,7 +18,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.4.291"
+#define KERNEL_VERSION "6.4.292"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -858,6 +858,7 @@ void* kmalloc(size_t size);
 void* kmalloc_aligned(size_t size, uint32_t align);
 void kfree(void* ptr);
 int  kfree_selftest(void);   // double-free-poison KAT (see memory.c)
+int  slab_selftest(void);    // slab allocator KAT: distinctness/integrity/reuse/routing (memory.c)
 void* krealloc(void* ptr, size_t size);
 uint32_t ksize(void* ptr);   // usable bytes of a kmalloc'd block (from its header)
 void* alloc_page(void);

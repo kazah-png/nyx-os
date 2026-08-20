@@ -6813,6 +6813,7 @@ static void run_selftests(void) {
         {"notify",       notify_selftest},
         {"stack-canary", stack_canary_selftest},
         {"kfree",        kfree_selftest},
+        {"slab",         slab_selftest},
         {"elf",          elf_selftest},
         {"numparse",     numparse_selftest},        {"hkdf",          hkdf_selftest},
         {"snprintf",     snprintf_selftest},

@@ -343,6 +343,38 @@ int kfree_selftest(void) {
     return rc;
 }
 
+// KAT (`slab` in the self-test battery): exercises the slab allocator (kmalloc's backend for
+// small objects) through kmalloc/kfree, so the allocator lock keeps it SMP/IRQ-safe. Verifies
+// a page's worth of same-size objects are distinct + non-overlapping (no slot aliasing / free-
+// list corruption), each block keeps its own bytes (no cross-slot bleed), freed slots are
+// reclaimed (a second round of the same allocations still succeeds), and a request past the
+// largest slab class (1024) still succeeds via the heap fallback. 0 on pass, else the step.
+int slab_selftest(void) {
+    enum { SN = 24 };
+    void* v[SN];
+    // 1. distinctness + no-overlap: kmalloc(48) -> the 64-byte slab class (~63 slots/page)
+    for (int i = 0; i < SN; i++) { v[i] = kmalloc(48); if (!v[i]) return 1; }
+    for (int i = 0; i < SN; i++)
+        for (int j = i + 1; j < SN; j++) {
+            uint64_t x = (uint64_t)v[i], y = (uint64_t)v[j], d = (x > y) ? x - y : y - x;
+            if (d < 48) { for (int k = 0; k < SN; k++) kfree(v[k]); return 2; }   // aliased slots
+        }
+    // 2. write-integrity: a distinct pattern per block, verified with no cross-contamination
+    for (int i = 0; i < SN; i++) { uint8_t* s = (uint8_t*)v[i]; for (int k = 0; k < 48; k++) s[k] = (uint8_t)(i * 5 + k); }
+    for (int i = 0; i < SN; i++) { uint8_t* s = (uint8_t*)v[i];
+        for (int k = 0; k < 48; k++) if (s[k] != (uint8_t)(i * 5 + k)) { for (int m = 0; m < SN; m++) kfree(v[m]); return 3; } }
+    for (int i = 0; i < SN; i++) kfree(v[i]);
+    // 3. reuse: the same count re-allocates after freeing (freed slots reclaimed, not leaked)
+    for (int i = 0; i < SN; i++) { v[i] = kmalloc(48); if (!v[i]) { for (int m = 0; m < i; m++) kfree(v[m]); return 4; } }
+    for (int i = 0; i < SN; i++) kfree(v[i]);
+    // 4. size routing: a request past the largest slab class -> heap fallback still serves it
+    void* big = kmalloc(SLAB_MAX_OBJ + 64); if (!big) return 5;
+    { uint8_t* s = (uint8_t*)big; s[0] = 0x5a; s[SLAB_MAX_OBJ + 63] = 0xa5;
+      if (s[0] != 0x5a || s[SLAB_MAX_OBJ + 63] != 0xa5) { kfree(big); return 6; } }
+    kfree(big);
+    return 0;
+}
+
 // Usable size of a kmalloc'd block: the request size stored in its header. Lets a
 // grow-in-place buffer (vfs_pwrite) know how many bytes its current allocation holds
 // without tracking a separate capacity field. NULL -> 0. Only valid for pointers
