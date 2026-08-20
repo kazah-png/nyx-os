@@ -3,7 +3,7 @@
  * Hosted tool (runs on the dev machine); single file, no dependencies.
  * See lang/docs/spec-n.md for the language specification this implements.
  *
- * Supported subset (currently N v0.21):
+ * Supported subset (currently N v0.22):
  *   - extern syscall { fn name(params) [-> T] = N }
  *   - fn decls with block bodies, params, return types
  *   - statements: let (:=, mut), assignment (= += -=), return, while,
@@ -91,6 +91,10 @@
  *     auto-drop (the sink rule, which also makes drop recursion
  *     impossible); no drop flags — branch agreement still required.
  *     Zero-cost: the C layout is a plain struct.
+ *   - missing-return flow analysis (v0.22): a typed fn/method must
+ *     GUARANTEE a value on every path (tail expr, return, both-arm if,
+ *     all-arm match, or a diverging never call); loops never guarantee.
+ *     Checked here, not delegated to the C compiler (in-OS tcc is silent).
  * Not yet (N++ territory): closures, generic Result<T,E>, modules/use.
  */
 /* Platform includes. In-OS builds (milestone M2) compile this file with
@@ -2174,6 +2178,40 @@ static int block_returns(Block* b) {
     return b && b->n > 0 && b->st[b->n - 1]->k == S_RET;
 }
 
+/* v0.22 missing-return flow analysis: does this block GUARANTEE a value
+ * on every path through it? A path is covered by a tail expression, a
+ * `return`, an `if` whose BOTH arms guarantee, an exhaustive `match`
+ * statement whose every arm guarantees, or a call to a `never` function
+ * (the path diverges — exit does not come back). Loops never guarantee:
+ * a `while` may run zero times, and `while true` is not special-cased
+ * (§9). Before this check, "does every path return?" was delegated to
+ * the C compiler on the generated file — and the in-OS TinyCC does not
+ * even warn, so a missed path was silent garbage on target. */
+static int block_guarantees(Block* b) {
+    if (!b) return 0;
+    if (b->tail) return 1;
+    for (int i = 0; i < b->n; i++) {
+        Stmt* s = b->st[i];
+        if (s->k == S_RET) return 1;
+        if (s->k == S_MATCH && s->mtarget == MT_RET) return 1;  /* return match */
+        if (s->k == S_IF && s->els &&
+            block_guarantees(s->body) && block_guarantees(s->els)) return 1;
+        if (s->k == S_MATCH && s->mtarget == MT_STMT && s->narms > 0) {
+            int all = 1;
+            for (int a = 0; a < s->narms; a++)
+                if (!block_guarantees(s->arms[a].body)) { all = 0; break; }
+            if (all) return 1;
+        }
+        if (s->k == S_EXPR && s->e && s->e->k == E_CALL &&
+            s->e->callee->k == E_PATH) {
+            Param* ps; int np; Ty rt;
+            if (fn_lookup(s->e->callee->name, &ps, &np, &rt) && is_never(rt))
+                return 1;
+        }
+    }
+    return 0;
+}
+
 /* v0.19: the destructor wired to t's struct via #[drop(fn)], or NULL. */
 static const char* own_drop_fn(Ty t) {
     if (!t.name || t.ptrs != 0) return NULL;
@@ -2886,6 +2924,9 @@ static void gen_program(const char* srcname) {
         LOOP_DEPTH = MATCH_DEPTH = 0;
         vars_add((char*)"self", ty_named(m->type), 0);   /* receiver: immutable */
         for (int p = 0; p < m->np; p++) vars_add(m->ps[p].name, m->ps[p].ty, 0);
+        if (m->ret.name && !is_never(m->ret) && !block_guarantees(m->body))
+            die("%s: not every path through method '%s.%s' returns a %s — add a tail expression or a return",
+                FILENAME, m->type, m->name, ty_str(m->ret));
         fputs("static ", OUT);
         if (!m->ret.name || is_never(m->ret)) fputs("void", OUT);
         else emit_type(m->ret);
@@ -2913,6 +2954,9 @@ static void gen_program(const char* srcname) {
             if (ty_is_own(f->ps[p].ty))     /* v0.17: this fn is the owner now */
                 VARS[NVARS - 1].own_state = OWN_HELD;
         }
+        if (f->ret.name && !is_never(f->ret) && !block_guarantees(f->body))
+            die("%s: not every path through '%s' returns a %s — add a tail expression or a return",
+                FILENAME, f->name, ty_str(f->ret));
         gen_fn_sig(f);
         fputc(' ', OUT);
         gen_block(f->body, 0, 1);

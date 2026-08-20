@@ -1,6 +1,6 @@
 # The N Language — Specification
 
-**Version:** v0.21 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
+**Version:** v0.22 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
 
 This document specifies N exactly as implemented by the bootstrap compiler
 `ncc`. It is a *descriptive* spec: everything here compiles today. Planned
@@ -889,9 +889,16 @@ The compiler rejects the following, each with a `file:line` diagnostic:
   field exactly once with compatible values; interpolation accepts only
   `str` and integer values; unary operators require integer operands.
 
-Remaining outside the bootstrap's scope: *missing*-return flow analysis (a
-typed function whose control flow can fall off the end is caught by the C
-compiler on the generated file, not by `ncc`).
+- **Missing-return flow analysis** (v0.22): a function or method with a
+  declared return type must **guarantee a value on every path**. A path is
+  covered by the body's tail expression, a `return`, an `if` whose *both*
+  arms guarantee, a `match` statement whose *every* arm guarantees (its
+  exhaustiveness is already proven), or a call to a `never` function — the
+  path diverges and does not come back. **Loops never guarantee**: a
+  `while` body may run zero times, and `while true` is deliberately not
+  special-cased (§9). Before v0.22 this was delegated to the C compiler on
+  the generated file — and the in-OS TinyCC does not even warn, so a
+  missed path was silent garbage on target.
 
 ### 6.6 Indexing — `e[i]` (since v0.15)
 
@@ -1064,23 +1071,20 @@ interpolated expressions are parsed by the ordinary expression grammar.
 These are known, deliberate gaps in the bootstrap; each is queued for the
 N++/type-checker phase:
 
-1. **No flow analysis.** Expression-level checking is complete (§6.5), but
-   whether every control path of a typed function actually returns defers to
-   the C compiler on the generated file.
-2. **Missing constructs:** closures, modules/`use`, generic
+1. **Missing constructs:** closures, modules/`use`, generic
    `Result<T, E>` — all specified in the N++ design document. (`struct`
    landed in v0.5, `defer` in v0.6, `enum` + `match` in v0.7, `impl`
    methods in v0.8 — completing the N++ P2 stage — match-as-expression
    in v0.9, `?` over structural result enums in v0.10, and counted `for`
    loops in v0.11.)
-3. **Match-expression and `?` positions are limited** (§5.6.1, §5.9):
+2. **Match-expression and `?` positions are limited** (§5.6.1, §5.9):
    statement value positions only — no general expression nesting
    until the lowering needs it.
-4. **No allocator-backed slice type yet** (§6.6): buffers are raw
+3. **No allocator-backed slice type yet** (§6.6): buffers are raw
    `sbrk`/`mmap` pointers with programmer-contract bounds; a
    length-carrying checked slice is n++ territory. (Raw index *writes*
    landed in v0.16.)
-5. Fixed implementation caps (per file: 64 functions, 64 syscalls; per call:
+4. Fixed implementation caps (per file: 64 functions, 64 syscalls; per call:
    16 arguments; per function: 256 live locals) — generous for the bootstrap,
    diagnosed clearly when exceeded.
 
@@ -1088,7 +1092,9 @@ Resolved since v0.1: `:=` bindings now get concrete types with `i64` as the
 integer default; interpolation dispatches by type; `mut` is enforced; the
 generated C is strict C99 with no GNU extensions (TinyCC-compatible — this
 removed `__auto_type`, which tcc does not support). Interpolation format
-controls landed across v0.20 (hex) and v0.21 (width and zero-padding).
+controls landed across v0.20 (hex) and v0.21 (width and zero-padding), and
+v0.22 added missing-return flow analysis — the C compiler is no longer the
+backstop for a typed function falling off the end.
 
 ## 10. Toolchain
 
