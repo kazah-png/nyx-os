@@ -2633,6 +2633,43 @@ static void cmd_nvme(int argc, char** argv) {
     // except through an explicit, confirmed nyxinstall.
     if (argc >= 2 && strcmp(argv[1], "read") == 0)
         nvme_dump_lba((uint64_t)(uint32_t)atoi(argc >= 3 ? argv[2] : "0"));
+    // `nvme writetest confirm` — DIAGNOSTIC: write a scratch region of the NVMe with a
+    // stamped pattern (one single-block write each, exactly like ext2), flush, then read
+    // it all back and report how many blocks survived. Reveals whether bulk single-block
+    // writes actually land on a real controller. WRITES — only on a disposable disk.
+    if (argc >= 2 && strcmp(argv[1], "writetest") == 0) {
+        if (argc < 3 || strcmp(argv[2], "confirm") != 0) {
+            printf("Usage: nvme writetest confirm\n");
+            printf("  Writes+reads scratch LBA 800000..802047 on the NVMe (disposable disk only).\n");
+            return;
+        }
+        static uint8_t wb[512], rb[512];
+        uint32_t base = 800000u, count = 2048u, ok = 0, bad = 0, shown = 0;
+        printf("nvme writetest: writing %u single blocks @ LBA %u..\n", count, base);
+        for (uint32_t i = 0; i < count; i++) {
+            for (int j = 0; j < 512; j++) wb[j] = (uint8_t)(i * 3 + j);
+            wb[0] = 0x5A; wb[1] = 0xA5; wb[2] = (uint8_t)(i & 0xFF); wb[3] = (uint8_t)((i >> 8) & 0xFF);
+            if (blk_write1(BLK_NVME0, base + i, wb) != 0) { printf("  WRITE returned error at block %u\n", i); break; }
+        }
+        blk_flush(BLK_NVME0);
+        printf("nvme writetest: reading back..\n");
+        for (uint32_t i = 0; i < count; i++) {
+            __builtin_memset(rb, 0, 512);
+            blk_read1(BLK_NVME0, base + i, rb);
+            int good = rb[0] == 0x5A && rb[1] == 0xA5 && rb[2] == (uint8_t)(i & 0xFF) && rb[3] == (uint8_t)((i >> 8) & 0xFF);
+            if (good) ok++;
+            else {
+                bad++;
+                if (shown < 4) {
+                    printf("  MISMATCH block %u (LBA %u): got %02x %02x %02x %02x, want 5a a5 %02x %02x\n",
+                           i, base + i, rb[0], rb[1], rb[2], rb[3], (uint8_t)(i & 0xFF), (uint8_t)((i >> 8) & 0xFF));
+                    shown++;
+                }
+            }
+        }
+        printf("nvme writetest: %u/%u blocks OK, %u BAD\n", ok, count, bad);
+        return;
+    }
 }
 
 // Parse a drive selector for the installer commands: "n0"/"nvme"/"nvme0" -> the
