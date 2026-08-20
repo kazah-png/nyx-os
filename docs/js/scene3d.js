@@ -6,6 +6,7 @@ function init3DScene() {
   const container = document.getElementById('webgl-canvas-container');
   if (!container) return;
   if (typeof THREE === 'undefined') return;   // degrade to the CSS ambient background, no console error
+  if (window.innerWidth < 900) return;         // skip WebGL on phones/tablets (hidden via CSS anyway) — saves battery
 
   const scene = new THREE.Scene();
   scene.fog = new THREE.FogExp2(0x030305, 0.030);

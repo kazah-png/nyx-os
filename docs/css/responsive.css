@@ -76,6 +76,23 @@
   }
 }
 
+/* Mobile / tablet nav: collapse the Discord + GitHub buttons into the hamburger
+   drawer so the toggle never gets pushed off-screen on narrow viewports. */
+@media (max-width: 979px) {
+  .nav-actions .btn {
+    display: none;
+  }
+}
+
+/* The WebGL nebula is a full-screen fixed background. On phones it renders a
+   bright moon right behind the hero copy and washes the text out (and costs
+   battery). Hide it below 900px — the CSS aurora + grid keep the ambiance. */
+@media (max-width: 900px) {
+  #webgl-canvas-container {
+    display: none !important;
+  }
+}
+
 /* Ultrawide Displays (2000px+) */
 @media (min-width: 2000px) {
   :root {
@@ -90,7 +107,7 @@
 
 /* Accessibility: High-Contrast & Focus States */
 :focus-visible {
-  outline: 2px solid var(--accent-lunar-bright);
+  outline: 2px solid var(--accent-purple-bright);
   outline-offset: 3px;
 }
 
