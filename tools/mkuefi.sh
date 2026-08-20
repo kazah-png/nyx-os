@@ -45,18 +45,22 @@ insmod all_video
 # entry that comes up upright ("rotate=" is read by the kernel; 0/90/180/270 clockwise).
 menuentry 'NyxOS (landscape)' {
     multiboot2 /boot/nyx-kernel.bin
+    module2 /boot/nyx-kernel.bin nyxkernel.bin
     boot
 }
 menuentry 'NyxOS (rotate 90 - portrait)' {
     multiboot2 /boot/nyx-kernel.bin rotate=90
+    module2 /boot/nyx-kernel.bin nyxkernel.bin
     boot
 }
 menuentry 'NyxOS (rotate 270 - portrait, other way)' {
     multiboot2 /boot/nyx-kernel.bin rotate=270
+    module2 /boot/nyx-kernel.bin nyxkernel.bin
     boot
 }
 menuentry 'NyxOS (rotate 180)' {
     multiboot2 /boot/nyx-kernel.bin rotate=180
+    module2 /boot/nyx-kernel.bin nyxkernel.bin
     boot
 }
 CFG
