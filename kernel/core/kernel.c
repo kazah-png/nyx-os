@@ -6512,6 +6512,7 @@ static void run_selftests(void) {
         {"cptree",       cptree_walk_selftest},
         {"notify",       notify_selftest},
         {"stack-canary", stack_canary_selftest},
+        {"elf",          elf_selftest},
         {"numparse",     numparse_selftest},        {"hkdf",          hkdf_selftest},
         {"chacha20",     chacha20_selftest},        {"siphash",       siphash_selftest},
         {"poly1305",     poly1305_selftest},        {"chachapoly",    chacha20poly1305_selftest},

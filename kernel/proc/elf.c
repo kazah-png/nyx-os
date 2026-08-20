@@ -10,6 +10,17 @@ int elf_validate(const uint8_t* data, uint32_t size) {
     if (hdr->e_machine != EM_X86_64) return 0;
     if (hdr->e_type != ELF_EXEC) return 0;
     if (hdr->e_phnum == 0) return 0;
+    // The program-header table must be well-formed and lie inside the image. These
+    // checks are PURE (side-effect-free), so they belong here — every elf_validate
+    // caller (not just elf_load_image) then rejects a truncated or overflowing table.
+    // e_phentsize must EXACTLY equal our struct: the size check below strides by it
+    // while the phdr[i] indexing in elf_load_image strides by sizeof(elf64_phdr_t), so
+    // any mismatch lets a small check guard a large read. The math is 64-bit and
+    // subtraction-first, so hostile e_phnum/e_phoff (up to 2^16 * 2^16, or an e_phoff
+    // near 2^64) cannot wrap past it.
+    if (hdr->e_phentsize != sizeof(elf64_phdr_t)) return 0;
+    if (hdr->e_phoff > size) return 0;
+    if ((uint64_t)hdr->e_phnum * sizeof(elf64_phdr_t) > size - hdr->e_phoff) return 0;
     return 1;
 }
 
@@ -24,21 +35,9 @@ int elf_load_image(const uint8_t* data, uint32_t size, uint64_t** out_pd,
     if (!elf_validate(data, size)) return -1;
 
     elf64_hdr_t* hdr = (elf64_hdr_t*)data;
-    // e_phnum and e_phentsize are uint16_t, so they promote to int and the
-    // program-header table size is computed in 32-bit — for hostile values
-    // (up to 65535 * 65535) that overflows int (signed UB) before it widens to
-    // the 64-bit comparison, which could sneak a too-large table past this bound
-    // check (CodeQL cpp/integer-multiplication-cast-to-long). Do the math in
-    // 64-bit so the size is exact.
-    // e_phentsize must be EXACTLY our struct size: the bound below is computed
-    // from e_phentsize, but the phdr[i] indexing further down strides by
-    // sizeof(elf64_phdr_t). Any other value makes the two disagree — e_phentsize
-    // of 1 with e_phnum of 1000 passes a 1000-byte check and then reads 56000.
-    if (hdr->e_phentsize != sizeof(elf64_phdr_t)) return -1;
-    // Subtraction-first: the multiply was already widened to 64-bit, but the
-    // ADDITION still wrapped, so a huge e_phoff sailed past this.
-    if (hdr->e_phoff > size) return -1;
-    if ((uint64_t)hdr->e_phnum * sizeof(elf64_phdr_t) > size - hdr->e_phoff) return -1;
+    // The program-header table's well-formedness (e_phentsize == our struct,
+    // e_phoff + e_phnum*phentsize within the image, all 64-bit / overflow-safe) is
+    // now enforced by elf_validate() above, so the phdr[i] indexing below is bounded.
 
     uint64_t* pd = alloc_page_directory();
     if (!pd) return -1;
@@ -198,4 +197,37 @@ int elf_load_args(const uint8_t* data, uint32_t size, char* const* argv, int arg
 
 int elf_load(const uint8_t* data, uint32_t size, process_t** out_proc) {
     return elf_load_args(data, size, (char* const*)0, 0, out_proc);
+}
+
+// KAT: elf_validate is the gate every ELF (from disk, initramfs, or a user execve)
+// passes before the loader touches it, so its header + program-header-table checks are
+// a security boundary. Build one well-formed image, confirm it passes, then mutate each
+// field a hostile file could set and confirm each is REJECTED — locking the header
+// hardening against regressions. Pure (no allocation / paging), so it runs in the
+// offline self-test battery.
+int elf_selftest(void) {
+    uint8_t buf[sizeof(elf64_hdr_t) + sizeof(elf64_phdr_t)];
+    for (unsigned i = 0; i < sizeof(buf); i++) buf[i] = 0;
+    elf64_hdr_t* h = (elf64_hdr_t*)buf;
+    h->e_ident[0] = 0x7F; h->e_ident[1] = 'E'; h->e_ident[2] = 'L'; h->e_ident[3] = 'F';
+    h->e_ident[4] = ELF_64BIT; h->e_ident[5] = ELF_LITTLE_ENDIAN;
+    h->e_type = ELF_EXEC; h->e_machine = EM_X86_64;
+    h->e_phoff = sizeof(elf64_hdr_t); h->e_phentsize = sizeof(elf64_phdr_t); h->e_phnum = 1;
+    uint32_t sz = (uint32_t)sizeof(buf);
+
+    if (!elf_validate(buf, sz)) return 1;                          // the valid image must pass
+    { uint8_t s = buf[0];        buf[0] = 0;               if (elf_validate(buf, sz)) return 2;  buf[0] = s; }        // bad magic
+    { uint8_t s = h->e_ident[4]; h->e_ident[4] = 1;        if (elf_validate(buf, sz)) return 3;  h->e_ident[4] = s; } // 32-bit class
+    { uint8_t s = h->e_ident[5]; h->e_ident[5] = 2;        if (elf_validate(buf, sz)) return 4;  h->e_ident[5] = s; } // big-endian
+    { uint16_t s = h->e_machine; h->e_machine = 40;        if (elf_validate(buf, sz)) return 5;  h->e_machine = s; }  // not x86-64 (ARM)
+    { uint16_t s = h->e_type;    h->e_type = 1;            if (elf_validate(buf, sz)) return 6;  h->e_type = s; }     // ET_REL, not ET_EXEC
+    { uint16_t s = h->e_phnum;   h->e_phnum = 0;           if (elf_validate(buf, sz)) return 7;  h->e_phnum = s; }    // no program headers
+    { uint16_t s = h->e_phentsize; h->e_phentsize = 1;     if (elf_validate(buf, sz)) return 8;  h->e_phentsize = s; }// wrong phentsize
+    { uint64_t s = h->e_phoff;   h->e_phoff = sz + 1;      if (elf_validate(buf, sz)) return 9;  h->e_phoff = s; }    // table starts past EOF
+    { uint16_t s = h->e_phnum;   h->e_phnum = 1000;        if (elf_validate(buf, sz)) return 10; h->e_phnum = s; }    // phnum*56 runs off the end
+    { uint64_t s = h->e_phoff;   h->e_phoff = 0xFFFFFFFFFFFFFFF0ull; if (elf_validate(buf, sz)) return 11; h->e_phoff = s; } // e_phoff near 2^64 (wrap probe)
+    if (elf_validate(buf, sizeof(elf64_hdr_t) - 1)) return 12;      // smaller than a header
+    if (elf_validate((const uint8_t*)0, sz))        return 13;      // NULL data
+    if (!elf_validate(buf, sz)) return 14;                          // restored image still valid (no mutation leaked)
+    return 0;
 }

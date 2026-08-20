@@ -75,4 +75,7 @@ typedef struct {
 #define SHT_SYMTAB 2
 #define SHT_STRTAB 3
 
+// KAT for the ELF header/program-header validation gate (crafted-image rejection).
+int elf_selftest(void);
+
 #endif
