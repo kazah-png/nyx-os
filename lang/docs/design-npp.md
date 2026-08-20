@@ -162,6 +162,7 @@ extern syscall {
 #[drop(close_window)]
 own struct Window { id: i64 }
 
+#[caps(syscall)]
 fn close_window(win: Window) {
     win_destroy(win.id);
 }
