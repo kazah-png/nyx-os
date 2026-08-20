@@ -55,18 +55,21 @@ kernel `open`/`read` from N — wiring the two together makes the first
 | Precedence expression grammar + unary | ✓ (3 tiers) | ✓ (full table) |
 | Statements, `if`/`while`, functions, recursion | ✓ | ✓ |
 | `else` | ✓ — rung 2 landed | ✓ |
-| **An AST** | ✗ — emits during the descent | ✓ — parse → check → gen |
+| **An AST** | ✓ expressions — rung 3 landed (statements still emit directly) | ✓ — parse → check → gen |
 | Types (everything is `i64` in the toy) | ✗ | full checker |
 | structs / enums / match / defer / own / caps | ✗ | ✓ |
 | `str` values and string literals as data | ✗ | ✓ |
 | Error diagnostics (`line N: message`) | ✓ at the parser's expect points — rung 2 | ✓ everywhere |
 
-The structural gap is the AST row. On-the-fly emission works because the
-toy checks nothing; a checker needs to *look at* the program before code
-exists, which is why `ncc` builds `Expr`/`Stmt` trees first. The toy can
-grow one incrementally: parse expressions into a postorder node array
-(`kind/lhs/rhs/val` in parallel i64 arrays — every technique already in
-hand), then emit from the tree instead of the descent.
+The structural gap *was* the AST row. On-the-fly emission works because
+the toy checks nothing; a checker needs to *look at* the program before
+code exists, which is why `ncc` builds `Expr`/`Stmt` trees first. Rung 3
+closed it for the expression tier: the rules build a postorder node
+array (`nk/nl/nr/nv` parallel i64 arrays in one by-value struct, plus a
+flat four-slot argument table per call node), and a separate walker
+emits by postorder recursion — verified byte-identical to the fused
+emitter's code, so the architecture moved *under* the outputs.
+Statements still emit directly; the seam is one function (`gen_cmp`).
 
 ## Does N itself have enough?
 
@@ -95,13 +98,23 @@ Mostly yes — the language grew its self-host muscles deliberately:
    its source line, and the parser's expect points (`)`, `;`, braces,
    trailing input) refuse bad input with `line N: error: ...` — first
    error wins. A parser became real: wrong input gets a message.
-3. **A postorder AST in nparse** — parse expressions into node arrays,
-   emit from the tree. The architecture leap that makes a toy *checker*
-   possible, and the last structural difference from `ncc`'s pipeline.
+3. **A postorder AST in nparse** — ✅ **landed**: the expression rules
+   build parallel node arrays (kind/lhs/rhs/value in one by-value
+   struct, calls with a flat four-slot arg table — the `fp[f*4+j]` move
+   again) and `emit_node` walks the tree in postorder. The walker
+   reproduces the fused emitter's code byte for byte — same values,
+   same word counts — and the first dividend arrived immediately: with
+   a whole call in hand as data, the parser checks argument count
+   against parameter count ("wrong number of arguments"), a diagnostic
+   the emit-on-the-fly version had no natural seat for. Honest cut:
+   statements and control flow still emit directly (the jump-patching
+   tier is unchanged); folding them into the tree is a later rung.
 
-Beyond those, the ladder is: a type column on the AST (i64/str to start),
-then the subset grows until the toy parses the examples directory — at
-which point it stops being a toy.
+All three rungs are in. From here the ladder is: a *check pass* that
+walks the expression tree before emission (the whole point of rung 3 —
+types or undefined-name detection at toy scale), statements joining the
+tree, then the subset grows until the toy parses the examples directory
+— at which point it stops being a toy.
 
 ## Definition of done for M5
 

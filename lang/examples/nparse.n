@@ -1,46 +1,62 @@
 // nparse.n — the M5 chain, token-native end to end: a complete toy
-//   compiler with FUNCTIONS and REAL IDENTIFIERS. lex → parse → emit →
-//   run, in N's own surface syntax:
+//   compiler with FUNCTIONS, REAL IDENTIFIERS, and — since the selfhost
+//   road's rung 3 — a real AST for its expressions. lex → parse →
+//   emit → run, in N's own surface syntax:
 //       fn fact(n) { r := 1; if n > 1 { r := n * fact(n - 1); } r } fact(5)
 //   The lexer fills a token buffer (sbrk'd i64 arrays, v0.16 index
-//   stores); the parser consumes TOKENS and emits stack code; the VM
-//   runs it. The grammar covers the whole toy language:
+//   stores); the parser consumes TOKENS, never characters; the VM runs
+//   the emitted stack code. The grammar covers the whole toy language:
 //     program := { fndef } { stmt } cmp
 //     fndef   := 'fn' name '(' name { ',' name } ')' '{' { stmt } cmp '}'
 //     stmt    := name ':=' cmp ';'
 //              | 'if' cmp block [ 'else' block ]
 //              | 'while' cmp block
-//   `else` compiles as the classic diamond: the condition's JZ is
-//   patched to the else entry, and the then-arm ends in a JMP patched
-//   past the whole statement — two placeholder patches per if/else.
-//   Since the selfhost road's rung 2 the toy also REFUSES bad input:
-//   every token records its source line, the parser checks its expect
-//   points (')', ';', braces, trailing input), and the first violation
-//   prints "line N: error: ..." and stops — a parser is not real until
-//   wrong input gets a message instead of undefined behavior.
-//   Identifiers are INTERNED, the way ncc's own VARS table works: the
-//   lexer keeps a symbol table (a names byte-buffer plus per-symbol
-//   start/len), looks every alpha span up by byte comparison, appends
-//   the ones it has never seen, and the token's value IS the symbol
-//   index. Everything downstream — variable slots, function entry and
-//   parameter tables — keys off symbol indexes, so the parser did not
-//   change at all when names grew from one letter to words: that is
-//   the token architecture paying rent. Keywords (if/while/fn) are
-//   exact-matched before interning.
-//   A function body has the same shape as a program — statements, then
-//   the value it returns. A JMP patched over the fndefs starts
-//   execution at the main statements; entries are recorded BEFORE
-//   bodies compile (self-recursion resolves); calls are CALLER-SAVE
-//   over the flat table, which is why recursion — and shared parameter
-//   names across functions — work with no frame machinery. With
-//   multiple parameters the discipline generalizes, and the STACK
-//   dictates the order twice over: (1) save every callee slot, in
-//   declaration order; (2) evaluate ALL the arguments before binding
-//   any — so an argument like `a % b` in `gcd(b, a % b)` still reads
-//   the OLD values — then STORE them in REVERSE (a pop hands back the
-//   last argument first); (3) CALL; (4) restore each saved slot in
-//   reverse with SWAP + STORE, working down the stack beneath the
-//   returned value. `if`/`while` compile with branch patching.
+//
+//   THE EXPRESSION TIER IS TWO-PHASE NOW. The old parser emitted code
+//   while it descended — postfix fell out of parse order, which works
+//   exactly as long as nothing needs to happen between understanding
+//   the program and generating its code. A checker is precisely that
+//   kind of thing: it must look at a whole expression BEFORE code for
+//   it exists, which is why ncc parses to Expr/Stmt trees first and an
+//   emit-on-the-fly toy never could. So the expression rules now BUILD
+//   a postorder AST: parallel i64 node arrays carried in one struct
+//   (Ast — nk kind, nl lhs, nr rhs, nv value, and na, a flat argument
+//   table with four slots per call node: the fp[f*4+j] move again).
+//     node kind 0 = number (nv = value)     1 = load (nv = var slot)
+//               2 = binop (nl/nr = children, nv = ITS VM OPCODE)
+//               3 = negate (nl = operand)
+//               4 = call (nv = fn symbol, nl = arg count, args in na)
+//   A separate walker, emit_node, then emits by postorder recursion —
+//   children first, the node's own operation last. Postfix is no
+//   longer a lucky consequence of parse order; it is a property of the
+//   tree, and the walker produces byte-for-byte the code the emitting
+//   parser used to, so every result and word count below is unchanged:
+//   the architecture moved under the outputs. The caller-save call
+//   machinery (save the callee's slots in order, evaluate ALL the
+//   arguments before binding any — so `gcd(b, a % b)` still reads the
+//   OLD values — bind in REVERSE because pops hand back the last
+//   argument first, CALL, restore in reverse with SWAP + STORE) moved
+//   wholesale from the parser into the walker: parse decides WHAT (a
+//   call of f with these argument trees), emit decides HOW — ncc's own
+//   parse → gen split, now inside the toy. And the first dividend of
+//   holding a whole call as data: the parser checks the argument count
+//   against the callee's parameter count ("wrong number of
+//   arguments"), a diagnostic the fused version had no natural seat
+//   for. Statements and control flow still emit directly — the jump
+//   patching (`if`/`else` diamond, `while` back-JMP) is unchanged, and
+//   folding statements into the tree is a later rung; the seam between
+//   the tiers is one function, gen_cmp: build a fresh expression tree,
+//   walk it, hand back the same two cursors the old parse_cmp did.
+//
+//   Everything below the seam is as the earlier rungs left it.
+//   Identifiers are INTERNED (a names byte-buffer plus per-symbol
+//   start/len; the token's value IS the symbol index, and slots,
+//   function entries and parameter tables key off it). Every token
+//   records its source line, and the parser refuses bad input at its
+//   expect points — "line N: error: ..." and stop, first violation
+//   wins. Function entries are recorded BEFORE bodies compile, so
+//   self-recursion resolves; a JMP patched over the fndefs starts
+//   execution at the main statements.
 //   Token encoding: kind 0 = number (val = its value), 1 = identifier
 //   (val = its SYMBOL INDEX), 2 = operator/punct (val = its byte),
 //   3 = '==', 4 = ':=', 5 = 'if', 6 = 'while', 7 = 'fn', 8 = 'else',
@@ -196,8 +212,18 @@ fn fail(line: i64, msg: str) -> never {
     sys_exit(0);
 }
 
+// The expression tree, as parallel i64 arrays in one by-value struct:
+// nk = node kind, nl/nr = child indexes, nv = the node's value (a
+// number, a slot, an opcode, or a function symbol), na = the flat
+// argument table (four root indexes per call node, na[idx*4 + j]).
+struct Ast { nk: *i64, nl: *i64, nr: *i64, nv: *i64, na: *i64 }
+
 // Both cursors, threaded functionally: pos walks tokens, cp walks code.
 struct EP { pos: i64, cp: i64 }
+
+// The build-phase cursors: pos walks tokens, nn is the next free node,
+// root is the subtree this rule just built.
+struct NP { pos: i64, nn: i64, root: i64 }
 
 fn emit1(code: *i64, cp: i64, op: i64) -> i64 {
     code[cp] = op;
@@ -212,84 +238,84 @@ fn emit2(code: *i64, cp: i64, op: i64, arg: i64) -> i64 {
 
 // factor := number | name '(' cmp { ',' cmp } ')' | name
 //         | '-' factor | '(' cmp ')'
-//   A call is the caller-save discipline over the flat table, and the
-//   stack fixes the order twice: save every callee slot in declaration
-//   order; evaluate ALL the arguments (so none of them sees a new
-//   binding), then STORE them in reverse — a pop hands back the last
-//   argument first; CALL; then restore each saved slot in reverse with
-//   SWAP + STORE, working down the stack beneath the returned value.
-fn parse_factor(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, pos: i64, code: *i64, cp: i64) -> EP {
-    if k[pos] == 0 {
-        return EP{ pos: pos + 1, cp: emit2(code, cp, 1, v[pos]) };
+//   Phase one only BUILDS: every arm appends a node and returns its
+//   index — not a single opcode is emitted on this side of the seam.
+//   The call arm allocates its node FIRST so the argument roots can
+//   fill its slice of the arg table in place; and with the whole call
+//   in hand as data, the parser finally checks it — the argument count
+//   must match the callee's parameter count.
+fn ast_factor(k: *i64, v: *i64, ln: *i64, fpc: *i64, a: Ast, pos: i64, nn: i64) -> NP {
+    if k[pos] == 0 {                       // number
+        a.nk[nn] = 0; a.nl[nn] = 0; a.nr[nn] = 0; a.nv[nn] = v[pos];
+        return NP{ pos: pos + 1, nn: nn + 1, root: nn };
     }
     if k[pos] == 1 && k[pos + 1] == 2 && v[pos + 1] == 40 {
         f := v[pos];                       // name '(' — a call
-        cnt := fpc[f];
-        mut c := cp;
-        mut j := 0;
-        while j < cnt {                    // save the callee's slots, in order
-            c = emit2(code, c, 11, fp[f * 4 + j]);
-            j += 1;
-        }
+        idx := nn;                         // the call node, made first
+        mut n2 := nn + 1;
         mut p := pos + 2;
-        mut a := 0;
-        while a < cnt {                    // all arguments, before any binds
-            r := parse_cmp(k, v, ln, fe, fp, fpc, p, code, c);
-            p = r.pos;
-            c = r.cp;
-            if k[p] == 2 && v[p] == 44 {   // ',' between arguments
-                p += 1;
+        mut cnt := 0;
+        mut more := !(k[p] == 2 && v[p] == 41);
+        while more {                       // comma-separated argument trees
+            more = false;
+            r := ast_cmp(k, v, ln, fpc, a, p, n2);
+            if cnt == 4 {                  // the arg table holds four
+                fail(ln[p], "wrong number of arguments");
             }
-            a += 1;
-        }
-        mut w := cnt - 1;
-        while w > -1 {                     // bind in reverse: pops give the
-            c = emit2(code, c, 12, fp[f * 4 + w]);   // last argument first
-            w -= 1;
-        }
-        c = emit2(code, c, 15, fe[f]);     // CALL the entry
-        mut u := cnt - 1;
-        while u > -1 {                     // restore in reverse, beneath the
-            c = emit1(code, c, 17);        // returned value: SWAP + STORE
-            c = emit2(code, c, 12, fp[f * 4 + u]);
-            u -= 1;
+            a.na[idx * 4 + cnt] = r.root;
+            cnt += 1;
+            p = r.pos;
+            n2 = r.nn;
+            if k[p] == 2 && v[p] == 44 {   // ',' — another argument
+                p += 1;
+                more = true;
+            }
         }
         if !(k[p] == 2 && v[p] == 41) {
             fail(ln[p], "expected ')' after the arguments");
         }
-        return EP{ pos: p + 1, cp: c };    // skip ')'
+        if cnt != fpc[f] {                 // the first check that reads a call
+            fail(ln[p], "wrong number of arguments");
+        }
+        a.nk[idx] = 4; a.nl[idx] = cnt; a.nr[idx] = 0; a.nv[idx] = f;
+        return NP{ pos: p + 1, nn: n2, root: idx };
     }
-    if k[pos] == 1 {                       // name read: LOAD its slot
-        return EP{ pos: pos + 1, cp: emit2(code, cp, 11, v[pos]) };
+    if k[pos] == 1 {                       // name read
+        a.nk[nn] = 1; a.nl[nn] = 0; a.nr[nn] = 0; a.nv[nn] = v[pos];
+        return NP{ pos: pos + 1, nn: nn + 1, root: nn };
     }
-    if k[pos] == 2 && v[pos] == 45 {       // unary minus: operand, then NEG
-        r := parse_factor(k, v, ln, fe, fp, fpc, pos + 1, code, cp);
-        return EP{ pos: r.pos, cp: emit1(code, r.cp, 7) };
+    if k[pos] == 2 && v[pos] == 45 {       // unary minus
+        r := ast_factor(k, v, ln, fpc, a, pos + 1, nn);
+        a.nk[r.nn] = 3; a.nl[r.nn] = r.root; a.nr[r.nn] = 0; a.nv[r.nn] = 0;
+        return NP{ pos: r.pos, nn: r.nn + 1, root: r.nn };
     }
     if k[pos] == 2 && v[pos] == 40 {       // '(' — mutual recursion
-        r := parse_cmp(k, v, ln, fe, fp, fpc, pos + 1, code, cp);
+        r := ast_cmp(k, v, ln, fpc, a, pos + 1, nn);
         if !(k[r.pos] == 2 && v[r.pos] == 41) {
             fail(ln[r.pos], "expected ')'");
         }
-        return EP{ pos: r.pos + 1, cp: r.cp };
+        return NP{ pos: r.pos + 1, nn: r.nn, root: r.root };
     }
     fail(ln[pos], "expected an expression");
-    EP{ pos: pos, cp: cp }                 // unreachable; keeps the lowering total
+    NP{ pos: pos, nn: nn, root: 0 }        // unreachable; keeps the lowering total
 }
 
-// term := factor (('*' | '/' | '%') factor)*  — op emitted after its rhs
-fn parse_term(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, pos: i64, code: *i64, cp: i64) -> EP {
-    mut r := parse_factor(k, v, ln, fe, fp, fpc, pos, code, cp);
+// term := factor (('*' | '/' | '%') factor)*
+//   The operator tag stored in a binop node IS its VM opcode — one
+//   name for one thing, so the walker emits nv directly.
+fn ast_term(k: *i64, v: *i64, ln: *i64, fpc: *i64, a: Ast, pos: i64, nn: i64) -> NP {
+    mut r := ast_factor(k, v, ln, fpc, a, pos, nn);
     mut going := true;
     while going {
         going = false;
         if k[r.pos] == 2 && (v[r.pos] == 42 || v[r.pos] == 47 || v[r.pos] == 37) {
             op := v[r.pos];
-            n := parse_factor(k, v, ln, fe, fp, fpc, r.pos + 1, code, r.cp);
+            n := ast_factor(k, v, ln, fpc, a, r.pos + 1, r.nn);
             mut oc := 4;                   // MUL
             if op == 47 { oc = 5; }        // DIV
             if op == 37 { oc = 6; }        // MOD
-            r = EP{ pos: n.pos, cp: emit1(code, n.cp, oc) };
+            a.nk[n.nn] = 2; a.nl[n.nn] = r.root; a.nr[n.nn] = n.root; a.nv[n.nn] = oc;
+            r = NP{ pos: n.pos, nn: n.nn + 1, root: n.nn };
             going = true;
         }
     }
@@ -297,17 +323,18 @@ fn parse_term(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, pos: i6
 }
 
 // sum := term (('+' | '-') term)*
-fn parse_sum(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, pos: i64, code: *i64, cp: i64) -> EP {
-    mut r := parse_term(k, v, ln, fe, fp, fpc, pos, code, cp);
+fn ast_sum(k: *i64, v: *i64, ln: *i64, fpc: *i64, a: Ast, pos: i64, nn: i64) -> NP {
+    mut r := ast_term(k, v, ln, fpc, a, pos, nn);
     mut going := true;
     while going {
         going = false;
         if k[r.pos] == 2 && (v[r.pos] == 43 || v[r.pos] == 45) {
             op := v[r.pos];
-            n := parse_term(k, v, ln, fe, fp, fpc, r.pos + 1, code, r.cp);
+            n := ast_term(k, v, ln, fpc, a, r.pos + 1, r.nn);
             mut oc := 2;                   // ADD
             if op == 45 { oc = 3; }        // SUB
-            r = EP{ pos: n.pos, cp: emit1(code, n.cp, oc) };
+            a.nk[n.nn] = 2; a.nl[n.nn] = r.root; a.nr[n.nn] = n.root; a.nv[n.nn] = oc;
+            r = NP{ pos: n.pos, nn: n.nn + 1, root: n.nn };
             going = true;
         }
     }
@@ -315,18 +342,81 @@ fn parse_sum(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, pos: i64
 }
 
 // cmp := sum [('<' | '>' | '==') sum]   — lowest tier, pushes 0 or 1
-fn parse_cmp(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, pos: i64, code: *i64, cp: i64) -> EP {
-    l := parse_sum(k, v, ln, fe, fp, fpc, pos, code, cp);
+fn ast_cmp(k: *i64, v: *i64, ln: *i64, fpc: *i64, a: Ast, pos: i64, nn: i64) -> NP {
+    l := ast_sum(k, v, ln, fpc, a, pos, nn);
     two := k[l.pos] == 3;
     one := k[l.pos] == 2 && (v[l.pos] == 60 || v[l.pos] == 62);
     if two || one {
         mut oc := 10;                      // EQ
         if one && v[l.pos] == 60 { oc = 8; }   // LT
         if one && v[l.pos] == 62 { oc = 9; }   // GT
-        r := parse_sum(k, v, ln, fe, fp, fpc, l.pos + 1, code, l.cp);
-        return EP{ pos: r.pos, cp: emit1(code, r.cp, oc) };
+        r := ast_sum(k, v, ln, fpc, a, l.pos + 1, l.nn);
+        a.nk[r.nn] = 2; a.nl[r.nn] = l.root; a.nr[r.nn] = r.root; a.nv[r.nn] = oc;
+        return NP{ pos: r.pos, nn: r.nn + 1, root: r.nn };
     }
     l
+}
+
+// Phase two: the postorder walk. Children first, the node's own
+// operation last — and the walker emits byte-for-byte what the fused
+// parser-emitter used to, no matter how the tree was built. The
+// caller-save discipline lives HERE now: parse decided WHAT (a call of
+// f with these argument trees), this decides HOW — save the callee's
+// slots in order, evaluate all the argument trees, bind in reverse
+// (pops hand back the last argument first), CALL, then restore each
+// saved slot in reverse with SWAP + STORE beneath the returned value.
+fn emit_node(a: Ast, fe: *i64, fp: *i64, code: *i64, cp: i64, idx: i64) -> i64 {
+    if a.nk[idx] == 0 {                    // number: PUSH its value
+        return emit2(code, cp, 1, a.nv[idx]);
+    }
+    if a.nk[idx] == 1 {                    // name read: LOAD its slot
+        return emit2(code, cp, 11, a.nv[idx]);
+    }
+    if a.nk[idx] == 2 {                    // binop: lhs, rhs, then the opcode
+        c := emit_node(a, fe, fp, code, cp, a.nl[idx]);
+        c2 := emit_node(a, fe, fp, code, c, a.nr[idx]);
+        return emit1(code, c2, a.nv[idx]);
+    }
+    if a.nk[idx] == 3 {                    // unary minus: operand, then NEG
+        c := emit_node(a, fe, fp, code, cp, a.nl[idx]);
+        return emit1(code, c, 7);
+    }
+    f := a.nv[idx];                        // call
+    cnt := a.nl[idx];
+    mut c := cp;
+    mut j := 0;
+    while j < cnt {                        // save the callee's slots, in order
+        c = emit2(code, c, 11, fp[f * 4 + j]);
+        j += 1;
+    }
+    mut q := 0;
+    while q < cnt {                        // all argument trees, before any binds
+        c = emit_node(a, fe, fp, code, c, a.na[idx * 4 + q]);
+        q += 1;
+    }
+    mut w := cnt - 1;
+    while w > -1 {                         // bind in reverse: pops give the
+        c = emit2(code, c, 12, fp[f * 4 + w]);   // last argument first
+        w -= 1;
+    }
+    c = emit2(code, c, 15, fe[f]);         // CALL the entry
+    mut u := cnt - 1;
+    while u > -1 {                         // restore in reverse, beneath the
+        c = emit1(code, c, 17);            // returned value: SWAP + STORE
+        c = emit2(code, c, 12, fp[f * 4 + u]);
+        u -= 1;
+    }
+    c
+}
+
+// The seam between the tiers: parse ONE expression into a fresh tree
+// (the node cursor restarts at zero — expression trees are transient),
+// then walk it. Upward this plays exactly the role the emitting
+// parse_cmp played — same cursors in, same cursors out — which is why
+// the statement tier below did not change shape at all.
+fn gen_cmp(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, a: Ast, pos: i64, code: *i64, cp: i64) -> EP {
+    r := ast_cmp(k, v, ln, fpc, a, pos, 0);
+    EP{ pos: r.pos, cp: emit_node(a, fe, fp, code, cp, r.root) }
 }
 
 // A statement begins with `if`, `while`, or a name followed by ':='.
@@ -340,16 +430,16 @@ fn is_stmt_start(k: *i64, pos: i64) -> bool {
 //   with a placeholder and PATCHED afterwards (one index store into the
 //   code buffer). `while` also emits the back-JMP to its condition, and
 //   the JZ patch lands past that jump.
-fn parse_stmt(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, pos: i64, code: *i64, cp: i64) -> EP {
+fn parse_stmt(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, a: Ast, pos: i64, code: *i64, cp: i64) -> EP {
     if k[pos] == 5 {                       // if cmp block [else block]
-        c := parse_cmp(k, v, ln, fe, fp, fpc, pos + 1, code, cp);
+        c := gen_cmp(k, v, ln, fe, fp, fpc, a, pos + 1, code, cp);
         hole := c.cp + 1;                  // the JZ's target word
-        r := parse_block(k, v, ln, fe, fp, fpc, c.pos, code, emit2(code, c.cp, 13, 0));
+        r := parse_block(k, v, ln, fe, fp, fpc, a, c.pos, code, emit2(code, c.cp, 13, 0));
         if k[r.pos] == 8 {                 // else: the classic diamond —
             hole2 := r.cp + 1;             // the then-arm hops past the else,
             c2 := emit2(code, r.cp, 14, 0);
             code[hole] = c2;               // false lands at the else entry,
-            e := parse_block(k, v, ln, fe, fp, fpc, r.pos + 1, code, c2);
+            e := parse_block(k, v, ln, fe, fp, fpc, a, r.pos + 1, code, c2);
             code[hole2] = e.cp;            // and the hop lands past it all
             return e;
         }
@@ -358,15 +448,15 @@ fn parse_stmt(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, pos: i6
     }
     if k[pos] == 6 {                       // while cmp { stmts }
         top := cp;
-        c := parse_cmp(k, v, ln, fe, fp, fpc, pos + 1, code, cp);
+        c := gen_cmp(k, v, ln, fe, fp, fpc, a, pos + 1, code, cp);
         hole := c.cp + 1;
-        r := parse_block(k, v, ln, fe, fp, fpc, c.pos, code, emit2(code, c.cp, 13, 0));
+        r := parse_block(k, v, ln, fe, fp, fpc, a, c.pos, code, emit2(code, c.cp, 13, 0));
         e := emit2(code, r.cp, 14, top);   // back to the condition
         code[hole] = e;                    // exit lands past the back-jump
         return EP{ pos: r.pos, cp: e };
     }
     slot := v[pos];                        // name ':=' cmp ';'
-    r := parse_cmp(k, v, ln, fe, fp, fpc, pos + 2, code, cp);
+    r := gen_cmp(k, v, ln, fe, fp, fpc, a, pos + 2, code, cp);
     if !(k[r.pos] == 2 && v[r.pos] == 59) {
         fail(ln[r.pos], "expected ';' after the binding");
     }
@@ -374,7 +464,7 @@ fn parse_stmt(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, pos: i6
 }
 
 // block := '{' { stmt } '}'   — statement-only; a block has no tail.
-fn parse_block(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, pos: i64, code: *i64, cp: i64) -> EP {
+fn parse_block(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, a: Ast, pos: i64, code: *i64, cp: i64) -> EP {
     if !(k[pos] == 2 && v[pos] == 123) {
         fail(ln[pos], "expected '\{'");
     }
@@ -384,7 +474,7 @@ fn parse_block(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, pos: i
     while more {
         more = false;
         if is_stmt_start(k, p) {
-            r := parse_stmt(k, v, ln, fe, fp, fpc, p, code, c);
+            r := parse_stmt(k, v, ln, fe, fp, fpc, a, p, code, c);
             p = r.pos;
             c = r.cp;
             more = true;
@@ -401,7 +491,7 @@ fn parse_block(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, pos: i
 //   function may call itself; up to four comma-separated parameters
 //   record their slots in fp[f*4 + j] with the count in fpc[f]; the
 //   body ends in RET, which returns its tail value.
-fn parse_fndef(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, pos: i64, code: *i64, cp: i64) -> EP {
+fn parse_fndef(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, a: Ast, pos: i64, code: *i64, cp: i64) -> EP {
     f := v[pos + 1];
     fe[f] = cp;
     mut p := pos + 3;                      // fn +0, name +1, '(' +2, params...
@@ -426,13 +516,13 @@ fn parse_fndef(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, pos: i
     while more {
         more = false;
         if is_stmt_start(k, p) {
-            r := parse_stmt(k, v, ln, fe, fp, fpc, p, code, c);
+            r := parse_stmt(k, v, ln, fe, fp, fpc, a, p, code, c);
             p = r.pos;
             c = r.cp;
             more = true;
         }
     }
-    t := parse_cmp(k, v, ln, fe, fp, fpc, p, code, c);  // body tail = return value
+    t := gen_cmp(k, v, ln, fe, fp, fpc, a, p, code, c);  // body tail = return value
     EP{ pos: t.pos + 1, cp: emit1(code, t.cp, 16) }   // skip '}', RET
 }
 
@@ -440,7 +530,7 @@ fn parse_fndef(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, pos: i
 //   If any functions exist, a JMP with a placeholder target is emitted
 //   first and patched to hop over their bodies — execution starts at
 //   the main statements, functions are entered only by CALL.
-fn parse_program(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, pos: i64, code: *i64, cp: i64) -> EP {
+fn parse_program(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, a: Ast, pos: i64, code: *i64, cp: i64) -> EP {
     mut p := pos;
     mut c := cp;
     if k[p] == 7 {
@@ -450,7 +540,7 @@ fn parse_program(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, pos:
         while fns {
             fns = false;
             if k[p] == 7 {
-                r := parse_fndef(k, v, ln, fe, fp, fpc, p, code, c);
+                r := parse_fndef(k, v, ln, fe, fp, fpc, a, p, code, c);
                 p = r.pos;
                 c = r.cp;
                 fns = true;
@@ -462,13 +552,13 @@ fn parse_program(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, pos:
     while more {
         more = false;
         if is_stmt_start(k, p) {
-            r := parse_stmt(k, v, ln, fe, fp, fpc, p, code, c);
+            r := parse_stmt(k, v, ln, fe, fp, fpc, a, p, code, c);
             p = r.pos;
             c = r.cp;
             more = true;
         }
     }
-    t := parse_cmp(k, v, ln, fe, fp, fpc, p, code, c);
+    t := gen_cmp(k, v, ln, fe, fp, fpc, a, p, code, c);
     if k[t.pos] != 9 {
         fail(ln[t.pos], "unexpected input after the tail expression");
     }
@@ -533,9 +623,9 @@ fn run(prog: *i64, stk: *i64, vars: *i64) -> i64 {
 
 // The whole pipeline in one call: tokens in, code out, value from the VM.
 fn show(src: str, k: *i64, v: *i64, ln: *i64, code: *i64, stk: *i64, vars: *i64,
-        fe: *i64, fp: *i64, fpc: *i64, nb: *u8, ss: *i64, sl: *i64) {
+        fe: *i64, fp: *i64, fpc: *i64, a: Ast, nb: *u8, ss: *i64, sl: *i64) {
     lex(src, k, v, ln, nb, ss, sl);
-    r := parse_program(k, v, ln, fe, fp, fpc, 0, code, 0);
+    r := parse_program(k, v, ln, fe, fp, fpc, a, 0, code, 0);
     words := emit1(code, r.cp, 0);         // HALT closes the program
     val := run(code, stk, vars);
     put("{src}\n  ->  {val}   [{words} code words]\n");
@@ -554,18 +644,20 @@ fn main() -> i64 {
     ss := alloc_words(64);
     sl := alloc_words(64);
     ln := alloc_words(96);                 // per-token source lines (rung 2)
-    put("else, diagnostics, functions - lex -> parse -> emit -> run:\n");
+    ast := Ast{ nk: alloc_words(64), nl: alloc_words(64), nr: alloc_words(64),
+                nv: alloc_words(64), na: alloc_words(256) };   // rung 3
+    put("an AST under the expressions - lex -> parse -> emit -> run:\n");
     // Braces are escaped so they read as text, not interpolation (§2.5).
     show("fn max(a, b) \{ m := 0; if a > b \{ m := a; \} else \{ m := b; \} m \} max(3, 9) + max(7, 2)",
-         k, v, ln, code, stk, vars, fe, fp, fpc, nb, ss, sl);
+         k, v, ln, code, stk, vars, fe, fp, fpc, ast, nb, ss, sl);
     show("fn gcd(a, b) \{ r := a; if b > 0 \{ r := gcd(b, a % b); \} r \} gcd(48, 18)",
-         k, v, ln, code, stk, vars, fe, fp, fpc, nb, ss, sl);
+         k, v, ln, code, stk, vars, fe, fp, fpc, ast, nb, ss, sl);
     show("fn fact(n) \{ r := 1; if n > 1 \{ r := n * fact(n - 1); \} r \} fact(5)",
-         k, v, ln, code, stk, vars, fe, fp, fpc, nb, ss, sl);
+         k, v, ln, code, stk, vars, fe, fp, fpc, ast, nb, ss, sl);
     // The broken program runs LAST: the toy now refuses bad input with a
     // located message, and fail() ends the process (first error wins).
     put("and a deliberately broken program:\n");
     show("a := 1;\nb := (a + ;\nb",
-         k, v, ln, code, stk, vars, fe, fp, fpc, nb, ss, sl);
+         k, v, ln, code, stk, vars, fe, fp, fpc, ast, nb, ss, sl);
     0
 }
