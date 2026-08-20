@@ -1154,6 +1154,38 @@ static void join_mount_relative(const char* base, const char* rel, char* out, in
     out[o] = '\0';
 }
 
+// KAT (`pathnorm` in the self-test battery) for join_mount_relative — the canonicaliser
+// behind vfs_abs (mount-aware relative-path resolution for touch/mkdir/rm/mv/cp/Editor
+// saves issued from a mounted CWD). Verifies "." is dropped, ".." pops exactly one
+// component, names that only LOOK like dot-dirs ("...", "..foo", ".bashrc") stay literal,
+// and — the containment property — that stacked ".." can never walk ABOVE root. Pure
+// string logic, runs offline. Returns 0 on pass, else the failing case number.
+static int pathnorm_eq(const char* base, const char* rel, const char* want) {
+    char out[256];
+    join_mount_relative(base, rel, out, (int)sizeof(out));
+    return strcmp(out, want) == 0;
+}
+int vfs_pathnorm_selftest(void) {
+    if (!pathnorm_eq("/mnt/home/nyx", "..",             "/mnt/home"))          return 1;
+    if (!pathnorm_eq("/mnt/home/nyx", "../../foo",      "/mnt/foo"))           return 2;
+    if (!pathnorm_eq("/mnt/home/nyx", "a/b/../c",       "/mnt/home/nyx/a/c"))  return 3;
+    if (!pathnorm_eq("/mnt/home/nyx", "././.",          "/mnt/home/nyx"))      return 4;
+    if (!pathnorm_eq("/mnt",          "a//b",           "/mnt/a/b"))           return 5;
+    if (!pathnorm_eq("/mnt",          "",               "/mnt"))               return 6;
+    // ".." containment at/above root — must never escape "/":
+    if (!pathnorm_eq("/",             "..",             "/"))                  return 7;
+    if (!pathnorm_eq("/a",            "..",             "/"))                  return 8;
+    if (!pathnorm_eq("/mnt",          "../..",          "/"))                  return 9;
+    if (!pathnorm_eq("/mnt/home/nyx", "../../../../..", "/"))                  return 10;
+    if (!pathnorm_eq("/mnt",          "a/../..",        "/"))                  return 11;
+    // look-alike names that are NOT dot-dirs stay literal:
+    if (!pathnorm_eq("/mnt",          "...",            "/mnt/..."))           return 12;
+    if (!pathnorm_eq("/mnt",          "..foo",          "/mnt/..foo"))         return 13;
+    if (!pathnorm_eq("/mnt",          ".bashrc",        "/mnt/.bashrc"))       return 14;
+    if (!pathnorm_eq("/",             "foo/bar",        "/foo/bar"))           return 15;
+    return 0;
+}
+
 // Canonicalize `path` for the mount-aware file operations. An absolute path is returned
 // unchanged. A RELATIVE path is joined onto the current directory ONLY when the CWD is on
 // a mounted FS -- so `touch foo`, `mkdir bar`, `rm baz`, `mv`/`cp`, and Editor saves issued
