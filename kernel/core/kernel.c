@@ -182,6 +182,7 @@ static void cmd_nyxgrub(int argc, char** argv);
 static void cmd_nyxpart(int argc, char** argv);
 static void cmd_nyxgpt(int argc, char** argv);
 static void cmd_nyxfat(int argc, char** argv);
+static void cmd_nyxverify(int argc, char** argv);
 static void cmd_mkfs(int argc, char** argv);
 static void cmd_nyxinstall(int argc, char** argv);
 static void cmd_env(int argc, char** argv);
@@ -336,6 +337,7 @@ static const command_t commands[] = {
     {"nyxgrub",   cmd_nyxgrub,   "Install GRUB boot sectors so a disk boots standalone: nyxgrub <drive>", false},
     {"nyxgpt",    cmd_nyxgpt,    "Write a UEFI GUID Partition Table (ESP + NyxOS): nyxgpt <drive> confirm", false},
     {"nyxfat",    cmd_nyxfat,    "Format the ESP FAT32 + write /EFI/BOOT: nyxfat <drive> confirm", false},
+    {"nyxverify", cmd_nyxverify, "Check an installed disk's kernel (ELF+multiboot2, ext2+raw): nyxverify <drive>", false},
     {"env",       cmd_env,       "Show environment variables", false},
     {"export",    cmd_export,    "Set env variable: export <name>=<value>", false},
     {"find",      cmd_find,      "Find files by name: find <name> [path]", false},
@@ -5642,6 +5644,55 @@ static void cmd_nyxinstall(int argc, char** argv) {
     printf("[4/4] === nyxinstall done: written to %s ===\n", argv[1]);
     if (grub_ok) printf("  Reboot from this disk (BIOS/CSM) to run the installed NyxOS.\n");
     else printf("  Run 'nyxgrub %s' to install the bootloader for standalone boot.\n", argv[1]);
+}
+
+// nyxverify <drive> — mount the installed NyxOS partition and read /boot/nyx-kernel.bin
+// back, checking for the ELF + multiboot2 header both via the ext2 file path AND by a
+// RAW read of the file's first on-disk block. Diagnoses whether an installed kernel is
+// intact on the medium (run it right after install, and again after a power cycle to
+// tell a write bug from a persistence bug).
+static void cmd_nyxverify(int argc, char** argv) {
+    if (argc < 2) { printf("Usage: nyxverify <drive>\n  Check the installed /boot/nyx-kernel.bin (ELF + multiboot2, ext2 + raw).\n"); return; }
+    uint8_t dev = parse_blk_dev(argv[1]);
+    if (blk_dev_sectors(dev) == 0) { printf("nyxverify: %s not available\n", argv[1]); return; }
+    uint64_t nx_start = 0, nx_sectors = 0;
+    if (gpt_find_nyx(dev, &nx_start, &nx_sectors) != 0) { printf("nyxverify: no NyxOS partition in the GPT\n"); return; }
+    if (ext2_mount(dev, (uint32_t)nx_start) != 0) { printf("nyxverify: ext2 mount failed\n"); return; }
+    printf("=== nyxverify: NyxOS ext2 @ LBA %u (block size %u) ===\n", (uint32_t)nx_start, ext2_fs.block_size);
+    uint32_t ino = ext2_resolve("/boot/nyx-kernel.bin");
+    if (!ino) { printf("  /boot/nyx-kernel.bin: NOT FOUND in the ext2\n"); return; }
+    ext2_inode_t inode;
+    if (ext2_read_inode(ino, &inode) < 0) { printf("  inode %u read failed\n", ino); return; }
+    printf("  /boot/nyx-kernel.bin: inode %u  size %u  block[0]=%u block[1]=%u\n",
+           ino, inode.size, inode.block[0], inode.block[1]);
+
+    // (a) ext2 file path: read the first block through the ext2 block walker
+    static uint8_t b0[4096];
+    __builtin_memset(b0, 0, sizeof(b0));
+    ext2_read_inode_block(&inode, 0, b0);
+    int elf_e = (b0[0] == 0x7f && b0[1] == 'E' && b0[2] == 'L' && b0[3] == 'F');
+    printf("  ext2 first 8: %02x %02x %02x %02x %02x %02x %02x %02x  ELF=%s\n",
+           b0[0], b0[1], b0[2], b0[3], b0[4], b0[5], b0[6], b0[7], elf_e ? "OK" : "NO");
+
+    // (b) RAW read of the first data block's LBA, bypassing the ext2 block logic
+    uint32_t raw_lba = ext2_fs.part_start_lba + inode.block[0] * (ext2_fs.block_size / 512);
+    static uint8_t rr[512];
+    __builtin_memset(rr, 0, sizeof(rr));
+    blk_read1(dev, raw_lba, rr);
+    int elf_r = (rr[0] == 0x7f && rr[1] == 'E' && rr[2] == 'L' && rr[3] == 'F');
+    printf("  raw LBA %u first 8: %02x %02x %02x %02x %02x %02x %02x %02x  ELF=%s\n",
+           raw_lba, rr[0], rr[1], rr[2], rr[3], rr[4], rr[5], rr[6], rr[7], elf_r ? "OK" : "NO");
+
+    // (c) multiboot2 magic (0xE85250D6, 8-byte aligned) somewhere in the first 32 KB
+    static uint8_t buf[32768];
+    int n = ext2_read_file("/boot/nyx-kernel.bin", buf, sizeof(buf));
+    int mb2 = 0;
+    for (int i = 0; i + 4 <= n; i += 8) {
+        uint32_t m = (uint32_t)buf[i] | ((uint32_t)buf[i+1] << 8) | ((uint32_t)buf[i+2] << 16) | ((uint32_t)buf[i+3] << 24);
+        if (m == 0xE85250D6u) { mb2 = 1; break; }
+    }
+    printf("  multiboot2 magic in first %d B: %s\n", n, mb2 ? "FOUND" : "MISSING");
+    printf("  => on-disk kernel looks %s\n", (elf_r && mb2) ? "VALID" : "CORRUPT/EMPTY -- this is why GRUB fails");
 }
 
 static void cmd_mv(int argc, char** argv) {
