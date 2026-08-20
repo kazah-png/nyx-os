@@ -6649,6 +6649,7 @@ static void run_selftests(void) {
         {"cptree",       cptree_walk_selftest},
         {"notify",       notify_selftest},
         {"stack-canary", stack_canary_selftest},
+        {"kfree",        kfree_selftest},
         {"elf",          elf_selftest},
         {"numparse",     numparse_selftest},        {"hkdf",          hkdf_selftest},
         {"snprintf",     snprintf_selftest},

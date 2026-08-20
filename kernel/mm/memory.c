@@ -219,6 +219,11 @@ typedef struct alloc_hdr {
 // the matching allocator regardless of size.
 #define ALLOC_MAGIC_SLAB 0x4E79584F // "NyXO"
 #define ALLOC_MAGIC_HEAP 0x4E795848 // "NyXH"
+// Stamped over a block's magic the instant it is freed (see kfree). A double-free — or
+// any stale pointer whose block was already released — then fails the live-magic check
+// and is dropped, instead of being re-routed to heap_free() and re-coalescing an
+// already-free block (which corrupts the free list). "NyXF".
+#define ALLOC_MAGIC_FREED 0x4E795846
 
 void slab_init_all(void) {
     slab_init();
@@ -270,17 +275,27 @@ void kfree(void* ptr) {
     uint64_t fl = spin_lock_irqsave(&kmalloc_lock);
     alloc_hdr_t* hdr = ((alloc_hdr_t*)ptr) - 1;
     extern void heap_free(void*);
-    if (hdr->magic == ALLOC_MAGIC_SLAB) {
+    // Read the origin magic, then immediately poison the header. heap_free() only flips
+    // its block's used-bit — it never touches this alloc_hdr_t — so without poisoning, a
+    // heap-backed block kept its ALLOC_MAGIC_HEAP after being freed: a second kfree of the
+    // same pointer re-entered heap_free() and coalesced an already-free block, corrupting
+    // the free list. (slab_free() happens to overwrite the header with its free-list link,
+    // so the slab path was already covered; the heap path was not.) Stamping
+    // ALLOC_MAGIC_FREED makes a double-free — or any stale pointer — fail the check below
+    // and be dropped. hdr->size stays intact for the slab_free() argument evaluated first.
+    uint32_t magic = hdr->magic;
+    hdr->magic = ALLOC_MAGIC_FREED;
+    if (magic == ALLOC_MAGIC_SLAB) {
         slab_free(hdr, hdr->size + sizeof(alloc_hdr_t));
-    } else if (hdr->magic == ALLOC_MAGIC_HEAP) {
+    } else if (magic == ALLOC_MAGIC_HEAP) {
         heap_free(hdr);
     }
-    // Neither magic: the header is corrupted, the pointer never came from kmalloc,
-    // or the block was already freed. Every pointer kfree can legitimately see was
-    // stamped by kmalloc with one of the two magics (slab_alloc/heap_alloc are only
-    // ever reached through kmalloc), so an unknown header is invalid. Guessing a
-    // backend from it and calling slab_free/heap_free would let it rewrite an
-    // unrelated block's metadata (issue #52) — drop it instead of corrupting the heap.
+    // Neither live magic: a double-free (header now reads ALLOC_MAGIC_FREED), a pointer
+    // that never came from kmalloc, or a corrupted header. Every pointer kfree can
+    // legitimately see was stamped by kmalloc (slab_alloc/heap_alloc are only ever reached
+    // through it), so an unknown header is invalid. Guessing a backend and calling
+    // slab_free/heap_free would let it rewrite an unrelated block's metadata (issue #52) —
+    // drop it instead of corrupting the heap.
     spin_unlock_irqrestore(&kmalloc_lock, fl);
 }
 
@@ -297,6 +312,35 @@ void* krealloc(void* ptr, size_t size) {
     memcpy_asm(newp, ptr, old_size < size ? old_size : size);
     kfree(ptr);
     return newp;
+}
+
+// KAT (`kfree` in the self-test battery): kfree() must poison a block's header the
+// instant it is freed, so a double-free is caught rather than re-routed. Exercises the
+// HEAP-backed path (a request whose size+header exceeds every slab class) — the one that
+// previously kept its ALLOC_MAGIC_HEAP after free and so re-coalesced the free list on a
+// second kfree. Returns 0 on pass, else the failing step.
+int kfree_selftest(void) {
+    size_t big = SLAB_MAX_OBJ;                     // + header exceeds the slab -> heap path
+    void* p = kmalloc(big);
+    if (!p) return 1;
+    alloc_hdr_t* h = ((alloc_hdr_t*)p) - 1;
+    if (h->magic != ALLOC_MAGIC_HEAP) return 2;    // confirm it really took the heap path
+    kfree(p);
+    if (h->magic != ALLOC_MAGIC_FREED) return 3;   // THE FIX: header poisoned on free
+    kfree(p);                                      // double-free: must be dropped, not re-freed
+    // The dropped double-free must not have corrupted the free list: two fresh heap
+    // allocations still succeed and occupy distinct, non-overlapping regions.
+    void* a = kmalloc(big);
+    void* b = kmalloc(big);
+    int rc = 0;
+    if (!a || !b) rc = 4;
+    else {
+        uint8_t* pa = (uint8_t*)a; uint8_t* pb = (uint8_t*)b;
+        if (!(pa + big <= pb || pb + big <= pa)) rc = 5;   // overlap => corrupted free list
+    }
+    if (a) kfree(a);
+    if (b) kfree(b);
+    return rc;
 }
 
 // Usable size of a kmalloc'd block: the request size stored in its header. Lets a
