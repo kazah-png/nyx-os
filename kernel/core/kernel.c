@@ -2690,8 +2690,9 @@ static void cmd_nvme(int argc, char** argv) {
         }
         static uint8_t wb[512], rb[512];
         if (do_write) {
-            printf("nvme persisttest: controller VWC (volatile write cache) present: %s\n",
-                   nvme_vwc() ? "YES (Flush is required for persistence)" : "no (writes should be persistent)");
+            printf("nvme persisttest: controller VWC present: %s; write cache now: %s\n",
+                   nvme_vwc() ? "YES" : "no",
+                   nvme_wce_disabled() ? "DISABLED (write-through - should persist)" : "ENABLED (relies on Flush)");
             printf("nvme persisttest: writing %u stamped blocks @ LBA %u..\n", count, base);
             for (uint32_t i = 0; i < count; i++) {
                 for (int j = 0; j < 512; j++) wb[j] = (uint8_t)(i * 7 + j);

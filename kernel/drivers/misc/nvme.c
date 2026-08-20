@@ -37,6 +37,7 @@ typedef struct {
     uint64_t nsze;                 // namespace size in logical blocks
     uint32_t lba_size;             // bytes per logical block
     uint8_t  vwc;                  // Identify-Controller VWC bit 0: volatile write cache present
+    uint8_t  wce_disabled;         // 1 once Set-Features disabled the write cache (write-through)
     char     model[41], serial[21];
     // I/O queue pair (qid 1)
     int      io_ready;
@@ -79,6 +80,18 @@ static void build_set_nqueues(uint32_t* sqe, uint32_t nsq0, uint32_t ncq0, uint1
     sqe[0]  = 0x09u | ((uint32_t)cid << 16);   // CDW0: SET FEATURES
     sqe[10] = 0x07u;                           // CDW10: FID = Number of Queues
     sqe[11] = (ncq0 << 16) | (nsq0 & 0xFFFF);  // CDW11: NCQR:NSQR (0-based)
+}
+// SET FEATURES (opcode 0x09) FID 0x06 = Volatile Write Cache: CDW11 bit0 = WCE
+// (Write Cache Enable). enable=0 -> write-through: every write reaches the medium
+// before the command completes, so freshly-written data survives an abrupt
+// power-off WITHOUT depending on a Flush the controller may defer/ignore (observed
+// on the real Silicon Motion SMI2263 — flushed data was still lost on hard
+// power-off). Pure/KAT'd.
+static void build_set_wce(uint32_t* sqe, uint32_t enable, uint16_t cid) {
+    for (int i = 0; i < 16; i++) sqe[i] = 0;
+    sqe[0]  = 0x09u | ((uint32_t)cid << 16);   // CDW0: SET FEATURES
+    sqe[10] = 0x06u;                           // CDW10: FID = Volatile Write Cache
+    sqe[11] = enable ? 1u : 0u;                // CDW11: WCE (bit 0)
 }
 // CREATE I/O COMPLETION QUEUE (opcode 0x05): PRP1=CQ page, CDW10=(qsize0<<16)|qid,
 // CDW11 PC=1 (contiguous), IEN=0 (polled). Pure/KAT'd.
@@ -341,6 +354,14 @@ int nvme_create_io_queues(void) {
     nvme_dev.io_ready = 1;
     printf("nvme: I/O queue pair created (qid 1, depth %u, SQ1 db 0x%x CQ1 db 0x%x)\n",
            NVME_IOQ_DEPTH, sq_db_off(1, nvme_dev.dstrd), cq_db_off(1, nvme_dev.dstrd));
+
+    // Force write-through: disable the volatile write cache so a just-written
+    // install reaches the NAND before completion and survives an abrupt power-off,
+    // even on a controller that defers NVM Flush. Non-fatal if the drive refuses.
+    build_set_wce(sqe, 0, 0x13);
+    int wst = nvme_admin_submit(sqe);
+    if (wst == 0) { nvme_dev.wce_disabled = 1; printf("nvme: volatile write cache DISABLED (write-through)\n"); }
+    else printf("nvme: could NOT disable write cache (status=%d) - writes rely on Flush/shutdown\n", wst);
     return 0;
 }
 
@@ -456,6 +477,7 @@ const char* nvme_model_str(void)       { return nvme_dev.model; }
 uint64_t    nvme_capacity_blocks(void) { return nvme_dev.nsze; }
 uint32_t    nvme_block_size(void)      { return nvme_dev.lba_size ? nvme_dev.lba_size : 512; }
 int         nvme_vwc(void)             { return nvme_dev.vwc; }   // 1 = controller has a volatile write cache (Flush matters)
+int         nvme_wce_disabled(void)    { return nvme_dev.wce_disabled; } // 1 = write cache turned off (write-through)
 
 // QEMU functional check ONLY (needs a real `-device nvme`; NOT in the boot KAT
 // battery). Writes a known pattern to a scratch LBA, reads it back, compares.
@@ -536,6 +558,12 @@ int nvme_selftest(void) {
     if (sqe[0]  != 0x00100009u) return 21;   // SET FEATURES | CID 0x10
     if (sqe[10] != 0x07u)       return 22;   // FID = Number of Queues
     if (sqe[11] != 0u)          return 23;   // request 1 SQ + 1 CQ (0-based)
+    build_set_wce(sqe, 0, 0x13);
+    if (sqe[0]  != 0x00130009u) return 64;   // SET FEATURES | CID 0x13
+    if (sqe[10] != 0x06u)       return 65;   // FID = Volatile Write Cache
+    if (sqe[11] != 0u)          return 66;   // WCE=0 (write-through)
+    build_set_wce(sqe, 1, 0x13);
+    if (sqe[11] != 1u)          return 67;   // WCE=1 (write-back)
     build_create_io_cq(sqe, 0x00000001CAFE0000ULL, 1, 7, 0x11);
     if (sqe[0]  != 0x00110005u) return 24;   // CREATE IO CQ | CID 0x11
     if (sqe[6]  != 0xCAFE0000u) return 25;   // PRP1 low
