@@ -143,6 +143,7 @@ static void cmd_tar(int argc, char** argv);
 static void cmd_iniget(int argc, char** argv);
 static void cmd_factor(int argc, char** argv);
 static void cmd_strings(int argc, char** argv);
+static void cmd_sha256sum(int argc, char** argv);
 static void cmd_semver(int argc, char** argv);
 static void cmd_fnv(int argc, char** argv);
 static void cmd_seq(int argc, char** argv);
@@ -351,6 +352,7 @@ static const command_t commands[] = {
     {"nl",        cmd_nl,        "Number lines: nl [-b a|t|n] [-w N] [-s SEP] <file>", false},
     {"factor",    cmd_factor,    "Prime factorization: factor N [N ...]", false},
     {"strings",   cmd_strings,   "Print printable-character runs in a file: strings [-n MIN] <file>", false},
+    {"sha256sum", cmd_sha256sum, "Print the SHA-256 digest of each file: sha256sum <file>...", false},
     {"seq",       cmd_seq,       "Integer sequence: seq [FIRST [STEP]] LAST", false},
     {"paste",     cmd_paste,     "Merge lines of files: paste [-s] [-d LIST] <file ...>", false},
     {"clip",      cmd_clip,      "Clipboard: clip <text> to copy, clip to paste, clip -c to clear", false},
@@ -632,7 +634,7 @@ void execute_command(const char* cmd_line) {
 typedef struct { const char* title; const char* const* names; } help_cat_t;
 static const char* const HC_shell[] = {"help","man","version","clear","history","exec","spawn","jobs","wait","nice","renice",0};
 static const char* const HC_files[] = {"ls","cd","pwd","cat","file","tar","iniget","open","touch","mkdir","rm","cp","mv","tree","find","which","basename","dirname","files","df","du","disks","lsblk","lspci","nvme","nyxpart","mkfs","nyxinstall","nyxgrub","mount","ext2ls","ext2cat",0};
-static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","fold","nl","expand","unexpand","factor","strings","seq","paste","clip","cut","uniq","join","comm","printf","wc","write","hexdump",0};
+static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","fold","nl","expand","unexpand","factor","strings","sha256sum","seq","paste","clip","cut","uniq","join","comm","printf","wc","write","hexdump",0};
 static const char* const HC_sys[]   = {"ps","kill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat","screenshot","stackcheck",0};
 static const char* const HC_user[]  = {"useradd","users",0};
 static const char* const HC_net[]   = {"ifconfig","dhcp","dns","ping","setip","httpget","tls","ipcalc",0};
@@ -721,6 +723,7 @@ static const man_page_t man_pages[] = {
     {"nl",       "Number the lines of <file>. By default only non-empty lines are numbered (-b t); -b a numbers every line and -b n numbers none. Each line number is right-justified in a field N columns wide (6 by default, or -w N) and followed by a separator (a tab by default, or -s SEP), then the line text."},
     {"factor",   "Print the prime factorization of each integer argument, one per line, as `N: p1 p2 ...` with factors ascending and repeated by multiplicity (e.g. `factor 90` prints `90: 2 3 3 5`). 0 and 1 print just `N:`. Accepts any 64-bit unsigned value; a non-numeric or negative argument is reported and skipped."},
     {"strings",  "Print each run of at least MIN (default 4, or -n MIN) consecutive printable characters found in <file>, one run per line — the classic way to read the text embedded in a binary (an ELF, an image, a package). A printable character is a space through `~` (0x20-0x7E) or a tab; any other byte ends the current run. The file is streamed in fixed chunks, so even a large binary needs no whole-file buffer."},
+    {"sha256sum","Print the SHA-256 digest of each file argument as `<64-hex-digits>  <name>` (two spaces between, the GNU sha256sum format), the standard way to check a file's integrity — e.g. that a downloaded package matches a published hash. Each file is streamed through the hash in fixed chunks, so a large binary needs no whole-file buffer, and the total is capped so an endless special like /dev/zero cannot spin forever. A file that cannot be opened is reported and skipped."},
     {"vfsstat",  "Report VFS node-pool usage: how many of the fixed node slots are live, free, and the linear high-water mark, plus a breakdown of the transient mount-backed (ext2 /mnt mirror) nodes into those still held by an open fd versus idle-but-unfreed. A diagnostic for node-pool exhaustion under sustained in-OS file I/O (issue #66): if `mount held` climbs and never falls across a compile session, an fd is leaking; watch it before/after `cc`/`xbm` runs."},
     {"comm",     "Compare two files that are each already sorted, line by line, in three columns: lines only in <file1> (column 1), lines only in <file2> (column 2, indented one tab), and lines common to both (column 3, indented two tabs). `-1`/`-2`/`-3` suppress the respective column (and drop its indentation from the later columns), so e.g. `comm -12 a b` prints just the lines common to both. Input is assumed sorted in byte order."},
     {"semver",   "Parse and compare Semantic Versioning 2.0.0 strings (MAJOR.MINOR.PATCH[-prerelease][+build]). With one argument, validate it and print the parsed fields. With two, print their precedence relation (`A < B`, `A = B`, or `A > B`) per the semver spec: core numbers compared numerically, a prerelease ranks below the same version without one, and build metadata is ignored. Useful for comparing package versions."},
@@ -1197,6 +1200,31 @@ static void cmd_strings(int argc, char** argv) {
     }
     strings_finish(&st);
     vfs_close(fd);
+}
+
+// sha256sum <file>... — print each file's SHA-256 digest as `<64-hex>  <name>` (the
+// GNU format: digest, two spaces, name), the standard file-integrity check for a
+// package-managing OS. Streams each file through the hash in fixed chunks via the
+// offset-aware vfs_pread — no whole-file buffer, so a large binary hashes fine — and
+// caps the total so an endless special (/dev/zero) can't spin forever.
+static void cmd_sha256sum(int argc, char** argv) {
+    if (argc < 2) { printf("Usage: sha256sum <file>...\n"); return; }
+    for (int a = 1; a < argc; a++) {
+        int fd = vfs_open(argv[a], 0, 0);
+        if (fd < 0) { printf("sha256sum: %s: cannot open\n", argv[a]); continue; }
+        sha256_ctx_t ctx; sha256_init(&ctx);
+        static uint8_t buf[512];
+        uint32_t off = 0; const uint32_t cap = 256u * 1024u * 1024u;
+        int n;
+        while (off < cap && (n = vfs_pread(fd, buf, sizeof(buf), off)) > 0) {
+            sha256_update(&ctx, buf, (uint32_t)n);
+            off += (uint32_t)n;
+        }
+        vfs_close(fd);
+        uint8_t dg[SHA256_DIGEST_SIZE]; sha256_final(&ctx, dg);
+        char hex[SHA256_DIGEST_SIZE * 2 + 1]; sha256_to_hex(dg, hex);
+        printf("%s  %s\n", hex, argv[a]);
+    }
 }
 
 static void cmd_factor(int argc, char** argv) {
@@ -6416,6 +6444,30 @@ static int strings_selftest(void) {
     return 0;
 }
 
+// KAT for the `sha256sum` streaming path: hash known messages fed in SMALL chunks
+// (as the file streamer does) and check the hex digest. Guards the chunked
+// sha256_update loop + sha256_to_hex formatting the command relies on (the one-shot
+// hash is already covered by the sha256 KAT). Canonical NIST vectors.
+static int sha256sum_selftest(void) {
+    uint8_t dg[SHA256_DIGEST_SIZE];
+    char hex[SHA256_DIGEST_SIZE * 2 + 1];
+    static const uint8_t abc[] = { 'a','b','c' };
+    sha256_ctx_t ctx; sha256_init(&ctx);
+    sha256_update(&ctx, abc, 1); sha256_update(&ctx, abc + 1, 2);       // two chunks
+    sha256_final(&ctx, dg); sha256_to_hex(dg, hex);
+    if (strcmp(hex, "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad") != 0) return 1;
+    static const uint8_t fox[] = "The quick brown fox jumps over the lazy dog";
+    sha256_init(&ctx);
+    for (uint32_t i = 0; i < 43; i += 7) { uint32_t c = (43 - i) < 7 ? (43 - i) : 7; sha256_update(&ctx, fox + i, c); }
+    sha256_final(&ctx, dg); sha256_to_hex(dg, hex);
+    if (strcmp(hex, "d7a8fbb307d7809469ca9abcb0082e4f8d5651e46d3cdb762d02d0bf37c9e592") != 0) return 2;
+    static const uint8_t empty[1] = {0};
+    sha256_init(&ctx); sha256_update(&ctx, empty, 0);                    // empty input
+    sha256_final(&ctx, dg); sha256_to_hex(dg, hex);
+    if (strcmp(hex, "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855") != 0) return 3;
+    return 0;
+}
+
 // Run the whole offline self-test battery, print a machine-readable summary, and
 // halt. Triggered ONLY by the "selftest" multiboot command line (used by CI); a
 // normal boot never calls this, so ordinary startup is unaffected. Each test is a
@@ -6431,6 +6483,7 @@ static void run_selftests(void) {
         {"iniparse",     ini_selftest},
         {"factor",       factor_selftest},
         {"strings",      strings_selftest},
+        {"sha256sum",    sha256sum_selftest},
         {"semver",       semver_selftest},
         {"tls_prf",      tls_prf_selftest},       {"tls_keysched",  tls_keyschedule_selftest},
         {"tls_record",   tls_record_selftest},    {"tls_ske_p384",  tls_ske_p384_selftest},
