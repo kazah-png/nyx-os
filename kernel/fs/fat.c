@@ -238,7 +238,7 @@ int fat_format_esp(uint8_t dev, uint32_t part_lba, uint32_t total_sectors,
     if (fat_write_file(dev, part_lba, &g, cb, (const uint8_t*)boot_efi, boot_len) != 0) return -10;
     if (fat_write_file(dev, part_lba, &g, cg, (const uint8_t*)cfg, cfg_len) != 0) return -11;
 
-    if (dev != BLK_NVME0) ata_flush();
+    blk_flush(dev);
     return 0;
 }
 

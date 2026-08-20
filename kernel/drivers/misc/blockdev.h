@@ -12,5 +12,6 @@ int blk_read1(uint8_t dev, uint32_t lba, void* buf);          // one 512-B secto
 int blk_write1(uint8_t dev, uint32_t lba, const void* buf);   // one 512-B sector
 int blk_read(uint8_t dev, uint32_t lba, uint32_t count, void* buf);
 int blk_write(uint8_t dev, uint32_t lba, uint32_t count, const void* buf);
+int blk_flush(uint8_t dev);                                   // force the write cache to the medium (NVMe Flush / ATA flush)
 
 #endif

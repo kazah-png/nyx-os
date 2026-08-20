@@ -472,6 +472,21 @@ int nvme_io_selftest(void) {
     return 0;
 }
 
+// NVM FLUSH (opcode 0x00): force the namespace's volatile write cache to the
+// medium. ESSENTIAL on a real SSD — QEMU's emulated NVMe persists a write on
+// completion, but a physical drive caches it, so without a flush freshly-written
+// data (e.g. a just-installed kernel) is lost on power-off. 0 on success.
+int nvme_flush(void) {
+    if (!nvme_dev.io_ready) return -1;
+    uint32_t sqe[16];
+    for (int i = 0; i < 16; i++) sqe[i] = 0;
+    sqe[0] = 0x00u | ((uint32_t)0x33u << 16);   // CDW0: opcode 0x00 (Flush), CID
+    sqe[1] = 1;                                  // NSID
+    int st = nvme_io_submit(sqe);
+    if (st != 0) { printf("nvme: FLUSH failed (status=%d)\n", st); return -1; }
+    return 0;
+}
+
 int nvme_present(void) { return nvme_dev.present; }
 
 // KAT: exercise the pure register math against hand-computed vectors. The MMIO

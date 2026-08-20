@@ -2685,7 +2685,7 @@ static void cmd_nyxpart(int argc, char** argv) {
     static uint8_t sec[512];
     mbr_build(&p, 1, sec);
     if (blk_write1(dev, 0, sec) != 0) { printf("nyxpart: write to %s failed\n", argv[1]); return; }
-    if (dev != BLK_NVME0) ata_flush();                   // NVMe commits on completion; ATA needs a flush
+    blk_flush(dev);                   // commit the partition table to the medium (ATA + NVMe)
     char hb[24];
     du_human((uint64_t)want * 512ULL, hb, sizeof(hb));
     printf("nyxpart: %s partitioned - 1x Linux %s at LBA %u [boot]\n", argv[1], hb, start);
@@ -5480,7 +5480,7 @@ static int install_grub_to(uint8_t dev) {
     if (blk_read1(dev, 0, sec0) != 0) return -2;
     __builtin_memcpy(sec0, boot_work, 446);            // boot code only; keep the MBR table [446..511]
     if (blk_write1(dev, 0, sec0) != 0) return -3;
-    if (dev != BLK_NVME0) ata_flush();
+    blk_flush(dev);
     return 0;
 }
 
@@ -5552,6 +5552,7 @@ static int install_populate_ext2(uint8_t dev, uint32_t part_lba, uint32_t blocks
         } else printf("  (kernel copy failed)\n");
     } else printf("  (no /nyxkernel.bin module; add /boot/nyx-kernel.bin manually)\n");
     printf("  %d file(s) across %d director(y/ies)%s\n", files, dirs, err ? " (with errors)" : "");
+    blk_flush(dev);          // final commit: force the whole write cache to the medium before we return
     if (have_kernel_out) *have_kernel_out = have_kernel;
     return 0;
 }
@@ -5626,7 +5627,7 @@ static void cmd_nyxinstall(int argc, char** argv) {
     static uint8_t sec[512];
     mbr_build(&p, 1, sec);
     if (blk_write1(dev, 0, sec) != 0) { printf("nyxinstall: partition write failed\n"); return; }
-    if (dev != BLK_NVME0) ata_flush();
+    blk_flush(dev);
 
     printf("[2/4] ext2 + OS tree + kernel...\n");
     int have_kernel = 0;

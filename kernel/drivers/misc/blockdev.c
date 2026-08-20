@@ -44,3 +44,11 @@ int blk_write(uint8_t dev, uint32_t lba, uint32_t count, const void* buf) {
     }
     return 0;
 }
+
+// Force the device's write cache to the medium. NVMe needs an explicit Flush on
+// real hardware (its cache is volatile); ATA flushes its own cache. Call this at
+// every commit point so a power-off after an install doesn't lose the writes.
+int blk_flush(uint8_t dev) {
+    if (dev == BLK_NVME0) return nvme_flush();
+    return ata_flush();
+}

@@ -170,7 +170,7 @@ int gpt_write_disk(uint8_t dev, uint64_t disk_sectors,
                      backup_arr, GPT_NUM_ENTRIES, GPT_ENTRY_SIZE, acrc, disk_guid);
     if (blk_write1(dev, (uint32_t)backup_hdr, gpt_hdr) != 0) return -8;
 
-    if (dev != BLK_NVME0) ata_flush();
+    blk_flush(dev);
     return 0;
 }
 
