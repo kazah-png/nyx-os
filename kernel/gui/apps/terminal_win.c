@@ -103,7 +103,7 @@ terminal_win_t* terminal_create_ctx(void) {
     term_set_prompt(term);
     term->visible_rows = 20;
     char banner[48];
-    snprintf(banner, sizeof(banner), "NyxOS Terminal v%s", KERNEL_VERSION);
+    snprintf(banner, sizeof(banner), "%s Terminal v%s", TERMINAL_NAME, KERNEL_VERSION);
     term_add_line(term, banner, VGA_LIGHT_GREEN | (VGA_BLACK << 4));
     term_add_line(term, "Type 'help' for available commands.", VGA_LIGHT_CYAN | (VGA_BLACK << 4));
     term_add_line(term, "", VGA_LIGHT_GREY | (VGA_BLACK << 4));

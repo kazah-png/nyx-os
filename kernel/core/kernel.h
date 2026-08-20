@@ -18,9 +18,16 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.4.286"
+#define KERNEL_VERSION "6.4.287"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
+
+// Component names, in the Nyx (Greek night) family alongside the Selene browser.
+// Hemera (daughter of Nyx, goddess of daylight) is the compositor / window manager;
+// Erebus (primordial darkness) is the terminal emulator. Used wherever these
+// components identify themselves (nyxfetch, the terminal banner).
+#define COMPOSITOR_NAME "Hemera"
+#define TERMINAL_NAME   "Erebus"
 
 #define ARCH_X86 1
 #define BITS_64  1
