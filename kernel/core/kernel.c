@@ -6443,6 +6443,40 @@ static int sha256sum_selftest(void) {
     return 0;
 }
 
+// KAT for the kernel's snprintf/vsnprintf — infrastructure behind 380+ call sites, so a
+// formatter regression corrupts output everywhere. Covers signed/unsigned decimal (incl.
+// the full 64-bit range that issue #78 truncated), hex, char/string/%%, width zero-pad,
+// integer precision, and truncation to the buffer size. Pure (formats into a buffer).
+static int snprintf_selftest(void) {
+    char b[64];
+    snprintf(b, sizeof(b), "%d", -42);                       if (strcmp(b, "-42") != 0) return 1;
+    snprintf(b, sizeof(b), "%d", 0);                         if (strcmp(b, "0") != 0) return 2;
+    snprintf(b, sizeof(b), "%i", 2147483647);                if (strcmp(b, "2147483647") != 0) return 3;
+    // unsigned decimal — the issue #78 cases: must not truncate to 32-bit or show a sign
+    snprintf(b, sizeof(b), "%u", 3000000000u);               if (strcmp(b, "3000000000") != 0) return 4;
+    snprintf(b, sizeof(b), "%lu", 10000000000ul);            if (strcmp(b, "10000000000") != 0) return 5;
+    snprintf(b, sizeof(b), "%llu", 1000000016000000063ull);  if (strcmp(b, "1000000016000000063") != 0) return 6;
+    snprintf(b, sizeof(b), "%llu", 18446744073709551615ull); if (strcmp(b, "18446744073709551615") != 0) return 7; // 2^64-1
+    snprintf(b, sizeof(b), "%u", 0u);                        if (strcmp(b, "0") != 0) return 8;
+    // hex (already 64-bit-safe)
+    snprintf(b, sizeof(b), "%x", 0xdeadbeefu);               if (strcmp(b, "deadbeef") != 0) return 9;
+    snprintf(b, sizeof(b), "%llx", 0x1122334455667788ull);   if (strcmp(b, "1122334455667788") != 0) return 10;
+    // char / string / percent
+    snprintf(b, sizeof(b), "%c%c", 'h', 'i');                if (strcmp(b, "hi") != 0) return 11;
+    snprintf(b, sizeof(b), "[%s]", "abc");                   if (strcmp(b, "[abc]") != 0) return 12;
+    snprintf(b, sizeof(b), "%s", (char*)0);                  if (strcmp(b, "(null)") != 0) return 13;
+    snprintf(b, sizeof(b), "100%%");                         if (strcmp(b, "100%") != 0) return 14;
+    // width zero-pad + integer precision
+    snprintf(b, sizeof(b), "%05u", 42u);                     if (strcmp(b, "00042") != 0) return 15;
+    snprintf(b, sizeof(b), "%08x", 0x1234u);                 if (strcmp(b, "00001234") != 0) return 16;
+    snprintf(b, sizeof(b), "%.5d", 42);                      if (strcmp(b, "00042") != 0) return 17;
+    // a realistic mixed line (nyxfetch-style)
+    snprintf(b, sizeof(b), "%s=%d (0x%x)", "n", 255, 255u);  if (strcmp(b, "n=255 (0xff)") != 0) return 18;
+    // truncation: a 5-byte buffer holds 4 chars + NUL
+    { char s[5]; snprintf(s, sizeof(s), "%d", 123456);       if (strcmp(s, "1234") != 0) return 19; }
+    return 0;
+}
+
 // Run the whole offline self-test battery, print a machine-readable summary, and
 // halt. Triggered ONLY by the "selftest" multiboot command line (used by CI); a
 // normal boot never calls this, so ordinary startup is unaffected. Each test is a
@@ -6514,6 +6548,7 @@ static void run_selftests(void) {
         {"stack-canary", stack_canary_selftest},
         {"elf",          elf_selftest},
         {"numparse",     numparse_selftest},        {"hkdf",          hkdf_selftest},
+        {"snprintf",     snprintf_selftest},
         {"chacha20",     chacha20_selftest},        {"siphash",       siphash_selftest},
         {"poly1305",     poly1305_selftest},        {"chachapoly",    chacha20poly1305_selftest},
         {"blake2s",      blake2s_selftest},         {"cmac",          aes_cmac_selftest},
@@ -7320,14 +7355,17 @@ int vsnprintf(char *buf, size_t size, const char *fmt, va_list args) {
                 fmt++;
             } else if (*fmt == 'u') {
                 unsigned long val = long_flag ? va_arg(args, unsigned long) : (unsigned long)va_arg(args, unsigned int);
-                char tmp[24];
-                itoa((int)val, tmp, 10);
+                // 64-bit-safe unsigned decimal + width zero-padding. itoa((int)val)
+                // truncated to 32 bits (and printed a spurious '-' above INT_MAX);
+                // build the digits from the full unsigned value, like %x does (issue #78).
+                char tmp[24]; int ti = 0;
+                if (val == 0) tmp[ti++] = '0';
+                else { char rev[24]; int ri = 0; unsigned long v = val;
+                       while (v) { rev[ri++] = (char)('0' + (int)(v % 10)); v /= 10; }
+                       while (ri) tmp[ti++] = rev[--ri]; }
+                tmp[ti] = '\0';
+                if (width > ti) { int pad = width - ti; while (pad-- > 0 && written < (int)size - 1) { *p++ = '0'; written++; } }
                 char *t = tmp;
-                int tlen = 0; while (t[tlen]) tlen++;
-                if (width > tlen) {
-                    int pad = width - tlen;
-                    while (pad-- > 0 && written < (int)size - 1) { *p++ = '0'; written++; }
-                }
                 while (*t && written < (int)size - 1) { *p++ = *t++; written++; }
                 fmt++;
             } else if (*fmt == 'x' || *fmt == 'X') {
