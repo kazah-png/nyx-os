@@ -10,10 +10,13 @@ PHDRS
 SECTIONS {
     . = 0x100000;
 
+    _text_start = .;
     .text : ALIGN(16) {
         KEEP(*(.multiboot))
-        *(.text)
+        *(.text .text.* .ltext .ltext.*)    /* gather per-function (.text.*) code too, so
+                                               _text_end spans ALL code (panic backtrace) */
     } :text
+    _text_end = .;
 
     .rodata : ALIGN(16) {
         *(.rodata)

@@ -6085,7 +6085,7 @@ static void cmd_kill(int argc, char** argv) {
 // LFB (fb_use_lfb_direct) because by panic time the compositor's double-buffer
 // present loop is dead — anything drawn to the back buffer would never appear.
 static void panic_screen(const char* msg, uint64_t cr0, uint64_t cr2,
-                         uint64_t cr3, uint64_t caller) {
+                         uint64_t cr3, uint64_t caller, const uint64_t* bt, int btn) {
     if (!fb_get_addr() || fb_get_width() == 0) return;   // no framebuffer: text only
     fb_use_lfb_direct();
     uint32_t w = fb_get_width(), h = fb_get_height();
@@ -6137,6 +6137,24 @@ static void panic_screen(const char* msg, uint64_t cr0, uint64_t cr2,
     snprintf(rb, sizeof(rb), "CR3=0x%lx   from=0x%lx", cr3, caller);
     font_draw_string(margin, y, rb, dim, bg);
 
+    // Best-effort backtrace (stack-scan .text hits): the call trail to run through
+    // addr2line — the only debug signal on real hardware, which has no serial.
+    if (btn > 0) {
+        y += (int)font_get_height() + 12;
+        font_draw_string(margin, y, "Backtrace (stack scan):", dim, bg);
+        y += (int)font_get_height() + 4;
+        for (int i = 0; i < btn; ) {
+            char line[96]; int p = 0;
+            for (int k = 0; k < 4 && i < btn; k++, i++) {
+                char one[20]; snprintf(one, sizeof(one), "0x%lx ", bt[i]);
+                for (int z = 0; one[z] && p < 95; z++) line[p++] = one[z];
+            }
+            line[p] = '\0';
+            font_draw_string(margin, y, line, dim, bg);
+            y += (int)font_get_height() + 4;
+        }
+    }
+
     // Footer.
     font_draw_string(margin, (int)h - 58,
                      "The system has been halted to prevent damage.", dim, bg);
@@ -6172,12 +6190,33 @@ void kernel_panic(const char* msg, ...) {
     __asm__ volatile("mov %%cr2, %0" : "=r"(cr2));
     __asm__ volatile("mov %%cr3, %0" : "=r"(cr3));
 
+    // Best-effort backtrace: -Os omits the frame pointer, so scan the current stack PAGE
+    // (guaranteed mapped — never fault while panicking) and keep the qwords that land in
+    // the kernel .text range: the likely return addresses. Heuristic (some false hits),
+    // but it turns the panic screen — the only debug signal on real hardware (no serial) —
+    // into an addr2line-able call trail.
+    extern char _text_start[], _text_end[];
+    static uint64_t bt[10];
+    int btn = 0;
+    {
+        uint64_t rsp; __asm__ volatile("mov %%rsp, %0" : "=r"(rsp));
+        uint64_t ts = (uint64_t)_text_start, te = (uint64_t)_text_end;
+        uint64_t page_end = (rsp | 0xFFFULL) + 1;              // end of RSP's 4 KB page
+        for (uint64_t a = rsp; a + 8 <= page_end && btn < 10; a += 8) {
+            uint64_t v = *(volatile uint64_t*)a;
+            if (v >= ts && v < te) bt[btn++] = v;
+        }
+    }
+
     // Text/serial log first (kept for debugging; greppable "[KERNEL PANIC]").
     printf("\n\n[KERNEL PANIC] %s\n\nSystem halted.\n", pbuf);
     printf("CR0=0x%lx CR2=0x%lx CR3=0x%lx from=0x%lx\n", cr0, cr2, cr3, caller);
+    printf("Backtrace (stack scan, .text hits):");
+    for (int i = 0; i < btn; i++) printf(" 0x%lx", bt[i]);
+    printf("\n");
 
     // Then the visual stop screen (overwrites the framebuffer if one is up).
-    panic_screen(pbuf, cr0, cr2, cr3, caller);
+    panic_screen(pbuf, cr0, cr2, cr3, caller, bt, btn);
 
     while (1) { __asm__ volatile("hlt"); }
 }
