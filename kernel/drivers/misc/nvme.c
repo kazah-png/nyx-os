@@ -115,7 +115,12 @@ static void build_create_io_sq(uint32_t* sqe, uint64_t prp1, uint16_t qid, uint1
 }
 // NVM READ (opcode 0x02) / WRITE (0x01) for one contiguous run: NSID, PRP1=first
 // data page, PRP2 (0, the 2nd page, or a PRP-list page — see nvme_build_prps),
-// SLBA (64-bit split across CDW10/11), NLB (0-based) in CDW12. Pure/KAT'd.
+// SLBA (64-bit split across CDW10/11), NLB (0-based) in CDW12. WRITES set CDW12
+// bit 30 = FUA (Force Unit Access): the controller must commit this write to
+// non-volatile media before completing it, bypassing the volatile write cache
+// entirely. This is a PER-COMMAND durability guarantee that does not depend on a
+// Flush or the WCE setting — the real Silicon Motion SMI2263 ignores both, so FUA
+// is how a just-written install actually reaches the NAND. Pure/KAT'd.
 static void build_io_rw(uint32_t* sqe, int write, uint32_t nsid, uint64_t slba, uint64_t prp1, uint64_t prp2, uint16_t nlb0, uint16_t cid) {
     for (int i = 0; i < 16; i++) sqe[i] = 0;
     sqe[0]  = (write ? 0x01u : 0x02u) | ((uint32_t)cid << 16);
@@ -126,7 +131,8 @@ static void build_io_rw(uint32_t* sqe, int write, uint32_t nsid, uint64_t slba, 
     sqe[9]  = (uint32_t)(prp2 >> 32);          // PRP2 high
     sqe[10] = (uint32_t)slba;                  // SLBA low
     sqe[11] = (uint32_t)(slba >> 32);          // SLBA high
-    sqe[12] = nlb0;                            // NLB (0-based; 0 = one block)
+    sqe[12] = (uint32_t)nlb0;                  // NLB (0-based; 0 = one block)
+    if (write) sqe[12] |= (1u << 30);          // FUA: force this write to the medium before completion
 }
 
 // Pure (KAT'd): given the DMA buffer physical base (page-aligned), block count and
@@ -587,6 +593,7 @@ int nvme_selftest(void) {
     if (sqe[12] != 0u)          return 39;   // NLB (0-based = 1 block)
     build_io_rw(sqe, 1, 1, 0, 0x00000000CAFE0000ULL, 0, 0, 0x21);
     if (sqe[0]  != 0x00210001u) return 40;   // WRITE (0x01) | CID 0x21
+    if (sqe[12] != 0x40000000u) return 68;   // write carries FUA (bit 30); NLB 0-based = 1 block
 
     // rung D: PRP list + NLB encoding for batched multi-block I/O (pure)
     uint64_t p1 = 0, p2 = 0, katlist[16];
@@ -616,6 +623,6 @@ int nvme_selftest(void) {
     if (sqe[6]  != 0xC0DE0000u) return 60;   // PRP1 low
     if (sqe[8]  != 0xC0DE1000u) return 61;   // PRP2 low (2nd page)
     if (sqe[9]  != 0u)          return 62;   // PRP2 high
-    if (sqe[12] != 7u)          return 63;   // NLB (0-based) = 8 blocks
+    if (sqe[12] != (0x40000000u | 7u)) return 63;   // NLB (0-based) = 8 blocks + FUA bit 30 (write)
     return 0;
 }
