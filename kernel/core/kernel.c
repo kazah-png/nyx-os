@@ -593,26 +593,40 @@ static int resolve_user_elf(const char* name, char* out, int outsz) {
     return 0;
 }
 
+static void shell_expand_vars(const char* in, char* out, int outsz);   // $VAR / ${VAR} expansion (defined below)
+
 void execute_command(const char* cmd_line) {
     if (!cmd_line || !*cmd_line) return;
     char cmd_copy[256];
     strncpy(cmd_copy, cmd_line, 255);
     cmd_copy[255] = '\0';
     char* argv[MAX_CMD_ARGS];
+    // Expand $VAR / ${VAR} only when the line actually contains a '$'. Non-'$' commands take
+    // the original path byte-for-byte, so nothing the shell already ran changes behaviour
+    // (including the cc self-host, which runs `cc …` through here). The expansion scratch
+    // (MAX_CMD_ARGS*256 = 8 KB) is kmalloc'd per call — off the 4 KB kernel stack, and
+    // re-entrant when a command runs another via execute_command; a failed alloc harmlessly
+    // falls back to no expansion.
+    char (*argbuf)[256] = (strchr(cmd_copy, '$') != NULL)
+                          ? (char (*)[256])kmalloc(MAX_CMD_ARGS * 256) : NULL;
     int argc = 0;
     char* token = strtok(cmd_copy, " ");
     while (token != NULL && argc < MAX_CMD_ARGS) {
-        argv[argc++] = token;
+        if (argbuf) { shell_expand_vars(token, argbuf[argc], 256); argv[argc] = argbuf[argc]; }
+        else        { argv[argc] = token; }
+        argc++;
         token = strtok(NULL, " ");
     }
     if (token != NULL) {          /* more tokens than the cap: refuse rather than silently truncate */
         printf("error: too many arguments (max %d)\n", MAX_CMD_ARGS);
+        if (argbuf) kfree(argbuf);
         return;
     }
-    if (argc == 0) return;
+    if (argc == 0) { if (argbuf) kfree(argbuf); return; }
     for (int i = 0; commands[i].name != NULL; i++) {
         if (strcmp(argv[0], commands[i].name) == 0) {
             commands[i].func(argc, argv);
+            if (argbuf) kfree(argbuf);
             return;
         }
     }
@@ -622,10 +636,12 @@ void execute_command(const char* cmd_line) {
     char path[128];
     if (resolve_user_elf(argv[0], path, sizeof(path))) {
         run_foreground_elf(path, argv, argc);
+        if (argbuf) kfree(argbuf);
         return;
     }
     // Command not found - output will be captured by putchar hook
     printf("Command not found: %s\n", argv[0]);
+    if (argbuf) kfree(argbuf);
 }
 
 // ------------------------------------------------------------
@@ -3070,6 +3086,79 @@ static void cmd_export(int argc, char** argv) {
     env_vars[env_count] = env_buf[env_count];
     env_count++;
     printf("  %s\n", argv[1]);
+}
+
+// ---- shell variable expansion ($VAR / ${VAR}) — used by execute_command ----
+static int sh_name_start(char c) { return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || c == '_'; }
+static int sh_name_cont(char c)  { return sh_name_start(c) || (c >= '0' && c <= '9'); }
+
+// Value of shell variable `name` (length `namelen`), or NULL if unset. Reads the same
+// env_vars[] table `export`/`env` populate ("NAME=value" strings).
+static const char* shell_lookup_var(const char* name, int namelen) {
+    for (int e = 0; e < env_count; e++) {
+        const char* eq = strchr(env_vars[e], '=');
+        if (eq && (int)(eq - env_vars[e]) == namelen && strncmp(env_vars[e], name, (size_t)namelen) == 0)
+            return eq + 1;
+    }
+    return 0;
+}
+
+// Expand $NAME and ${NAME} references in `in` into `out` (bounded by outsz). NAME is
+// [A-Za-z_][A-Za-z0-9_]*, looked up in the shell env; an undefined variable expands to
+// empty (bash semantics). A '$' that does NOT begin a valid reference — end of string, a
+// following digit / other non-name char, or an unclosed '${' — is copied literally, as is
+// every other character. Pure logic; execute_command only calls it for tokens of a command
+// line that actually contains a '$'. KAT: shell_expand_selftest.
+static void shell_expand_vars(const char* in, char* out, int outsz) {
+    int o = 0;
+    for (int i = 0; in[i] && o < outsz - 1; ) {
+        if (in[i] == '$' && (sh_name_start(in[i + 1]) || in[i + 1] == '{')) {
+            int braced = (in[i + 1] == '{');
+            int s = i + 1 + braced, e = s;
+            while (in[e] && sh_name_cont(in[e])) e++;
+            if (braced && in[e] != '}') { out[o++] = in[i++]; continue; }   // unclosed ${... -> literal '$'
+            int namelen = e - s;
+            if (namelen == 0) { out[o++] = in[i++]; continue; }             // "$" / "${}"    -> literal '$'
+            const char* val = shell_lookup_var(in + s, namelen);
+            if (val) for (int k = 0; val[k] && o < outsz - 1; k++) out[o++] = val[k];   // unset -> empty
+            i = e + braced;                                                 // consume name (+ closing brace)
+        } else {
+            out[o++] = in[i++];
+        }
+    }
+    out[o] = '\0';
+}
+
+// KAT (`shellvar`): $VAR / ${VAR}, embedded, adjacent, undefined-to-empty, and the literal
+// cases ('$' before a digit, at end of string, or an unclosed '${'). Injects two temporary
+// env vars, restores env_count after. Returns 0 on pass, else the failing case number.
+static int shell_expand_selftest(void) {
+    int saved = env_count;
+    static char v1[] = "FOO=bar";
+    static char v2[] = "HOME=/mnt/home/nyx";
+    if (env_count + 2 > 16) return 99;
+    env_vars[env_count++] = v1;
+    env_vars[env_count++] = v2;
+    char out[256];
+    int rc = 0, n = 0;
+    #define SX(inp, want) do { n++; shell_expand_vars((inp), out, sizeof(out)); \
+        if (strcmp(out, (want)) != 0) { rc = n; goto done; } } while (0)
+    SX("$FOO",         "bar");            // 1  bare
+    SX("${FOO}",       "bar");            // 2  braced
+    SX("pre$FOO/post", "prebar/post");    // 3  embedded, delimited by '/'
+    SX("$HOME/x",      "/mnt/home/nyx/x");// 4  value with slashes
+    SX("${HOME}s",     "/mnt/home/nyxs"); // 5  braced lets a name char follow
+    SX("$FOO$FOO",     "barbar");         // 6  adjacent
+    SX("$UNDEF",       "");               // 7  undefined -> empty
+    SX("a${UNDEF}b",   "ab");             // 8  undefined braced -> empty
+    SX("literal",      "literal");        // 9  no '$'
+    SX("cost$5",       "cost$5");         // 10 '$' before a digit -> literal
+    SX("end$",         "end$");           // 11 trailing '$'       -> literal
+    SX("${FOO",        "${FOO");          // 12 unclosed '${'      -> literal
+    #undef SX
+done:
+    env_count = saved;
+    return rc;
 }
 
 static void cmd_find(int argc, char** argv) {
@@ -6642,6 +6731,7 @@ static void run_selftests(void) {
         {"strings",      strings_selftest},
         {"sha256sum",    sha256sum_selftest},
         {"hmac",         hmac_selftest},
+        {"shellvar",     shell_expand_selftest},
         {"semver",       semver_selftest},
         {"tls_prf",      tls_prf_selftest},       {"tls_keysched",  tls_keyschedule_selftest},
         {"tls_record",   tls_record_selftest},    {"tls_ske_p384",  tls_ske_p384_selftest},
