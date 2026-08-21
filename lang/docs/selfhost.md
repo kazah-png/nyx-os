@@ -55,7 +55,7 @@ kernel `open`/`read` from N — wiring the two together makes the first
 | Precedence expression grammar + unary | ✓ (3 tiers) | ✓ (full table) |
 | Statements, `if`/`while`, functions, recursion | ✓ | ✓ |
 | `else` | ✓ — rung 2 landed | ✓ |
-| **An AST** | ✓ expressions — rung 3 landed (statements still emit directly) | ✓ — parse → check → gen |
+| **An AST** | ✓ expressions AND statements — whole bodies parse to a tree, then check → fold → emit run as passes (only fn headers + the fndef hop-over emit direct) | ✓ — parse → check → gen |
 | Types (everything is `i64` in the toy) | ✗ | full checker |
 | structs / enums / match / defer / own / caps | ✗ | ✓ |
 | `str` values and string literals as data | ✗ | ✓ |
@@ -135,9 +135,21 @@ the first time the toy's output got *better* than what the fused
 parser-emitter produced, which is the point: by the time the fused
 version had seen both operands, their PUSHes were already emitted.
 Check runs before fold so diagnostics describe the program as written.
-From here the ladder is: a type column on the nodes, statements
-joining the tree, then the subset grows until the toy parses the
-examples directory — at which point it stops being a toy.
+
+Statements then joined the tree: bind/if/while are node kinds, blocks
+are seq *chains* (a cons list in the same parallel arrays), and each
+BODY — a function's or main's — is one finished tree over which the
+three passes run in order (`gen_body`: check → fold → emit, the
+compiler's whole shape in eight lines). The jump-patching craft moved
+from the parser into `emit_stmt` unchanged in shape, scope moved from
+parse-time threading into the check walk where it belongs, and the
+output did not move a byte — verified against the previous build, only
+the banner differs. Only the outermost skeleton still emits as it
+parses: function entry recording, parameter tables, the hop-over JMP —
+headers, not meaning. From here the ladder is: a type column on the
+nodes, statement-level transforms (an `if 1 > 0` could drop its dead
+arm), then the subset grows until the toy parses the examples
+directory — at which point it stops being a toy.
 
 ## Definition of done for M5
 
