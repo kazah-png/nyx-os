@@ -226,6 +226,24 @@ static void draw_active_field(int px, int py, int field, const char* user, const
     fb_present();   // no-op unless rotated
 }
 
+// Live clock for the login screen — HH:MM:SS over the date, centred near the bottom
+// like a lock screen. It repaints only its own gradient strip before drawing, so it
+// ticks every second with no flicker of the panel or crescent-moon logo above it.
+static void draw_login_clock(uint32_t fw, uint32_t fh) {
+    rtc_time_t t;
+    rtc_read_time(&t);
+    char tm[16], dt[24];
+    snprintf(tm, sizeof(tm), "%02u:%02u:%02u", t.hour, t.minute, t.second);
+    snprintf(dt, sizeof(dt), "%04u-%02u-%02u", t.year, t.month, t.day);
+    int cy = (int)fh - 54;
+    for (int y = cy - 3; y < cy + 36 && y < (int)fh; y++)          // seamless gradient backing
+        fb_fill_rect(0, y, fw, 1, login_grad((uint32_t)y, fh));
+    int tw = (int)strlen(tm) * FONT_WIDTH;
+    int dw = (int)strlen(dt) * FONT_WIDTH;
+    font_draw_string_trans(((int)fw - tw) / 2, cy,      tm, fb_rgb(232, 224, 250));
+    font_draw_string_trans(((int)fw - dw) / 2, cy + 18, dt, fb_rgb(150, 130, 205));
+}
+
 int login_screen(void) {
     uint32_t fw = fb_get_width(), fh = fb_get_height();
 
@@ -252,6 +270,9 @@ int login_screen(void) {
     int attempts = 0;
     const char* msg = "";
 
+    int last_sec = -1;    // login-screen clock: redraw only when the second changes
+    draw_login_clock(fw, fh);
+
     for (;;) {
         char user[32], pass[64];
         int user_pos = 0, pass_pos = 0, field = 0;
@@ -270,7 +291,12 @@ int login_screen(void) {
             }
             __asm__ volatile("sti");
 
-            if (!c) { for (volatile int i = 0; i < 10000; i++); continue; }
+            if (!c) {
+                rtc_time_t ct; rtc_read_time(&ct);        // tick the clock once per second
+                if ((int)ct.second != last_sec) { last_sec = (int)ct.second; draw_login_clock(fw, fh); }
+                for (volatile int i = 0; i < 10000; i++);
+                continue;
+            }
 
             if (c == '\t') {                          // toggle login / create
                 mode ^= 1; field = 0; user_pos = pass_pos = 0;
