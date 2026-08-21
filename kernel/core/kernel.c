@@ -172,6 +172,7 @@ static void cmd_comm(int argc, char** argv);
 static void cmd_vfsstat(int argc, char** argv);
 static void cmd_rev(int argc, char** argv);
 static void cmd_tr(int argc, char** argv);
+static void cmd_sed(int argc, char** argv);
 static void cmd_fold(int argc, char** argv);
 static void cmd_nl(int argc, char** argv);
 static void cmd_printf(int argc, char** argv);
@@ -360,6 +361,7 @@ static const command_t commands[] = {
     {"sort",      cmd_sort,      "Sort lines of a file: sort [-rn] <file>", false},
     {"rev",       cmd_rev,       "Reverse the characters of each line: rev <file>", false},
     {"tr",        cmd_tr,        "Translate/delete/squeeze chars: tr [-ds] SET1 [SET2] <file>", false},
+    {"sed",       cmd_sed,       "Substitute text: sed s/old/new/[g] <file>", false},
     {"fold",      cmd_fold,      "Wrap long lines to a width: fold [-w width] <file>", false},
     {"nl",        cmd_nl,        "Number lines: nl [-b a|t|n] [-w N] [-s SEP] <file>", false},
     {"factor",    cmd_factor,    "Prime factorization: factor N [N ...]", false},
@@ -664,7 +666,7 @@ void execute_command(const char* cmd_line) {
 typedef struct { const char* title; const char* const* names; } help_cat_t;
 static const char* const HC_shell[] = {"help","man","version","clear","history","exec","spawn","jobs","wait","nice","renice",0};
 static const char* const HC_files[] = {"ls","cd","pwd","cat","file","tar","iniget","open","touch","mkdir","rm","cp","mv","tree","find","which","basename","dirname","realpath","files","df","du","disks","lsblk","lspci","nvme","nyxpart","mkfs","nyxinstall","nyxgrub","mount","ext2ls","ext2cat",0};
-static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","fold","nl","expand","unexpand","factor","isprime","strings","sha256sum","seq","paste","clip","cut","uniq","join","comm","printf","wc","write","hexdump",0};
+static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","sed","fold","nl","expand","unexpand","factor","isprime","strings","sha256sum","seq","paste","clip","cut","uniq","join","comm","printf","wc","write","hexdump",0};
 static const char* const HC_sys[]   = {"ps","kill","pgrep","pkill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat","screenshot","stackcheck",0};
 static const char* const HC_user[]  = {"useradd","users",0};
 static const char* const HC_net[]   = {"ifconfig","arp","netstat","dhcp","dns","ping","setip","httpget","tls","ipcalc",0};
@@ -748,6 +750,7 @@ static const man_page_t man_pages[] = {
     {"grep",     "Print the lines of <file> that match <pattern>. -i ignores letter case, -n prefixes each match with its line number, and -v inverts the search to print the lines that do NOT match."},
     {"sort",     "Sort the lines of <file>. -r reverses the result; -n sorts numerically by the integer at the start of each line instead of alphabetically."},
     {"rev",      "Print each line of <file> with the order of its characters reversed."},
+    {"sed",      "Substitute text with the s command: sed s/old/new/[g] <file> replaces the literal string <old> with <new> on each line (the first match per line, or every match with the g flag) and prints the result — the file itself is not changed. Any character right after the s works as the delimiter, so s|a|b|g is the same as s/a/b/g. Matching is literal (NyxOS has no regex engine); unlike tr, which works one character at a time, sed replaces whole strings."},
     {"tr",       "Translate, delete or squeeze characters read from <file>. With two sets, each character of <file> that appears in SET1 is replaced by the character at the same position in SET2 (a shorter SET2 repeats its last character). -d deletes every SET1 character instead; -s collapses each run of a repeated result character into one. Sets may use ascending ranges such as a-z or 0-9."},
     {"fold",     "Wrap the lines of <file> so no output line is longer than the given width (80 by default, or -w width). A line longer than the width is broken with a hard newline at exactly that many characters; shorter lines and existing line breaks are left alone."},
     {"nl",       "Number the lines of <file>. By default only non-empty lines are numbered (-b t); -b a numbers every line and -b n numbers none. Each line number is right-justified in a field N columns wide (6 by default, or -w N) and followed by a separator (a tab by default, or -s SEP), then the line text."},
@@ -2031,6 +2034,92 @@ static void cmd_tr(int argc, char** argv) {
         putchar(out);
         last = out;
     }
+}
+
+// --- sed: literal-string substitution -------------------------------------
+// Replace `old` (length ol>0) with `new` in one line: the first occurrence only,
+// or all of them when `global`. Advances past each match in the INPUT, so it never
+// re-scans inserted text (a `new` that contains `old` cannot loop). Writes a
+// NUL-terminated result into out and truncates safely at outmax. Returns the length.
+static int sed_subst_line(const char* line, int ll, const char* oldp, int ol,
+                          const char* newp, int nl, int global, char* out, int outmax) {
+    int o = 0, i = 0, done = 0;
+    while (i < ll) {
+        int hit = (ol > 0) && !(done && !global) && (i + ol <= ll);
+        for (int k = 0; hit && k < ol; k++) if (line[i + k] != oldp[k]) hit = 0;
+        if (hit) {
+            for (int k = 0; k < nl && o < outmax - 1; k++) out[o++] = newp[k];
+            i += ol;
+            done = 1;
+        } else {
+            if (o < outmax - 1) out[o++] = line[i];
+            i++;
+        }
+    }
+    out[o] = '\0';
+    return o;
+}
+
+// sed s<D>old<D>new<D>[g] <file> — literal substitution per line (first match, or
+// every match with the g flag). D is any delimiter (the char right after 's'), so
+// s/a/b/ and s|a|b|g both work. Prints the transformed file to stdout; the file is
+// NOT modified. File-oriented like tr/rev/wc (there is no stdin into a builtin), and
+// matching is LITERAL (NyxOS has no regex engine; grep is substring too) — this is
+// the string-level replace that no other builtin does (tr is character-level).
+static void cmd_sed(int argc, char** argv) {
+    if (argc < 3) { printf("Usage: sed s/old/new/[g] <file>\n"); return; }
+    const char* e = argv[1];
+    if (e[0] != 's' || !e[1]) { printf("sed: only the s/old/new/[g] command is supported\n"); return; }
+    char delim = e[1];
+    char oldp[128], newp[128];
+    int ol = 0, nl = 0, global = 0;
+    const char* p = e + 2;
+    while (*p && *p != delim && ol < (int)sizeof(oldp) - 1) oldp[ol++] = *p++;
+    if (*p != delim) { printf("sed: unterminated s command\n"); return; }
+    oldp[ol] = '\0'; p++;
+    while (*p && *p != delim && nl < (int)sizeof(newp) - 1) newp[nl++] = *p++;
+    if (*p != delim) { printf("sed: unterminated s command\n"); return; }
+    newp[nl] = '\0'; p++;
+    for (; *p; p++) {
+        if (*p == 'g') global = 1;
+        else { printf("sed: unknown flag '%c'\n", *p); return; }
+    }
+    if (ol == 0) { printf("sed: empty pattern\n"); return; }
+
+    int fd = vfs_open(argv[2], 0, 0);
+    if (fd < 0) { printf("sed: cannot open '%s'\n", argv[2]); return; }
+    char* buf = (char*)kmalloc(8192);
+    char* out = (char*)kmalloc(16384);
+    if (!buf || !out) { if (buf) kfree(buf); if (out) kfree(out); vfs_close(fd); printf("sed: out of memory\n"); return; }
+    int bytes = vfs_read(fd, buf, 8192 - 1);
+    vfs_close(fd);
+    if (bytes > 0) {
+        int start = 0;
+        for (int i = 0; i <= bytes; i++) {
+            if (i == bytes || buf[i] == '\n') {
+                sed_subst_line(buf + start, i - start, oldp, ol, newp, nl, global, out, 16384);
+                printf("%s", out);
+                if (i < bytes) putchar('\n');
+                start = i + 1;
+            }
+        }
+    }
+    kfree(buf); kfree(out);
+}
+
+// KAT for the sed substitution core: first-vs-global, growth/shrink/empty, no match,
+// overlap, and the no-rescan property (a replacement containing the pattern must not loop).
+int sed_subst_selftest(void) {
+    char o[64];
+    sed_subst_line("aXaXa", 5, "X", 1, "Y", 1, 0, o, sizeof(o)); if (strcmp(o, "aYaXa")) return 1;
+    sed_subst_line("aXaXa", 5, "X", 1, "Y", 1, 1, o, sizeof(o)); if (strcmp(o, "aYaYa")) return 2;
+    sed_subst_line("cat", 3, "cat", 3, "tiger", 5, 1, o, sizeof(o)); if (strcmp(o, "tiger")) return 3;
+    sed_subst_line("hello", 5, "l", 1, "", 0, 1, o, sizeof(o)); if (strcmp(o, "heo")) return 4;
+    sed_subst_line("abc", 3, "z", 1, "Q", 1, 1, o, sizeof(o)); if (strcmp(o, "abc")) return 5;
+    sed_subst_line("aaa", 3, "aa", 2, "b", 1, 1, o, sizeof(o)); if (strcmp(o, "ba")) return 6;
+    sed_subst_line("x", 1, "x", 1, "xx", 2, 1, o, sizeof(o)); if (strcmp(o, "xx")) return 7;
+    sed_subst_line("", 0, "a", 1, "b", 1, 1, o, sizeof(o)); if (o[0]) return 8;
+    return 0;
 }
 
 // fold [-w WIDTH] <file> — wrap each input line so no output line exceeds WIDTH
@@ -6937,6 +7026,7 @@ static void run_selftests(void) {
         {"numparse",     numparse_selftest},        {"hkdf",          hkdf_selftest},
         {"snprintf",     snprintf_selftest},
         {"histexpand",   history_expand_selftest},
+        {"sed",          sed_subst_selftest},
         {"chacha20",     chacha20_selftest},        {"siphash",       siphash_selftest},
         {"poly1305",     poly1305_selftest},        {"chachapoly",    chacha20poly1305_selftest},
         {"blake2s",      blake2s_selftest},         {"cmac",          aes_cmac_selftest},
