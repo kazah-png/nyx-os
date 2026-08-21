@@ -122,11 +122,22 @@ at the block's closing brace, because the checker cannot promise the
 branch ran — so `if c { b := 1; } b` is refused, as are `x := x + 1`
 self-feeds (a name binds only *after* its right-hand side checks) and
 function bodies reading main's names (the flat runtime table would
-allow it; the checker enforces the lexical story). From here the
-ladder is: more rules on the same walk (a type column; constant
-folding as the first tree *transform*), statements joining the tree,
-then the subset grows until the toy parses the examples directory — at
-which point it stops being a toy.
+allow it; the checker enforces the lexical story).
+
+And the tree's *other* dividend followed: a **fold pass** (`fold_node`)
+rewrites constant subtrees in place between check and emit — a binop
+over two folded numbers becomes a number computed at compile time, a
+negation likewise, call arguments fold while calls never do, and
+DIV/MOD by a literal zero stay unfolded (the compiler must not crash
+computing what the program would; the VM owns that failure). The
+folding demo emits 10 code words where the unfolded tree emits 19 —
+the first time the toy's output got *better* than what the fused
+parser-emitter produced, which is the point: by the time the fused
+version had seen both operands, their PUSHes were already emitted.
+Check runs before fold so diagnostics describe the program as written.
+From here the ladder is: a type column on the nodes, statements
+joining the tree, then the subset grows until the toy parses the
+examples directory — at which point it stops being a toy.
 
 ## Definition of done for M5
 

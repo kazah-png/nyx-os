@@ -1,7 +1,8 @@
 // nparse.n — the M5 chain, token-native end to end: a complete toy
 //   compiler with FUNCTIONS, REAL IDENTIFIERS, and — since the selfhost
 //   road's rung 3 — a real AST for its expressions, with a real CHECK
-//   PASS over it. lex → parse → check → emit → run, in N's own syntax:
+//   PASS and a real TRANSFORM over it. lex → parse → check → fold →
+//   emit → run, in N's own syntax:
 //       fn fact(n) { r := 1; if n > 1 { r := n * fact(n - 1); } r } fact(5)
 //   The lexer fills a token buffer (sbrk'd i64 arrays, v0.16 index
 //   stores); the parser consumes TOKENS, never characters; the VM runs
@@ -64,6 +65,18 @@
 //   body sees ONLY its parameters and its own bindings: the flat
 //   runtime table lets bodies read anything, but that is caller-save's
 //   private business, and the checker now enforces the lexical story.
+//
+//   THE FOLD PASS is the other thing a tree buys. fold_node walks the
+//   same postorder and REWRITES: a binop whose children both folded to
+//   numbers becomes a number computed at COMPILE time; a negation of a
+//   number likewise; call arguments fold, calls never do. The fused
+//   parser-emitter could not have done this even in principle — by the
+//   time it had seen both operands, their PUSHes were already emitted;
+//   rewriting history is exactly what holding the program AS DATA
+//   makes possible. The folding demo compiles to 10 code words where
+//   the unfolded tree emits 19. Division and modulo by a constant
+//   zero are left unfolded: the compiler must not crash computing
+//   what the program would — the VM owns that failure, at run time.
 //
 //   Everything below the seam is as the earlier rungs left it.
 //   Identifiers are INTERNED (a names byte-buffer plus per-symbol
@@ -425,6 +438,56 @@ fn check_node(a: Ast, bv: *i64, bc: i64, idx: i64) {
     }
 }
 
+// THE FIRST TRANSFORM: constant folding, in place. Children first, so
+// nested constant expressions collapse bottom-up ((2*3)+4 folds the
+// MUL, sees two numbers at the ADD, folds again). A rewritten node
+// simply changes kind to 0 with the computed value — its old children
+// stay allocated but unreachable, which a transient per-expression
+// tree can afford. DIV/MOD by a literal zero stay unfolded (zerodiv):
+// the compiler must not crash computing what the program would.
+fn fold_node(a: Ast, idx: i64) {
+    if a.nk[idx] == 2 {                    // binop: fold children, then try
+        fold_node(a, a.nl[idx]);
+        fold_node(a, a.nr[idx]);
+        l := a.nl[idx];
+        r := a.nr[idx];
+        if a.nk[l] == 0 && a.nk[r] == 0 {
+            x := a.nv[l];
+            y := a.nv[r];
+            oc := a.nv[idx];
+            zerodiv := (oc == 5 || oc == 6) && y == 0;
+            if !zerodiv {
+                mut val := 0;
+                if oc == 2 { val = x + y; }
+                if oc == 3 { val = x - y; }
+                if oc == 4 { val = x * y; }
+                if oc == 5 { val = x / y; }
+                if oc == 6 { val = x % y; }
+                if oc == 8 { if x < y { val = 1; } }
+                if oc == 9 { if x > y { val = 1; } }
+                if oc == 10 { if x == y { val = 1; } }
+                a.nk[idx] = 0;             // the operation happened NOW
+                a.nv[idx] = val;
+            }
+        }
+    }
+    if a.nk[idx] == 3 {                    // negation of a folded number
+        fold_node(a, a.nl[idx]);
+        c := a.nl[idx];
+        if a.nk[c] == 0 {
+            a.nk[idx] = 0;
+            a.nv[idx] = -a.nv[c];
+        }
+    }
+    if a.nk[idx] == 4 {                    // call: arguments fold, calls never
+        mut q := 0;
+        while q < a.nl[idx] {
+            fold_node(a, a.na[idx * 4 + q]);
+            q += 1;
+        }
+    }
+}
+
 // Phase two: the postorder walk. Children first, the node's own
 // operation last — and the walker emits byte-for-byte what the fused
 // parser-emitter used to, no matter how the tree was built. The
@@ -477,15 +540,18 @@ fn emit_node(a: Ast, fe: *i64, fp: *i64, code: *i64, cp: i64, idx: i64) -> i64 {
     c
 }
 
-// The seam between the tiers, now three beats long: parse ONE
+// The seam between the tiers, now four beats long: parse ONE
 // expression into a fresh tree (the node cursor restarts at zero —
 // expression trees are transient), CHECK it against the bound set,
-// then walk it. Upward this plays exactly the role the emitting
+// FOLD what is constant, then walk what remains. Check runs before
+// fold on purpose: diagnostics describe the program as written, not
+// as optimized. Upward this plays exactly the role the emitting
 // parse_cmp played — cursors in, cursors out (bc passes through
 // untouched: expressions bind nothing).
 fn gen_cmp(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, a: Ast, bv: *i64, bc: i64, pos: i64, code: *i64, cp: i64) -> EP {
     r := ast_cmp(k, v, ln, fpc, a, pos, 0);
     check_node(a, bv, bc, r.root);
+    fold_node(a, r.root);
     EP{ pos: r.pos, cp: emit_node(a, fe, fp, code, cp, r.root), bc: bc }
 }
 
@@ -735,13 +801,19 @@ fn main() -> i64 {
                 nv: alloc_words(64), na: alloc_words(256),
                 nline: alloc_words(64) };  // rung 3 + the check pass
     bv := alloc_words(64);                 // the bound-name list
-    put("a checker over the AST - lex -> parse -> check -> emit -> run:\n");
+    put("a checker and a folder over the AST - lex -> parse -> check -> fold -> emit -> run:\n");
     // Braces are escaped so they read as text, not interpolation (§2.5).
     show("fn max(a, b) \{ m := 0; if a > b \{ m := a; \} else \{ m := b; \} m \} max(3, 9) + max(7, 2)",
          k, v, ln, code, stk, vars, fe, fp, fpc, ast, bv, nb, ss, sl);
     show("fn gcd(a, b) \{ r := a; if b > 0 \{ r := gcd(b, a % b); \} r \} gcd(48, 18)",
          k, v, ln, code, stk, vars, fe, fp, fpc, ast, bv, nb, ss, sl);
     show("fn fact(n) \{ r := 1; if n > 1 \{ r := n * fact(n - 1); \} r \} fact(5)",
+         k, v, ln, code, stk, vars, fe, fp, fpc, ast, bv, nb, ss, sl);
+    // Folding, visible: unfolded this program emits 19 code words; the
+    // fold pass collapses 2*3+4 to 10 and 10-8 to 2 at compile time and
+    // 10 words remain. (The flagship demos above fold nothing — their
+    // constants sit alone as call arguments — so their counts held.)
+    show("d := 2 * 3 + 4; d * (10 - 8)",
          k, v, ln, code, stk, vars, fe, fp, fpc, ast, bv, nb, ss, sl);
     // The broken program runs LAST (fail() ends the process — one failing
     // demo per run). It PARSES cleanly; what is wrong with it is semantic:
