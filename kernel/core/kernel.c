@@ -206,6 +206,8 @@ static void cmd_mkfs(int argc, char** argv);
 static void cmd_nyxinstall(int argc, char** argv);
 static void cmd_env(int argc, char** argv);
 static void cmd_export(int argc, char** argv);
+static void cmd_alias(int argc, char** argv);
+static void cmd_unalias(int argc, char** argv);
 static void cmd_find(int argc, char** argv);
 static void cmd_grep(int argc, char** argv);
 static void cmd_tail(int argc, char** argv);
@@ -369,6 +371,8 @@ static const command_t commands[] = {
     {"nyxverify", cmd_nyxverify, "Check an installed disk's kernel (ELF+multiboot2, ext2+raw): nyxverify <drive>", false},
     {"env",       cmd_env,       "Show environment variables", false},
     {"export",    cmd_export,    "Set env variable: export <name>=<value>", false},
+    {"alias",     cmd_alias,     "Define/list command aliases: alias [name[=value]]", false},
+    {"unalias",   cmd_unalias,   "Remove a command alias: unalias <name>", false},
     {"find",      cmd_find,      "Find files by name: find <name> [path]", false},
     {"grep",      cmd_grep,      "Search file contents: grep [-inv] <pattern> <file>", false},
     {"tail",      cmd_tail,      "Show last lines of a file: tail <file> [lines]", false},
@@ -629,8 +633,47 @@ static int resolve_user_elf(const char* name, char* out, int outsz) {
 
 static void shell_expand_vars(const char* in, char* out, int outsz);   // $VAR / ${VAR} expansion (defined below)
 
+// Shell command aliases (bash-style). Defined with `alias name=value`, expanded by
+// execute_command when a typed command's first word matches — so `alias ll='ls -l'`
+// makes `ll foo` run `ls -l foo`. Boot-lifetime (not persisted); the table is small and
+// file-scope so both the alias commands and the expander below see it.
+#define MAX_ALIASES 32
+static struct { char name[32]; char value[128]; } aliases[MAX_ALIASES];
+static int alias_count = 0;
+static const char* alias_lookup(const char* name) {
+    for (int i = 0; i < alias_count; i++)
+        if (strcmp(aliases[i].name, name) == 0) return aliases[i].value;
+    return NULL;
+}
 void execute_command(const char* cmd_line) {
     if (!cmd_line || !*cmd_line) return;
+    // Alias expansion (ITERATIVE, before tokenizing — no recursion, so the 4 KB kernel
+    // stack is safe): while the first word is a defined alias, rewrite the line with the
+    // alias value in place of that word. A no-op when nothing is defined, so the normal
+    // tokenize/dispatch below is byte-for-byte unchanged. Two stop conditions bound it:
+    // an iteration cap (a mutual `a=b`,`b=a` loop unwinds to command-not-found) and a
+    // self-reference guard (`alias ls='ls -a'` expands exactly once, bash-style).
+    char aliasbuf[256];
+    if (alias_count > 0) {
+        char last[64] = "";
+        for (int iter = 0; iter < 8; iter++) {
+            const char* s = cmd_line;
+            while (*s == ' ') s++;                       // skip leading spaces
+            char first[64]; int fi = 0;
+            while (*s && *s != ' ' && fi < 63) first[fi++] = *s++;
+            first[fi] = '\0';
+            if (strcmp(first, last) == 0) break;         // just expanded this name -> stop (self-ref)
+            const char* av = alias_lookup(first);
+            if (!av) break;                              // first word isn't an alias -> done
+            char tmp[256]; int p = 0;
+            for (const char* q = av; *q && p < 255; q++) tmp[p++] = *q;   // alias value
+            for (const char* q = s;  *q && p < 255; q++) tmp[p++] = *q;   // the rest (incl. leading space)
+            tmp[p] = '\0';
+            strncpy(aliasbuf, tmp, 255); aliasbuf[255] = '\0';
+            cmd_line = aliasbuf;                          // continue with the expanded line
+            strncpy(last, first, 63); last[63] = '\0';
+        }
+    }
     char cmd_copy[256];
     strncpy(cmd_copy, cmd_line, 255);
     cmd_copy[255] = '\0';
@@ -686,7 +729,7 @@ void execute_command(const char* cmd_line) {
 // a final "Other" pass prints any visible command not placed above, so nothing is
 // ever dropped even if a new command isn't categorised here yet.
 typedef struct { const char* title; const char* const* names; } help_cat_t;
-static const char* const HC_shell[] = {"help","man","version","clear","history","exec","spawn","jobs","wait","nice","renice","taskset",0};
+static const char* const HC_shell[] = {"help","man","version","clear","history","alias","unalias","exec","spawn","jobs","wait","nice","renice","taskset",0};
 static const char* const HC_files[] = {"ls","cd","pwd","cat","file","tar","iniget","open","touch","mkdir","rm","shred","cp","mv","tree","find","which","basename","dirname","realpath","files","df","du","disks","lsblk","lspci","nvme","nyxpart","mkfs","nyxinstall","nyxgrub","mount","ext2ls","ext2cat",0};
 static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","sed","patch","fold","fmt","nl","expand","unexpand","factor","isprime","strings","sha256sum","seq","paste","clip","cut","uniq","join","comm","printf","wc","write","hexdump",0};
 static const char* const HC_sys[]   = {"ps","time","kill","pgrep","pkill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat","screenshot","stackcheck",0};
@@ -851,6 +894,8 @@ static const man_page_t man_pages[] = {
     {"which",    "Look <name> up as a shell command and report how it would run: as a built-in, or as the program at a particular path."},
     {"env",      "Print the shell's environment variables, one NAME=value pair per line."},
     {"export",   "Set an environment variable: `export NAME=value`. Exported variables are passed on to the programs the shell runs."},
+    {"alias",    "Define or list command aliases, bash-style. `alias ll=ls -l` makes typing `ll` run `ls -l` (the value is the whole rest of the line after `=`, so no quotes are needed); `alias ll foo` then runs `ls -l foo`. With no arguments, `alias` lists every defined alias; `alias <name>` prints just that one. The first word of every command you type is expanded through the alias table, with a recursion cap so a self-referential alias can't loop. Aliases live for the session (they are not saved to disk). Remove one with `unalias`."},
+    {"unalias",  "Remove a command alias defined with `alias`: `unalias <name>`."},
     {"ps",       "List the running processes with their PID, scheduler state and name. Use kill to stop one."},
     {"time",     "Run a command and report how long it took: `time <command> [args...]` runs the rest of the line as a command and, when it finishes, prints the elapsed wall-clock time as `real   S.mmm s` (from the 1000 Hz tick counter). Useful for benchmarking a builtin — e.g. `time cc hello.c -o hello`, `time sha256sum bigfile`, or `time sort words.txt`. Times whole-command execution, not per-call CPU."},
     {"kill",     "Terminate the process with the given <pid>. Run ps first to find the pid you want."},
@@ -3631,6 +3676,56 @@ static void cmd_export(int argc, char** argv) {
     env_vars[env_count] = env_buf[env_count];
     env_count++;
     printf("  %s\n", argv[1]);
+}
+
+// alias — define or list command aliases (bash-style). `alias` lists all; `alias name`
+// prints one; `alias name=value...` defines one (the value is the rest of the line after
+// '=', so `alias ll=ls -l` stores "ls -l"). execute_command expands a matching first word.
+static void cmd_alias(int argc, char** argv) {
+    if (argc < 2) {                                              // list all
+        if (alias_count == 0) { printf("(no aliases defined)\n"); return; }
+        for (int i = 0; i < alias_count; i++)
+            printf("alias %s='%s'\n", aliases[i].name, aliases[i].value);
+        return;
+    }
+    char* eq = strchr(argv[1], '=');
+    if (!eq) {                                                   // query: alias <name>
+        const char* v = alias_lookup(argv[1]);
+        if (v) printf("alias %s='%s'\n", argv[1], v);
+        else   printf("alias: %s: not found\n", argv[1]);
+        return;
+    }
+    char name[32]; int ni = 0;
+    for (char* c = argv[1]; c < eq && ni < 31; c++) name[ni++] = *c;
+    name[ni] = '\0';
+    if (!name[0]) { printf("alias: invalid (empty) name\n"); return; }
+    char value[128]; int vi = 0;
+    for (char* c = eq + 1; *c && vi < 127; c++) value[vi++] = *c;         // text right after '='
+    for (int a = 2; a < argc && vi < 127; a++) {                         // remaining space-split words
+        value[vi++] = ' ';
+        for (char* c = argv[a]; *c && vi < 127; c++) value[vi++] = *c;
+    }
+    value[vi] = '\0';
+    for (int i = 0; i < alias_count; i++)                                // update if it already exists
+        if (strcmp(aliases[i].name, name) == 0) {
+            strncpy(aliases[i].value, value, 127); aliases[i].value[127] = '\0'; return;
+        }
+    if (alias_count >= MAX_ALIASES) { printf("alias: table full (max %d)\n", MAX_ALIASES); return; }
+    strncpy(aliases[alias_count].name, name, 31);   aliases[alias_count].name[31]  = '\0';
+    strncpy(aliases[alias_count].value, value, 127); aliases[alias_count].value[127] = '\0';
+    alias_count++;
+}
+
+// unalias <name> — remove a previously defined alias.
+static void cmd_unalias(int argc, char** argv) {
+    if (argc < 2) { printf("Usage: unalias <name>\n"); return; }
+    for (int i = 0; i < alias_count; i++)
+        if (strcmp(aliases[i].name, argv[1]) == 0) {
+            for (int j = i; j < alias_count - 1; j++) aliases[j] = aliases[j + 1];
+            alias_count--;
+            return;
+        }
+    printf("unalias: %s: not found\n", argv[1]);
 }
 
 // ---- shell variable expansion ($VAR / ${VAR}) — used by execute_command ----
