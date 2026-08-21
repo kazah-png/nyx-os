@@ -97,9 +97,11 @@ strict-C99 output — and is verified three ways:
    variables with located errors, and emitting a 10-word program where
    the unfolded tree needs 19, on target), and the VM that executes the
    emitted code — **runs the whole toy compiler loop inside NyxOS**. (This
-   workload also uncovered — and keeps profiling — a kernel VFS
-   node-pool exhaustion,
-   [#66](https://github.com/kazah-png/nyx-os/issues/66) — the language
+   workload also uncovered — and, run after run, profiled to a pin — a
+   kernel VFS node-pool exhaustion,
+   [#66](https://github.com/kazah-png/nyx-os/issues/66): the per-kind
+   census the suite's data motivated shows the leak is entirely
+   unreclaimed `/proc` process entries, ~4 nodes per exec — the language
    toolchain doubles as a real stress test for the OS.)
 2. **Generated C is clean.** Output compiles warning-free with the OS
    freestanding flags and links with the standard NyxOS `crt0` + `nyxrt`.
