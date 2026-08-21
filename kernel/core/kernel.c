@@ -176,6 +176,7 @@ static void cmd_rev(int argc, char** argv);
 static void cmd_tr(int argc, char** argv);
 static void cmd_sed(int argc, char** argv);
 static void cmd_fold(int argc, char** argv);
+static void cmd_fmt(int argc, char** argv);
 static void cmd_nl(int argc, char** argv);
 static void cmd_printf(int argc, char** argv);
 static void cmd_expand(int argc, char** argv);
@@ -369,6 +370,7 @@ static const command_t commands[] = {
     {"tr",        cmd_tr,        "Translate/delete/squeeze chars: tr [-ds] SET1 [SET2] <file>", false},
     {"sed",       cmd_sed,       "Substitute text: sed s/old/new/[g] <file>", false},
     {"fold",      cmd_fold,      "Wrap long lines to a width: fold [-w width] <file>", false},
+    {"fmt",       cmd_fmt,       "Reflow text to fill lines up to a width: fmt [-w width] <file>", false},
     {"nl",        cmd_nl,        "Number lines: nl [-b a|t|n] [-w N] [-s SEP] <file>", false},
     {"factor",    cmd_factor,    "Prime factorization: factor N [N ...]", false},
     {"isprime",   cmd_isprime,   "Test primality of each integer: isprime N [N ...]", false},
@@ -676,7 +678,7 @@ void execute_command(const char* cmd_line) {
 typedef struct { const char* title; const char* const* names; } help_cat_t;
 static const char* const HC_shell[] = {"help","man","version","clear","history","exec","spawn","jobs","wait","nice","renice","taskset",0};
 static const char* const HC_files[] = {"ls","cd","pwd","cat","file","tar","iniget","open","touch","mkdir","rm","shred","cp","mv","tree","find","which","basename","dirname","realpath","files","df","du","disks","lsblk","lspci","nvme","nyxpart","mkfs","nyxinstall","nyxgrub","mount","ext2ls","ext2cat",0};
-static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","sed","fold","nl","expand","unexpand","factor","isprime","strings","sha256sum","seq","paste","clip","cut","uniq","join","comm","printf","wc","write","hexdump",0};
+static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","sed","fold","fmt","nl","expand","unexpand","factor","isprime","strings","sha256sum","seq","paste","clip","cut","uniq","join","comm","printf","wc","write","hexdump",0};
 static const char* const HC_sys[]   = {"ps","kill","pgrep","pkill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat","screenshot","stackcheck",0};
 static const char* const HC_user[]  = {"useradd","users",0};
 static const char* const HC_net[]   = {"ifconfig","arp","netstat","dhcp","dns","ping","setip","httpget","httpd","tls","ipcalc",0};
@@ -764,6 +766,7 @@ static const man_page_t man_pages[] = {
     {"sed",      "Substitute text with the s command: sed s/old/new/[g] <file> replaces the literal string <old> with <new> on each line (the first match per line, or every match with the g flag) and prints the result — the file itself is not changed. Any character right after the s works as the delimiter, so s|a|b|g is the same as s/a/b/g. Matching is literal (NyxOS has no regex engine); unlike tr, which works one character at a time, sed replaces whole strings."},
     {"tr",       "Translate, delete or squeeze characters read from <file>. With two sets, each character of <file> that appears in SET1 is replaced by the character at the same position in SET2 (a shorter SET2 repeats its last character). -d deletes every SET1 character instead; -s collapses each run of a repeated result character into one. Sets may use ascending ranges such as a-z or 0-9."},
     {"fold",     "Wrap the lines of <file> so no output line is longer than the given width (80 by default, or -w width). A line longer than the width is broken with a hard newline at exactly that many characters; shorter lines and existing line breaks are left alone."},
+    {"fmt",      "Reflow (rewrap) the prose in <file> to fill lines up to a width (75 by default, or -w width) -- the paragraph formatter. Unlike `fold`, which only hard-breaks over-long lines at a fixed column, fmt COLLAPSES each paragraph's internal whitespace and repacks its words greedily, so short lines are joined and long ones split at word boundaries. A blank line separates paragraphs and is preserved as a single blank line; a word longer than the width is left whole on its own line rather than broken. Reads one bounded chunk of the file (like head/fold)."},
     {"nl",       "Number the lines of <file>. By default only non-empty lines are numbered (-b t); -b a numbers every line and -b n numbers none. Each line number is right-justified in a field N columns wide (6 by default, or -w N) and followed by a separator (a tab by default, or -s SEP), then the line text."},
     {"factor",   "Print the prime factorization of each integer argument, one per line, as `N: p1 p2 ...` with factors ascending and repeated by multiplicity (e.g. `factor 90` prints `90: 2 3 3 5`). 0 and 1 print just `N:`. Accepts any 64-bit unsigned value; a non-numeric or negative argument is reported and skipped. Small factors are peeled by trial division and the rest by Miller-Rabin + Pollard's rho, so even a large 64-bit semiprime factors quickly."},
     {"isprime",  "Test each integer argument for primality and print `N is prime` or `N is not prime`. Uses an exact deterministic Miller-Rabin (the twelve witnesses 2..37, proven correct for all 64-bit N), so the answer is definitive — not probabilistic — and it correctly rejects Carmichael numbers that fool a naive Fermat test. Much faster than `factor` for a large prime, since it never has to find the factors. A non-numeric or negative argument is reported and skipped."},
@@ -2199,6 +2202,107 @@ static void cmd_fold(int argc, char** argv) {
         putchar(c);
         col++;
     }
+}
+
+// Greedy word-wrap reflow, the core of `fmt`. Collapses each paragraph's internal
+// whitespace and repacks its words to fill lines up to `width`; a blank line (a
+// whitespace run with >=2 newlines) separates paragraphs and is preserved as one
+// blank line; a word longer than `width` is emitted whole on its own line, never
+// split. Pure (no I/O, no globals) so the KAT can pin it. NUL-terminates `out` and
+// returns its length (capped at outsz-1).
+static int fmt_wrap(const char* in, int len, int width, char* out, int outsz) {
+    if (width < 1) width = 1;
+    int o = 0, col = 0, line_started = 0, para_had_content = 0, pending_para = 0;
+    #define FMT_PUTC(ch) do { if (o < outsz - 1) out[o++] = (char)(ch); } while (0)
+    int i = 0;
+    while (i < len) {
+        char c = in[i];
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\r') {   // whitespace run
+            int nl = 0;
+            while (i < len) {
+                char w = in[i];
+                if (w != ' ' && w != '\t' && w != '\n' && w != '\r') break;
+                if (w == '\n') nl++;
+                i++;
+            }
+            if (nl >= 2 && para_had_content) pending_para = 1;    // blank line = paragraph break
+            continue;
+        }
+        int j = i;                                               // word is [i, j)
+        while (j < len) {
+            char w = in[j];
+            if (w == ' ' || w == '\t' || w == '\n' || w == '\r') break;
+            j++;
+        }
+        int wlen = j - i;
+        if (pending_para) {                                      // close paragraph, emit blank line
+            if (line_started) FMT_PUTC('\n');
+            FMT_PUTC('\n');
+            col = 0; line_started = 0; para_had_content = 0; pending_para = 0;
+        }
+        if (!line_started) {                                     // first word of the line
+            for (int k = i; k < j; k++) FMT_PUTC(in[k]);
+            col = wlen; line_started = 1;
+        } else if (col + 1 + wlen <= width) {                    // fits with a joining space
+            FMT_PUTC(' ');
+            for (int k = i; k < j; k++) FMT_PUTC(in[k]);
+            col += 1 + wlen;
+        } else {                                                 // wrap to a new line
+            FMT_PUTC('\n');
+            for (int k = i; k < j; k++) FMT_PUTC(in[k]);
+            col = wlen;
+        }
+        para_had_content = 1;
+        i = j;
+    }
+    if (line_started) FMT_PUTC('\n');                            // trailing newline
+    #undef FMT_PUTC
+    if (o < outsz) out[o] = '\0'; else out[outsz - 1] = '\0';
+    return o;
+}
+
+// fmt [-w width] <file> — reflow prose to fill lines up to `width` (75 default). The
+// word-repacking companion to `fold` (which only hard-breaks over-long lines). Reads
+// one bounded chunk like head/fold; scratch buffers are kmalloc'd off the 4 KB stack.
+static void cmd_fmt(int argc, char** argv) {
+    int width = 75, ai = 1;
+    if (ai < argc && argv[ai][0] == '-' && argv[ai][1] == 'w') {
+        if (argv[ai][2] != '\0') { width = atoi(argv[ai] + 2); ai++; }        // -wN
+        else if (ai + 1 < argc)  { width = atoi(argv[ai + 1]); ai += 2; }     // -w N
+        else { printf("Usage: fmt [-w width] <file>\n"); return; }
+    }
+    if (width < 1) width = 1;
+    if (ai >= argc) { printf("Usage: fmt [-w width] <file>\n"); return; }
+    int fd = vfs_open(argv[ai], 0, 0);
+    if (fd < 0) { printf("fmt: cannot open '%s'\n", argv[ai]); return; }
+    char* buf = (char*)kmalloc(8192);
+    char* out = (char*)kmalloc(8704);
+    if (!buf || !out) { if (buf) kfree(buf); if (out) kfree(out); vfs_close(fd);
+                        printf("fmt: out of memory\n"); return; }
+    int bytes = vfs_read(fd, buf, 8191);
+    vfs_close(fd);
+    if (bytes > 0) { fmt_wrap(buf, bytes, width, out, 8704); printf("%s", out); }
+    kfree(out); kfree(buf);
+}
+
+// KAT for fmt_wrap: pins greedy packing, over-width words, paragraph preservation,
+// and whitespace collapse. Returns 0 on pass, else the failing case number.
+static int fmt_selftest(void) {
+    struct { const char* in; int w; const char* want; } t[] = {
+        {"aaa bbb ccc",             7,  "aaa bbb\nccc\n"},               // greedy pack + wrap
+        {"aa bbbbbbbb cc",          5,  "aa\nbbbbbbbb\ncc\n"},           // over-width word stays whole
+        {"a b\n\nc d",              20, "a b\n\nc d\n"},                 // paragraph break preserved
+        {"  a   b  ",               20, "a b\n"},                       // whitespace collapsed, no lead break
+        {"",                        20, ""},                            // empty in -> empty out
+        {"   \n\n  ",               20, ""},                            // all-whitespace -> empty out
+        {"one two three\n\nfour five", 8, "one two\nthree\n\nfour\nfive\n"}, // two paragraphs, tight width
+    };
+    char out[256];
+    for (int i = 0; i < (int)(sizeof(t)/sizeof(t[0])); i++) {
+        fmt_wrap(t[i].in, (int)strlen(t[i].in), t[i].w, out, sizeof out);
+        if (strcmp(out, t[i].want) != 0) return i + 1;
+    }
+    return 0;
 }
 
 // nl [-b a|t|n] [-w N] [-s SEP] <file> — number the lines of <file>. By default
@@ -7302,6 +7406,7 @@ static void run_selftests(void) {
         {"snprintf",     snprintf_selftest},
         {"histexpand",   history_expand_selftest},
         {"sed",          sed_subst_selftest},
+        {"fmt",          fmt_selftest},
         {"chacha20",     chacha20_selftest},        {"siphash",       siphash_selftest},
         {"poly1305",     poly1305_selftest},        {"chachapoly",    chacha20poly1305_selftest},
         {"blake2s",      blake2s_selftest},         {"cmac",          aes_cmac_selftest},
