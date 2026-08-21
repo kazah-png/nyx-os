@@ -58,7 +58,7 @@ kernel `open`/`read` from N — wiring the two together makes the first
 | **An AST** | ✓ expressions AND statements — whole bodies parse to a tree, then check → fold → emit run as passes (only fn headers + the fndef hop-over emit direct) | ✓ — parse → check → gen |
 | Types (everything is `i64` in the toy) | ✗ | full checker |
 | structs / enums / match / defer / own / caps | ✗ | ✓ |
-| `str` values and string literals as data | ✗ | ✓ |
+| `str` values and string literals as data | partial — literal-only strings + `print` (a side table like the interned names; values wait on the type column) | ✓ |
 | Error diagnostics (`line N: message`) | ✓ expect points (rung 2) + a semantic pass: unknown variable, call arity | ✓ everywhere |
 
 The structural gap *was* the AST row. On-the-fly emission works because
@@ -154,10 +154,22 @@ pass changed), a `while` over constant false vanishes, and a
 constant-true `while` is left alone because an infinite loop is the
 program's right. The demo `if 1 > 2 { x := 999; } y := 5; y` emits 7
 words where the unfolded tree needs 18 — and the dead arm was still
-checked first, because dead code must still be legal code. From here
-the ladder is: a type column on the nodes (once a second value kind
-exists to distinguish), then the subset grows until the toy parses
-the examples directory — at which point it stops being a toy.
+checked first, because dead code must still be legal code.
+
+The second value kind arrived next: **string literals and `print`**.
+A double-quoted literal lexes into a side string table (bytes plus
+start/len spans — the interned-names pattern again, carried as one
+by-value struct because N caps functions at 16 parameters and the
+toy's plumbing was at the door), `print "text";` compiles to a PRINTS
+opcode with a table index, `print expr;` to the expression plus PRINT
+— the operand checks and folds like any expression, so `print 6 * 7`
+emits `PUSH 42`. The staging is deliberate: a string is legal ONLY
+directly after `print`, because the moment strings flow as values —
+into bindings, comparisons, calls — the node arrays need a **type
+column** to keep the kinds apart. That column is now the next rung,
+and it finally has its reason to exist. After it: the subset grows
+until the toy parses the examples directory — at which point it
+stops being a toy.
 
 ## Definition of done for M5
 
