@@ -106,6 +106,7 @@ static void cmd_nyxfetch(int argc, char** argv);
 static void cmd_echo(int argc, char** argv);
 static void cmd_reboot(int argc, char** argv);
 static void cmd_ps(int argc, char** argv);
+static void cmd_time(int argc, char** argv);
 static void cmd_mtdemo(int argc, char** argv);
 static void cmd_mem(int argc, char** argv);
 static void cmd_cpus(int argc, char** argv);
@@ -309,6 +310,7 @@ static const command_t commands[] = {
     {"uname",     cmd_uname,     "Show system information", false},
     {"reboot",    cmd_reboot,    "Reboot the system", false},
     {"ps",        cmd_ps,        "List processes", false},
+    {"time",      cmd_time,      "Time a command's wall-clock run: time <command> [args...]", false},
     {"mtdemo",    cmd_mtdemo,    "Preemptive multitasking self-test", false},
     {"mem",       cmd_mem,       "Show memory usage", false},
     {"cpus",      cmd_cpus,      "List CPU cores (SMP)", false},
@@ -685,7 +687,7 @@ typedef struct { const char* title; const char* const* names; } help_cat_t;
 static const char* const HC_shell[] = {"help","man","version","clear","history","exec","spawn","jobs","wait","nice","renice","taskset",0};
 static const char* const HC_files[] = {"ls","cd","pwd","cat","file","tar","iniget","open","touch","mkdir","rm","shred","cp","mv","tree","find","which","basename","dirname","realpath","files","df","du","disks","lsblk","lspci","nvme","nyxpart","mkfs","nyxinstall","nyxgrub","mount","ext2ls","ext2cat",0};
 static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","sed","patch","fold","fmt","nl","expand","unexpand","factor","isprime","strings","sha256sum","seq","paste","clip","cut","uniq","join","comm","printf","wc","write","hexdump",0};
-static const char* const HC_sys[]   = {"ps","kill","pgrep","pkill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat","screenshot","stackcheck",0};
+static const char* const HC_sys[]   = {"ps","time","kill","pgrep","pkill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat","screenshot","stackcheck",0};
 static const char* const HC_user[]  = {"useradd","users",0};
 static const char* const HC_net[]   = {"ifconfig","arp","netstat","dhcp","dns","ping","setip","httpget","httpd","tls","ipcalc",0};
 static const char* const HC_dev[]   = {"cc","xbm","semver","fnv","urlcode","crc32c","fletcher","murmur","base58","bech32","deflate","gzip","gunzip","zcat","calc","expr","json","hmac","totp",0};
@@ -848,6 +850,7 @@ static const man_page_t man_pages[] = {
     {"env",      "Print the shell's environment variables, one NAME=value pair per line."},
     {"export",   "Set an environment variable: `export NAME=value`. Exported variables are passed on to the programs the shell runs."},
     {"ps",       "List the running processes with their PID, scheduler state and name. Use kill to stop one."},
+    {"time",     "Run a command and report how long it took: `time <command> [args...]` runs the rest of the line as a command and, when it finishes, prints the elapsed wall-clock time as `real   S.mmm s` (from the 1000 Hz tick counter). Useful for benchmarking a builtin — e.g. `time cc hello.c -o hello`, `time sha256sum bigfile`, or `time sort words.txt`. Times whole-command execution, not per-call CPU."},
     {"kill",     "Terminate the process with the given <pid>. Run ps first to find the pid you want."},
     {"pgrep",    "List the PIDs of processes whose name contains <pattern> (a substring match, like ps | grep). With -l also print each name. Prints one PID per line so you can act on them; reports when nothing matches."},
     {"pkill",    "Terminate every process whose name contains <pattern> (substring match). Kernel threads (init/idle/compositor) are protected and refused, exactly like kill. Reports how many were signalled."},
@@ -1092,6 +1095,26 @@ static void cmd_reboot(int argc, char** argv) {
     printf("Rebooting...\n");
     outb(0x64, 0xFE);
     __asm__ volatile("int $0");
+}
+
+// time <command> [args...] — run a command and report the wall-clock time it took.
+// Re-joins the arguments into a command line, runs it through execute_command, and
+// prints the elapsed seconds.milliseconds (get_ticks is the 1000 Hz tick counter). Handy
+// for timing a compile (`time cc foo.c -o foo`), a hash, or any other builtin.
+static void cmd_time(int argc, char** argv) {
+    if (argc < 2) { printf("Usage: time <command> [args...]\n"); return; }
+    char line[256]; int p = 0;
+    for (int i = 1; i < argc; i++) {
+        int l = (int)strlen(argv[i]);
+        if (p + l + 2 >= (int)sizeof(line)) break;                  // keep room for a space + NUL
+        if (i > 1) line[p++] = ' ';
+        for (int k = 0; k < l; k++) line[p++] = argv[i][k];
+    }
+    line[p] = '\0';
+    uint32_t t0 = get_ticks();
+    execute_command(line);
+    uint32_t dt = get_ticks() - t0;                                 // elapsed milliseconds
+    printf("\nreal\t%u.%03u s\n", dt / 1000, dt % 1000);
 }
 
 static void cmd_ps(int argc, char** argv) {
