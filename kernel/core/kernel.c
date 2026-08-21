@@ -127,6 +127,7 @@ static void cmd_cat(int argc, char** argv);
 static void cmd_touch(int argc, char** argv);
 static void cmd_mkdir(int argc, char** argv);
 static void cmd_rm(int argc, char** argv);
+static void cmd_shred(int argc, char** argv);
 static void cmd_cp(int argc, char** argv);
 static void cmd_mv(int argc, char** argv);
 static void cmd_useradd(int argc, char** argv);
@@ -321,6 +322,7 @@ static const command_t commands[] = {
     {"touch",     cmd_touch,     "Create empty file: touch <file>", false},
     {"mkdir",     cmd_mkdir,     "Create directory: mkdir <dir>", false},
     {"rm",        cmd_rm,        "Remove file or directory: rm <path>", false},
+    {"shred",     cmd_shred,     "Overwrite a file's data, then optionally remove it: shred [-n N] [-u] <file>", false},
     {"cp",        cmd_cp,        "Copy a file (cp <src> <dst>) or a tree (cp -r <srcdir> <dstdir>)", false},
     {"mv",        cmd_mv,        "Move/rename file: mv <src> <dst>", false},
     {"useradd",   cmd_useradd,   "Add a user account: useradd <user> <pass>", false},
@@ -667,7 +669,7 @@ void execute_command(const char* cmd_line) {
 // ever dropped even if a new command isn't categorised here yet.
 typedef struct { const char* title; const char* const* names; } help_cat_t;
 static const char* const HC_shell[] = {"help","man","version","clear","history","exec","spawn","jobs","wait","nice","renice",0};
-static const char* const HC_files[] = {"ls","cd","pwd","cat","file","tar","iniget","open","touch","mkdir","rm","cp","mv","tree","find","which","basename","dirname","realpath","files","df","du","disks","lsblk","lspci","nvme","nyxpart","mkfs","nyxinstall","nyxgrub","mount","ext2ls","ext2cat",0};
+static const char* const HC_files[] = {"ls","cd","pwd","cat","file","tar","iniget","open","touch","mkdir","rm","shred","cp","mv","tree","find","which","basename","dirname","realpath","files","df","du","disks","lsblk","lspci","nvme","nyxpart","mkfs","nyxinstall","nyxgrub","mount","ext2ls","ext2cat",0};
 static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","sed","fold","nl","expand","unexpand","factor","isprime","strings","sha256sum","seq","paste","clip","cut","uniq","join","comm","printf","wc","write","hexdump",0};
 static const char* const HC_sys[]   = {"ps","kill","pgrep","pkill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat","screenshot","stackcheck",0};
 static const char* const HC_user[]  = {"useradd","users",0};
@@ -747,6 +749,7 @@ static const man_page_t man_pages[] = {
     {"cp",       "Copy the file <src> to <dst>, replacing <dst> if it already exists. With `cp -r <srcdir> <dstdir>` it copies a whole directory tree recursively, creating each destination directory and copying every file across filesystems (e.g. from the RAM image to a freshly-formatted disk mounted at /mnt) — this is how `nyxinstall` populates a target disk. The walk is iterative with a bounded off-stack frontier, so deep trees are safe on the small kernel stack."},
     {"mv",       "Move or rename <src> to <dst>. Within one filesystem this only rewrites the directory entry."},
     {"rm",       "Remove <path>. There is no recycle bin, so a removed file is gone for good."},
+    {"shred",    "Destroy a file's contents by overwriting every byte with cryptographic random data before it can be recovered: shred [-n N] [-u] <file>. -n sets the number of overwrite passes (default 3); -u also removes the file afterwards (like shred -u on Linux). The overwrite is in place — on the ramdisk it rewrites the bytes directly, and on the EXT2 mount it is flushed back to the same disk blocks at close — so unlike rm alone, the old contents are actually gone. Operates on one file (not a directory)."},
     {"mkdir",    "Create a new, empty directory named <dir>."},
     {"echo",     "Write the arguments to standard output separated by spaces and followed by a newline. `echo text > file` writes to a file instead of the screen."},
     {"grep",     "Print the lines of <file> that match <pattern>. -i ignores letter case, -n prefixes each match with its line number, and -v inverts the search to print the lines that do NOT match."},
@@ -5885,6 +5888,47 @@ static void cmd_mkdir(int argc, char** argv) {
 static void cmd_rm(int argc, char** argv) {
     if (argc < 2) { printf("Usage: rm <path>\n"); return; }
     if (vfs_unlink(argv[1]) < 0) printf("rm: failed to remove %s\n", argv[1]);
+}
+
+// shred [-n N] [-u] <file> — overwrite the file's bytes with cryptographic random
+// data N times (default 3), then optionally remove it (-u). On the ramdisk the bytes
+// are overwritten in place, and on the EXT2 mount the overwrite is flushed to the same
+// blocks at close, so the old contents are genuinely destroyed (not just unlinked).
+// One named file only — same blast radius as rm.
+static void cmd_shred(int argc, char** argv) {
+    extern void csprng_bytes(uint8_t* out, uint32_t n);
+    int passes = 3, remove_after = 0, ai = 1;
+    while (ai < argc && argv[ai][0] == '-' && argv[ai][1]) {
+        if      (strcmp(argv[ai], "-u") == 0) remove_after = 1;
+        else if (strcmp(argv[ai], "-n") == 0 && ai + 1 < argc) { passes = atoi(argv[ai + 1]); ai++; }
+        else if (argv[ai][1] == 'n' && argv[ai][2]) passes = atoi(argv[ai] + 2);   // -nN
+        else { printf("shred: bad option '%s'\n", argv[ai]); return; }
+        ai++;
+    }
+    if (ai >= argc) { printf("Usage: shred [-n N] [-u] <file>\n"); return; }
+    if (passes < 1) passes = 1;
+    if (passes > 32) passes = 32;
+    const char* path = argv[ai];
+    uint32_t size = 0; int isdir = 0;
+    if (vfs_stat(path, &size, &isdir) != 0) { printf("shred: cannot access '%s'\n", path); return; }
+    if (isdir) { printf("shred: '%s' is a directory\n", path); return; }
+    if (size > 0) {
+        int fd = vfs_open(path, 0, 0);
+        if (fd < 0) { printf("shred: cannot open '%s'\n", path); return; }
+        uint8_t* buf = (uint8_t*)kmalloc(4096);
+        if (!buf) { vfs_close(fd); printf("shred: out of memory\n"); return; }
+        for (int p = 0; p < passes; p++)
+            for (uint32_t off = 0; off < size; off += 4096) {
+                uint32_t chunk = (size - off < 4096) ? (size - off) : 4096;
+                csprng_bytes(buf, chunk);
+                vfs_pwrite(fd, buf, chunk, off);
+            }
+        kfree(buf);
+        vfs_close(fd);   // flushes an EXT2-backed file to disk
+    }
+    printf("shred: %s overwritten (%d pass%s)", path, passes, passes == 1 ? "" : "es");
+    if (remove_after) printf(vfs_unlink(path) == 0 ? ", removed" : ", but remove failed");
+    printf("\n");
 }
 
 // ---------------------------------------------------------------------------
