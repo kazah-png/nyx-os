@@ -183,6 +183,7 @@ static void cmd_expand(int argc, char** argv);
 static void cmd_unexpand(int argc, char** argv);
 static void cmd_deflate(int argc, char** argv);
 static void cmd_gzip(int argc, char** argv);
+static void cmd_patch(int argc, char** argv);
 static void cmd_gunzip(int argc, char** argv);
 static void cmd_zcat(int argc, char** argv);
 static void cmd_ipcalc(int argc, char** argv);
@@ -371,6 +372,7 @@ static const command_t commands[] = {
     {"rev",       cmd_rev,       "Reverse the characters of each line: rev <file>", false},
     {"tr",        cmd_tr,        "Translate/delete/squeeze chars: tr [-ds] SET1 [SET2] <file>", false},
     {"sed",       cmd_sed,       "Substitute text: sed s/old/new/[g] <file>", false},
+    {"patch",     cmd_patch,     "Apply a unified diff to a file in place: patch <file> <diff>", false},
     {"fold",      cmd_fold,      "Wrap long lines to a width: fold [-w width] <file>", false},
     {"fmt",       cmd_fmt,       "Reflow text to fill lines up to a width: fmt [-w width] <file>", false},
     {"nl",        cmd_nl,        "Number lines: nl [-b a|t|n] [-w N] [-s SEP] <file>", false},
@@ -682,7 +684,7 @@ void execute_command(const char* cmd_line) {
 typedef struct { const char* title; const char* const* names; } help_cat_t;
 static const char* const HC_shell[] = {"help","man","version","clear","history","exec","spawn","jobs","wait","nice","renice","taskset",0};
 static const char* const HC_files[] = {"ls","cd","pwd","cat","file","tar","iniget","open","touch","mkdir","rm","shred","cp","mv","tree","find","which","basename","dirname","realpath","files","df","du","disks","lsblk","lspci","nvme","nyxpart","mkfs","nyxinstall","nyxgrub","mount","ext2ls","ext2cat",0};
-static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","sed","fold","fmt","nl","expand","unexpand","factor","isprime","strings","sha256sum","seq","paste","clip","cut","uniq","join","comm","printf","wc","write","hexdump",0};
+static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","sed","patch","fold","fmt","nl","expand","unexpand","factor","isprime","strings","sha256sum","seq","paste","clip","cut","uniq","join","comm","printf","wc","write","hexdump",0};
 static const char* const HC_sys[]   = {"ps","kill","pgrep","pkill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat","screenshot","stackcheck",0};
 static const char* const HC_user[]  = {"useradd","users",0};
 static const char* const HC_net[]   = {"ifconfig","arp","netstat","dhcp","dns","ping","setip","httpget","httpd","tls","ipcalc",0};
@@ -768,6 +770,7 @@ static const man_page_t man_pages[] = {
     {"sort",     "Sort the lines of <file>. -r reverses the result; -n sorts numerically by the integer at the start of each line instead of alphabetically."},
     {"rev",      "Print each line of <file> with the order of its characters reversed."},
     {"sed",      "Substitute text with the s command: sed s/old/new/[g] <file> replaces the literal string <old> with <new> on each line (the first match per line, or every match with the g flag) and prints the result — the file itself is not changed. Any character right after the s works as the delimiter, so s|a|b|g is the same as s/a/b/g. Matching is literal (NyxOS has no regex engine); unlike tr, which works one character at a time, sed replaces whole strings."},
+    {"patch",    "Apply a unified diff to a file IN PLACE: `patch <file> <diff>` reads the unified diff in <diff> (the format `diff -u` and git produce) and edits <file> accordingly — added (`+`) lines inserted, removed (`-`) lines dropped, context (` `) lines kept. It is fail-safe: every hunk's context and removed lines must match <file> exactly at the hunk's position, or the whole patch is rejected with a reason and the file is left completely unchanged (no partial application). `---`/`+++` headers and `\\ No newline` markers are ignored. The read side of the existing `diff` — together they let you produce a diff, ship it, and apply it in-OS. Pinned by the `patch` self-test (insert/delete/change hunks + context-mismatch rejection)."},
     {"tr",       "Translate, delete or squeeze characters read from <file>. With two sets, each character of <file> that appears in SET1 is replaced by the character at the same position in SET2 (a shorter SET2 repeats its last character). -d deletes every SET1 character instead; -s collapses each run of a repeated result character into one. Sets may use ascending ranges such as a-z or 0-9."},
     {"fold",     "Wrap the lines of <file> so no output line is longer than the given width (80 by default, or -w width). A line longer than the width is broken with a hard newline at exactly that many characters; shorter lines and existing line breaks are left alone."},
     {"fmt",      "Reflow (rewrap) the prose in <file> to fill lines up to a width (75 by default, or -w width) -- the paragraph formatter. Unlike `fold`, which only hard-breaks over-long lines at a fixed column, fmt COLLAPSES each paragraph's internal whitespace and repacks its words greedily, so short lines are joined and long ones split at word boundaries. A blank line separates paragraphs and is preserved as a single blank line; a word longer than the width is left whole on its own line rather than broken. Reads one bounded chunk of the file (like head/fold)."},
@@ -2554,6 +2557,135 @@ static void cmd_deflate(int argc, char** argv) {
 }
 
 // gzip <in> <out> — compress a file into a .gz that stock gunzip / browsers read (image/deflate.c).
+// Length of the line starting at p (bytes up to AND including its '\n', or to `end`).
+static int pa_linelen(const char* p, const char* end) {
+    const char* q = p;
+    while (q < end && *q != '\n') q++;
+    if (q < end) q++;                       // include the terminating newline
+    return (int)(q - p);
+}
+static int pa_lineeq(const char* a, int alen, const char* b, int blen) {
+    if (alen != blen) return 0;
+    for (int i = 0; i < alen; i++) if (a[i] != b[i]) return 0;
+    return 1;
+}
+
+// Apply a unified diff to `tgt`, writing the patched text to `out`. Walks the diff hunk
+// by hunk: each hunk's context (' ') and removed ('-') lines must match the target
+// EXACTLY at the hunk's line position, or the whole patch is rejected (no partial
+// application) — added ('+') lines are emitted, removed lines dropped, context kept.
+// `---`/`+++` file headers and `\ No newline` markers are skipped. Returns 0 and sets
+// *outlen on a clean apply; a negative code on a malformed diff, a context mismatch, a
+// hunk past EOF, or output overflow. Pure (no I/O) so the KAT pins it.
+static int patch_apply(const char* tgt, int tlen, const char* diff, int dlen,
+                       char* out, int outcap, int* outlen) {
+    int o = 0, tpos = 0, tline = 1, dpos = 0;
+    #define PA_EMIT(src, n) do { if (o + (n) > outcap) return -9; \
+        for (int _k = 0; _k < (n); _k++) out[o++] = (src)[_k]; } while (0)
+    while (dpos < dlen) {
+        const char* dl = diff + dpos;
+        int dll = pa_linelen(dl, diff + dlen);
+        if ((dll >= 3 && dl[0] == '-' && dl[1] == '-' && dl[2] == '-') ||   // --- old header
+            (dll >= 3 && dl[0] == '+' && dl[1] == '+' && dl[2] == '+') ||   // +++ new header
+            (dll >= 1 && dl[0] == '\\')) { dpos += dll; continue; }         // \ No newline
+        if (dll >= 2 && dl[0] == '@' && dl[1] == '@') {                     // @@ -old,n +new,m @@
+            int i = 2;
+            while (i < dll && dl[i] != '-') i++;
+            if (i >= dll) return -1;
+            i++;
+            int oldstart = 0;
+            while (i < dll && dl[i] >= '0' && dl[i] <= '9') { oldstart = oldstart * 10 + (dl[i] - '0'); i++; }
+            if (oldstart < 1) oldstart = 1;
+            while (tline < oldstart && tpos < tlen) {                       // copy target lines before the hunk
+                int ll = pa_linelen(tgt + tpos, tgt + tlen);
+                PA_EMIT(tgt + tpos, ll); tpos += ll; tline++;
+            }
+            dpos += dll;
+            while (dpos < dlen) {                                           // hunk body
+                const char* hl = diff + dpos;
+                int hll = pa_linelen(hl, diff + dlen);
+                if (hll >= 2 && hl[0] == '@' && hl[1] == '@') break;        // next hunk
+                if (hll >= 3 && hl[0] == '-' && hl[1] == '-' && hl[2] == '-') break;
+                char pfx = hll >= 1 ? hl[0] : ' ';
+                if (pfx == '\\') { dpos += hll; continue; }
+                if (pfx == ' ' || pfx == '-') {
+                    if (tpos >= tlen) return -2;                            // hunk expects a line past EOF
+                    int tll = pa_linelen(tgt + tpos, tgt + tlen);
+                    if (!pa_lineeq(hl + 1, hll - 1, tgt + tpos, tll)) return -3;   // context/remove mismatch
+                    if (pfx == ' ') PA_EMIT(tgt + tpos, tll);              // context: keep
+                    tpos += tll; tline++;                                   // consume the target line
+                } else if (pfx == '+') {
+                    PA_EMIT(hl + 1, hll - 1);                               // added line
+                } else return -4;                                          // junk inside a hunk
+                dpos += hll;
+            }
+            continue;
+        }
+        dpos += dll;                                                        // lenient: skip stray lines
+    }
+    while (tpos < tlen) {                                                   // copy the target's tail
+        int ll = pa_linelen(tgt + tpos, tgt + tlen);
+        PA_EMIT(tgt + tpos, ll); tpos += ll;
+    }
+    #undef PA_EMIT
+    if (outlen) *outlen = o;
+    return 0;
+}
+
+// KAT for patch_apply: insert / delete / change hunks, header skipping, and rejection
+// of a hunk whose context does not match the target. 0 = pass, else the failing case.
+static int patch_kat_eq(const char* tgt, const char* diff, const char* want) {
+    char out[512]; int olen = 0;
+    if (patch_apply(tgt, (int)strlen(tgt), diff, (int)strlen(diff), out, sizeof out - 1, &olen) != 0) return 0;
+    out[olen] = '\0';
+    return strcmp(out, want) == 0;
+}
+static int patch_selftest(void) {
+    const char* T = "line1\nline2\nline3\n";
+    if (!patch_kat_eq(T, "@@ -1,3 +1,4 @@\n line1\n line2\n+INSERTED\n line3\n",
+                         "line1\nline2\nINSERTED\nline3\n")) return 1;              // insert
+    if (!patch_kat_eq(T, "@@ -1,3 +1,2 @@\n line1\n-line2\n line3\n",
+                         "line1\nline3\n")) return 2;                              // delete
+    if (!patch_kat_eq(T, "@@ -1,3 +1,3 @@\n line1\n-line2\n+CHANGED\n line3\n",
+                         "line1\nCHANGED\nline3\n")) return 3;                     // change
+    if (!patch_kat_eq(T, "--- a/f\n+++ b/f\n@@ -2,1 +2,1 @@\n-line2\n+X\n",
+                         "line1\nX\nline3\n")) return 4;                           // headers skipped
+    { char out[128]; int ol = 0;
+      const char* bad = "@@ -1,1 +1,1 @@\n-NOTLINE1\n+Z\n";
+      if (patch_apply(T, (int)strlen(T), bad, (int)strlen(bad), out, sizeof out, &ol) == 0) return 5; }  // must reject
+    return 0;
+}
+
+// patch <file> <diff> — apply a unified diff to <file> IN PLACE (fail-safe: the file is
+// left untouched unless every hunk applies cleanly). The read side of `diff`.
+static void cmd_patch(int argc, char** argv) {
+    if (argc < 3) { printf("Usage: patch <file> <diff>   (apply a unified diff in place)\n"); return; }
+    int tfd = vfs_open(argv[1], 0, 0);
+    if (tfd < 0) { printf("patch: cannot open '%s'\n", argv[1]); return; }
+    int dfd = vfs_open(argv[2], 0, 0);
+    if (dfd < 0) { vfs_close(tfd); printf("patch: cannot open '%s'\n", argv[2]); return; }
+    char* tb = (char*)kmalloc(65536);
+    char* db = (char*)kmalloc(65536);
+    char* ob = (char*)kmalloc(131072);
+    if (!tb || !db || !ob) { if (tb) kfree(tb); if (db) kfree(db); if (ob) kfree(ob);
+                             vfs_close(tfd); vfs_close(dfd); printf("patch: out of memory\n"); return; }
+    int tn = vfs_read(tfd, tb, 65535); vfs_close(tfd);
+    int dn = vfs_read(dfd, db, 65535); vfs_close(dfd);
+    if (tn < 0 || dn <= 0) { printf("patch: read error\n"); kfree(tb); kfree(db); kfree(ob); return; }
+    int on = 0;
+    int r = patch_apply(tb, tn, db, dn, ob, 131072, &on);
+    if (r != 0) {
+        const char* why = r == -3 ? "context does not match (hunk failed)" : r == -2 ? "hunk runs past end of file"
+                        : r == -9 ? "patched output too large" : "malformed diff";
+        printf("patch: %s (err %d) — '%s' left unchanged\n", why, r, argv[1]);
+    } else if (vfs_write_file(argv[1], ob, (uint32_t)on) < 0) {
+        printf("patch: cannot write '%s'\n", argv[1]);
+    } else {
+        printf("patch: applied %s to %s (%d -> %d bytes)\n", argv[2], argv[1], tn, on);
+    }
+    kfree(tb); kfree(db); kfree(ob);
+}
+
 static void cmd_gzip(int argc, char** argv) {
     if (argc < 3) { printf("Usage: gzip <in> <out>   (write a .gz that stock gunzip reads)\n"); return; }
     int fd = vfs_open(argv[1], 0, 0);
@@ -7475,6 +7607,7 @@ static void run_selftests(void) {
         {"snprintf",     snprintf_selftest},
         {"histexpand",   history_expand_selftest},
         {"sed",          sed_subst_selftest},
+        {"patch",        patch_selftest},
         {"fmt",          fmt_selftest},
         {"securezero",   secure_zero_selftest},
         {"chacha20",     chacha20_selftest},        {"siphash",       siphash_selftest},
