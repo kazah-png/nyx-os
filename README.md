@@ -7,7 +7,7 @@
 <p align="center">
   <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.9.0-LTS"><img src="https://img.shields.io/badge/release-v5.9.0--LTS-825AD2?style=flat" /></a>
   &nbsp;
-  <img src="https://img.shields.io/badge/version-v6.4.294-825AD2?style=flat" />
+  <img src="https://img.shields.io/badge/version-v6.4.295-825AD2?style=flat" />
   &nbsp;
   <img src="https://img.shields.io/badge/arch-x86__64-825AD2?style=flat" />
   &nbsp;
@@ -69,7 +69,7 @@ nyx:root$ nyxfetch
     .:oo.. :o.               ---------
   :oo:.oo.o:                 OS:         NyxOS x86_64
  .#o:.   :.                  Host:       QEMU Standard PC
- #:::....:                   Kernel:     NyxOS 6.4.294 (GUI Suite)
+ #:::....:                   Kernel:     NyxOS 6.4.295 (GUI Suite)
 o#::. . o.                   Uptime:     00:00:12
 o#.o:   :o                   Shell:      nyxsh
 o###o   o#                   Resolution: 1024 x 768
@@ -194,7 +194,9 @@ For a deeper tour — the boot flow, every subsystem, and recipes for adding a c
 command, a render demo, a wallpaper, or a CI self-test — see
 [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The security model — privilege separation,
 memory protection, safe program loading, and how untrusted input is handled — is in
-[docs/SECURITY.md](docs/SECURITY.md).
+[docs/SECURITY.md](docs/SECURITY.md). How processes are represented, scheduled, and
+retired — the process table, states, the weighted round-robin scheduler, threads,
+signals, and job control — is in [docs/PROCESS.md](docs/PROCESS.md).
 
 ---
 

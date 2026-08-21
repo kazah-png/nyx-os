@@ -1,0 +1,219 @@
+# NyxOS Process & Scheduling Model
+
+How NyxOS represents, runs, and retires processes. Every structure and constant
+below is grounded in the source — the header offsets are in
+[`kernel/core/kernel.h`](../kernel/core/kernel.h), the lifecycle logic in
+[`kernel/proc/process.c`](../kernel/proc/process.c), and the system-call surface
+in [`kernel/core/syscall.c`](../kernel/core/syscall.c).
+
+This complements [ARCHITECTURE.md](ARCHITECTURE.md) (the whole-system view) and
+[SECURITY.md](SECURITY.md) (the privilege boundary as a security property).
+
+---
+
+## 1. The process table
+
+Every task — kernel thread or user process — is a `struct process` (`process_t`)
+held in a fixed global array:
+
+```c
+#define MAX_PROCESSES 512
+process_t* process_table[MAX_PROCESSES];   // dense: slots 0..process_count-1
+```
+
+The table is **dense**: exiting tasks are swap-removed and `process_count` shrinks,
+so iterators walk `0..process_count-1` with no NULL gaps in the middle (the
+`ps`, `pgrep`, and `jobs` commands all share this loop). A task is found by pid
+with `find_process(pid)`.
+
+Key `process_t` fields:
+
+| Field | Meaning |
+|-------|---------|
+| `pid`, `ppid` | process id and parent id |
+| `uid`/`euid`, `gid`/`egid` | real/effective user and group ids |
+| `comm[32]` | short name (shown by `ps`; set from the program path) |
+| `cmdline[256]` | full space-joined argv |
+| `page_directory` | the process's PML4 (address space). **NULL ⇒ kernel thread** |
+| `stack`, `kernel_stack` | ring-3 and ring-0 stacks |
+| `state` | one of the `PROC_*` states below |
+| `files[256]`, `ufd_*[32]` | open handles; the per-process fd table (`PROC_MAX_FDS = 32`) |
+| `program_break`, `heap_start` | the lazy-`sbrk` heap window |
+| `mmap_vmas[]`, `mmap_next` | anonymous `mmap` regions |
+| `cwd[MAX_PATH]` | per-process current directory (relative paths resolve here) |
+| `sched_managed`, `sched_weight`, `sched_quantum`, `sched_cpu` | scheduler bookkeeping (§5) |
+| `tgid` | thread-group leader pid (§6) |
+| `sig_pending`, `sig_mask`, `sig_handlers[NSIG]`, … | signal disposition (§7) |
+| `exit_code` | status passed to `exit()`, collected by `waitpid()` |
+
+---
+
+## 2. Process states
+
+```c
+#define PROC_PARKED  0   // not runnable (a retired kernel thread); scheduler skips it
+#define PROC_RUN     1   // runnable or running
+#define PROC_ZOMBIE  2   // exited, awaiting reap_zombies() / waitpid()
+#define PROC_BLOCKED 3   // blocked in kwait()/sleep(); scheduler skips it
+#define PROC_STOPPED 4   // job-control stopped (SIGTSTP/SIGSTOP); parked until SIGCONT
+```
+
+The scheduler only considers `PROC_RUN` tasks; `PARKED`, `BLOCKED`, and `STOPPED`
+are skipped, and `ZOMBIE` tasks are dead but not yet freed.
+
+---
+
+## 3. Privilege model: kernel threads vs user processes
+
+The single distinction that matters for safety is **`page_directory`**:
+
+- **Kernel threads** (`page_directory == NULL`) — `init`, `idle`, the per-core
+  `apworker` tasks, and the `compositor` run in **ring 0** on the shared kernel
+  address space. They have no user stack to free.
+- **User processes** (`page_directory != NULL`) run in **ring 3** with their own
+  PML4. A fault in ring 3 kills only that process; the kernel keeps running.
+
+This is why `kill` and `pkill` **refuse a task with `page_directory == NULL`**:
+tearing a kernel thread's stack out from under the scheduler would crash the
+system. Both commands share that exact guard, so neither can take down `init`,
+`idle`, `compositor`, or an `apworker`.
+
+---
+
+## 4. Lifecycle: create → run → exit → reap
+
+```
+ spawn /prog.elf ──► elf_validate ──► elf_load_args ──► PROC_RUN ──► exit()
+                                                              │
+                                                    PROC_ZOMBIE (exit_code kept)
+                                                              │
+                          ┌───────────────────────────────────┴───────────────┐
+                 parent is a user process                    parent is a kernel thread
+                 → waitpid() collects it                     (a `spawn` background job)
+                   (do_waitpid reaps)                        → reap_zombies() auto-frees
+```
+
+**Creation.** `spawn_user_path_args(path, argv, argc)` opens the ELF, copies it
+off the VFS, runs it through `elf_validate` (see [SECURITY.md](SECURITY.md)),
+loads it with `elf_load_args` (seeding argv on the new stack), names it after the
+path, sets `sched_managed = 1`, records `ppid`, and enables the scheduler. Userland
+ELFs live at root paths, so it is `spawn /spin.elf`, not `spawn spin` — `vfs_open`
+has no search path. The `fork(2)`, `execve(2)`, and `clone(2)` system calls
+(`SYS_FORK=10`, `SYS_EXECVE=13`, `SYS_CLONE=50`) build processes the same way from
+inside ring 3.
+
+**Exit and reap.** On `exit()` a process becomes a `PROC_ZOMBIE` holding its
+`exit_code`, so a parent can still read the status. `reap_zombies()`
+([process.c](../kernel/proc/process.c)) then frees the address space, kernel
+stack, `process_t`, and table slot — but only for **orphans and background jobs**
+(a `spawn` job whose parent is a kernel thread). A zombie whose parent is a live
+user process is **left for that parent's `waitpid()`** to collect. Reaping runs in
+the compositor's background slot (never in the IRQ path), because it calls
+`kfree`/`free_page_directory`.
+
+> A consequence worth knowing: a background job killed with `pkill`/`kill` stays a
+> zombie in `ps`/`pgrep` output for a short window until the background reaper runs —
+> exactly like a `<defunct>` process on Linux. A second `pkill` on it then hits the
+> `page_directory == NULL` guard (its address space is already gone) and safely
+> refuses, so nothing is double-freed.
+
+---
+
+## 5. The scheduler
+
+NyxOS runs a **preemptive, weighted round-robin** scheduler across all available
+CPUs, enabled by `sched_enable()` once user processes exist.
+
+- **Weighted round-robin.** Each task gets `sched_weight` ticks per turn
+  (`sched_quantum` counts down the current turn). `nice`/`renice` set the weight
+  (clamped to 1..64; higher = more CPU). This is what the `mtdemo` self-test
+  demonstrates: a thread with 3× the weight counts ~3× faster.
+- **Per-CPU pinning (SMP).** `sched_cpu` fixes which core may run a task: `0`
+  (the default) means the BSP, `N > 0` means AP #N exclusively. Because no other
+  core will even look at a pinned task, two cores can never pick the same one —
+  no "currently running" flag is needed. The `apworker1..N` kernel threads are
+  the per-AP idle/work tasks.
+- **`sched_managed`.** Only tasks with this flag are round-robined. A blocking
+  `exec` and unstarted processes leave it `0` so the scheduler skips them.
+- **Blocking.** `sleep()` sets `wake_tick`; `kwait()` sets `waiting_for` and the
+  `PROC_BLOCKED` state; `FUTEX_WAIT` parks on a `futex_key`. Each is woken from
+  the corresponding kernel path and returns to `PROC_RUN`.
+
+---
+
+## 6. Threads (CLONE_VM) and thread groups
+
+`clone(fn, stack, arg, flags)` (`SYS_CLONE`) with `CLONE_VM` creates a **thread**
+that shares its creator's address space. Shared state (heap via `sbrk`, `mmap`
+regions) is owned by the **thread-group leader**, identified by `tgid` (the
+leader's pid; `0` or `== pid` means the task *is* the leader). Any thread's
+`sbrk`/`mmap` is seen by all of them because they defer to `tg_leader()`. When a
+member is reaped, `tg_reassign_leader()` keeps the group's shared state owned by a
+surviving member.
+
+---
+
+## 7. Signals and job control
+
+Signals are delivered at **return-to-ring-3** (`signal_dispatch`, off the syscall
+path), never asynchronously inside the kernel:
+
+- `sig_pending` / `sig_mask` / `sig_active` are per-signal bitmasks; `sig_handlers[NSIG]`
+  holds each disposition (`SIG_DFL`, `SIG_IGN`, or a ring-3 handler VA).
+- On entering a handler the kernel saves the ring-3 context in `sig_saved[18]`;
+  `SYS_SIGRETURN` restores it via the libc `sig_trampoline`.
+- `alarm(2)` arms `alarm_tick`; the scheduler tick posts `SIGALRM` once it passes.
+- **Job control:** `SIGTSTP`/`SIGSTOP` move a task to `PROC_STOPPED` (recorded in
+  `stop_sig`); `SIGCONT` resumes it. `waitpid(..., WUNTRACED)` reports the stop.
+
+`kill(pid, sig)` (`SYS_KILL`) posts a signal; `waitpid` (`SYS_WAITPID`, with the
+`WNOHANG` option) collects children.
+
+---
+
+## 8. Per-process resources
+
+- **File descriptors** — a private table of `PROC_MAX_FDS = 32` small-int fds, each
+  mapping to an internal VFS handle + byte offset. Isolated per process and closed
+  on reap, so fds neither leak nor cross processes.
+- **Working directory** — `cwd` is per process, inherited on `fork`, kept across
+  `execve`. Relative paths in `open`/`getdents` resolve against it (see
+  [`vfs_realpath`](../kernel/fs/vfs.c) and the `realpath` command).
+- **Heap** — `sbrk` moves `program_break`; the window `[heap_start, program_break)`
+  is faulted in lazily, one zeroed page per first touch.
+- **Anonymous mmap** — `mmap_vmas[]` regions fault in fresh zeroed pages at the
+  mapping's protection.
+
+---
+
+## 9. The command surface
+
+| Command | What it does |
+|---------|--------------|
+| `ps` | list every task: pid, ppid, state, name |
+| `pgrep [-l] <pat>` | print pids whose name contains `<pat>` (`-l` adds names) |
+| `pkill <pat>` | terminate matching processes (kernel threads refused) |
+| `kill <pid>` | terminate one process by pid (kernel threads refused) |
+| `jobs` | the shell's scheduler-managed background jobs |
+| `wait [pid]` | block until a background job (or all) exits |
+| `nice`, `renice` | set a task's scheduler weight (1..64) |
+| `top` | live process/CPU view |
+| `spawn /prog.elf` | run a user ELF in the background |
+| `exec <file>` | run a user ELF to completion (foreground) |
+| `free`, `pmap` | memory usage; a process's address-space map |
+
+---
+
+## 10. Limits and non-goals
+
+- Up to **512** tasks and **32** open fds per process — fixed arrays, no dynamic
+  growth. These are generous for an experimental desktop OS, not tuned for server
+  fan-out.
+- The scheduler is a straightforward weighted round-robin with static per-CPU
+  pinning — no priority inheritance, no load balancing across cores, no cgroups.
+- `#40` (FPU/SSE `XMM` state is not saved across context switches) is a **known,
+  latent** limitation — harmless today because the kernel is built `-mno-sse`; see
+  [SECURITY.md](SECURITY.md) and the issue tracker.
+
+NyxOS is an experimental system; this model favours clarity and a small, auditable
+core over completeness.
