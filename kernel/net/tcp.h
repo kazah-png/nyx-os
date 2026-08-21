@@ -89,4 +89,12 @@ void tcp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip, uint32_t 
 void tcp_tick(void);                 // drive retransmit timers (call from net poll)
 void tcp_debug_drop(int n);          // testing: silently drop the next n TX segments
 
+// Read-only introspection for the `netstat` command. Iterate 0..tcp_conn_count()-1;
+// tcp_conn_info() fills an ACTIVE slot's tuple+state and returns 1, else 0.
+int tcp_conn_count(void);
+int tcp_conn_info(int idx, int* state, uint32_t* src_ip, uint16_t* src_port,
+                  uint32_t* dst_ip, uint16_t* dst_port);
+const char* tcp_state_name(int state);
+uint32_t tcp_rx_csum_drops(void);    // count of RX segments dropped for a bad checksum
+
 #endif

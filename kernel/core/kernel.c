@@ -133,6 +133,7 @@ static void cmd_useradd(int argc, char** argv);
 static void cmd_users(int argc, char** argv);
 static void cmd_ifconfig(int argc, char** argv);
 static void cmd_arp(int argc, char** argv);
+static void cmd_netstat(int argc, char** argv);
 static void cmd_ping(int argc, char** argv);
 static void cmd_kill(int argc, char** argv);
 static void cmd_pgrep(int argc, char** argv);
@@ -324,6 +325,7 @@ static const command_t commands[] = {
     {"users",     cmd_users,     "List user accounts", false},
     {"ifconfig",  cmd_ifconfig,  "Show network interfaces", false},
     {"arp",       cmd_arp,       "Show the ARP cache (IPv4 -> MAC neighbours)", false},
+    {"netstat",   cmd_netstat,   "Show the TCP connection table", false},
     {"dns",       cmd_dns,       "DNS resolve: dns <hostname>", false},
     {"ping",      cmd_ping,      "Ping a host: ping <ip|hostname>", false},
     {"kill",      cmd_kill,      "Kill a process: kill <pid>", false},
@@ -665,7 +667,7 @@ static const char* const HC_files[] = {"ls","cd","pwd","cat","file","tar","inige
 static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","fold","nl","expand","unexpand","factor","isprime","strings","sha256sum","seq","paste","clip","cut","uniq","join","comm","printf","wc","write","hexdump",0};
 static const char* const HC_sys[]   = {"ps","kill","pgrep","pkill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat","screenshot","stackcheck",0};
 static const char* const HC_user[]  = {"useradd","users",0};
-static const char* const HC_net[]   = {"ifconfig","arp","dhcp","dns","ping","setip","httpget","tls","ipcalc",0};
+static const char* const HC_net[]   = {"ifconfig","arp","netstat","dhcp","dns","ping","setip","httpget","tls","ipcalc",0};
 static const char* const HC_dev[]   = {"cc","xbm","semver","fnv","urlcode","crc32c","fletcher","murmur","base58","bech32","deflate","gzip","calc","json","hmac",0};
 static const char* const HC_media[] = {"play","sb16play","imageview","selene",0};
 static const char* const HC_games[] = {"doom","pong","voxel","fire","matrix","lava","fractal","julia","particles","snake","tetris",0};
@@ -835,6 +837,7 @@ static const man_page_t man_pages[] = {
     {"hexdump",  "Print a side-by-side hex and ASCII dump of memory, starting at <addr> for [bytes] bytes (256 by default)."},
     {"ifconfig", "Show each network interface with its IPv4 address, netmask and gateway. Configure one with dhcp or setip."},
     {"arp",      "Show the ARP cache: the IPv4 -> MAC address mappings the stack has resolved for neighbours on the local link (the DHCP gateway, a `ping`/`dns`/`httpget` target). Entries are filled on demand by ARP resolution and looked up when sending each frame; a host that has not been contacted yet will not appear. Read-only view of what `arp -a` shows on Linux."},
+    {"netstat",  "Show the TCP connection table: each active slot's local and foreign address (ip:port, '*' for an unbound side) and TCP state (LISTEN, SYN_SENT, ESTABLISHED, the closing states, ...). A loopback session uses two slots (client + server child) plus one for the listener. Also reports how many inbound segments were dropped for a bad checksum. UDP is connectionless and has no table. Like `netstat -tan` / `ss -t` on Linux."},
     {"dhcp",     "Obtain an IPv4 address, netmask and gateway for the network interface automatically from a DHCP server."},
     {"dns",      "Resolve the hostname <hostname> to an IPv4 address using the configured DNS server."},
     {"ping",     "Send ICMP echo requests to <ip|hostname> and report the replies, to check whether a host is reachable."},
@@ -6154,6 +6157,41 @@ static void cmd_arp(int argc, char** argv) {
         shown++;
     }
     if (!shown) printf("(arp cache empty)\n");
+}
+
+// Format "ip:port" into out (a zero ip or port prints as '*', like netstat/ss).
+static void netstat_addr(char* out, int outsz, uint32_t ip, uint16_t port) {
+    char ips[16];
+    if (ip == 0) { ips[0] = '*'; ips[1] = '\0'; }
+    else snprintf(ips, sizeof(ips), "%d.%d.%d.%d", IP4_OCTETS(ip));
+    if (port == 0) snprintf(out, outsz, "%s:*", ips);
+    else           snprintf(out, outsz, "%s:%d", ips, (int)port);
+}
+
+// netstat — the TCP connection table (the stack tracks no per-flow UDP state, so
+// there is nothing connection-oriented to show for UDP). Read-only, like arp/ps.
+static void cmd_netstat(int argc, char** argv) {
+    (void)argc; (void)argv;
+    const int LW = 22, FW = 22;   // Local / Foreign address column widths
+    printf("Proto ");
+    printf("Local Address");   for (int p = 13; p < LW; p++) putchar(' ');
+    printf("Foreign Address"); for (int p = 15; p < FW; p++) putchar(' ');
+    printf("State\n");
+    int shown = 0;
+    for (int i = 0; i < tcp_conn_count(); i++) {
+        int st; uint32_t sip, dip; uint16_t sport, dport;
+        if (!tcp_conn_info(i, &st, &sip, &sport, &dip, &dport)) continue;
+        char la[24], fa[24];
+        netstat_addr(la, sizeof(la), sip, sport);
+        netstat_addr(fa, sizeof(fa), dip, dport);
+        printf("tcp   ");
+        printf("%s", la); for (int p = (int)strlen(la); p < LW; p++) putchar(' ');
+        printf("%s", fa); for (int p = (int)strlen(fa); p < FW; p++) putchar(' ');
+        printf("%s\n", tcp_state_name(st));
+        shown++;
+    }
+    if (!shown) printf("(no active TCP connections)\n");
+    printf("TCP: %u segment(s) dropped for bad checksum\n", (unsigned)tcp_rx_csum_drops());
 }
 
 static void cmd_dns(int argc, char** argv) {

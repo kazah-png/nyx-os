@@ -46,6 +46,39 @@ static uint32_t next_isn = 1000;
 // never take it again or block on the net poll, so there is no re-entry/self-deadlock.
 static spinlock_t tcp_lock = SPINLOCK_INIT;
 
+// --- Read-only introspection for the `netstat` command (kernel.c) ---
+// conns[] is a fixed static array whose slots are reused, never freed, so reading a
+// slot's scalar fields without tcp_lock cannot use-after-free; a torn read at worst
+// shows a momentarily-stale state, which is fine for a diagnostic snapshot (ss-like).
+int tcp_conn_count(void) { return TCP_MAX_CONNS; }
+
+int tcp_conn_info(int idx, int* state, uint32_t* src_ip, uint16_t* src_port,
+                  uint32_t* dst_ip, uint16_t* dst_port) {
+    if (idx < 0 || idx >= TCP_MAX_CONNS || !conns[idx].active) return 0;
+    if (state)    *state    = conns[idx].state;
+    if (src_ip)   *src_ip   = conns[idx].src_ip;
+    if (src_port) *src_port = conns[idx].src_port;
+    if (dst_ip)   *dst_ip   = conns[idx].dst_ip;
+    if (dst_port) *dst_port = conns[idx].dst_port;
+    return 1;
+}
+
+const char* tcp_state_name(int state) {
+    switch (state) {
+        case TCP_STATE_CLOSED:      return "CLOSED";
+        case TCP_STATE_SYN_SENT:    return "SYN_SENT";
+        case TCP_STATE_SYN_RCVD:    return "SYN_RCVD";
+        case TCP_STATE_ESTABLISHED: return "ESTABLISHED";
+        case TCP_STATE_FIN_WAIT1:   return "FIN_WAIT1";
+        case TCP_STATE_FIN_WAIT2:   return "FIN_WAIT2";
+        case TCP_STATE_CLOSE_WAIT:  return "CLOSE_WAIT";
+        case TCP_STATE_LAST_ACK:    return "LAST_ACK";
+        case TCP_STATE_TIME_WAIT:   return "TIME_WAIT";
+        case TCP_STATE_LISTEN:      return "LISTEN";
+        default:                    return "?";
+    }
+}
+
 static int find_slot(void) {
     for (int i = 0; i < TCP_MAX_CONNS; i++)
         if (!conns[i].active) return i;
