@@ -225,6 +225,7 @@ static void cmd_desktop(int argc, char** argv);
 static void cmd_beep(int argc, char** argv);
 static void cmd_play(int argc, char** argv);
 static void cmd_sb16play(int argc, char** argv);
+static void cmd_wav(int argc, char** argv);
 static void cmd_exec(int argc, char** argv);
 static void cmd_cc(int argc, char** argv);
 static void cmd_xbm(int argc, char** argv);
@@ -432,6 +433,7 @@ static const command_t commands[] = {
     {"desktop",   cmd_desktop,   "Launch window compositor desktop", false},
     {"beep",      cmd_beep,      "Play a tone: beep [freq] [ms]", false},
     {"play",      cmd_play,      "Play a demo melody", false},
+    {"wav",       cmd_wav,       "Play a .wav file through the SB16: wav <file.wav>", false},
     {"sb16play",  cmd_sb16play,  "Test SB16 playback: sb16play [freq] [ms]", false},
     {"exec",      cmd_exec,      "Run ELF in foreground (waits): exec <file>", false},
     {"cc",        cmd_cc,        "Compile/link C in-OS: cc [-c] [--self-libc] <in.c/.o ...> [-o out]", false},
@@ -738,7 +740,7 @@ static const char* const HC_sys[]   = {"ps","time","kill","pgrep","pkill","mem",
 static const char* const HC_user[]  = {"useradd","users",0};
 static const char* const HC_net[]   = {"ifconfig","route","arp","netstat","dhcp","dns","ping","setip","httpget","httpd","tls","ipcalc",0};
 static const char* const HC_dev[]   = {"cc","xbm","semver","fnv","urlcode","crc32c","fletcher","murmur","base58","bech32","deflate","gzip","gunzip","zcat","calc","expr","json","hmac","totp",0};
-static const char* const HC_media[] = {"play","sb16play","imageview","selene",0};
+static const char* const HC_media[] = {"play","wav","sb16play","imageview","selene",0};
 static const char* const HC_games[] = {"doom","pong","voxel","fire","matrix","lava","nyxflex","fractal","julia","particles","snake","tetris",0};
 static const char* const HC_test[]  = {"mtdemo","smpstress","smpuser","smpthreads","smpbalance","tlbtest","cowtest","crash","usertest","tcptest","tcpdrop","tcploop","tcpserve","posttest","tlsstrict","prftest","gcmtest","dertest","p256test","p384test","x25519test","tlskeytest","tlsrectest","csprngtest","skp384test","deflatetest","sha512test","pngtest","bmptest","giftest","jpegtest","imgreject","httptest","ext2test","rsatest","chaintest","formtest",0};
 static const help_cat_t help_cats[] = {
@@ -945,6 +947,7 @@ static const man_page_t man_pages[] = {
     {"nyxflex",  "Show off the whole desktop at a glance: `nyxflex` tiles FOUR windows across the screen quadrants — Nyx Matrix (top-left), Nyx Lava (top-right), an Erebus terminal auto-running `nyxfetch` (bottom-left), and DOOM (bottom-right). The first three open at once as passive animated tiles; DOOM opens last and runs in the foreground, so `nyxflex` stays in DOOM until you quit it with Ctrl-C (the other three keep their place). Needs the DOOM WAD present (as `doom` does)."},
     {"matrix",   "Open `Nyx Matrix`, a cmatrix-style green code-rain window: per-column falling glyph streams with a bright head and a fading tail. Eye-candy and a light framebuffer stress demo."},
     {"play",     "Play a short built-in demo melody through the sound device, a quick way to confirm audio output is working."},
+    {"wav",      "Play a WAV audio file through the Sound Blaster 16: `wav <file.wav>`. Parses the RIFF/WAVE container (any chunk order), prints the format it found -- sample rate, bit depth (8 or 16), channel count and duration -- and streams the PCM to the SB16 DMA. Only uncompressed PCM is supported; a stereo file is down-mixed to its left channel, and a clip longer than the 64 KB DMA buffer plays its first portion. Rejects a non-WAV, compressed, or odd-bit-depth file with a reason. The file player to `sb16play`'s tone generator; pinned by the `wavparse` self-test."},
     {"sb16play", "Test Sound Blaster 16 playback: `sb16play [freq] [ms]` emits a tone at [freq] Hz for [ms] milliseconds through the SB16 DMA path (defaults if omitted), verifying the audio driver end to end."},
     {"fastfetch","Alias for `nyxfetch`: print the NyxOS logo beside a summary of the running system — kernel version, CPU, memory and uptime — the neofetch-style banner."},
     {"httpget",  "Fetch a URL over HTTP and print the response: `httpget <url>`. Resolves the host via DNS, opens a TCP connection, sends the GET and shows the status and body. Plain HTTP only; HTTPS is handled by the TLS stack (see `tls`)."},
@@ -4172,6 +4175,124 @@ static void cmd_play(int argc, char** argv) {
 }
 
 #include "../drivers/audio/sb16.h"
+// Parse a WAV (RIFF/WAVE) file: walk the chunks to find `fmt ` (sample rate / bit depth /
+// channels) and `data` (the PCM span). Only uncompressed PCM (format 1), 8- or 16-bit,
+// mono or stereo. Pure (no I/O) so the KAT pins it. Returns 0 and fills the out params on
+// success; a distinct negative code on a non-WAV / compressed / unsupported / malformed file.
+static int wav_parse(const uint8_t* d, uint32_t len, uint32_t* rate, uint16_t* bits,
+                     uint16_t* ch, uint32_t* doff, uint32_t* dlen) {
+    if (len < 44) return -1;
+    if (!(d[0] == 'R' && d[1] == 'I' && d[2] == 'F' && d[3] == 'F')) return -2;
+    if (!(d[8] == 'W' && d[9] == 'A' && d[10] == 'V' && d[11] == 'E')) return -3;
+    uint32_t p = 12, fmt_ok = 0, data_ok = 0;
+    uint16_t afmt = 0, c = 0, bps = 0; uint32_t sr = 0, do_ = 0, dl_ = 0;
+    while (p + 8 <= len) {
+        const uint8_t* id = d + p;
+        uint32_t csz = d[p+4] | ((uint32_t)d[p+5] << 8) | ((uint32_t)d[p+6] << 16) | ((uint32_t)d[p+7] << 24);
+        uint32_t body = p + 8;
+        if (id[0]=='f'&&id[1]=='m'&&id[2]=='t'&&id[3]==' ') {
+            if (body + 16 > len) return -4;
+            afmt = d[body]    | ((uint16_t)d[body+1]  << 8);
+            c    = d[body+2]  | ((uint16_t)d[body+3]  << 8);
+            sr   = d[body+4]  | ((uint32_t)d[body+5]  << 8) | ((uint32_t)d[body+6] << 16) | ((uint32_t)d[body+7] << 24);
+            bps  = d[body+14] | ((uint16_t)d[body+15] << 8);
+            fmt_ok = 1;
+        } else if (id[0]=='d'&&id[1]=='a'&&id[2]=='t'&&id[3]=='a') {
+            do_ = body;
+            dl_ = (body + csz <= len) ? csz : (len - body);   // clamp to what's actually in the file
+            data_ok = 1;
+        }
+        p = body + csz + (csz & 1);                            // chunks are padded to even length
+    }
+    if (!fmt_ok || !data_ok) return -5;
+    if (afmt != 1)               return -6;                    // only uncompressed PCM
+    if (bps != 8 && bps != 16)   return -7;
+    if (c != 1 && c != 2)        return -8;
+    if (rate) *rate = sr; if (bits) *bits = bps; if (ch) *ch = c;
+    if (doff) *doff = do_; if (dlen) *dlen = dl_;
+    return 0;
+}
+
+// Write a canonical 44-byte PCM WAV header into h (for the KAT and tests).
+static void wav_write_hdr(uint8_t* h, uint32_t rate, uint16_t bits, uint16_t ch, uint32_t datalen) {
+    uint32_t br = rate * ch * (bits / 8); uint16_t ba = (uint16_t)(ch * (bits / 8)); uint32_t rsz = 36 + datalen;
+    h[0]='R';h[1]='I';h[2]='F';h[3]='F'; h[4]=(uint8_t)rsz;h[5]=(uint8_t)(rsz>>8);h[6]=(uint8_t)(rsz>>16);h[7]=(uint8_t)(rsz>>24);
+    h[8]='W';h[9]='A';h[10]='V';h[11]='E'; h[12]='f';h[13]='m';h[14]='t';h[15]=' ';
+    h[16]=16;h[17]=0;h[18]=0;h[19]=0; h[20]=1;h[21]=0; h[22]=(uint8_t)ch;h[23]=0;
+    h[24]=(uint8_t)rate;h[25]=(uint8_t)(rate>>8);h[26]=(uint8_t)(rate>>16);h[27]=(uint8_t)(rate>>24);
+    h[28]=(uint8_t)br;h[29]=(uint8_t)(br>>8);h[30]=(uint8_t)(br>>16);h[31]=(uint8_t)(br>>24);
+    h[32]=(uint8_t)ba;h[33]=(uint8_t)(ba>>8); h[34]=(uint8_t)bits;h[35]=0;
+    h[36]='d';h[37]='a';h[38]='t';h[39]='a'; h[40]=(uint8_t)datalen;h[41]=(uint8_t)(datalen>>8);h[42]=(uint8_t)(datalen>>16);h[43]=(uint8_t)(datalen>>24);
+}
+
+// KAT for wav_parse: extract fields from mono/stereo headers + reject non-WAV, non-PCM,
+// and unsupported bit depths. Returns 0 on pass, else the failing case number.
+static int wav_parse_selftest(void) {
+    static uint8_t b[128];
+    uint32_t rate=0,doff=0,dlen=0; uint16_t bits=0,ch=0;
+    wav_write_hdr(b, 44100, 16, 2, 20); for (int i=0;i<20;i++) b[44+i]=(uint8_t)i;
+    if (wav_parse(b, 64, &rate,&bits,&ch,&doff,&dlen) != 0) return 1;
+    if (rate!=44100 || bits!=16 || ch!=2 || doff!=44 || dlen!=20) return 2;
+    wav_write_hdr(b, 8000, 8, 1, 10);
+    if (wav_parse(b, 54, &rate,&bits,&ch,&doff,&dlen) != 0) return 3;
+    if (rate!=8000 || bits!=8 || ch!=1 || dlen!=10) return 4;
+    b[0]='X'; if (wav_parse(b, 54, &rate,&bits,&ch,&doff,&dlen) == 0) return 5;   // non-RIFF
+    wav_write_hdr(b, 8000, 8, 1, 10); b[20]=2;                                     // format 2 (ADPCM)
+    if (wav_parse(b, 54, &rate,&bits,&ch,&doff,&dlen) == 0) return 6;
+    wav_write_hdr(b, 8000, 8, 1, 10); b[34]=24;                                    // 24-bit
+    if (wav_parse(b, 54, &rate,&bits,&ch,&doff,&dlen) == 0) return 7;
+    return 0;
+}
+
+// wav <file> — parse a .wav file, print its format, and play it through the SB16 (up to
+// the 64 KB DMA buffer; stereo is down-mixed to the left channel). The file player to
+// sb16play's tone generator.
+static void cmd_wav(int argc, char** argv) {
+    if (argc < 2) { printf("Usage: wav <file.wav>\n"); return; }
+    int fd = vfs_open(argv[1], 0, 0);
+    if (fd < 0) { printf("wav: cannot open '%s'\n", argv[1]); return; }
+    uint8_t* file = (uint8_t*)kmalloc(256 * 1024);
+    if (!file) { vfs_close(fd); printf("wav: out of memory\n"); return; }
+    int n = vfs_read(fd, file, 256 * 1024);
+    vfs_close(fd);
+    if (n <= 0) { kfree(file); printf("wav: read error or empty file\n"); return; }
+    uint32_t rate=0, doff=0, dlen=0; uint16_t bits=0, ch=0;
+    int r = wav_parse(file, (uint32_t)n, &rate, &bits, &ch, &doff, &dlen);
+    if (r != 0) {
+        const char* why = (r==-2||r==-3) ? "not a WAV/RIFF file" : r==-6 ? "not PCM (compressed)"
+                        : r==-7 ? "unsupported bit depth (need 8 or 16)" : r==-8 ? "unsupported channel count"
+                        : "malformed WAV";
+        printf("wav: %s (err %d)\n", why, r); kfree(file); return;
+    }
+    uint32_t frame = (uint32_t)ch * (bits / 8);
+    uint32_t frames = frame ? dlen / frame : 0;
+    uint32_t dur = rate ? (uint32_t)((uint64_t)frames * 1000 / rate) : 0;
+    printf("wav: %s -- %u Hz, %u-bit %s, %u frames (%u.%03u s)\n",
+           argv[1], rate, bits, ch == 2 ? "stereo" : "mono", frames, dur / 1000, dur % 1000);
+    if (!sb16_is_initialized()) { printf("wav: SB16 not available (boot QEMU with an sb16 device) -- parsed only, not played\n"); kfree(file); return; }
+    uint8_t* dma = sb16_get_buffer(); uint32_t cap = sb16_get_buffer_size();
+    if (!dma) { kfree(file); printf("wav: no DMA buffer\n"); return; }
+    const uint8_t* pcm = file + doff;
+    uint32_t play;                                              // mono bytes handed to the SB16
+    if (ch == 1) {
+        play = dlen < cap ? dlen : cap;
+        __builtin_memcpy(dma, pcm, play);
+    } else {                                                    // stereo -> take the left channel
+        uint32_t ss = bits / 8, o = 0;
+        for (uint32_t f = 0; f + 2*ss <= dlen && o + ss <= cap; f += 2*ss)
+            for (uint32_t k = 0; k < ss; k++) dma[o++] = pcm[f + k];
+        play = o;
+    }
+    uint32_t pframes = (bits/8) ? play / (bits/8) : 0;
+    uint32_t pdur = rate ? (uint32_t)((uint64_t)pframes * 1000 / rate) : 0;
+    if (play < dlen) printf("wav: playing the first %u.%03u s (clip exceeds the 64 KB DMA buffer)\n", pdur/1000, pdur%1000);
+    sb16_play_sound(dma, play, rate, (uint8_t)bits);           // dma is already filled: self-copy is harmless
+    sleep(pdur + 120);
+    sb16_stop_dma_bits((uint8_t)bits);
+    printf("wav: done.\n");
+    kfree(file);
+}
+
 static void cmd_sb16play(int argc, char** argv) {
     (void)argc; (void)argv;
     if (!sb16_is_initialized()) {
@@ -7772,6 +7893,7 @@ static void run_selftests(void) {
         {"sed",          sed_subst_selftest},
         {"patch",        patch_selftest},
         {"fmt",          fmt_selftest},
+        {"wavparse",     wav_parse_selftest},
         {"securezero",   secure_zero_selftest},
         {"chacha20",     chacha20_selftest},        {"siphash",       siphash_selftest},
         {"poly1305",     poly1305_selftest},        {"chachapoly",    chacha20poly1305_selftest},
