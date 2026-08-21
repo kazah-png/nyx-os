@@ -94,9 +94,11 @@ strict-C99 output — and is verified three ways:
    real `.n` files read off the ext2 disk), a parser that builds whole
    program bodies as a *checked, folded* AST — statements included — and
    compiles them from a token buffer to stack code (refusing unknown
-   variables with located errors, and emitting a 10-word program where
-   the unfolded tree needs 19, on target), and the VM that executes the
-   emitted code — **runs the whole toy compiler loop inside NyxOS**. (This
+   variables and type errors with located messages, resolving string
+   `==` to a byte-comparing STREQ, and emitting a 10-word program where
+   the unfolded tree needs 19 — all verified on target), and the VM that
+   executes the emitted code — **runs the whole toy compiler loop inside
+   NyxOS**. (This
    workload also uncovered — and, run after run, profiled to a pin — a
    kernel VFS node-pool exhaustion,
    [#66](https://github.com/kazah-png/nyx-os/issues/66): the per-kind
