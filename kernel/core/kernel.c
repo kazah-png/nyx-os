@@ -184,6 +184,7 @@ static void cmd_deflate(int argc, char** argv);
 static void cmd_gzip(int argc, char** argv);
 static void cmd_ipcalc(int argc, char** argv);
 static void cmd_calc(int argc, char** argv);
+static void cmd_expr(int argc, char** argv);
 static void cmd_json(int argc, char** argv);
 static void cmd_tree(int argc, char** argv);
 static void cmd_du(int argc, char** argv);
@@ -400,6 +401,7 @@ static const command_t commands[] = {
     {"gzip",      cmd_gzip,      "Compress a file to gunzip-readable .gz: gzip <in> <out>", false},
     {"ipcalc",    cmd_ipcalc,    "IPv4 subnet calc: ipcalc <ip>/<prefix> | <ip> <mask>", false},
     {"calc",      cmd_calc,      "Evaluate an integer expression: calc <expr>", false},
+    {"expr",      cmd_expr,      "Evaluate an expression: expr length|substr|index ... | expr <arithmetic>", false},
     {"json",      cmd_json,      "Validate / query JSON: json <file> | json get <file> <path>", false},
     {"wc",        cmd_wc,        "Count lines/words/chars: wc <file>", false},
     {"write",     cmd_write,     "Write text to file: write <file> <text>", false},
@@ -674,7 +676,7 @@ static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev",
 static const char* const HC_sys[]   = {"ps","kill","pgrep","pkill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat","screenshot","stackcheck",0};
 static const char* const HC_user[]  = {"useradd","users",0};
 static const char* const HC_net[]   = {"ifconfig","arp","netstat","dhcp","dns","ping","setip","httpget","tls","ipcalc",0};
-static const char* const HC_dev[]   = {"cc","xbm","semver","fnv","urlcode","crc32c","fletcher","murmur","base58","bech32","deflate","gzip","calc","json","hmac","totp",0};
+static const char* const HC_dev[]   = {"cc","xbm","semver","fnv","urlcode","crc32c","fletcher","murmur","base58","bech32","deflate","gzip","calc","expr","json","hmac","totp",0};
 static const char* const HC_media[] = {"play","sb16play","imageview","selene",0};
 static const char* const HC_games[] = {"doom","pong","voxel","fire","matrix","lava","fractal","julia","particles","snake","tetris",0};
 static const char* const HC_test[]  = {"mtdemo","smpstress","smpuser","smpthreads","smpbalance","tlbtest","cowtest","crash","usertest","tcptest","tcpdrop","tcploop","tcpserve","posttest","tlsstrict","prftest","gcmtest","dertest","p256test","p384test","x25519test","tlskeytest","tlsrectest","csprngtest","skp384test","deflatetest","sha512test","pngtest","bmptest","giftest","jpegtest","imgreject","httptest","ext2test","rsatest","chaintest","formtest",0};
@@ -797,6 +799,7 @@ static const man_page_t man_pages[] = {
     {"gzip",     "Compress <in> into <out> as a gzip (.gz) file (RFC 1952) - the format stock gunzip, web browsers, and Python gzip.decompress read. Wraps the DEFLATE compressor with a gzip header and a CRC-32 + uncompressed-size trailer."},
     {"ipcalc",   "IPv4 subnet calculator. Give an address as `ipcalc <ip>/<prefix>`, `ipcalc <ip> <netmask>`, or `ipcalc <ip> <prefix>` and it prints the network and broadcast addresses, the netmask and wildcard, the usable host range (HostMin..HostMax) and the host count. RFC-correct at the edges: a /31 has two usable addresses (RFC 3021) and a /32 is a single host."},
     {"calc",     "Evaluate a 64-bit signed integer expression with C operators and precedence: + - * / %, the bitwise/shift operators | ^ & << >>, unary - + ~, parentheses, and decimal / 0x-hex / 0b-binary literals. Division truncates toward zero. Quote or join the terms, e.g. calc (2 + 3) * 4. Reports divide-by-zero, bad syntax, and unbalanced parentheses."},
+    {"expr",     "Evaluate an expression, like the POSIX expr. String operations that calc does not do: `expr length STRING` (character count), `expr substr STRING POS LEN` (LEN characters from 1-based POS, clamped to the string), and `expr index STRING CHARS` (the 1-based position of the first STRING character that appears in CHARS, or 0). Any other argument is treated as an integer arithmetic expression and evaluated exactly like calc, so `expr 6 * 7` prints 42. Arguments are separate tokens, so they must not contain spaces."},
     {"json",     "Validate or query a JSON document (RFC 8259) read from a file. `json <file>` prints whether it is valid or the byte offset of the first error - strict: rejects trailing commas, unquoted keys, leading zeros, bad escapes, control chars in strings, and NaN/Infinity. `json get <file> <path>` extracts the value at a jq-lite path built from `.name` (object member) and `[N]` (array index) steps, e.g. `json get cfg.json .users[0].name`; `.` selects the whole document; it prints the value's raw JSON (scalar or subtree), or a not-found / type-mismatch / bad-path error. Both parsing and extraction are iterative (O(1) kernel stack), so nesting beyond 256 levels is rejected and even hostile deeply-nested input cannot exhaust the stack."},
     {"xbm",      "The NyxOS package manager. `xbm install <name>` resolves the recipe's `deps:` (installing every dependency first, in topological order — the apt/pacman \"pull the whole tree\" model), compiles each package from its recipe with the in-OS C compiler, installs it, and records a SHA-256 integrity manifest; `xbm verify <name>` re-hashes the installed binary and reports OK or MODIFIED against that manifest (apt/pacman-style tamper detection); `xbm remove <name>` uninstalls it; `xbm deps <name>` resolves and prints the install order from the recipes' `deps:` fields (dependencies before dependents, target last), detecting dependency cycles and missing packages - a topological sort like the one apt/pacman use to order an install. `xbm search <str>` and `xbm list` browse the available and installed packages. A recipe may carry a `url:` line pointing at a remote http:// source; xbm then downloads that source into the package before building it, the pacman/apt \"fetch source, then compile in-OS\" model."},
     {"cc",       "Compile and link C source into an ELF program with the in-OS TinyCC toolchain. -c stops after producing an object file."},
@@ -2509,6 +2512,48 @@ static void cmd_calc(int argc, char** argv) {
     while (ti) num[ni++] = tmp[--ti];
     num[ni] = '\0';
     printf("%s\n", num);
+}
+
+// expr — a POSIX-ish expression evaluator. The string operations calc lacks:
+//   expr length STRING           -> number of characters
+//   expr substr STRING POS LEN   -> LEN chars from 1-based POS (clamped; empty if out of range)
+//   expr index STRING CHARS      -> 1-based position of the first STRING char that is in CHARS, else 0
+// Anything else is an integer arithmetic expression, evaluated with calc_eval (the same
+// KAT'd evaluator calc and $((...)) use), so `expr 6 * 7` prints 42.
+static void cmd_expr(int argc, char** argv) {
+    if (argc >= 3 && strcmp(argv[1], "length") == 0) {
+        printf("%d\n", (int)strlen(argv[2]));
+        return;
+    }
+    if (argc >= 5 && strcmp(argv[1], "substr") == 0) {
+        const char* s = argv[2];
+        int len = (int)strlen(s), pos = atoi(argv[3]), take = atoi(argv[4]);
+        char out[256]; int o = 0;
+        if (pos < 1) pos = 1;
+        for (int i = pos - 1; i < len && take > 0 && o < (int)sizeof(out) - 1; i++, take--)
+            out[o++] = s[i];
+        out[o] = '\0';
+        printf("%s\n", out);
+        return;
+    }
+    if (argc >= 4 && strcmp(argv[1], "index") == 0) {
+        const char* s = argv[2]; const char* set = argv[3];
+        int result = 0;
+        for (int i = 0; s[i] && !result; i++)
+            for (int j = 0; set[j]; j++) if (s[i] == set[j]) { result = i + 1; break; }
+        printf("%d\n", result);
+        return;
+    }
+    if (argc < 2) { printf("Usage: expr length STR | substr STR POS LEN | index STR CHARS | <arithmetic>\n"); return; }
+    char buf[256]; int n = 0;                         // arithmetic fallback (join args -> calc_eval)
+    for (int i = 1; i < argc && n < (int)sizeof(buf) - 1; i++) {
+        if (i > 1 && n < (int)sizeof(buf) - 1) buf[n++] = ' ';
+        for (int k = 0; argv[i][k] && n < (int)sizeof(buf) - 1; k++) buf[n++] = argv[i][k];
+    }
+    buf[n] = '\0';
+    int64_t r;
+    if (calc_eval(buf, &r) == 0) { char num[24]; snprintf(num, sizeof(num), "%lld", (long long)r); printf("%s\n", num); }
+    else printf("expr: syntax error\n");
 }
 
 // json <file>            — validate a JSON document (RFC 8259) read from the VFS (core/json.c).
