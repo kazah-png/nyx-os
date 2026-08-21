@@ -90,6 +90,16 @@
 //   the unfolded tree emits 19. Division and modulo by a constant
 //   zero are left unfolded: the compiler must not crash computing
 //   what the program would — the VM owns that failure, at run time.
+//   Since the statements joined the tree, the fold pass rewrites THEM
+//   too: an `if` whose condition folded to a constant DISSOLVES into
+//   its live arm (the node is rewritten in place into a seq wrapper
+//   around that arm's chain — the dead arm is simply never emitted),
+//   and a `while` over a constant false vanishes the same way; a
+//   constant-TRUE while is left alone, because an infinite loop is
+//   the program's right. Check runs first, so a dead arm is still
+//   CHECKED — dead code must still be legal code (ncc's rule too),
+//   and elimination never widens scope: a binding in a live arm still
+//   dies at its brace as far as the checker is concerned.
 //
 //   Everything below the seam is as the earlier rungs left it.
 //   Identifiers are INTERNED (a names byte-buffer plus per-symbol
@@ -662,8 +672,15 @@ fn check_stmt(a: Ast, bv: *i64, bc: i64, idx: i64) -> i64 {
 }
 
 // The statement half of the FOLD pass: recurse to every expression
-// root and fold it. Statements themselves have nothing to fold — yet
-// (an `if 1 > 0` could drop its dead arm; a rung for another day).
+// root and fold it — and rewrite STATEMENTS whose shape the folded
+// constants decide. An if over a constant condition dissolves into
+// its live arm: the node is rewritten in place into a seq wrapper
+// around that arm's chain (a seq in statement position nests fine —
+// every walker handles kind 8 and -1 generically, so no other pass
+// changed at all). The dead arm is left where it stands, unreachable
+// from the tree — never emitted. A while over constant FALSE becomes
+// an empty wrapper the same way; over constant TRUE it is left alone
+// (an infinite loop is the program's right), body still folding.
 fn fold_stmt(a: Ast, idx: i64) {
     if idx < 0 {
         return;
@@ -672,11 +689,28 @@ fn fold_stmt(a: Ast, idx: i64) {
     if a.nk[idx] == 5 { fold_node(a, a.nl[idx]); }
     if a.nk[idx] == 6 {
         fold_node(a, a.nl[idx]);
+        if a.nk[a.nl[idx]] == 0 {          // constant condition: dead-arm
+            mut live := a.nr[idx];         // elimination — nonzero keeps
+            if a.nv[a.nl[idx]] == 0 {      // then, zero keeps else
+                live = a.na[idx * 4];
+            }
+            fold_stmt(a, live);
+            a.nk[idx] = 8;                 // the if dissolves into a seq
+            a.nl[idx] = live;              // wrapper around the live arm
+            a.nr[idx] = -1;                // (or around nothing at all)
+            return;
+        }
         fold_stmt(a, a.nr[idx]);
         fold_stmt(a, a.na[idx * 4]);
     }
     if a.nk[idx] == 7 {
         fold_node(a, a.nl[idx]);
+        if a.nk[a.nl[idx]] == 0 && a.nv[a.nl[idx]] == 0 {
+            a.nk[idx] = 8;                 // while false: it never runs —
+            a.nl[idx] = -1;                // an empty wrapper remains
+            a.nr[idx] = -1;
+            return;
+        }
         fold_stmt(a, a.nr[idx]);
     }
 }
@@ -917,6 +951,11 @@ fn main() -> i64 {
     // 10 words remain. (The flagship demos above fold nothing — their
     // constants sit alone as call arguments — so their counts held.)
     show("d := 2 * 3 + 4; d * (10 - 8)",
+         k, v, ln, code, stk, vars, fe, fp, fpc, ast, bv, nb, ss, sl);
+    // Dead-arm elimination, visible: the condition folds to 0, the if
+    // dissolves, and 7 words remain of an unfolded 18. The dead arm was
+    // still checked first — dead code must be legal code.
+    show("if 1 > 2 \{ x := 999; \} y := 5; y",
          k, v, ln, code, stk, vars, fe, fp, fpc, ast, bv, nb, ss, sl);
     // The broken program runs LAST (fail() ends the process — one failing
     // demo per run). It PARSES cleanly; what is wrong with it is semantic:

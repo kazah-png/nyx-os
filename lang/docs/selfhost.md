@@ -146,10 +146,18 @@ parse-time threading into the check walk where it belongs, and the
 output did not move a byte — verified against the previous build, only
 the banner differs. Only the outermost skeleton still emits as it
 parses: function entry recording, parameter tables, the hop-over JMP —
-headers, not meaning. From here the ladder is: a type column on the
-nodes, statement-level transforms (an `if 1 > 0` could drop its dead
-arm), then the subset grows until the toy parses the examples
-directory — at which point it stops being a toy.
+headers, not meaning. Statement-level transforms followed at once:
+an `if` whose condition folds to a constant **dissolves into its live
+arm** (the node is rewritten in place into a seq wrapper — every
+walker already handled seq and empty chains generically, so no other
+pass changed), a `while` over constant false vanishes, and a
+constant-true `while` is left alone because an infinite loop is the
+program's right. The demo `if 1 > 2 { x := 999; } y := 5; y` emits 7
+words where the unfolded tree needs 18 — and the dead arm was still
+checked first, because dead code must still be legal code. From here
+the ladder is: a type column on the nodes (once a second value kind
+exists to distinguish), then the subset grows until the toy parses
+the examples directory — at which point it stops being a toy.
 
 ## Definition of done for M5
 
