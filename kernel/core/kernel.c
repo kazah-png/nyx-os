@@ -147,6 +147,7 @@ static void cmd_dirname(int argc, char** argv);
 static void cmd_realpath(int argc, char** argv);
 static void cmd_head(int argc, char** argv);
 static void cmd_file(int argc, char** argv);
+static void cmd_identify(int argc, char** argv);
 static void cmd_tar(int argc, char** argv);
 static void cmd_iniget(int argc, char** argv);
 static void cmd_factor(int argc, char** argv);
@@ -356,6 +357,7 @@ static const command_t commands[] = {
     {"realpath",  cmd_realpath,  "Canonicalise a path: realpath [-e] <path>...", false},
     {"head",      cmd_head,      "Show first lines of a file: head <file> [lines]", false},
     {"file",      cmd_file,      "Identify a file's type: file <file>...", false},
+    {"identify",  cmd_identify,  "Show an image's format + dimensions: identify <image>...", false},
     {"tar",       cmd_tar,       "List a tar archive: tar t[v] <file.tar>", false},
     {"iniget",    cmd_iniget,    "Read an INI/conf value: iniget <file> <section|-> <key>", false},
     {"tree",      cmd_tree,      "Show filesystem tree: tree [path]", false},
@@ -734,7 +736,7 @@ void execute_command(const char* cmd_line) {
 // ever dropped even if a new command isn't categorised here yet.
 typedef struct { const char* title; const char* const* names; } help_cat_t;
 static const char* const HC_shell[] = {"help","man","version","clear","history","alias","unalias","exec","spawn","jobs","wait","nice","renice","taskset",0};
-static const char* const HC_files[] = {"ls","cd","pwd","cat","file","tar","iniget","open","touch","mkdir","rm","shred","cp","mv","tree","find","which","basename","dirname","realpath","files","df","du","disks","lsblk","lspci","nvme","nyxpart","mkfs","nyxinstall","nyxgrub","mount","ext2ls","ext2cat",0};
+static const char* const HC_files[] = {"ls","cd","pwd","cat","file","identify","tar","iniget","open","touch","mkdir","rm","shred","cp","mv","tree","find","which","basename","dirname","realpath","files","df","du","disks","lsblk","lspci","nvme","nyxpart","mkfs","nyxinstall","nyxgrub","mount","ext2ls","ext2cat",0};
 static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","sed","patch","fold","fmt","nl","expand","unexpand","factor","isprime","strings","sha256sum","seq","paste","clip","cut","uniq","join","comm","printf","wc","write","hexdump",0};
 static const char* const HC_sys[]   = {"ps","time","kill","pgrep","pkill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat","screenshot","stackcheck",0};
 static const char* const HC_user[]  = {"useradd","users",0};
@@ -809,6 +811,7 @@ static const man_page_t man_pages[] = {
     {"pwd",      "Print the full path of the current working directory."},
     {"cat",      "Write the contents of <file> to standard output. The usual way to view a text file."},
     {"file",     "Identify the type of each <file> from its leading bytes (magic numbers: ELF, PNG, GIF, JPEG, PDF, Zip, gzip, WAV, BMP, tar, #! scripts) and, for text, whether it is ASCII or UTF-8 (with a source-extension hint like `C source`). Prints `<file>: <type>`."},
+    {"identify", "Print an image's format and pixel dimensions from its header alone -- `identify <image>...` prints `<file>: <FMT> image, <W> x <H>` for PNG, GIF, BMP, NetPBM (P1-P6) and JPEG. It reads only the header (no full decode, so it is fast and light even on a large image) and reports the width/height the file declares. The dimension companion to `file`, which reports only the type. Pinned by the `imgident` self-test."},
     {"tar",      "List the members of a POSIX ustar (.tar) archive: `tar t <file.tar>` prints each member's path, and `tar tv` also prints its type flag and byte size. Listing only — extraction is not yet supported."},
     {"iniget",   "Read one value from an INI/.conf file: `iniget <file> <section> <key>` prints the trimmed value under [section], or `iniget <file> - <key>` reads the global section (keys before any [section]). '=' is the delimiter; ';'/'#' begin whole-line comments. Prints nothing and reports not-found if the key is absent."},
     {"cp",       "Copy the file <src> to <dst>, replacing <dst> if it already exists. With `cp -r <srcdir> <dstdir>` it copies a whole directory tree recursively, creating each destination directory and copying every file across filesystems (e.g. from the RAM image to a freshly-formatted disk mounted at /mnt) — this is how `nyxinstall` populates a target disk. The walk is iterative with a bounded off-stack frontier, so deep trees are safe on the small kernel stack."},
@@ -1248,6 +1251,97 @@ static void cmd_file(int argc, char** argv) {
         if (n < 0) n = 0;
         printf("%s: %s\n", argv[a], filetype_identify(argv[a], buf, (uint32_t)n));
     }
+}
+
+// Identify an image from its HEADER only (no full decode): sets *fmt to a static format
+// name and *w/*h to the pixel dimensions. Handles PNG, GIF, BMP, NetPBM (P1-P6) and JPEG
+// (scanning to the SOF marker). Returns 0 on a recognised image, -1 otherwise. Pure so a
+// KAT can pin it. The dimension companion to `file` (which reports type only).
+static int image_identify(const uint8_t* d, uint32_t len, const char** fmt, uint32_t* w, uint32_t* h) {
+    if (len >= 24 && d[0]==0x89 && d[1]=='P' && d[2]=='N' && d[3]=='G') {          // PNG: IHDR w@16 h@20 (BE)
+        *fmt = "PNG";
+        *w = ((uint32_t)d[16]<<24)|((uint32_t)d[17]<<16)|((uint32_t)d[18]<<8)|d[19];
+        *h = ((uint32_t)d[20]<<24)|((uint32_t)d[21]<<16)|((uint32_t)d[22]<<8)|d[23];
+        return 0;
+    }
+    if (len >= 10 && d[0]=='G' && d[1]=='I' && d[2]=='F') {                        // GIF: screen w@6 h@8 (LE)
+        *fmt = "GIF"; *w = d[6]|((uint32_t)d[7]<<8); *h = d[8]|((uint32_t)d[9]<<8); return 0;
+    }
+    if (len >= 26 && d[0]=='B' && d[1]=='M') {                                     // BMP: w@18 h@22 (LE, h may be <0)
+        *fmt = "BMP";
+        *w = d[18]|((uint32_t)d[19]<<8)|((uint32_t)d[20]<<16)|((uint32_t)d[21]<<24);
+        int32_t hh = (int32_t)(d[22]|((uint32_t)d[23]<<8)|((uint32_t)d[24]<<16)|((uint32_t)d[25]<<24));
+        *h = (uint32_t)(hh < 0 ? -hh : hh);
+        return 0;
+    }
+    if (len >= 3 && d[0]=='P' && d[1]>='1' && d[1]<='6') {                         // NetPBM: two ints after the magic
+        *fmt = "PNM"; uint32_t p = 2, v[2] = {0,0}, vi = 0;
+        while (p < len && vi < 2) {
+            while (p < len && (d[p]==' '||d[p]=='\t'||d[p]=='\n'||d[p]=='\r')) p++;
+            if (p < len && d[p]=='#') { while (p < len && d[p]!='\n') p++; continue; }   // skip a comment line
+            uint32_t val = 0; int got = 0;
+            while (p < len && d[p]>='0' && d[p]<='9') { val = val*10 + (d[p]-'0'); p++; got = 1; }
+            if (got) v[vi++] = val; else if (p < len) p++;
+        }
+        if (vi < 2) return -1;
+        *w = v[0]; *h = v[1]; return 0;
+    }
+    if (len >= 4 && d[0]==0xFF && d[1]==0xD8) {                                    // JPEG: scan segments to a SOF
+        uint32_t p = 2;
+        while (p + 4 < len) {
+            if (d[p] != 0xFF) { p++; continue; }
+            uint8_t m = d[p+1];
+            if (m==0xD8 || m==0xD9 || (m>=0xD0 && m<=0xD7) || m==0x01 || m==0xFF) { p += 2; continue; }
+            uint32_t seg = ((uint32_t)d[p+2]<<8)|d[p+3];
+            if (m>=0xC0 && m<=0xC3) {                                             // SOF0..SOF3: h@+5 w@+7 (BE)
+                if (p + 9 > len) return -1;
+                *fmt = "JPEG"; *h = ((uint32_t)d[p+5]<<8)|d[p+6]; *w = ((uint32_t)d[p+7]<<8)|d[p+8]; return 0;
+            }
+            p += 2 + seg;
+        }
+        return -1;
+    }
+    return -1;
+}
+
+// KAT for image_identify: a synthetic minimal header for each format, dims checked, plus
+// rejection of unknown data. 0 = pass, else the failing case number.
+static int image_identify_selftest(void) {
+    const char* f = 0; uint32_t w = 0, h = 0;
+    uint8_t png[24] = {0x89,'P','N','G',0x0D,0x0A,0x1A,0x0A, 0,0,0,13, 'I','H','D','R', 0,0,2,0x80, 0,0,1,0xE0};
+    if (image_identify(png,24,&f,&w,&h)!=0 || w!=640 || h!=480) return 1;
+    uint8_t gif[10] = {'G','I','F','8','9','a', 0x80,0x02, 0xE0,0x01};
+    if (image_identify(gif,10,&f,&w,&h)!=0 || w!=640 || h!=480) return 2;
+    uint8_t bmp[26] = {'B','M',0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0, 0x80,2,0,0, 0xE0,1,0,0};
+    if (image_identify(bmp,26,&f,&w,&h)!=0 || w!=640 || h!=480) return 3;
+    const char* ppm = "P6\n640 480\n255\n";
+    if (image_identify((const uint8_t*)ppm,15,&f,&w,&h)!=0 || w!=640 || h!=480) return 4;
+    uint8_t jpg[11] = {0xFF,0xD8, 0xFF,0xC0, 0,17, 8, 1,0xE0, 2,0x80};
+    if (image_identify(jpg,11,&f,&w,&h)!=0 || w!=640 || h!=480) return 5;
+    uint8_t junk[16]; for (int i=0;i<16;i++) junk[i]=(uint8_t)(i+1);
+    if (image_identify(junk,16,&f,&w,&h)==0) return 6;                            // unknown -> reject
+    return 0;
+}
+
+// identify <image> — print an image's format and pixel dimensions from its header, e.g.
+// `foo.png: PNG image, 640 x 480`. Reads only the header, so it never decodes the image.
+static void cmd_identify(int argc, char** argv) {
+    if (argc < 2) { printf("Usage: identify <image>...\n"); return; }
+    uint8_t* hdr = (uint8_t*)kmalloc(16384);
+    if (!hdr) { printf("identify: out of memory\n"); return; }
+    for (int a = 1; a < argc; a++) {
+        int fd = vfs_open(argv[a], 0, 0);
+        if (fd < 0) { printf("identify: cannot open '%s'\n", argv[a]); continue; }
+        int n = vfs_read(fd, hdr, 16384);
+        vfs_close(fd);
+        if (n <= 0) { printf("%s: read error or empty\n", argv[a]); continue; }
+        const char* fmt = 0; uint32_t w = 0, h = 0;
+        if (image_identify(hdr, (uint32_t)n, &fmt, &w, &h) == 0)
+            printf("%s: %s image, %u x %u\n", argv[a], fmt, w, h);
+        else
+            printf("%s: not a recognized image (try `file`)\n", argv[a]);
+    }
+    kfree(hdr);
 }
 
 // tar t[v] <file.tar> — list the members of a POSIX ustar archive (v also shows the
@@ -7894,6 +7988,7 @@ static void run_selftests(void) {
         {"patch",        patch_selftest},
         {"fmt",          fmt_selftest},
         {"wavparse",     wav_parse_selftest},
+        {"imgident",     image_identify_selftest},
         {"securezero",   secure_zero_selftest},
         {"chacha20",     chacha20_selftest},        {"siphash",       siphash_selftest},
         {"poly1305",     poly1305_selftest},        {"chachapoly",    chacha20poly1305_selftest},
