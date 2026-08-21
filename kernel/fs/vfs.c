@@ -190,6 +190,72 @@ void vfs_pool_report(uint32_t* total, uint32_t* high_water, uint32_t* freelist,
     spin_unlock_irqrestore(&node_pool_lock, fl);
 }
 
+// Which census bucket a live node falls in. Pure (reads only the node's own tag
+// fields, no pool state) so a KAT can pin the rule. The order matters: an ext2
+// mirror is never a ramdisk/proc leak, so mount_backed wins; a /proc or /dev node
+// is tagged even though it is also type dir/file. 0=mount 1=proc 2=dev 3=ramdir
+// 4=ramfile — mirrors the labels vfsstat prints.
+static int node_census_kind(const vfs_node_t* n) {
+    if (n->mount_backed) return 0;
+    if (n->proc_type)    return 1;
+    if (n->dev_type)     return 2;
+    return (n->type == 1) ? 3 : 4;
+}
+
+// Break the LIVE non-mount nodes down by kind, for #66. vfs_pool_report could only
+// report "ramdisk + /proc" as a single lump (live minus the mount-backed count), so
+// which kind actually grows across a compile session was an inference across 15
+// census comments, never a measurement. This counts each category directly, so the
+// leaking bucket is visible. Read-only; same lock/pass shape as vfs_pool_report.
+// Invariant: live == (mount held+idle) + proc + dev + ram_dir + ram_file.
+void vfs_pool_kinds(uint32_t* proc_n, uint32_t* dev_n,
+                    uint32_t* ram_file, uint32_t* ram_dir) {
+    uint32_t pc = 0, dv = 0, rf = 0, rd = 0;
+    uint64_t fl = spin_lock_irqsave(&node_pool_lock);
+    for (uint32_t i = 0; i < node_count; i++) {
+        vfs_node_t* n = &nodes[i];
+        if (n->on_free_list) continue;              // freed slot: not live, tags are stale
+        switch (node_census_kind(n)) {
+            case 1: pc++; break;
+            case 2: dv++; break;
+            case 3: rd++; break;
+            case 4: rf++; break;
+            default: break;                          // 0 = mount-backed, counted by vfs_pool_report
+        }
+    }
+    spin_unlock_irqrestore(&node_pool_lock, fl);
+    if (proc_n)   *proc_n   = pc;
+    if (dev_n)    *dev_n    = dv;
+    if (ram_file) *ram_file = rf;
+    if (ram_dir)  *ram_dir  = rd;
+}
+
+// KAT for the #66 census classifier: each tag combination must land in the right
+// bucket, with the documented priority (mount > proc > dev > dir/file). Returns 0
+// on pass, else the failing case number.
+int vfs_poolkind_selftest(void) {
+    vfs_node_t n;
+    // mount-backed wins over every other tag (an ext2 mirror is never a leak here)
+    memset_asm(&n, 0, sizeof n); n.mount_backed = 1; n.proc_type = PROC_PID_DIR; n.type = 1;
+    if (node_census_kind(&n) != 0) return 1;
+    // /proc generated node
+    memset_asm(&n, 0, sizeof n); n.proc_type = PROC_MEMINFO;
+    if (node_census_kind(&n) != 1) return 2;
+    // /dev special node
+    memset_asm(&n, 0, sizeof n); n.dev_type = DEV_NULL;
+    if (node_census_kind(&n) != 2) return 3;
+    // plain ramdisk directory
+    memset_asm(&n, 0, sizeof n); n.type = 1;
+    if (node_census_kind(&n) != 3) return 4;
+    // plain ramdisk file
+    memset_asm(&n, 0, sizeof n); n.type = 0;
+    if (node_census_kind(&n) != 4) return 5;
+    // proc is checked before dev: a node tagged both counts as proc
+    memset_asm(&n, 0, sizeof n); n.proc_type = PROC_UPTIME; n.dev_type = DEV_ZERO;
+    if (node_census_kind(&n) != 1) return 6;
+    return 0;
+}
+
 // Append `child` to directory `parent`; returns 0, or -1 if `parent` already holds
 // MAX_CHILDREN entries. EVERY insert into a node's fixed children[] array must go
 // through here (or an equivalent `child_count >= MAX_CHILDREN` guard) — a raw

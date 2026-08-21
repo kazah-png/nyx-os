@@ -771,7 +771,7 @@ static const man_page_t man_pages[] = {
     {"hmac","Compute HMAC-SHA256 of <message> keyed by <key> and print it as 64 lowercase hex digits: `hmac <key> <message>`. HMAC is the standard keyed-hash message authentication code (RFC 2104 / FIPS 198) — the way API requests are signed, JWT `HS256` tokens are built, and webhook payloads are verified: the same key + message always yields the same tag, and without the key the tag can't be forged. Both arguments are taken as text (quote a message with spaces). Backed by the same KAT'd `hmac_sha256` the CSPRNG, HKDF and PBKDF2 auth path use; the RFC 4231 test vectors pin it (the `hmac` self-test)."},
     {"totp",     "Generate a time-based one-time password (RFC 6238) — the 6-digit authenticator code used for two-factor login: `totp <base32-secret> [unix-time]`. The shared secret is decoded from strict, padded, upper-case Base32 (A-Z, 2-7); the code is HMAC-SHA1 over a 30-second counter, the Google Authenticator default. With no time it uses the RTC clock (so it matches a phone authenticator when the clock is correct); pass a Unix time to reproduce a specific code — e.g. `totp GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ 59` prints 287082, the RFC 6238 test vector. Backed by the KAT'd totp_sha1/hmac_sha1 primitives."},
     {"sha256sum","Print the SHA-256 digest of each file argument as `<64-hex-digits>  <name>` (two spaces between, the GNU sha256sum format), the standard way to check a file's integrity — e.g. that a downloaded package matches a published hash. Each file is streamed through the hash in fixed chunks, so a large binary needs no whole-file buffer, and the total is capped so an endless special like /dev/zero cannot spin forever. A file that cannot be opened is reported and skipped."},
-    {"vfsstat",  "Report VFS node-pool usage: how many of the fixed node slots are live, free, and the linear high-water mark, plus a breakdown of the transient mount-backed (ext2 /mnt mirror) nodes into those still held by an open fd versus idle-but-unfreed. A diagnostic for node-pool exhaustion under sustained in-OS file I/O (issue #66): if `mount held` climbs and never falls across a compile session, an fd is leaking; watch it before/after `cc`/`xbm` runs."},
+    {"vfsstat",  "Report VFS node-pool usage: how many of the fixed node slots are live, free, and the linear high-water mark, then a by-kind breakdown of the live nodes -- mount-backed (ext2 /mnt mirror) held (open fd) vs idle, and the non-mount nodes split into /proc generated, /dev special, ramdisk dirs, and ramdisk files. A diagnostic for node-pool exhaustion under sustained in-OS file I/O (issue #66): watch it before/after `cc`/`xbm` runs -- if `mount held` climbs and never falls an fd is leaking, and the per-kind counts now show exactly which category (e.g. ramdisk files) grows rather than lumping /proc and ramdisk together."},
     {"comm",     "Compare two files that are each already sorted, line by line, in three columns: lines only in <file1> (column 1), lines only in <file2> (column 2, indented one tab), and lines common to both (column 3, indented two tabs). `-1`/`-2`/`-3` suppress the respective column (and drop its indentation from the later columns), so e.g. `comm -12 a b` prints just the lines common to both. Input is assumed sorted in byte order."},
     {"semver",   "Parse and compare Semantic Versioning 2.0.0 strings (MAJOR.MINOR.PATCH[-prerelease][+build]). With one argument, validate it and print the parsed fields. With two, print their precedence relation (`A < B`, `A = B`, or `A > B`) per the semver spec: core numbers compared numerically, a prerelease ranks below the same version without one, and build metadata is ignored. Useful for comparing package versions."},
     {"seq",      "Print an inclusive sequence of integers, one per line. `seq LAST` counts 1..LAST; `seq FIRST LAST` counts FIRST..LAST; `seq FIRST STEP LAST` advances by STEP (which may be negative). A range that starts on the wrong side of LAST prints nothing, and a zero STEP is an error. Integer-only (64-bit signed), matching GNU seq for integer arguments."},
@@ -1971,10 +1971,16 @@ static void cmd_vfsstat(int argc, char** argv) {
     uint32_t total = 0, hw = 0, freel = 0, held = 0, idle = 0;
     vfs_pool_report(&total, &hw, &freel, &held, &idle);
     uint32_t live = (hw >= freel) ? hw - freel : 0;
+    // Break the non-mount live nodes down by kind so the leaking category is
+    // MEASURED, not inferred (issue #66: the old lump could not tell /proc from
+    // ramdisk). Invariant: live == mount(held+idle) + proc + dev + ramdir + ramfile.
+    uint32_t pn = 0, dn = 0, rf = 0, rd = 0;
+    extern void vfs_pool_kinds(uint32_t*, uint32_t*, uint32_t*, uint32_t*);
+    vfs_pool_kinds(&pn, &dn, &rf, &rd);
     printf("VFS node pool: %u / %u live  (%u free, high-water %u)\n", live, total, freel, hw);
     printf("  mount-backed (/mnt ext2 mirror): %u held (open fd), %u idle\n", held, idle);
-    printf("  ramdisk + /proc tree:            %u\n",
-           (live >= held + idle) ? live - held - idle : 0);
+    printf("  /proc generated: %u   /dev special: %u\n", pn, dn);
+    printf("  ramdisk dirs:    %u   ramdisk files: %u\n", rd, rf);
 }
 
 // rev <file> — print each line with its characters in reverse order (the classic
@@ -6976,6 +6982,7 @@ extern int image_reject_selftest(void);
 extern int tcp_checksum_selftest(void);
 extern int dns_response_selftest(void);
 extern int vfs_pathnorm_selftest(void);
+extern int vfs_poolkind_selftest(void);
 extern int user_ptr_ok_selftest(void);   // syscall.c: validates the ring-3 pointer/length boundary
 extern int pipe_selftest(void);          // proc/pipe.c: the pipe ring-buffer read/write path
 extern int dhcp_options_selftest(void);
@@ -7253,6 +7260,7 @@ static void run_selftests(void) {
         {"jpeg",         jpeg_selftest},          {"imgreject",     image_reject_selftest},
         {"httpparse",    http_parse_selftest},    {"ext2dir",       ext2_dir_selftest},
         {"pathnorm",     vfs_pathnorm_selftest},
+        {"poolkind",     vfs_poolkind_selftest},
         {"userptr",      user_ptr_ok_selftest},
         {"pipe",         pipe_selftest},
         {"tcpcksum",     tcp_checksum_selftest},  {"dns",           dns_response_selftest},
