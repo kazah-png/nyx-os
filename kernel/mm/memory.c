@@ -207,6 +207,47 @@ void free_page(void* addr) {
     spin_unlock_irqrestore(&page_lock, fl);
 }
 
+// KAT for the physical page allocator's refcount / copy-on-write invariants — the
+// foundation fork's COW pages and the shared-libc mapping rest on, and where issues
+// #50 (double-free), #53 (incref a free frame), and #54 (free an interior pointer)
+// were fixed. Exercises a real alloc/incref/free cycle, checks the free-page count
+// returns EXACTLY to where it started (net-zero, the strongest whole-allocator
+// invariant), and probes the three guards on reserved page 0 so no concurrent
+// allocation can race them. Runs at the quiescent selftest point, like kfree_selftest.
+// Returns 0 on pass, else the failing case number.
+int page_alloc_selftest(void) {
+    uint32_t free0 = get_free_pages();
+    // --- COW refcount cycle on a real frame (held across the refcount checks) ---
+    void* p = alloc_page();
+    if (!p) return 1;
+    if (page_get_refcount(p) != 1) return 2;                       // fresh frame: one owner
+    if (get_free_pages() != free0 - 1) return 3;                   // one fewer free page
+    page_incref(p);                                               // COW share -> second reference
+    if (page_get_refcount(p) != 2) return 4;
+    if (get_free_pages() != free0 - 1) return 5;                   // no extra frame consumed
+    free_page((void*)((uintptr_t)p + 1));                          // interior pointer (#54): must be a no-op
+    if (page_get_refcount(p) != 2 || get_free_pages() != free0 - 1) return 6;
+    free_page(p);                                                 // drop one reference
+    if (page_get_refcount(p) != 1) return 7;                       // frame kept for the other owner
+    if (get_free_pages() != free0 - 1) return 8;
+    free_page(p);                                                 // drop the last reference
+    if (page_get_refcount(p) != 0) return 9;                       // frame returned to the pool
+    if (get_free_pages() != free0) return 10;                      // accounting restored
+    // --- guards on reserved page 0 (low 1 MB, refcount 0, never pooled: race-free) ---
+    void* rsv = (void*)0;
+    if (page_get_refcount(rsv) != 0) return 11;                    // precondition: reserved -> untracked
+    free_page(rsv);                                               // free a free/reserved frame (#50): no-op
+    if (page_get_refcount(rsv) != 0 || get_free_pages() != free0) return 12;
+    page_incref(rsv);                                            // incref a free frame (#53): must NOT resurrect it
+    if (page_get_refcount(rsv) != 0) return 13;
+    // --- net-zero stress: many alloc/free pairs leave the count where it started ---
+    void* v[32];
+    for (int i = 0; i < 32; i++) { v[i] = alloc_page(); if (!v[i]) return 14; }
+    for (int i = 0; i < 32; i++) free_page(v[i]);
+    if (get_free_pages() != free0) return 15;
+    return 0;
+}
+
 // Small allocation header for slab/heap routing
 typedef struct alloc_hdr {
     uint32_t magic;
