@@ -131,3 +131,49 @@ int pipe_read(int id, char* kbuf, int n) {
     user_rsp = saved_ursp;
     return got;
 }
+
+// KAT (`pipe`): the ring-buffer read/write path behind every shell pipeline. Nothing
+// else pins the `% PIPE_BUF_SIZE` wraparound, the fill-to-full cap, or the EOF/EPIPE
+// edges, and a regression there would silently corrupt piped data. Non-blocking by
+// construction: every read drains only what is buffered (never empty-with-writers),
+// EOF is checked after closing the write end, EPIPE after closing the read end.
+// Buffers are static (the 4 KB pattern is far larger than the 4 KB kernel stack).
+int pipe_selftest(void) {
+    static char buf[PIPE_BUF_SIZE + 8];
+    static char big[PIPE_BUF_SIZE + 100];
+    int id = pipe_new();
+    if (id < 0) return 1;
+
+    // 1. round-trip
+    if (pipe_write(id, "hello", 5) != 5) return 2;
+    if (pipe_read(id, buf, 5) != 5) return 3;
+    for (int i = 0; i < 5; i++) if (buf[i] != "hello"[i]) return 4;
+
+    // 2. partial reads: write 10, read 3 then 7
+    if (pipe_write(id, "0123456789", 10) != 10) return 5;
+    if (pipe_read(id, buf, 3) != 3 || buf[0] != '0' || buf[2] != '2') return 6;
+    if (pipe_read(id, buf, 7) != 7 || buf[0] != '3' || buf[6] != '9') return 7;
+
+    // 3. fill-to-full + WRAPAROUND: head is now mid-buffer, so writing PIPE_BUF_SIZE
+    //    bytes wraps the tail; the excess is dropped (buffer is full); reading it all
+    //    back must reproduce the pattern in order across the wrap.
+    for (int i = 0; i < PIPE_BUF_SIZE + 100; i++) big[i] = (char)(i & 0xFF);
+    if (pipe_write(id, big, PIPE_BUF_SIZE + 100) != PIPE_BUF_SIZE) return 8;
+    if (pipe_write(id, "x", 1) != 0) return 9;                 // full -> 0 written
+    if (pipe_read(id, buf, PIPE_BUF_SIZE) != PIPE_BUF_SIZE) return 10;
+    for (int i = 0; i < PIPE_BUF_SIZE; i++)
+        if ((uint8_t)buf[i] != (uint8_t)(i & 0xFF)) return 11;
+
+    // 4. EOF: empty pipe with the write end closed reads 0, not a block
+    pipe_close_end(id, 1);
+    if (pipe_read(id, buf, 8) != 0) return 12;
+    pipe_close_end(id, 0);                                     // frees the pipe
+
+    // 5. EPIPE: writing to a pipe whose read end is gone returns -1
+    int id2 = pipe_new();
+    if (id2 < 0) return 13;
+    pipe_close_end(id2, 0);
+    if (pipe_write(id2, "x", 1) != -1) { pipe_close_end(id2, 1); return 14; }
+    pipe_close_end(id2, 1);
+    return 0;
+}
