@@ -156,6 +156,7 @@ static void cmd_strings(int argc, char** argv);
 static void cmd_sha256sum(int argc, char** argv);
 static void cmd_hmac(int argc, char** argv);
 static void cmd_totp(int argc, char** argv);
+static void cmd_uuid(int argc, char** argv);
 static void cmd_semver(int argc, char** argv);
 static void cmd_fnv(int argc, char** argv);
 static void cmd_seq(int argc, char** argv);
@@ -394,6 +395,7 @@ static const command_t commands[] = {
     {"sha256sum", cmd_sha256sum, "Print the SHA-256 digest of each file: sha256sum <file>...", false},
     {"hmac",      cmd_hmac,      "HMAC-SHA256 of a message under a key: hmac <key> <message>", false},
     {"totp",      cmd_totp,      "RFC 6238 auth code: totp <base32-secret> [unix-time]", false},
+    {"uuid",      cmd_uuid,      "Generate random RFC-4122 v4 UUIDs: uuid [count]", false},
     {"seq",       cmd_seq,       "Integer sequence: seq [FIRST [STEP]] LAST", false},
     {"paste",     cmd_paste,     "Merge lines of files: paste [-s] [-d LIST] <file ...>", false},
     {"clip",      cmd_clip,      "Clipboard: clip <text> to copy, clip to paste, clip -c to clear", false},
@@ -741,7 +743,7 @@ static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev",
 static const char* const HC_sys[]   = {"ps","time","kill","pgrep","pkill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat","screenshot","stackcheck",0};
 static const char* const HC_user[]  = {"useradd","users",0};
 static const char* const HC_net[]   = {"ifconfig","route","arp","netstat","dhcp","dns","ping","setip","httpget","httpd","tls","ipcalc",0};
-static const char* const HC_dev[]   = {"cc","xbm","semver","fnv","urlcode","crc32c","fletcher","murmur","base58","bech32","deflate","gzip","gunzip","zcat","calc","expr","json","hmac","totp",0};
+static const char* const HC_dev[]   = {"cc","xbm","semver","fnv","urlcode","crc32c","fletcher","murmur","base58","bech32","deflate","gzip","gunzip","zcat","calc","expr","json","hmac","totp","uuid",0};
 static const char* const HC_media[] = {"play","wav","sb16play","imageview","selene",0};
 static const char* const HC_games[] = {"doom","pong","voxel","fire","matrix","lava","nyxflex","fractal","julia","particles","snake","tetris",0};
 static const char* const HC_test[]  = {"mtdemo","smpstress","smpuser","smpthreads","smpbalance","tlbtest","cowtest","crash","usertest","tcptest","tcpdrop","tcploop","tcpserve","posttest","tlsstrict","prftest","gcmtest","dertest","p256test","p384test","x25519test","tlskeytest","tlsrectest","csprngtest","skp384test","deflatetest","sha512test","pngtest","bmptest","giftest","jpegtest","imgreject","httptest","ext2test","rsatest","chaintest","formtest",0};
@@ -834,6 +836,7 @@ static const man_page_t man_pages[] = {
     {"strings",  "Print each run of at least MIN (default 4, or -n MIN) consecutive printable characters found in <file>, one run per line — the classic way to read the text embedded in a binary (an ELF, an image, a package). A printable character is a space through `~` (0x20-0x7E) or a tab; any other byte ends the current run. The file is streamed in fixed chunks, so even a large binary needs no whole-file buffer."},
     {"hmac","Compute HMAC-SHA256 of <message> keyed by <key> and print it as 64 lowercase hex digits: `hmac <key> <message>`. HMAC is the standard keyed-hash message authentication code (RFC 2104 / FIPS 198) — the way API requests are signed, JWT `HS256` tokens are built, and webhook payloads are verified: the same key + message always yields the same tag, and without the key the tag can't be forged. Both arguments are taken as text (quote a message with spaces). Backed by the same KAT'd `hmac_sha256` the CSPRNG, HKDF and PBKDF2 auth path use; the RFC 4231 test vectors pin it (the `hmac` self-test)."},
     {"totp",     "Generate a time-based one-time password (RFC 6238) — the 6-digit authenticator code used for two-factor login: `totp <base32-secret> [unix-time]`. The shared secret is decoded from strict, padded, upper-case Base32 (A-Z, 2-7); the code is HMAC-SHA1 over a 30-second counter, the Google Authenticator default. With no time it uses the RTC clock (so it matches a phone authenticator when the clock is correct); pass a Unix time to reproduce a specific code — e.g. `totp GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ 59` prints 287082, the RFC 6238 test vector. Backed by the KAT'd totp_sha1/hmac_sha1 primitives."},
+    {"uuid",     "Generate random RFC-4122 version-4 UUIDs: `uuid` prints one, `uuid <count>` prints up to 100. Each is 16 bytes drawn from the CSPRNG with the version (4) and variant bits set, formatted as the canonical 8-4-4-4-12 lower-case hex (e.g. `550e8400-e29b-41d4-a716-446655440000`). Useful for unique identifiers in scripts, configs and test data. The formatting/bit-setting is pinned by the `uuid` self-test; the randomness comes from the same HMAC-DRBG the crypto stack uses."},
     {"sha256sum","Print the SHA-256 digest of each file argument as `<64-hex-digits>  <name>` (two spaces between, the GNU sha256sum format), the standard way to check a file's integrity — e.g. that a downloaded package matches a published hash. Each file is streamed through the hash in fixed chunks, so a large binary needs no whole-file buffer, and the total is capped so an endless special like /dev/zero cannot spin forever. A file that cannot be opened is reported and skipped."},
     {"vfsstat",  "Report VFS node-pool usage: how many of the fixed node slots are live, free, and the linear high-water mark, then a by-kind breakdown of the live nodes -- mount-backed (ext2 /mnt mirror) held (open fd) vs idle, and the non-mount nodes split into /proc generated, /dev special, ramdisk dirs, and ramdisk files. A diagnostic for node-pool exhaustion under sustained in-OS file I/O (issue #66): watch it before/after `cc`/`xbm` runs -- if `mount held` climbs and never falls an fd is leaking, and the per-kind counts now show exactly which category (e.g. ramdisk files) grows rather than lumping /proc and ramdisk together."},
     {"comm",     "Compare two files that are each already sorted, line by line, in three columns: lines only in <file1> (column 1), lines only in <file2> (column 2, indented one tab), and lines common to both (column 3, indented two tabs). `-1`/`-2`/`-3` suppress the respective column (and drop its indentation from the later columns), so e.g. `comm -12 a b` prints just the lines common to both. Input is assumed sorted in byte order."},
@@ -1525,6 +1528,50 @@ static void cmd_totp(int argc, char** argv) {
     uint32_t code = totp_sha1(key, keylen, t, 30, 6);
     char out[8]; snprintf(out, sizeof(out), "%06u", (unsigned)code);
     printf("%s\n", out);
+}
+
+// Format 16 bytes as a canonical RFC-4122 version-4 UUID (36 chars + NUL into `out`,
+// which must hold >= 37): forces the version (4) and variant (10) bits, then emits
+// 8-4-4-4-12 lower-case hex. Pure so the KAT pins the bit-setting + layout.
+static void uuid_format(const uint8_t in[16], char* out) {
+    uint8_t b[16];
+    for (int i = 0; i < 16; i++) b[i] = in[i];
+    b[6] = (uint8_t)((b[6] & 0x0F) | 0x40);       // version 4
+    b[8] = (uint8_t)((b[8] & 0x3F) | 0x80);       // variant 10xxxxxx (RFC 4122)
+    static const char hx[] = "0123456789abcdef";
+    int o = 0;
+    for (int i = 0; i < 16; i++) {
+        if (i == 4 || i == 6 || i == 8 || i == 10) out[o++] = '-';
+        out[o++] = hx[b[i] >> 4];
+        out[o++] = hx[b[i] & 0x0F];
+    }
+    out[o] = '\0';
+}
+
+// KAT for uuid_format: the version nibble is always 4 and the variant nibble is 8-b,
+// whatever the input bytes; pinned with all-0, all-FF, and a stepped vector.
+static int uuid_selftest(void) {
+    char s[40]; uint8_t v[16];
+    for (int i=0;i<16;i++) v[i]=0x00; uuid_format(v, s);
+    if (strcmp(s, "00000000-0000-4000-8000-000000000000") != 0) return 1;
+    for (int i=0;i<16;i++) v[i]=0xFF; uuid_format(v, s);
+    if (strcmp(s, "ffffffff-ffff-4fff-bfff-ffffffffffff") != 0) return 2;
+    for (int i=0;i<16;i++) v[i]=(uint8_t)(i*0x11); uuid_format(v, s);
+    if (strcmp(s, "00112233-4455-4677-8899-aabbccddeeff") != 0) return 3;   // version/variant placed right
+    return 0;
+}
+
+// uuid [count] — print random RFC-4122 version-4 UUIDs (1 by default, up to 100), drawn
+// from the CSPRNG. Handy for generating unique identifiers in scripts and configs.
+static void cmd_uuid(int argc, char** argv) {
+    extern void csprng_bytes(uint8_t* out, uint32_t n);
+    int count = 1;
+    if (argc >= 2) { count = atoi(argv[1]); if (count < 1) count = 1; else if (count > 100) count = 100; }
+    for (int i = 0; i < count; i++) {
+        uint8_t b[16]; csprng_bytes(b, 16);
+        char s[40]; uuid_format(b, s);
+        printf("%s\n", s);
+    }
 }
 
 static void cmd_factor(int argc, char** argv) {
@@ -7989,6 +8036,7 @@ static void run_selftests(void) {
         {"fmt",          fmt_selftest},
         {"wavparse",     wav_parse_selftest},
         {"imgident",     image_identify_selftest},
+        {"uuid",         uuid_selftest},
         {"securezero",   secure_zero_selftest},
         {"chacha20",     chacha20_selftest},        {"siphash",       siphash_selftest},
         {"poly1305",     poly1305_selftest},        {"chachapoly",    chacha20poly1305_selftest},
