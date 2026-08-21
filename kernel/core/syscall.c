@@ -76,6 +76,36 @@ static int user_str_ok(uint64_t ptr) {
     return ptr >= USER_SPACE_MIN && ptr < USER_SPACE_END;
 }
 
+/* KAT for the syscall pointer/length validators — the security boundary that stops
+ * a ring-3 process from handing the kernel a kernel address as a syscall buffer (an
+ * arbitrary kernel read/write / info-leak primitive). Nothing else exercises this
+ * pure logic, and a regression here would silently reopen the hole, so pin every
+ * branch: the user-floor check, the length cap, the 2^64 wrap-around guard, and the
+ * USER_SPACE_END boundary (a buffer ending exactly at END is allowed; one byte past
+ * is not). Registered in run_selftests() via an extern in kernel.c. */
+int user_ptr_ok_selftest(void) {
+    /* user_ptr_ok — valid ranges accepted */
+    if (!user_ptr_ok(USER_SPACE_MIN, 16))               return 1;
+    if (!user_ptr_ok(0x400000ULL, 4096))                return 2;
+    if (!user_ptr_ok(0x400000ULL, 0))                   return 3;   /* zero length is valid */
+    if (!user_ptr_ok(USER_SPACE_END - 0x1000, 0x1000))  return 4;   /* ends exactly at END */
+    /* user_ptr_ok — rejections */
+    if (user_ptr_ok(USER_SPACE_MIN - 1, 1))             return 5;   /* below the user floor */
+    if (user_ptr_ok(0, 8))                              return 6;   /* NULL region */
+    if (user_ptr_ok(USER_SPACE_END, 1))                 return 7;   /* at the kernel split */
+    if (user_ptr_ok(0xFFFF800000000000ULL, 8))          return 8;   /* higher-half kernel address */
+    if (user_ptr_ok(0xFFFFFFFFFFFFFFF0ULL, 0x100))      return 9;   /* ptr+len wraps past 2^64 */
+    if (user_ptr_ok(USER_SPACE_END - 0x1000, 0x1001))   return 10;  /* one byte past END */
+    if (user_ptr_ok(USER_SPACE_MIN, USER_SPACE_END + 1)) return 11; /* length exceeds the cap */
+    /* user_str_ok — base-pointer range only */
+    if (!user_str_ok(USER_SPACE_MIN))                   return 12;
+    if (!user_str_ok(USER_SPACE_END - 1))               return 13;
+    if (user_str_ok(USER_SPACE_END))                    return 14;  /* at the split */
+    if (user_str_ok(0))                                 return 15;  /* NULL */
+    if (user_str_ok(0xFFFF800000000000ULL))             return 16;  /* kernel address */
+    return 0;
+}
+
 /* Per-process-agnostic fd table: ring 3 gets small integer fds and never sees
  * (or can forge) a raw kernel VFS handle. */
 /* The fd table lives in process_t (see kernel.h) — one per process, so fds are
