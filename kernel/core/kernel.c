@@ -183,6 +183,8 @@ static void cmd_expand(int argc, char** argv);
 static void cmd_unexpand(int argc, char** argv);
 static void cmd_deflate(int argc, char** argv);
 static void cmd_gzip(int argc, char** argv);
+static void cmd_gunzip(int argc, char** argv);
+static void cmd_zcat(int argc, char** argv);
 static void cmd_ipcalc(int argc, char** argv);
 static void cmd_calc(int argc, char** argv);
 static void cmd_expr(int argc, char** argv);
@@ -403,6 +405,8 @@ static const command_t commands[] = {
     {"unexpand",  cmd_unexpand,  "Convert spaces to tabs: unexpand [-a] [-t N] <file>", false},
     {"deflate",   cmd_deflate,   "Compress a file (zlib/DEFLATE): deflate <in> <out>", false},
     {"gzip",      cmd_gzip,      "Compress a file to gunzip-readable .gz: gzip <in> <out>", false},
+    {"gunzip",    cmd_gunzip,    "Decompress a .gz file: gunzip <in.gz> <out>", false},
+    {"zcat",      cmd_zcat,      "Decompress a .gz file to the console: zcat <in.gz>", false},
     {"ipcalc",    cmd_ipcalc,    "IPv4 subnet calc: ipcalc <ip>/<prefix> | <ip> <mask>", false},
     {"calc",      cmd_calc,      "Evaluate an integer expression: calc <expr>", false},
     {"expr",      cmd_expr,      "Evaluate an expression: expr length|substr|index ... | expr <arithmetic>", false},
@@ -682,7 +686,7 @@ static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev",
 static const char* const HC_sys[]   = {"ps","kill","pgrep","pkill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat","screenshot","stackcheck",0};
 static const char* const HC_user[]  = {"useradd","users",0};
 static const char* const HC_net[]   = {"ifconfig","arp","netstat","dhcp","dns","ping","setip","httpget","httpd","tls","ipcalc",0};
-static const char* const HC_dev[]   = {"cc","xbm","semver","fnv","urlcode","crc32c","fletcher","murmur","base58","bech32","deflate","gzip","calc","expr","json","hmac","totp",0};
+static const char* const HC_dev[]   = {"cc","xbm","semver","fnv","urlcode","crc32c","fletcher","murmur","base58","bech32","deflate","gzip","gunzip","zcat","calc","expr","json","hmac","totp",0};
 static const char* const HC_media[] = {"play","sb16play","imageview","selene",0};
 static const char* const HC_games[] = {"doom","pong","voxel","fire","matrix","lava","fractal","julia","particles","snake","tetris",0};
 static const char* const HC_test[]  = {"mtdemo","smpstress","smpuser","smpthreads","smpbalance","tlbtest","cowtest","crash","usertest","tcptest","tcpdrop","tcploop","tcpserve","posttest","tlsstrict","prftest","gcmtest","dertest","p256test","p384test","x25519test","tlskeytest","tlsrectest","csprngtest","skp384test","deflatetest","sha512test","pngtest","bmptest","giftest","jpegtest","imgreject","httptest","ext2test","rsatest","chaintest","formtest",0};
@@ -804,6 +808,8 @@ static const man_page_t man_pages[] = {
     {"realpath", "Print the canonical absolute form of each <path>: relative paths are resolved against the current directory and '.'/'..' segments are collapsed (NyxOS has no symlinks, so this fully normalises the path). With -e, require each path to exist and report the ones that do not."},
     {"deflate",  "Compress <in> into <out> using DEFLATE with a zlib wrapper (RFC 1950) - the format stock zlib and Python zlib.decompress read. Fixed-Huffman + LZ77; the output is verified to inflate back byte-for-byte, so it can be decompressed anywhere."},
     {"gzip",     "Compress <in> into <out> as a gzip (.gz) file (RFC 1952) - the format stock gunzip, web browsers, and Python gzip.decompress read. Wraps the DEFLATE compressor with a gzip header and a CRC-32 + uncompressed-size trailer."},
+    {"gunzip",   "Decompress a gzip (.gz) file: `gunzip <in.gz> <out>` writes the original bytes to <out>. The complement of `gzip`, so NyxOS can now READ the .gz files it (and stock gzip / browsers / Python) write. Parses the RFC-1952 header (including optional FNAME/FEXTRA/FCOMMENT/FHCRC fields), inflates the DEFLATE body, and verifies the CRC-32 and length trailer - a corrupted or non-gzip file is rejected with a reason, never silently mis-decoded. Compressed input up to 256 KB, decompressed output up to 1 MB (scratch is heap-allocated). Pinned by the `gzinflate` self-test (round-trip + corruption rejection)."},
+    {"zcat",     "Decompress a gzip (.gz) file straight to the console - `zcat <in.gz>` is to a .gz what `cat` is to a plain file. Same RFC-1952 decoder and integrity checks as `gunzip`, but writes the decompressed bytes to standard output instead of a file (handy for peeking at a compressed text file)."},
     {"ipcalc",   "IPv4 subnet calculator. Give an address as `ipcalc <ip>/<prefix>`, `ipcalc <ip> <netmask>`, or `ipcalc <ip> <prefix>` and it prints the network and broadcast addresses, the netmask and wildcard, the usable host range (HostMin..HostMax) and the host count. RFC-correct at the edges: a /31 has two usable addresses (RFC 3021) and a /32 is a single host."},
     {"calc",     "Evaluate a 64-bit signed integer expression with C operators and precedence: + - * / %, the bitwise/shift operators | ^ & << >>, unary - + ~, parentheses, and decimal / 0x-hex / 0b-binary literals. Division truncates toward zero. Quote or join the terms, e.g. calc (2 + 3) * 4. Reports divide-by-zero, bad syntax, and unbalanced parentheses."},
     {"expr",     "Evaluate an expression, like the POSIX expr. String operations that calc does not do: `expr length STRING` (character count), `expr substr STRING POS LEN` (LEN characters from 1-based POS, clamped to the string), and `expr index STRING CHARS` (the 1-based position of the first STRING character that appears in CHARS, or 0). Any other argument is treated as an integer arithmetic expression and evaluated exactly like calc, so `expr 6 * 7` prints 42. Arguments are separate tokens, so they must not contain spaces."},
@@ -2564,6 +2570,52 @@ static void cmd_gzip(int argc, char** argv) {
     if (vfs_write_file(argv[2], outbuf, olen) < 0) { printf("gzip: cannot write '%s'\n", argv[2]); return; }
     uint32_t pct10 = bytes ? (uint32_t)(((uint64_t)olen * 1000) / (uint32_t)bytes) : 0;
     printf("gzip: %d -> %u bytes (%u.%u%% of original) -> %s\n", bytes, olen, pct10 / 10, pct10 % 10, argv[2]);
+}
+
+// gunzip <in.gz> <out> — decompress a gzip file (the complement of `gzip`), so a .gz written
+// in-OS or fetched over the net can be read back. Scratch buffers are kmalloc'd off the 4 KB
+// stack (a small .gz can expand to a large output, hence a generous decompressed cap).
+#define GUNZIP_IN_CAP   (256u * 1024)     // compressed input cap
+#define GUNZIP_OUT_CAP  (1024u * 1024)    // decompressed output cap
+static const char* gunzip_errstr(int r) {
+    return r == -2 ? "not a gzip file (bad magic)" : r == -3 ? "unsupported compression method"
+         : r == -8 ? "size mismatch (corrupt)"     : r == -9 ? "CRC-32 mismatch (corrupt)"
+         : r == -7 ? "inflate error or output too large" : "malformed gzip header";
+}
+static void cmd_gunzip(int argc, char** argv) {
+    if (argc < 3) { printf("Usage: gunzip <in.gz> <out>\n"); return; }
+    int fd = vfs_open(argv[1], 0, 0);
+    if (fd < 0) { printf("gunzip: cannot open '%s'\n", argv[1]); return; }
+    uint8_t* in  = (uint8_t*)kmalloc(GUNZIP_IN_CAP);
+    uint8_t* out = (uint8_t*)kmalloc(GUNZIP_OUT_CAP);
+    if (!in || !out) { if (in) kfree(in); if (out) kfree(out); vfs_close(fd); printf("gunzip: out of memory\n"); return; }
+    int bytes = vfs_read(fd, in, GUNZIP_IN_CAP);
+    vfs_close(fd);
+    if (bytes <= 0) { printf("gunzip: read error or empty file\n"); kfree(in); kfree(out); return; }
+    uint32_t olen = 0;
+    int r = gzip_inflate(in, (uint32_t)bytes, out, GUNZIP_OUT_CAP, &olen);
+    if (r != 0) { printf("gunzip: %s (err %d)\n", gunzip_errstr(r), r); kfree(in); kfree(out); return; }
+    if (vfs_write_file(argv[2], out, olen) < 0) { printf("gunzip: cannot write '%s'\n", argv[2]); kfree(in); kfree(out); return; }
+    printf("gunzip: %d -> %u bytes -> %s\n", bytes, olen, argv[2]);
+    kfree(in); kfree(out);
+}
+
+// zcat <in.gz> — decompress a gzip file straight to the console (like `cat` for .gz).
+static void cmd_zcat(int argc, char** argv) {
+    if (argc < 2) { printf("Usage: zcat <in.gz>\n"); return; }
+    int fd = vfs_open(argv[1], 0, 0);
+    if (fd < 0) { printf("zcat: cannot open '%s'\n", argv[1]); return; }
+    uint8_t* in  = (uint8_t*)kmalloc(GUNZIP_IN_CAP);
+    uint8_t* out = (uint8_t*)kmalloc(GUNZIP_OUT_CAP);
+    if (!in || !out) { if (in) kfree(in); if (out) kfree(out); vfs_close(fd); printf("zcat: out of memory\n"); return; }
+    int bytes = vfs_read(fd, in, GUNZIP_IN_CAP);
+    vfs_close(fd);
+    if (bytes <= 0) { printf("zcat: read error or empty file\n"); kfree(in); kfree(out); return; }
+    uint32_t olen = 0;
+    int r = gzip_inflate(in, (uint32_t)bytes, out, GUNZIP_OUT_CAP, &olen);
+    if (r != 0) { printf("zcat: %s (err %d)\n", gunzip_errstr(r), r); kfree(in); kfree(out); return; }
+    for (uint32_t i = 0; i < olen; i++) putchar((char)out[i]);
+    kfree(in); kfree(out);
 }
 
 static uint32_t ipc_bswap32(uint32_t x) {
@@ -7375,6 +7427,7 @@ static void run_selftests(void) {
         {"inflate",      inflate_selftest},       {"png",           png_selftest},
         {"deflate",      deflate_selftest},
         {"gzip",         gzip_selftest},
+        {"gzinflate",    gzip_inflate_selftest},
         {"bmp",          bmp_selftest},           {"gif",           gif_selftest},
         {"jpeg",         jpeg_selftest},          {"imgreject",     image_reject_selftest},
         {"httpparse",    http_parse_selftest},    {"ext2dir",       ext2_dir_selftest},

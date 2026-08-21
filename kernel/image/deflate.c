@@ -170,6 +170,41 @@ int gzip_deflate(const uint8_t* src, uint32_t srclen, uint8_t* dst, uint32_t dst
     return 0;
 }
 
+// Decompress a gzip stream (.gz, RFC 1952) — the complement of gzip_deflate, so NyxOS can now
+// READ the .gz files it (and stock gzip) write. Parses the 10-byte header plus any optional
+// FEXTRA/FNAME/FCOMMENT/FHCRC fields, inflates the raw DEFLATE body via inflate.c, then verifies
+// the CRC-32 and ISIZE trailer. Returns 0 and sets *outlen on success; a distinct negative code
+// on a short/mangled header, non-DEFLATE method, truncation, inflate failure, or a size/CRC
+// mismatch — so a corrupted or non-gzip file is REJECTED, never silently mis-decoded.
+int gzip_inflate(const uint8_t* src, uint32_t srclen, uint8_t* dst, uint32_t dstcap, uint32_t* outlen) {
+    if (srclen < 18) return -1;                                   // 10 header + >=0 body + 8 trailer
+    if (src[0] != 0x1f || src[1] != 0x8b) return -2;              // bad magic -> not a gzip file
+    if (src[2] != 8) return -3;                                   // only CM=8 (DEFLATE) is defined
+    uint8_t flg = src[3];
+    uint32_t p = 10;                                              // past the fixed 10-byte header
+    if (flg & 0x04) {                                             // FEXTRA: XLEN(2) + XLEN bytes
+        if (p + 2 > srclen) return -4;
+        uint32_t xlen = (uint32_t)src[p] | ((uint32_t)src[p + 1] << 8);
+        p += 2 + xlen;
+        if (p > srclen) return -4;
+    }
+    if (flg & 0x08) { while (p < srclen && src[p]) p++; if (p >= srclen) return -5; p++; }  // FNAME (NUL-term)
+    if (flg & 0x10) { while (p < srclen && src[p]) p++; if (p >= srclen) return -5; p++; }  // FCOMMENT (NUL-term)
+    if (flg & 0x02) { p += 2; if (p > srclen) return -4; }        // FHCRC: 2-byte header CRC16
+    if (p + 8 > srclen) return -6;                                // no room for a body + trailer
+    uint32_t bodylen = srclen - p - 8;                            // DEFLATE body sits between header and trailer
+    uint32_t olen = 0;
+    if (inflate_raw(src + p, bodylen, dst, dstcap, &olen) != 0) return -7;
+    uint32_t tcrc  = (uint32_t)src[srclen - 8] | ((uint32_t)src[srclen - 7] << 8) |
+                     ((uint32_t)src[srclen - 6] << 16) | ((uint32_t)src[srclen - 5] << 24);
+    uint32_t tsize = (uint32_t)src[srclen - 4] | ((uint32_t)src[srclen - 3] << 8) |
+                     ((uint32_t)src[srclen - 2] << 16) | ((uint32_t)src[srclen - 1] << 24);
+    if (olen != tsize) return -8;                                 // ISIZE (uncompressed length) mismatch
+    if (crc32_calc(dst, olen) != tcrc) return -9;                 // CRC-32 mismatch -> corrupted data
+    if (outlen) *outlen = olen;
+    return 0;
+}
+
 // ---- known-answer self-test: compress, then decompress with NyxOS's own inflate.c ----
 static int d_bytes_equal(const uint8_t* a, const uint8_t* b, uint32_t n) {
     for (uint32_t i = 0; i < n; i++) if (a[i] != b[i]) return 0;
@@ -229,5 +264,35 @@ int gzip_selftest(void) {
         if (inflate_raw(comp + 10, glen - 18, back, sizeof back, &blen) != 0) return 50 + t;
         if (blen != n || !d_bytes_equal(in, back, n)) return 60 + t;       // body round-trips
     }
+    return 0;
+}
+
+// gzip_inflate KAT: exercise the full DECODE path (header parse + trailer verify), not just the
+// body. Round-trips 3 inputs through gzip_deflate -> gzip_inflate, and requires rejection of a
+// non-gzip file (bad magic) and of a stream with a corrupted CRC-32 trailer. 0 = pass.
+int gzip_inflate_selftest(void) {
+    static uint8_t in[2048], gz[4096], back[2048];
+    for (int t = 0; t < 3; t++) {
+        uint32_t n = 0;
+        if (t == 0) { const char* s = "hello gzip world\n"; while (in[n] = (uint8_t)s[n], s[n]) n++; }
+        else if (t == 1) { n = 1000; for (uint32_t i = 0; i < n; i++) in[i] = (uint8_t)('a' + (i % 7)); }
+        else { n = 700; for (uint32_t i = 0; i < n; i++) in[i] = (uint8_t)(i * 31 + 7); }  // low-compressibility
+        uint32_t glen = 0, blen = 0;
+        if (gzip_deflate(in, n, gz, sizeof gz, &glen) != 0) return 10 + t;
+        if (gzip_inflate(gz, glen, back, sizeof back, &blen) != 0) return 20 + t;
+        if (blen != n || !d_bytes_equal(in, back, n)) return 30 + t;
+    }
+    // must REJECT a non-gzip file (bad magic)
+    static uint8_t junk[32];
+    for (int i = 0; i < 32; i++) junk[i] = (uint8_t)i;
+    uint32_t jl = 0;
+    if (gzip_inflate(junk, sizeof junk, back, sizeof back, &jl) == 0) return 50;
+    // must REJECT a stream with a corrupted CRC-32 trailer
+    uint32_t clen = 0, dlen = 0, m = 0;
+    const char* s = "abcabcabcabc";
+    while (in[m] = (uint8_t)s[m], s[m]) m++;
+    if (gzip_deflate(in, m, gz, sizeof gz, &clen) != 0) return 60;
+    gz[clen - 8] ^= 0xFF;                                             // flip a CRC-32 byte
+    if (gzip_inflate(gz, clen, back, sizeof back, &dlen) == 0) return 61;
     return 0;
 }

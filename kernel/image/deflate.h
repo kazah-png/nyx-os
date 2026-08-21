@@ -23,6 +23,12 @@ int zlib_deflate(const uint8_t* src, uint32_t srclen, uint8_t* dst, uint32_t dst
 int gzip_deflate(const uint8_t* src, uint32_t srclen, uint8_t* dst, uint32_t dstcap, uint32_t* outlen);
 int gzip_selftest(void);
 
+// gzip DECODE (RFC 1952): the complement of gzip_deflate — parse the header/optional fields,
+// inflate the DEFLATE body, verify the CRC-32 + ISIZE trailer. 0 on success (*outlen set); a
+// negative code on a malformed/non-gzip/corrupted stream (rejected, never mis-decoded).
+int gzip_inflate(const uint8_t* src, uint32_t srclen, uint8_t* dst, uint32_t dstcap, uint32_t* outlen);
+int gzip_inflate_selftest(void);
+
 // Known-answer self-test: compress several inputs and require each to inflate back byte-exact via
 // inflate.c (raw + zlib framing), plus that compressible inputs actually shrink. 0 = pass.
 int deflate_selftest(void);
