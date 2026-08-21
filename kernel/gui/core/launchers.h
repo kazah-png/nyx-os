@@ -20,6 +20,7 @@ void launch_voxel(void);                // open Nyx Voxels, the voxel-scene wind
 void launch_fire(void);                 // open Nyx Fire, the animated doom-fire window
 void launch_matrix(void);               // open Nyx Matrix, the green code-rain window
 void launch_lava(void);                 // open Nyx Lava, the animated plasma window
+void launch_nyxflex(void);              // open Nyx Flex, the 4-quadrant matrix+lava+terminal+DOOM showcase
 void launch_mandel(void);               // open Nyx Fractal, the Mandelbrot perf-demo window
 void launch_julia(void);                // open Nyx Julia, the Julia-set perf-demo window
 void launch_particles(void);            // open Nyx Particles, the particle-fountain perf-demo window

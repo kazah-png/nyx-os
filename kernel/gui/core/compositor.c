@@ -1948,6 +1948,55 @@ void launch_lava(void) {
     w->on_tick = lava_win_tick;
 }
 
+// Open "Nyx Flex" — a four-window showcase tiled across the screen quadrants: Nyx Matrix
+// (top-left), Nyx Lava (top-right), an Erebus terminal running nyxfetch (bottom-left),
+// and DOOM (bottom-right). The first three are passive animated tiles that open at once;
+// DOOM, like launch_doom_windowed, runs in the FOREGROUND and BLOCKS until the player
+// quits (Ctrl-C), so it is opened LAST, after the other three are already on screen. A
+// "show off the whole OS at a glance" command (user-requested).
+void launch_nyxflex(void) {
+    int sw = (int)fb_get_width(), sh = (int)fb_get_height();
+    int hw = sw / 2, hh = sh / 2;
+    // Centre a window of size (w, h)+title inside the quadrant whose top-left is (qx, qy).
+    #define NF_POS(qx, qy, w, h, ox, oy) do { \
+        (ox) = (qx) + (hw - (int)(w)) / 2;             if ((ox) < (qx)) (ox) = (qx); \
+        (oy) = (qy) + (hh - (int)(h) - TITLE_H) / 2;   if ((oy) < (qy)) (oy) = (qy); } while (0)
+    int mx, my, lx, ly, tx, ty;
+    // Q1 top-left — Nyx Matrix
+    NF_POS(0, 0, MATRIX_WIN_W, MATRIX_WIN_H, mx, my);
+    window_t* mw = window_create(mx, my, MATRIX_WIN_W, MATRIX_WIN_H, "Nyx Matrix", matrix_win_draw);
+    if (mw) { mw->reserved = matrix_create_ctx(); if (mw->reserved) mw->on_tick = matrix_win_tick; else window_destroy(mw->id); }
+    // Q2 top-right — Nyx Lava
+    NF_POS(hw, 0, LAVA_WIN_W, LAVA_WIN_H, lx, ly);
+    window_t* lw = window_create(lx, ly, LAVA_WIN_W, LAVA_WIN_H, "Nyx Lava", lava_win_draw);
+    if (lw) { lw->reserved = lava_create_ctx(); if (lw->reserved) lw->on_tick = lava_win_tick; else window_destroy(lw->id); }
+    // Q3 bottom-left — Erebus terminal, auto-running nyxfetch (fed to its key handler)
+    NF_POS(0, hh, 640, 400, tx, ty);
+    window_t* tw = window_create(tx, ty, 640, 400, "Terminal", terminal_win_draw);
+    if (tw) {
+        tw->reserved = terminal_create_ctx();
+        if (tw->reserved) {
+            tw->on_key = terminal_win_key;
+            for (const char* c = "nyxfetch\n"; *c; c++) terminal_win_key(tw, (unsigned char)*c);
+        } else window_destroy(tw->id);
+    }
+    // Q4 bottom-right — DOOM (foreground; blocks until quit, so it goes last)
+    if (doom_win_id < 0) {
+        const int DW = 640, DH = 400;
+        int dpx = hw + (hw - DW) / 2;             if (dpx < hw) dpx = hw;
+        int dpy = hh + (hh - DH - TITLE_H) / 2;   if (dpy < hh) dpy = hh;
+        window_t* dw = window_create(dpx, dpy, DW, DH, "DOOM  -  Ctrl-C to quit", doom_win_draw);
+        if (dw) {
+            doom_win_id = dw->id;
+            for (int i = 0; i < 320 * 200; i++) doom_frame[i] = 0;
+            gui_launch_elf("/doom.elf");           // foreground: pump repaints all four windows
+            doom_win_id = -1;
+            window_destroy(dw->id);
+        }
+    }
+    #undef NF_POS
+}
+
 // Open the Nyx Fractal window — a fixed-point Mandelbrot renderer that auto-zooms,
 // a P4 rendering-performance-testing demo with a live benchmark HUD (frame-time /
 // render FPS / iteration cap / zoom), sibling to the /fire //matrix //lava effects.

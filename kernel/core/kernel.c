@@ -235,6 +235,7 @@ static void cmd_voxel(int argc, char** argv);
 static void cmd_fire(int argc, char** argv);
 static void cmd_matrix(int argc, char** argv);
 static void cmd_lava(int argc, char** argv);
+static void cmd_nyxflex(int argc, char** argv);
 static void cmd_fractal(int argc, char** argv);
 static void cmd_julia(int argc, char** argv);
 static void cmd_particles(int argc, char** argv);
@@ -443,6 +444,7 @@ static const command_t commands[] = {
     {"fire",      cmd_fire,      "Open Nyx Fire (animated doom-fire effect)", false},
     {"matrix",    cmd_matrix,    "Open Nyx Matrix (green code-rain effect)", false},
     {"lava",      cmd_lava,      "Open Nyx Lava (animated plasma effect)", false},
+    {"nyxflex",   cmd_nyxflex,   "Showcase: tile matrix + lava + terminal(nyxfetch) + DOOM", false},
     {"fractal",   cmd_fractal,   "Open Nyx Fractal (Mandelbrot render-perf demo)", false},
     {"julia",     cmd_julia,     "Open Nyx Julia (morphing Julia-set render-perf demo)", false},
     {"particles", cmd_particles, "Open Nyx Particles (particle-fountain render-perf demo)", false},
@@ -737,7 +739,7 @@ static const char* const HC_user[]  = {"useradd","users",0};
 static const char* const HC_net[]   = {"ifconfig","route","arp","netstat","dhcp","dns","ping","setip","httpget","httpd","tls","ipcalc",0};
 static const char* const HC_dev[]   = {"cc","xbm","semver","fnv","urlcode","crc32c","fletcher","murmur","base58","bech32","deflate","gzip","gunzip","zcat","calc","expr","json","hmac","totp",0};
 static const char* const HC_media[] = {"play","sb16play","imageview","selene",0};
-static const char* const HC_games[] = {"doom","pong","voxel","fire","matrix","lava","fractal","julia","particles","snake","tetris",0};
+static const char* const HC_games[] = {"doom","pong","voxel","fire","matrix","lava","nyxflex","fractal","julia","particles","snake","tetris",0};
 static const char* const HC_test[]  = {"mtdemo","smpstress","smpuser","smpthreads","smpbalance","tlbtest","cowtest","crash","usertest","tcptest","tcpdrop","tcploop","tcpserve","posttest","tlsstrict","prftest","gcmtest","dertest","p256test","p384test","x25519test","tlskeytest","tlsrectest","csprngtest","skp384test","deflatetest","sha512test","pngtest","bmptest","giftest","jpegtest","imgreject","httptest","ext2test","rsatest","chaintest","formtest",0};
 static const help_cat_t help_cats[] = {
     {"Shell & help",              HC_shell},
@@ -940,6 +942,7 @@ static const man_page_t man_pages[] = {
     {"tetris",   "Play Tetris: the arrow keys move and rotate the falling piece, Space hard-drops it, and completing a full row clears it. Speed rises as you go."},
     {"pong",     "Play Pong: steer your paddle with the mouse or the arrow keys and rally the ball past the opponent."},
     {"lava",     "Open `Nyx Lava`, an animated plasma / lava-lamp window — four phase-shifted integer sine waves cycled through a heat palette (all fixed-point, no floats). Eye-candy that also stresses the framebuffer fill as a small render benchmark."},
+    {"nyxflex",  "Show off the whole desktop at a glance: `nyxflex` tiles FOUR windows across the screen quadrants — Nyx Matrix (top-left), Nyx Lava (top-right), an Erebus terminal auto-running `nyxfetch` (bottom-left), and DOOM (bottom-right). The first three open at once as passive animated tiles; DOOM opens last and runs in the foreground, so `nyxflex` stays in DOOM until you quit it with Ctrl-C (the other three keep their place). Needs the DOOM WAD present (as `doom` does)."},
     {"matrix",   "Open `Nyx Matrix`, a cmatrix-style green code-rain window: per-column falling glyph streams with a bright head and a fading tail. Eye-candy and a light framebuffer stress demo."},
     {"play",     "Play a short built-in demo melody through the sound device, a quick way to confirm audio output is working."},
     {"sb16play", "Test Sound Blaster 16 playback: `sb16play [freq] [ms]` emits a tone at [freq] Hz for [ms] milliseconds through the SB16 DMA path (defaults if omitted), verifying the audio driver end to end."},
@@ -4851,6 +4854,12 @@ static void cmd_matrix(int argc, char** argv) {
 static void cmd_lava(int argc, char** argv) {
     (void)argc; (void)argv;
     launch_lava();
+}
+
+// `nyxflex` — open the 4-quadrant showcase (matrix + lava + terminal/nyxfetch + DOOM).
+static void cmd_nyxflex(int argc, char** argv) {
+    (void)argc; (void)argv;
+    launch_nyxflex();
 }
 
 // `fractal` — open the Nyx Fractal window (Mandelbrot render-perf demo, compositor.c).
