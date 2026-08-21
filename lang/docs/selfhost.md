@@ -56,9 +56,9 @@ kernel `open`/`read` from N — wiring the two together makes the first
 | Statements, `if`/`while`, functions, recursion | ✓ | ✓ |
 | `else` | ✓ — rung 2 landed | ✓ |
 | **An AST** | ✓ expressions AND statements — whole bodies parse to a tree, then check → fold → emit run as passes (only fn headers + the fndef hop-over emit direct) | ✓ — parse → check → gen |
-| Types (everything is `i64` in the toy) | ✗ | full checker |
+| Types (everything is `i64` in the toy) | ✓ a real TYPE COLUMN — int/str inferred bottom-up on the tree, per-name types fixed for life, int-only ops refuse strings with located errors | full checker |
 | structs / enums / match / defer / own / caps | ✗ | ✓ |
-| `str` values and string literals as data | partial — literal-only strings + `print` (a side table like the interned names; values wait on the type column) | ✓ |
+| `str` values and string literals as data | ✓ at toy scale — strings bind, load, and print (a string IS its table index at run time; the type column keeps the kinds apart) | ✓ |
 | Error diagnostics (`line N: message`) | ✓ expect points (rung 2) + a semantic pass: unknown variable, call arity | ✓ everywhere |
 
 The structural gap *was* the AST row. On-the-fly emission works because
@@ -166,10 +166,24 @@ opcode with a table index, `print expr;` to the expression plus PRINT
 emits `PUSH 42`. The staging is deliberate: a string is legal ONLY
 directly after `print`, because the moment strings flow as values —
 into bindings, comparisons, calls — the node arrays need a **type
-column** to keep the kinds apart. That column is now the next rung,
-and it finally has its reason to exist. After it: the subset grows
-until the toy parses the examples directory — at which point it
-stops being a toy.
+column** to keep the kinds apart.
+
+And the column landed: `nt` types every expression node (0 int,
+1 str), inferred bottom-up by the same check walk that owns scope — a
+load carries the type its name was bound with (a per-symbol table in
+the checker's `Scope` bundle), and **a name's type is fixed for its
+lifetime**, because the flat runtime table genuinely cannot tell an
+integer from a string index — `x := 1; if c { x := "s"; } print x;`
+would otherwise leave x's kind up to which way `c` ran. Strings now
+bind, load, and print (`print` is ONE form; the operand's inferred
+type picks PRINT or PRINTS at emit — same syntax, different code,
+decided by the checker), while arithmetic, comparisons, conditions,
+call arguments and body values stay int-only, each refusal located
+("cannot use a string in arithmetic or comparison", "a name cannot
+change type", "a condition must be an integer"). From here: string
+equality and concatenation as typed operators, or the subset simply
+grows until the toy parses the examples directory — at which point
+it stops being a toy.
 
 ## Definition of done for M5
 

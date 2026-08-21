@@ -12,7 +12,7 @@
 //     stmt    := name ':=' cmp ';'
 //              | 'if' cmp block [ 'else' block ]
 //              | 'while' cmp block
-//              | 'print' ( string | cmp ) ';'
+//              | 'print' cmp ';'      (strings are factors now)
 //
 //   THE WHOLE PROGRAM IS A TREE NOW. The old parser emitted code while
 //   it descended — postfix fell out of parse order, which works
@@ -33,7 +33,8 @@
 //               6 = if (nl = cond, nr = then chain, na[0] = else or -1)
 //               7 = while (nl = cond, nr = body chain)
 //               8 = seq (nl = statement, nr = next link or -1)
-//               9 = print value (nl = expr)   10 = print literal (nv)
+//               9 = print (nl = expr; the operand's TYPE picks the
+//                   opcode)                10 = string literal (nv)
 //   A separate walker, emit_node, then emits by postorder recursion —
 //   children first, the node's own operation last. Postfix is no
 //   longer a lucky consequence of parse order; it is a property of the
@@ -121,24 +122,31 @@
 //   6 MOD · 7 NEG · 8 LT · 9 GT · 10 EQ · 11 LOAD slot · 12 STORE slot
 //   · 13 JZ target · 14 JMP target · 15 CALL target (pushes the return
 //   address) · 16 RET (returns the top value) · 17 SWAP · 18 PRINT
-//   (pop, write the number + newline) · 19 PRINTS index (write a
-//   string-table entry + newline).
+//   (pop, write the number + newline) · 19 PRINTS (pop a string-table
+//   index, write that entry + newline).
 //
-//   STRINGS AND PRINT — the toy's second value kind, staged honestly.
-//   A double-quoted literal lexes into a side STRING TABLE (sb bytes +
-//   sts/stl spans, the interned-names pattern again; no escapes yet —
-//   the scan just runs to the next quote). `print` is a statement:
-//   `print "text";` compiles to PRINTS with a table index, and
-//   `print expr;` compiles to the expression followed by PRINT — the
-//   operand checks and FOLDS like any expression (print 6 * 7 emits
-//   PUSH 42). A string is legal ONLY directly after print: anywhere
-//   else it falls into "expected an expression", because the moment
-//   strings flow as VALUES — into bindings, comparisons, calls — the
-//   node arrays need a TYPE COLUMN to keep the kinds apart. That is
-//   the next rung, and this one exists to give it a reason.
-//   The VM carries the string table alongside the code: PRINTS looks
-//   the span up and writes the bytes through the same audited
-//   boundary every other output uses.
+//   THE TYPE COLUMN. Strings are real VALUES now, and the check pass
+//   is what makes that safe. A double-quoted literal lexes into a
+//   side STRING TABLE (sb bytes + sts/stl spans, the interned-names
+//   pattern; no escapes yet — the scan runs to the next quote) and at
+//   run time a string IS its table index: a strlit node lowers to a
+//   plain PUSH, so strings ride the same stack, the same vars table,
+//   the same STORE/LOAD as every integer. The machine cannot tell
+//   them apart — which is precisely why the checker must. check_node
+//   now ANNOTATES the tree: every expression node gets a type in nt
+//   (0 int, 1 str), computed bottom-up; a per-symbol table (vt) gives
+//   loads the type their name was bound with, and a name's type is
+//   FIXED for its lifetime ("a name cannot change type" — otherwise
+//   `x := 1; if c \{ x := "s"; \} print x;` would leave x's kind
+//   depending on which way c went at run time). Int-only, refused
+//   with located errors: arithmetic and comparisons, conditions, call
+//   arguments and returns, and a body's tail value. Strings may be
+//   bound, loaded, and printed. `print expr;` is ONE form — the
+//   operand's inferred type picks PRINT or PRINTS at emit, which is
+//   the type column doing real work: same syntax, different code,
+//   decided by the checker. The VM carries the string table alongside
+//   the code; PRINTS pops the index and writes the bytes through the
+//   same audited boundary every other output uses.
 
 #[caps(syscall)]
 extern syscall {
@@ -320,12 +328,20 @@ fn fail(line: i64, msg: str) -> never {
 // number, a slot, an opcode, or a function symbol), na = the flat
 // argument table (four root indexes per call node, na[idx*4 + j]),
 // nline = the node's source line, so the check pass can locate blame.
-struct Ast { nk: *i64, nl: *i64, nr: *i64, nv: *i64, na: *i64, nline: *i64 }
+struct Ast { nk: *i64, nl: *i64, nr: *i64, nv: *i64, na: *i64, nline: *i64,
+             nt: *i64 }
 
 // The string table, one by-value bundle: literal bytes + per-entry
 // start/len spans. (Bundling matters practically too: N caps functions
 // at 16 parameters, and the toy's plumbing was at the door.)
 struct Strs { sb: *u8, sts: *i64, stl: *i64 }
+
+// The checker's environment: the bound-name list (which symbols are
+// live, bv + a threaded count) and the per-symbol type table (vt —
+// what kind of value each name holds, 0 int / 1 str). The flat
+// runtime table cannot tell an integer from a string index; the
+// checker can, and this is where it keeps the knowledge.
+struct Scope { bv: *i64, vt: *i64 }
 
 // The outer skeleton's cursors: pos walks tokens, cp walks code. The
 // bound-name count no longer threads through parsing — scope lives in
@@ -359,6 +375,12 @@ fn ast_factor(k: *i64, v: *i64, ln: *i64, fpc: *i64, a: Ast, pos: i64, nn: i64) 
     if k[pos] == 0 {                       // number
         a.nk[nn] = 0; a.nl[nn] = 0; a.nr[nn] = 0; a.nv[nn] = v[pos];
         a.nline[nn] = ln[pos];
+        return NP{ pos: pos + 1, nn: nn + 1, root: nn };
+    }
+    if k[pos] == 10 {                      // string literal: a value now —
+        a.nk[nn] = 10; a.nl[nn] = -1;      // its table index, PUSHed like
+        a.nr[nn] = -1; a.nv[nn] = v[pos];  // any number; the type column
+        a.nline[nn] = ln[pos];             // keeps the kinds apart
         return NP{ pos: pos + 1, nn: nn + 1, root: nn };
     }
     if k[pos] == 1 && k[pos + 1] == 2 && v[pos + 1] == 40 {
@@ -481,38 +503,60 @@ fn ast_cmp(k: *i64, v: *i64, ln: *i64, fpc: *i64, a: Ast, pos: i64, nn: i64) -> 
 // THE CHECK PASS — the first consumer of the tree that is not the
 // emitter, and the reason the tree exists: it looks at a whole
 // expression while NO code for it has been generated yet, and emits
-// nothing itself. One rule so far: every load must name a BOUND
-// variable — one of the enclosing function's parameters, or a name a
-// `:=` statement already bound in this scope (bv holds their symbol
-// indexes, bc many of them are live). Anything else is refused with
-// the node's recorded source line. More rules land on this same walk
-// as the toy grows (types, arity was the parser's, folding is next
-// door) — which is exactly how ncc's check_expr accreted.
-fn check_node(a: Ast, bv: *i64, bc: i64, idx: i64) {
-    if a.nk[idx] == 1 {                    // load: the symbol must be bound
+// nothing itself. Two duties now. SCOPE: every load must name a BOUND
+// variable — a parameter of the enclosing function, or a name a `:=`
+// statement already bound in this scope (env.bv holds their symbol
+// indexes, bc many of them are live). TYPES: the walk ANNOTATES the
+// tree bottom-up — every node's kind of value lands in nt (0 int,
+// 1 str): numbers and calls are int, literals are str, a load carries
+// the type its name was bound with (env.vt), and the int-only
+// operations refuse strings with located errors. The predicted shape
+// held: rules accrete on this one walk — which is exactly how ncc's
+// check_expr grew.
+fn check_node(a: Ast, env: Scope, bc: i64, idx: i64) {
+    if a.nk[idx] == 0 {                    // number: int, by construction
+        a.nt[idx] = 0;
+    }
+    if a.nk[idx] == 10 {                   // string literal: str
+        a.nt[idx] = 1;
+    }
+    if a.nk[idx] == 1 {                    // load: bound, and typed as bound
         mut ok := false;
         mut i := 0;
         while i < bc {
-            if bv[i] == a.nv[idx] { ok = true; }
+            if env.bv[i] == a.nv[idx] { ok = true; }
             i += 1;
         }
         if !ok {
             fail(a.nline[idx], "unknown variable");
         }
+        a.nt[idx] = env.vt[a.nv[idx]];
     }
-    if a.nk[idx] == 2 {                    // binop: both children
-        check_node(a, bv, bc, a.nl[idx]);
-        check_node(a, bv, bc, a.nr[idx]);
+    if a.nk[idx] == 2 {                    // binop: both children, both int
+        check_node(a, env, bc, a.nl[idx]);
+        check_node(a, env, bc, a.nr[idx]);
+        if a.nt[a.nl[idx]] == 1 || a.nt[a.nr[idx]] == 1 {
+            fail(a.nline[idx], "cannot use a string in arithmetic or comparison");
+        }
+        a.nt[idx] = 0;
     }
-    if a.nk[idx] == 3 {                    // unary minus: its operand
-        check_node(a, bv, bc, a.nl[idx]);
+    if a.nk[idx] == 3 {                    // unary minus: an int operand
+        check_node(a, env, bc, a.nl[idx]);
+        if a.nt[a.nl[idx]] == 1 {
+            fail(a.nline[idx], "cannot negate a string");
+        }
+        a.nt[idx] = 0;
     }
-    if a.nk[idx] == 4 {                    // call: every argument tree
+    if a.nk[idx] == 4 {                    // call: int arguments, int result
         mut q := 0;
         while q < a.nl[idx] {
-            check_node(a, bv, bc, a.na[idx * 4 + q]);
+            check_node(a, env, bc, a.na[idx * 4 + q]);
+            if a.nt[a.na[idx * 4 + q]] == 1 {
+                fail(a.nline[idx], "cannot pass a string to a function");
+            }
             q += 1;
         }
+        a.nt[idx] = 0;
     }
 }
 
@@ -580,6 +624,9 @@ fn emit_node(a: Ast, fe: *i64, fp: *i64, code: *i64, cp: i64, idx: i64) -> i64 {
     }
     if a.nk[idx] == 1 {                    // name read: LOAD its slot
         return emit2(code, cp, 11, a.nv[idx]);
+    }
+    if a.nk[idx] == 10 {                   // string literal: at run time a
+        return emit2(code, cp, 1, a.nv[idx]);   // string IS its table index
     }
     if a.nk[idx] == 2 {                    // binop: lhs, rhs, then the opcode
         c := emit_node(a, fe, fp, code, cp, a.nl[idx]);
@@ -652,13 +699,9 @@ fn ast_stmt(k: *i64, v: *i64, ln: *i64, fpc: *i64, a: Ast, pos: i64, nn: i64) ->
         a.nk[idx] = 7; a.nl[idx] = c.root; a.nr[idx] = b.root; a.nv[idx] = 0;
         return NP{ pos: b.pos, nn: b.nn, root: idx };
     }
-    if k[pos] == 11 {                      // print string ; | print cmp ;
-        idx := nn;
-        a.nline[idx] = ln[pos];
-        if k[pos + 1] == 10 && k[pos + 2] == 2 && v[pos + 2] == 59 {
-            a.nk[idx] = 10; a.nl[idx] = -1; a.nr[idx] = -1; a.nv[idx] = v[pos + 1];
-            return NP{ pos: pos + 3, nn: nn + 1, root: idx };
-        }
+    if k[pos] == 11 {                      // print cmp ; — ONE form: the
+        idx := nn;                         // operand's TYPE picks the
+        a.nline[idx] = ln[pos];            // opcode at emit
         r := ast_cmp(k, v, ln, fpc, a, pos + 1, nn + 1);
         if !(k[r.pos] == 2 && v[r.pos] == 59) {
             fail(ln[r.pos], "expected ';' after print");
@@ -716,34 +759,48 @@ fn ast_block(k: *i64, v: *i64, ln: *i64, fpc: *i64, a: Ast, pos: i64, nn: i64) -
 // AFTER its right-hand side checks (`x := x + 1` cannot self-feed);
 // if arms and while bodies check with the count they were given and
 // this fn hands back the ORIGINAL — branch names die with the branch.
-fn check_stmt(a: Ast, bv: *i64, bc: i64, idx: i64) -> i64 {
+fn check_stmt(a: Ast, env: Scope, bc: i64, idx: i64) -> i64 {
     if idx < 0 {                           // an empty chain binds nothing
         return bc;
     }
     if a.nk[idx] == 8 {                    // seq: this statement, then the rest
-        b := check_stmt(a, bv, bc, a.nl[idx]);
-        return check_stmt(a, bv, b, a.nr[idx]);
+        b := check_stmt(a, env, bc, a.nl[idx]);
+        return check_stmt(a, env, b, a.nr[idx]);
     }
-    if a.nk[idx] == 5 {                    // bind: rhs first, THEN the name
-        check_node(a, bv, bc, a.nl[idx]);
-        bv[bc] = a.nv[idx];
+    if a.nk[idx] == 5 {                    // bind: rhs first, THEN the name.
+        check_node(a, env, bc, a.nl[idx]);
+        slot := a.nv[idx];                 // A name's type is FIXED for its
+        mut seen := false;                 // lifetime: rebinding must keep
+        mut i := 0;                        // it, or the flat runtime table
+        while i < bc {                     // could hold either kind at once
+            if env.bv[i] == slot { seen = true; }
+            i += 1;
+        }
+        if seen && env.vt[slot] != a.nt[a.nl[idx]] {
+            fail(a.nline[idx], "a name cannot change type");
+        }
+        env.vt[slot] = a.nt[a.nl[idx]];
+        env.bv[bc] = slot;
         return bc + 1;
     }
-    if a.nk[idx] == 6 {                    // if: both arms, both restored
-        check_node(a, bv, bc, a.nl[idx]);
-        check_stmt(a, bv, bc, a.nr[idx]);
-        check_stmt(a, bv, bc, a.na[idx * 4]);
+    if a.nk[idx] == 6 {                    // if: an int condition; both arms
+        check_node(a, env, bc, a.nl[idx]);
+        if a.nt[a.nl[idx]] == 1 {
+            fail(a.nline[idx], "a condition must be an integer");
+        }
+        check_stmt(a, env, bc, a.nr[idx]);
+        check_stmt(a, env, bc, a.na[idx * 4]);
         return bc;
     }
-    if a.nk[idx] == 9 {                    // print expr: reads like any other
-        check_node(a, bv, bc, a.nl[idx]);
-        return bc;
+    if a.nk[idx] == 9 {                    // print: either type is welcome —
+        check_node(a, env, bc, a.nl[idx]); // the operand's nt picks the
+        return bc;                         // opcode at emit
     }
-    if a.nk[idx] == 10 {                   // print literal: nothing to bind
-        return bc;
+    check_node(a, env, bc, a.nl[idx]);     // while: int cond + body, restored
+    if a.nt[a.nl[idx]] == 1 {
+        fail(a.nline[idx], "a condition must be an integer");
     }
-    check_node(a, bv, bc, a.nl[idx]);      // while: cond + body, restored
-    check_stmt(a, bv, bc, a.nr[idx]);
+    check_stmt(a, env, bc, a.nr[idx]);
     bc
 }
 
@@ -809,12 +866,12 @@ fn emit_stmt(a: Ast, fe: *i64, fp: *i64, code: *i64, cp: i64, idx: i64) -> i64 {
         c := emit_node(a, fe, fp, code, cp, a.nl[idx]);
         return emit2(code, c, 12, a.nv[idx]);
     }
-    if a.nk[idx] == 9 {                    // print: value, then PRINT
+    if a.nk[idx] == 9 {                    // print: the operand's TYPE picks
         c := emit_node(a, fe, fp, code, cp, a.nl[idx]);
+        if a.nt[a.nl[idx]] == 1 {          // the opcode — the type column
+            return emit1(code, c, 19);     // doing real work
+        }
         return emit1(code, c, 18);
-    }
-    if a.nk[idx] == 10 {                   // print literal: PRINTS its index
-        return emit2(code, cp, 19, a.nv[idx]);
     }
     if a.nk[idx] == 6 {                    // if / else
         c := emit_node(a, fe, fp, code, cp, a.nl[idx]);
@@ -846,7 +903,7 @@ fn emit_stmt(a: Ast, fe: *i64, fp: *i64, code: *i64, cp: i64, idx: i64) -> i64 {
 // with nseed already-bound names sitting in bv), fold, emit. This is
 // the compiler's whole shape in eight lines — ncc's parse → check →
 // gen, at toy scale, shared by function bodies and the main program.
-fn gen_body(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, a: Ast, bv: *i64, nseed: i64, pos: i64, code: *i64, cp: i64) -> EP {
+fn gen_body(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, a: Ast, env: Scope, nseed: i64, pos: i64, code: *i64, cp: i64) -> EP {
     mut p := pos;
     mut n2 := 0;
     mut head := -1;
@@ -867,8 +924,11 @@ fn gen_body(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, a: Ast, b
         }
     }
     t := ast_cmp(k, v, ln, fpc, a, p, n2); // the tail is the body's value
-    b := check_stmt(a, bv, nseed, head);   // pass 1: check
-    check_node(a, bv, b, t.root);
+    b := check_stmt(a, env, nseed, head);  // pass 1: check
+    check_node(a, env, b, t.root);
+    if a.nt[t.root] == 1 {                 // values and returns stay int —
+        fail(a.nline[t.root], "a body's value must be an integer");
+    }
     fold_stmt(a, head);                    // pass 2: fold
     fold_node(a, t.root);
     c := emit_stmt(a, fe, fp, code, cp, head);   // pass 3: emit
@@ -886,7 +946,7 @@ fn gen_body(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, a: Ast, b
 //   must be bound by its own statements. The flat runtime table would
 //   let a body read main's names, but that is caller-save's private
 //   business — the checker enforces the lexical story.
-fn parse_fndef(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, a: Ast, bv: *i64, pos: i64, code: *i64, cp: i64) -> EP {
+fn parse_fndef(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, a: Ast, env: Scope, pos: i64, code: *i64, cp: i64) -> EP {
     f := v[pos + 1];
     fe[f] = cp;
     mut p := pos + 3;                      // fn +0, name +1, '(' +2, params...
@@ -896,7 +956,8 @@ fn parse_fndef(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, a: Ast
         going = false;
         if k[p] == 1 {
             fp[f * 4 + j] = v[p];
-            bv[j] = v[p];                  // a parameter is born bound
+            env.bv[j] = v[p];              // a parameter is born bound,
+            env.vt[v[p]] = 0;              // and it is an integer
             j += 1;
             p += 1;
             if k[p] == 2 && v[p] == 44 {   // ',' — another parameter follows
@@ -906,7 +967,7 @@ fn parse_fndef(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, a: Ast
         }
     }
     fpc[f] = j;
-    t := gen_body(k, v, ln, fe, fp, fpc, a, bv, j, p + 2, code, cp);
+    t := gen_body(k, v, ln, fe, fp, fpc, a, env, j, p + 2, code, cp);
     EP{ pos: t.pos + 1, cp: emit1(code, t.cp, 16) }   // skip '}', RET
 }
 
@@ -914,7 +975,7 @@ fn parse_fndef(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, a: Ast
 //   If any functions exist, a JMP with a placeholder target is emitted
 //   first and patched to hop over their bodies — execution starts at
 //   the main statements, functions are entered only by CALL.
-fn parse_program(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, a: Ast, bv: *i64, pos: i64, code: *i64, cp: i64) -> EP {
+fn parse_program(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, a: Ast, env: Scope, pos: i64, code: *i64, cp: i64) -> EP {
     mut p := pos;
     mut c := cp;
     if k[p] == 7 {
@@ -924,7 +985,7 @@ fn parse_program(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, a: A
         while fns {
             fns = false;
             if k[p] == 7 {
-                r := parse_fndef(k, v, ln, fe, fp, fpc, a, bv, p, code, c);
+                r := parse_fndef(k, v, ln, fe, fp, fpc, a, env, p, code, c);
                 p = r.pos;
                 c = r.cp;
                 fns = true;
@@ -932,7 +993,7 @@ fn parse_program(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, a: A
         }
         code[hole] = c;                    // main statements start here
     }
-    t := gen_body(k, v, ln, fe, fp, fpc, a, bv, 0, p, code, c);
+    t := gen_body(k, v, ln, fe, fp, fpc, a, env, 0, p, code, c);
     if k[t.pos] != 9 {                     // main's scope starts empty
         fail(ln[t.pos], "unexpected input after the tail expression");
     }
@@ -999,11 +1060,12 @@ fn run(prog: *i64, stk: *i64, vars: *i64, st: Strs) -> i64 {
             put("{x}\n");
             pc += 1;
         }
-        if op == 19 {                      // PRINTS: a string-table entry
-            s := prog[pc + 1];
+        if op == 19 {                      // PRINTS: pop a table index and
+            sp -= 1;                       // write that entry — strings are
+            s := stk[sp];                  // stack values like any other
             bput(st.sb, st.sts[s], st.stl[s]);
             put("\n");
-            pc += 2;
+            pc += 1;
         }
     }
     stk[0]
@@ -1011,10 +1073,10 @@ fn run(prog: *i64, stk: *i64, vars: *i64, st: Strs) -> i64 {
 
 // The whole pipeline in one call: tokens in, code out, value from the VM.
 fn show(src: str, k: *i64, v: *i64, ln: *i64, code: *i64, stk: *i64, vars: *i64,
-        fe: *i64, fp: *i64, fpc: *i64, a: Ast, bv: *i64, nb: *u8, ss: *i64, sl: *i64,
+        fe: *i64, fp: *i64, fpc: *i64, a: Ast, env: Scope, nb: *u8, ss: *i64, sl: *i64,
         st: Strs) {
     lex(src, k, v, ln, nb, ss, sl, st);
-    r := parse_program(k, v, ln, fe, fp, fpc, a, bv, 0, code, 0);
+    r := parse_program(k, v, ln, fe, fp, fpc, a, env, 0, code, 0);
     words := emit1(code, r.cp, 0);         // HALT closes the program
     put("{src}\n");                        // echo first: a program's prints
     val := run(code, stk, vars, st);       // land under its source
@@ -1036,42 +1098,46 @@ fn main() -> i64 {
     ln := alloc_words(96);                 // per-token source lines (rung 2)
     ast := Ast{ nk: alloc_words(96), nl: alloc_words(96), nr: alloc_words(96),
                 nv: alloc_words(96), na: alloc_words(384),
-                nline: alloc_words(96) };  // trees are per-BODY now: roomier
-    bv := alloc_words(64);                 // the bound-name list
+                nline: alloc_words(96),
+                nt: alloc_words(96) };     // the TYPE COLUMN (0 int, 1 str)
+    env := Scope{ bv: alloc_words(64), vt: alloc_words(64) };
     st := Strs{ sb: alloc_bytes(256),      // the string table: bytes + spans
                 sts: alloc_words(32), stl: alloc_words(32) };
-    put("strings and print in the toy - lex -> parse -> check -> fold -> emit -> run:\n");
+    put("a type column over the toy - lex -> parse -> check -> fold -> emit -> run:\n");
     // Braces are escaped so they read as text, not interpolation (§2.5).
     show("fn max(a, b) \{ m := 0; if a > b \{ m := a; \} else \{ m := b; \} m \} max(3, 9) + max(7, 2)",
-         k, v, ln, code, stk, vars, fe, fp, fpc, ast, bv, nb, ss, sl, st);
+         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, nb, ss, sl, st);
     show("fn gcd(a, b) \{ r := a; if b > 0 \{ r := gcd(b, a % b); \} r \} gcd(48, 18)",
-         k, v, ln, code, stk, vars, fe, fp, fpc, ast, bv, nb, ss, sl, st);
+         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, nb, ss, sl, st);
     show("fn fact(n) \{ r := 1; if n > 1 \{ r := n * fact(n - 1); \} r \} fact(5)",
-         k, v, ln, code, stk, vars, fe, fp, fpc, ast, bv, nb, ss, sl, st);
+         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, nb, ss, sl, st);
     // Folding, visible: unfolded this program emits 19 code words; the
     // fold pass collapses 2*3+4 to 10 and 10-8 to 2 at compile time and
     // 10 words remain. (The flagship demos above fold nothing — their
     // constants sit alone as call arguments — so their counts held.)
     show("d := 2 * 3 + 4; d * (10 - 8)",
-         k, v, ln, code, stk, vars, fe, fp, fpc, ast, bv, nb, ss, sl, st);
+         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, nb, ss, sl, st);
     // Dead-arm elimination, visible: the condition folds to 0, the if
     // dissolves, and 7 words remain of an unfolded 18. The dead arm was
     // still checked first — dead code must be legal code.
     show("if 1 > 2 \{ x := 999; \} y := 5; y",
-         k, v, ln, code, stk, vars, fe, fp, fpc, ast, bv, nb, ss, sl, st);
-    // The toy speaks: a string literal through PRINTS, a computed (and
-    // folded — PUSH 42) number through PRINT. Its prints land between
-    // the source echo and the result line.
-    show("print \"hello from the toy\"; print 6 * 7; 0",
-         k, v, ln, code, stk, vars, fe, fp, fpc, ast, bv, nb, ss, sl, st);
+         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, nb, ss, sl, st);
+    // The toy speaks, and strings are VALUES: one is bound to a name,
+    // loaded back, and printed — same stack, same vars table, same
+    // LOAD as any integer, with the type column picking PRINTS. The
+    // computed (and folded — PUSH 42) number takes PRINT instead:
+    // one syntax, two opcodes, decided by the checker.
+    show("greet := \"hello from the toy\"; print greet; print 6 * 7; 0",
+         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, nb, ss, sl, st);
     // The broken program runs LAST (fail() ends the process — one failing
-    // demo per run). It PARSES cleanly; what is wrong with it is semantic:
-    // b is bound only inside the if arm, so the tail's read of b is
-    // refused by the CHECK pass — a bug no parser could see. (The parse
-    // diagnostics from rung 2 still guard their expect points; their demo
-    // rotated out for the checker's, both end through the same fail().)
+    // demo per run). It PARSES cleanly; what is wrong is a TYPE: a string
+    // fed to +. The check pass refuses it with the operator's line — a
+    // bug the machine could never catch (an index adds like any number).
+    // Earlier failing demos rotate through this slot as new checks land;
+    // the unknown-variable and expect-point refusals still stand guard,
+    // all ending through the same fail().
     put("and a deliberately broken program:\n");
-    show("a := 1;\nif a > 0 \{ b := a; \} b",
-         k, v, ln, code, stk, vars, fe, fp, fpc, ast, bv, nb, ss, sl, st);
+    show("x := 1;\nprint x + \"oops\";\nx",
+         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, nb, ss, sl, st);
     0
 }
