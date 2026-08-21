@@ -134,6 +134,7 @@ static void cmd_mv(int argc, char** argv);
 static void cmd_useradd(int argc, char** argv);
 static void cmd_users(int argc, char** argv);
 static void cmd_ifconfig(int argc, char** argv);
+static void cmd_route(int argc, char** argv);
 static void cmd_arp(int argc, char** argv);
 static void cmd_netstat(int argc, char** argv);
 static void cmd_ping(int argc, char** argv);
@@ -337,6 +338,7 @@ static const command_t commands[] = {
     {"useradd",   cmd_useradd,   "Add a user account: useradd <user> <pass>", false},
     {"users",     cmd_users,     "List user accounts", false},
     {"ifconfig",  cmd_ifconfig,  "Show network interfaces", false},
+    {"route",     cmd_route,     "Show the IPv4 routing table (like route -n)", false},
     {"arp",       cmd_arp,       "Show the ARP cache (IPv4 -> MAC neighbours)", false},
     {"netstat",   cmd_netstat,   "Show the TCP connection table", false},
     {"dns",       cmd_dns,       "DNS resolve: dns <hostname>", false},
@@ -689,7 +691,7 @@ static const char* const HC_files[] = {"ls","cd","pwd","cat","file","tar","inige
 static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","sed","patch","fold","fmt","nl","expand","unexpand","factor","isprime","strings","sha256sum","seq","paste","clip","cut","uniq","join","comm","printf","wc","write","hexdump",0};
 static const char* const HC_sys[]   = {"ps","time","kill","pgrep","pkill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat","screenshot","stackcheck",0};
 static const char* const HC_user[]  = {"useradd","users",0};
-static const char* const HC_net[]   = {"ifconfig","arp","netstat","dhcp","dns","ping","setip","httpget","httpd","tls","ipcalc",0};
+static const char* const HC_net[]   = {"ifconfig","route","arp","netstat","dhcp","dns","ping","setip","httpget","httpd","tls","ipcalc",0};
 static const char* const HC_dev[]   = {"cc","xbm","semver","fnv","urlcode","crc32c","fletcher","murmur","base58","bech32","deflate","gzip","gunzip","zcat","calc","expr","json","hmac","totp",0};
 static const char* const HC_media[] = {"play","sb16play","imageview","selene",0};
 static const char* const HC_games[] = {"doom","pong","voxel","fire","matrix","lava","fractal","julia","particles","snake","tetris",0};
@@ -867,6 +869,7 @@ static const man_page_t man_pages[] = {
     {"cpus",     "List the logical CPU cores the kernel started (SMP), with each core's id and state."},
     {"hexdump",  "Print a side-by-side hex and ASCII dump of memory, starting at <addr> for [bytes] bytes (256 by default)."},
     {"ifconfig", "Show each network interface with its IPv4 address, netmask and gateway. Configure one with dhcp or setip."},
+    {"route",    "Show the kernel IPv4 routing table, like `route -n` / `netstat -r`: for every configured interface a default route (Destination 0.0.0.0 via the Gateway, Flags UG) and its directly-connected network (Destination = ip AND netmask, Genmask = netmask, Flags U), with the Iface name. Read-only, derived from the address/netmask/gateway each interface learned via dhcp or setip — so it shows where traffic for a given destination would be sent."},
     {"arp",      "Show the ARP cache: the IPv4 -> MAC address mappings the stack has resolved for neighbours on the local link (the DHCP gateway, a `ping`/`dns`/`httpget` target). Entries are filled on demand by ARP resolution and looked up when sending each frame; a host that has not been contacted yet will not appear. Read-only view of what `arp -a` shows on Linux."},
     {"netstat",  "Show the TCP connection table: each active slot's local and foreign address (ip:port, '*' for an unbound side) and TCP state (LISTEN, SYN_SENT, ESTABLISHED, the closing states, ...). A loopback session uses two slots (client + server child) plus one for the listener. Also reports how many inbound segments were dropped for a bad checksum. UDP is connectionless and has no table. Like `netstat -tan` / `ss -t` on Linux."},
     {"dhcp",     "Obtain an IPv4 address, netmask and gateway for the network interface automatically from a DHCP server."},
@@ -6818,6 +6821,39 @@ static void cmd_ifconfig(int argc, char** argv) {
                 IP4_OCTETS(net_interfaces[i].ip));
         }
     }
+}
+
+// Print one routing-table row with the columns padded like Linux `route -n`.
+static void route_print_row(uint32_t dest, uint32_t gw, uint32_t mask, const char* flags, const char* iface) {
+    char d[16], g[16], m[16];
+    snprintf(d, sizeof d, "%d.%d.%d.%d", IP4_OCTETS(dest));
+    snprintf(g, sizeof g, "%d.%d.%d.%d", IP4_OCTETS(gw));
+    snprintf(m, sizeof m, "%d.%d.%d.%d", IP4_OCTETS(mask));
+    printf("%s", d); for (int p = (int)strlen(d); p < 16; p++) putchar(' ');
+    printf("%s", g); for (int p = (int)strlen(g); p < 16; p++) putchar(' ');
+    printf("%s", m); for (int p = (int)strlen(m); p < 16; p++) putchar(' ');
+    printf("%s", flags); for (int p = (int)strlen(flags); p < 6; p++) putchar(' ');
+    printf("%s\n", iface);
+}
+
+// route — show the kernel IPv4 routing table (like `route -n` / `netstat -r`), derived
+// from each interface's DHCP- or setip-learned address, netmask and gateway. Read-only,
+// from LOCAL state: a default route (0.0.0.0 via the gateway, flags UG) plus the
+// directly-connected network (ip & netmask, flags U) for every configured interface.
+static void cmd_route(int argc, char** argv) {
+    (void)argc; (void)argv;
+    printf("Kernel IP routing table\n");
+    printf("Destination     Gateway         Genmask         Flags Iface\n");
+    int shown = 0;
+    for (int i = 0; i < 8; i++) {
+        net_iface_t* nif = &net_interfaces[i];
+        if (!nif->name[0] || strcmp(nif->name, "lo") == 0 || nif->ip == 0) continue;
+        if (nif->gateway)                                                 // default route via the gateway
+            { route_print_row(0, nif->gateway, 0, "UG", nif->name); shown++; }
+        route_print_row(nif->ip & nif->netmask, 0, nif->netmask, "U", nif->name);   // connected network
+        shown++;
+    }
+    if (!shown) printf("(no routes — bring an interface up with dhcp or setip)\n");
 }
 
 // arp — show the ARP cache (resolved IPv4 -> MAC neighbours), like `arp -a`. Filled as the
