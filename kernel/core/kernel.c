@@ -7560,7 +7560,7 @@ void kernel_main(uint64_t magic, void* mboot_ptr) {
             login_screen();               // blocks until a successful login
             printf("[LOGIN] Login successful, starting desktop...\n");
             compositor_init();
-            serial_puts("[COMP] calling compositor_run (Hemera)\n");
+            serial_puts("[COMP] calling compositor_run (Hemera " COMPOSITOR_VERSION ")\n");
             compositor_run();
             if (!compositor_logout_requested) break;
             compositor_logout_requested = 0;
@@ -7704,8 +7704,8 @@ void nyxfetch(void) {
     nyxfetch_field(info[n++], KEY_C, RST_C, "Uptime:", uptime);
     nyxfetch_field(info[n++], KEY_C, RST_C, "Shell:", "nyxsh");
     nyxfetch_field(info[n++], KEY_C, RST_C, "Resolution:", res_str);
-    nyxfetch_field(info[n++], KEY_C, RST_C, "Desktop:", COMPOSITOR_NAME);
-    nyxfetch_field(info[n++], KEY_C, RST_C, "Terminal:", TERMINAL_NAME);
+    nyxfetch_field(info[n++], KEY_C, RST_C, "Desktop:", COMPOSITOR_NAME " " COMPOSITOR_VERSION);
+    nyxfetch_field(info[n++], KEY_C, RST_C, "Terminal:", TERMINAL_NAME " " TERMINAL_VERSION);
     snprintf(val, sizeof(val), "%s (%d)", cpu_brand, cpu_count);
     nyxfetch_field(info[n++], KEY_C, RST_C, "CPU:", val);
     snprintf(val, sizeof(val), "%llu / %llu MiB (%u%%)",

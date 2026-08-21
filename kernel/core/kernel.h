@@ -18,7 +18,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.4.305"
+#define KERNEL_VERSION "6.4.306"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -26,8 +26,10 @@
 // Hemera (daughter of Nyx, goddess of daylight) is the compositor / window manager;
 // Erebus (primordial darkness) is the terminal emulator. Used wherever these
 // components identify themselves (nyxfetch, the terminal banner).
-#define COMPOSITOR_NAME "Hemera"
-#define TERMINAL_NAME   "Erebus"
+#define COMPOSITOR_NAME    "Hemera"
+#define COMPOSITOR_VERSION "2.0"      // Hemera: the windowing compositor (2nd-gen daedalOS-style desktop)
+#define TERMINAL_NAME      "Erebus"
+#define TERMINAL_VERSION   "1.0"      // Erebus: the terminal emulator
 
 #define ARCH_X86 1
 #define BITS_64  1
