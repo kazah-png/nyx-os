@@ -523,6 +523,14 @@ static int64_t rtc_to_epoch(const rtc_time_t* t) {
     return days * 86400 + (int64_t)t->hour * 3600 + (int64_t)t->minute * 60 + (int64_t)t->second;
 }
 
+// Current Unix epoch seconds from the RTC (UTC). Public wrapper so kernel.c (e.g. the
+// `totp` command) can get the time without duplicating the civil-days conversion.
+int64_t rtc_epoch_now(void) {
+    rtc_time_t t;
+    rtc_read_time(&t);
+    return rtc_to_epoch(&t);
+}
+
 uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
                          uint64_t a4, uint64_t a5, uint64_t a6) {
     switch (no) {

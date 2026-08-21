@@ -151,6 +151,7 @@ static void cmd_isprime(int argc, char** argv);
 static void cmd_strings(int argc, char** argv);
 static void cmd_sha256sum(int argc, char** argv);
 static void cmd_hmac(int argc, char** argv);
+static void cmd_totp(int argc, char** argv);
 static void cmd_semver(int argc, char** argv);
 static void cmd_fnv(int argc, char** argv);
 static void cmd_seq(int argc, char** argv);
@@ -369,6 +370,7 @@ static const command_t commands[] = {
     {"strings",   cmd_strings,   "Print printable-character runs in a file: strings [-n MIN] <file>", false},
     {"sha256sum", cmd_sha256sum, "Print the SHA-256 digest of each file: sha256sum <file>...", false},
     {"hmac",      cmd_hmac,      "HMAC-SHA256 of a message under a key: hmac <key> <message>", false},
+    {"totp",      cmd_totp,      "RFC 6238 auth code: totp <base32-secret> [unix-time]", false},
     {"seq",       cmd_seq,       "Integer sequence: seq [FIRST [STEP]] LAST", false},
     {"paste",     cmd_paste,     "Merge lines of files: paste [-s] [-d LIST] <file ...>", false},
     {"clip",      cmd_clip,      "Clipboard: clip <text> to copy, clip to paste, clip -c to clear", false},
@@ -670,7 +672,7 @@ static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev",
 static const char* const HC_sys[]   = {"ps","kill","pgrep","pkill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat","screenshot","stackcheck",0};
 static const char* const HC_user[]  = {"useradd","users",0};
 static const char* const HC_net[]   = {"ifconfig","arp","netstat","dhcp","dns","ping","setip","httpget","tls","ipcalc",0};
-static const char* const HC_dev[]   = {"cc","xbm","semver","fnv","urlcode","crc32c","fletcher","murmur","base58","bech32","deflate","gzip","calc","json","hmac",0};
+static const char* const HC_dev[]   = {"cc","xbm","semver","fnv","urlcode","crc32c","fletcher","murmur","base58","bech32","deflate","gzip","calc","json","hmac","totp",0};
 static const char* const HC_media[] = {"play","sb16play","imageview","selene",0};
 static const char* const HC_games[] = {"doom","pong","voxel","fire","matrix","lava","fractal","julia","particles","snake","tetris",0};
 static const char* const HC_test[]  = {"mtdemo","smpstress","smpuser","smpthreads","smpbalance","tlbtest","cowtest","crash","usertest","tcptest","tcpdrop","tcploop","tcpserve","posttest","tlsstrict","prftest","gcmtest","dertest","p256test","p384test","x25519test","tlskeytest","tlsrectest","csprngtest","skp384test","deflatetest","sha512test","pngtest","bmptest","giftest","jpegtest","imgreject","httptest","ext2test","rsatest","chaintest","formtest",0};
@@ -758,6 +760,7 @@ static const man_page_t man_pages[] = {
     {"isprime",  "Test each integer argument for primality and print `N is prime` or `N is not prime`. Uses an exact deterministic Miller-Rabin (the twelve witnesses 2..37, proven correct for all 64-bit N), so the answer is definitive — not probabilistic — and it correctly rejects Carmichael numbers that fool a naive Fermat test. Much faster than `factor` for a large prime, since it never has to find the factors. A non-numeric or negative argument is reported and skipped."},
     {"strings",  "Print each run of at least MIN (default 4, or -n MIN) consecutive printable characters found in <file>, one run per line — the classic way to read the text embedded in a binary (an ELF, an image, a package). A printable character is a space through `~` (0x20-0x7E) or a tab; any other byte ends the current run. The file is streamed in fixed chunks, so even a large binary needs no whole-file buffer."},
     {"hmac","Compute HMAC-SHA256 of <message> keyed by <key> and print it as 64 lowercase hex digits: `hmac <key> <message>`. HMAC is the standard keyed-hash message authentication code (RFC 2104 / FIPS 198) — the way API requests are signed, JWT `HS256` tokens are built, and webhook payloads are verified: the same key + message always yields the same tag, and without the key the tag can't be forged. Both arguments are taken as text (quote a message with spaces). Backed by the same KAT'd `hmac_sha256` the CSPRNG, HKDF and PBKDF2 auth path use; the RFC 4231 test vectors pin it (the `hmac` self-test)."},
+    {"totp",     "Generate a time-based one-time password (RFC 6238) — the 6-digit authenticator code used for two-factor login: `totp <base32-secret> [unix-time]`. The shared secret is decoded from strict, padded, upper-case Base32 (A-Z, 2-7); the code is HMAC-SHA1 over a 30-second counter, the Google Authenticator default. With no time it uses the RTC clock (so it matches a phone authenticator when the clock is correct); pass a Unix time to reproduce a specific code — e.g. `totp GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ 59` prints 287082, the RFC 6238 test vector. Backed by the KAT'd totp_sha1/hmac_sha1 primitives."},
     {"sha256sum","Print the SHA-256 digest of each file argument as `<64-hex-digits>  <name>` (two spaces between, the GNU sha256sum format), the standard way to check a file's integrity — e.g. that a downloaded package matches a published hash. Each file is streamed through the hash in fixed chunks, so a large binary needs no whole-file buffer, and the total is capped so an endless special like /dev/zero cannot spin forever. A file that cannot be opened is reported and skipped."},
     {"vfsstat",  "Report VFS node-pool usage: how many of the fixed node slots are live, free, and the linear high-water mark, plus a breakdown of the transient mount-backed (ext2 /mnt mirror) nodes into those still held by an open fd versus idle-but-unfreed. A diagnostic for node-pool exhaustion under sustained in-OS file I/O (issue #66): if `mount held` climbs and never falls across a compile session, an fd is leaking; watch it before/after `cc`/`xbm` runs."},
     {"comm",     "Compare two files that are each already sorted, line by line, in three columns: lines only in <file1> (column 1), lines only in <file2> (column 2, indented one tab), and lines common to both (column 3, indented two tabs). `-1`/`-2`/`-3` suppress the respective column (and drop its indentation from the later columns), so e.g. `comm -12 a b` prints just the lines common to both. Input is assumed sorted in byte order."},
@@ -1300,6 +1303,33 @@ static void cmd_hmac(int argc, char** argv) {
                 (const uint8_t*)argv[2], (uint32_t)strlen(argv[2]), mac);
     char hex[SHA256_DIGEST_SIZE * 2 + 1]; sha256_to_hex(mac, hex);
     printf("%s\n", hex);
+}
+
+// totp <base32-secret> [unix-time] — RFC 6238 authenticator code (HMAC-SHA1, 30-s
+// period, 6 digits: the Google-Authenticator default). The secret is decoded from
+// strict padded upper-case Base32; the time defaults to the RTC, or a supplied Unix
+// time reproduces a specific code (e.g. the RFC 6238 test vector). Exposes the KAT'd
+// totp_sha1/base32_decode primitives; %06u padding via snprintf (the console printf
+// has no width flags, but the KAT'd vsnprintf does).
+static void cmd_totp(int argc, char** argv) {
+    if (argc < 2) { printf("Usage: totp <base32-secret> [unix-time]\n"); return; }
+    extern int base32_decode(const char* in, uint32_t in_len, uint8_t* out, uint32_t* out_len);
+    extern uint32_t totp_sha1(const uint8_t* key, uint32_t keylen, uint64_t t, uint32_t period, int digits);
+    extern int64_t rtc_epoch_now(void);
+    uint8_t key[160]; uint32_t keylen = 0;
+    if (base32_decode(argv[1], (uint32_t)strlen(argv[1]), key, &keylen) != 0 || keylen == 0) {
+        printf("totp: invalid Base32 secret (upper-case A-Z2-7, padded to a multiple of 8)\n");
+        return;
+    }
+    uint64_t t;
+    if (argc >= 3) {
+        if (parse_u64(argv[2], &t) != 0) { printf("totp: '%s' is not a valid Unix time\n", argv[2]); return; }
+    } else {
+        t = (uint64_t)rtc_epoch_now();
+    }
+    uint32_t code = totp_sha1(key, keylen, t, 30, 6);
+    char out[8]; snprintf(out, sizeof(out), "%06u", (unsigned)code);
+    printf("%s\n", out);
 }
 
 static void cmd_factor(int argc, char** argv) {
