@@ -59,7 +59,7 @@ kernel `open`/`read` from N — wiring the two together makes the first
 | Types (everything is `i64` in the toy) | ✗ | full checker |
 | structs / enums / match / defer / own / caps | ✗ | ✓ |
 | `str` values and string literals as data | ✗ | ✓ |
-| Error diagnostics (`line N: message`) | ✓ at the parser's expect points — rung 2 | ✓ everywhere |
+| Error diagnostics (`line N: message`) | ✓ expect points (rung 2) + a semantic pass: unknown variable, call arity | ✓ everywhere |
 
 The structural gap *was* the AST row. On-the-fly emission works because
 the toy checks nothing; a checker needs to *look at* the program before
@@ -110,11 +110,23 @@ Mostly yes — the language grew its self-host muscles deliberately:
    statements and control flow still emit directly (the jump-patching
    tier is unchanged); folding them into the tree is a later rung.
 
-All three rungs are in. From here the ladder is: a *check pass* that
-walks the expression tree before emission (the whole point of rung 3 —
-types or undefined-name detection at toy scale), statements joining the
-tree, then the subset grows until the toy parses the examples directory
-— at which point it stops being a toy.
+All three rungs are in — and rung 3's promised payoff arrived on its
+heels: the toy now runs a real **check pass** (`check_node`) between
+build and emit. Every load must name a *bound* variable — the enclosing
+function's parameters plus the names bound by prior `:=` statements —
+and anything else is refused with the node's recorded source line
+(`line N: error: unknown variable`; nodes carry lines in a sixth Ast
+array). Scope is conservative the way ncc's v0.18 branch merge is
+conservative: a binding made inside an `if` arm or a `while` body dies
+at the block's closing brace, because the checker cannot promise the
+branch ran — so `if c { b := 1; } b` is refused, as are `x := x + 1`
+self-feeds (a name binds only *after* its right-hand side checks) and
+function bodies reading main's names (the flat runtime table would
+allow it; the checker enforces the lexical story). From here the
+ladder is: more rules on the same walk (a type column; constant
+folding as the first tree *transform*), statements joining the tree,
+then the subset grows until the toy parses the examples directory — at
+which point it stops being a toy.
 
 ## Definition of done for M5
 
