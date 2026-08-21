@@ -18,7 +18,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.4.307"
+#define KERNEL_VERSION "6.4.308"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -30,6 +30,11 @@
 #define COMPOSITOR_VERSION "2.0"      // Hemera: the windowing compositor (2nd-gen daedalOS-style desktop)
 #define TERMINAL_NAME      "Erebus"
 #define TERMINAL_VERSION   "1.0"      // Erebus: the terminal emulator
+#define SELENE_NAME        "Selene"
+#define SELENE_VERSION     "1.0"      // Selene: the web browser
+// LOOP POLICY (user 2026-08-21): a loop increment that CHANGES a component's code bumps
+// THAT component's version too — compositor.c -> COMPOSITOR_VERSION, terminal_win.c ->
+// TERMINAL_VERSION, selene_win.c -> SELENE_VERSION. Rhythm: +0.1 (minor) per meaningful change.
 
 #define ARCH_X86 1
 #define BITS_64  1

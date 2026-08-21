@@ -2563,7 +2563,7 @@ static selene_ctx_t* selene_new_ctx(void) {
     s->sel_field = -1;
     selene_set_url(s, "example.com");
     s->sel_link = -1;
-    strncpy(s->status, "Press Enter to load, or edit the URL", 95);
+    strncpy(s->status, SELENE_NAME " " SELENE_VERSION " - press Enter to load, or edit the URL", 95);
     return s;
 }
 
