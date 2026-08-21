@@ -253,6 +253,7 @@ static void cmd_jobs(int argc, char** argv);
 static void cmd_wait(int argc, char** argv);
 static void cmd_nice(int argc, char** argv);
 static void cmd_renice(int argc, char** argv);
+static void cmd_taskset(int argc, char** argv);
 static void cmd_usertest(int argc, char** argv);
 static void cmd_tcptest(int argc, char** argv);
 static void cmd_tcpdrop(int argc, char** argv);
@@ -442,6 +443,7 @@ static const command_t commands[] = {
     {"wait",      cmd_wait,      "Wait for background jobs: wait [pid]", false},
     {"nice",      cmd_nice,      "Spawn ELF at a scheduler weight: nice <weight> <file>", false},
     {"renice",    cmd_renice,    "Change a process's weight: renice <pid> <weight>", false},
+    {"taskset",   cmd_taskset,   "Pin a process to a CPU: taskset <cpu> <pid>", false},
     {"usertest",  cmd_usertest,  "Spawn preemptive ring-3 test processes", false},
     {"tcptest",   cmd_tcptest,   "Test TCP: tcptest <ip> <port>", false},
     {"tcpdrop",   cmd_tcpdrop,   "Test: drop next N TCP TX segs (force retransmit)", false},
@@ -672,7 +674,7 @@ void execute_command(const char* cmd_line) {
 // a final "Other" pass prints any visible command not placed above, so nothing is
 // ever dropped even if a new command isn't categorised here yet.
 typedef struct { const char* title; const char* const* names; } help_cat_t;
-static const char* const HC_shell[] = {"help","man","version","clear","history","exec","spawn","jobs","wait","nice","renice",0};
+static const char* const HC_shell[] = {"help","man","version","clear","history","exec","spawn","jobs","wait","nice","renice","taskset",0};
 static const char* const HC_files[] = {"ls","cd","pwd","cat","file","tar","iniget","open","touch","mkdir","rm","shred","cp","mv","tree","find","which","basename","dirname","realpath","files","df","du","disks","lsblk","lspci","nvme","nyxpart","mkfs","nyxinstall","nyxgrub","mount","ext2ls","ext2cat",0};
 static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","sed","fold","nl","expand","unexpand","factor","isprime","strings","sha256sum","seq","paste","clip","cut","uniq","join","comm","printf","wc","write","hexdump",0};
 static const char* const HC_sys[]   = {"ps","kill","pgrep","pkill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat","screenshot","stackcheck",0};
@@ -890,6 +892,7 @@ static const man_page_t man_pages[] = {
     {"version",  "Print the running NyxOS kernel version string (also shown by `nyxfetch` and in the desktop's About)."},
     {"nice",     "Spawn a program at a chosen scheduler weight: `nice <weight> <file>`. A higher weight gets more CPU time from the weighted scheduler; the program then runs like `spawn`. Adjust a running process later with `renice`."},
     {"renice",   "Change the scheduler weight of a running process: `renice <pid> <weight>` (find the pid with `ps`). Raises or lowers how much CPU time the weighted scheduler gives it."},
+    {"taskset",  "Pin a process to one CPU core (SMP affinity): `taskset <cpu> <pid>`, where cpu 0 is the boot processor and 1..N are the application processors (see `cpus`). Each core only runs tasks pinned to it, so this migrates the process to that core. Kernel threads have fixed pins and are refused; use it on a process you spawned. The scheduler still honours weights (`renice`) within a core."},
     {"pkg",      "Alias for `xbm`, the NyxOS package manager (its pacman/apt): install/remove/update/search/list packages, compiling them from a recipe with the in-OS `cc`. See `man xbm` for the full verb set."},
     {"ext2ls",   "List a directory on the mounted ext2 disk image (/mnt) — a convenience alias into the `mount` tool's ext2 browser. Use it to see files persisted on the disk across reboots."},
     {"ext2cat",  "Print the contents of a file stored on the mounted ext2 disk image — a convenience alias into the `mount` tool. The disk-backed counterpart of `cat`."},
@@ -4719,6 +4722,23 @@ static void cmd_renice(int argc, char** argv) {
     if (!p) { printf("renice: process %d not found\n", pid); return; }
     p->sched_weight = w;
     printf("renice: PID %d weight set to %u\n", pid, w);
+}
+
+// taskset <cpu> <pid> — pin a process to one CPU (SMP affinity): 0 = the BSP, 1..N = an AP.
+// Each core only runs tasks whose sched_cpu matches its own number, so setting it migrates
+// the process to that core. Kernel threads (init/idle/compositor/apworker) have fixed pins
+// that ARE the AP mutual-exclusion invariant, so they are refused — only user processes can
+// be re-pinned (same page_directory==NULL guard kill/pkill use).
+static void cmd_taskset(int argc, char** argv) {
+    if (argc < 3) { printf("Usage: taskset <cpu> <pid>   (cpu 0..%u; 0 = BSP)\n", cpu_count - 1); return; }
+    int cpu = atoi(argv[1]);
+    uint32_t pid = (uint32_t)atoi(argv[2]);
+    if (cpu < 0 || (uint32_t)cpu >= cpu_count) { printf("taskset: cpu must be 0..%u\n", cpu_count - 1); return; }
+    process_t* p = find_process(pid);
+    if (!p) { printf("taskset: process %d not found\n", pid); return; }
+    if (p->page_directory == NULL) { printf("taskset: %d is a kernel thread — its CPU pin is fixed\n", pid); return; }
+    p->sched_cpu = (int32_t)cpu;
+    printf("taskset: pinned PID %d to CPU %d\n", pid, cpu);
 }
 
 // Load an ELF from `path` and hand it to the preemptive scheduler as a background
