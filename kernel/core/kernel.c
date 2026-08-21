@@ -140,6 +140,7 @@ static void cmd_pkill(int argc, char** argv);
 static void cmd_which(int argc, char** argv);
 static void cmd_basename(int argc, char** argv);
 static void cmd_dirname(int argc, char** argv);
+static void cmd_realpath(int argc, char** argv);
 static void cmd_head(int argc, char** argv);
 static void cmd_file(int argc, char** argv);
 static void cmd_tar(int argc, char** argv);
@@ -331,6 +332,7 @@ static const command_t commands[] = {
     {"which",     cmd_which,     "Show path of a command: which <name>", false},
     {"basename",  cmd_basename,  "Strip directory (and suffix) from a path: basename <path> [suffix]", false},
     {"dirname",   cmd_dirname,   "Strip the last component from a path: dirname <path>", false},
+    {"realpath",  cmd_realpath,  "Canonicalise a path: realpath [-e] <path>...", false},
     {"head",      cmd_head,      "Show first lines of a file: head <file> [lines]", false},
     {"file",      cmd_file,      "Identify a file's type: file <file>...", false},
     {"tar",       cmd_tar,       "List a tar archive: tar t[v] <file.tar>", false},
@@ -659,7 +661,7 @@ void execute_command(const char* cmd_line) {
 // ever dropped even if a new command isn't categorised here yet.
 typedef struct { const char* title; const char* const* names; } help_cat_t;
 static const char* const HC_shell[] = {"help","man","version","clear","history","exec","spawn","jobs","wait","nice","renice",0};
-static const char* const HC_files[] = {"ls","cd","pwd","cat","file","tar","iniget","open","touch","mkdir","rm","cp","mv","tree","find","which","basename","dirname","files","df","du","disks","lsblk","lspci","nvme","nyxpart","mkfs","nyxinstall","nyxgrub","mount","ext2ls","ext2cat",0};
+static const char* const HC_files[] = {"ls","cd","pwd","cat","file","tar","iniget","open","touch","mkdir","rm","cp","mv","tree","find","which","basename","dirname","realpath","files","df","du","disks","lsblk","lspci","nvme","nyxpart","mkfs","nyxinstall","nyxgrub","mount","ext2ls","ext2cat",0};
 static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","fold","nl","expand","unexpand","factor","isprime","strings","sha256sum","seq","paste","clip","cut","uniq","join","comm","printf","wc","write","hexdump",0};
 static const char* const HC_sys[]   = {"ps","kill","pgrep","pkill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat","screenshot","stackcheck",0};
 static const char* const HC_user[]  = {"useradd","users",0};
@@ -779,6 +781,7 @@ static const man_page_t man_pages[] = {
     {"wc",       "Count the lines, words and characters in <file>. -l, -w or -c limit the output to just one of those counts."},
     {"basename", "Strip the directory prefix (and, if given, a trailing suffix) from <path>, printing only the final component."},
     {"dirname",  "Strip the final component from <path>, printing the directory portion that remains."},
+    {"realpath", "Print the canonical absolute form of each <path>: relative paths are resolved against the current directory and '.'/'..' segments are collapsed (NyxOS has no symlinks, so this fully normalises the path). With -e, require each path to exist and report the ones that do not."},
     {"deflate",  "Compress <in> into <out> using DEFLATE with a zlib wrapper (RFC 1950) - the format stock zlib and Python zlib.decompress read. Fixed-Huffman + LZ77; the output is verified to inflate back byte-for-byte, so it can be decompressed anywhere."},
     {"gzip",     "Compress <in> into <out> as a gzip (.gz) file (RFC 1952) - the format stock gunzip, web browsers, and Python gzip.decompress read. Wraps the DEFLATE compressor with a gzip header and a CRC-32 + uncompressed-size trailer."},
     {"ipcalc",   "IPv4 subnet calculator. Give an address as `ipcalc <ip>/<prefix>`, `ipcalc <ip> <netmask>`, or `ipcalc <ip> <prefix>` and it prints the network and broadcast addresses, the netmask and wildcard, the usable host range (HostMin..HostMax) and the host count. RFC-correct at the edges: a /31 has two usable addresses (RFC 3021) and a /32 is a single host."},
@@ -1027,6 +1030,28 @@ static void cmd_dirname(int argc, char** argv) {
     buf[last] = '\0';
     while (last > 1 && buf[last - 1] == '/') buf[--last] = '\0';  // collapse trailing slashes of the result
     printf("%s\n", buf);
+}
+
+// realpath [-e] <path>... — print each path's canonical absolute form (relative
+// paths resolve against the CWD; '.'/'..' collapse). vfs_realpath reuses the
+// pathnorm-KAT'd canonicaliser. With -e, require existence (checked via vfs_stat
+// on the resolved path) and report the ones that are missing.
+static void cmd_realpath(int argc, char** argv) {
+    int check = 0, ai = 1;
+    if (argc > ai && strcmp(argv[ai], "-e") == 0) { check = 1; ai++; }
+    if (argc <= ai) { printf("Usage: realpath [-e] <path>...\n"); return; }
+    for (int a = ai; a < argc; a++) {
+        char out[256];
+        vfs_realpath(argv[a], out, sizeof(out));
+        if (check) {
+            uint32_t sz; int isdir;
+            if (vfs_stat(out, &sz, &isdir) != 0) {
+                printf("realpath: %s: No such file or directory\n", argv[a]);
+                continue;
+            }
+        }
+        printf("%s\n", out);
+    }
 }
 
 static void cmd_reboot(int argc, char** argv) {

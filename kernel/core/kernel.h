@@ -18,7 +18,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.4.293"
+#define KERNEL_VERSION "6.4.294"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -1098,6 +1098,7 @@ typedef struct {
 int vfs_mount(const char* mount_point, int fs_type, void* fs_data);
 mount_entry_t* vfs_find_mount(const char* path);
 const char* vfs_getcwd(void);
+const char* vfs_realpath(const char* path, char* out, int outsz);  // canonical absolute path (. / .. collapsed)
 int vfs_chdir(const char* path);
 void* vfs_getcwd_node(void);      // opaque current-directory node (per-shell CWD)
 void  vfs_setcwd_node(void* n);

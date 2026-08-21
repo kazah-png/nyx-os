@@ -1201,6 +1201,21 @@ static const char* vfs_abs(const char* path, char* buf, int n) {
     return buf;
 }
 
+// Canonicalise `path` into `out` as a normalised absolute path: make it absolute
+// (a relative path is taken against the CWD), then collapse "." and ".." purely
+// lexically through join_mount_relative — the same canonicaliser vfs_abs/cd use,
+// pinned by the `pathnorm` KAT. Feeding an already-absolute path as the relative
+// part over base "/" normalises it too (vfs_abs alone leaves absolute paths as-is).
+// NyxOS has no symlinks, so this is a complete realpath; existence is the caller's
+// concern (the `realpath -e` flag checks it via vfs_stat).
+const char* vfs_realpath(const char* path, char* out, int outsz) {
+    if (outsz <= 0) return out;
+    if (!path || !*path) path = ".";
+    const char* base = (path[0] == '/') ? "/" : vfs_getcwd();
+    join_mount_relative(base, path, out, outsz);
+    return out;
+}
+
 // Resolve `path` to its directory node (opaque handle, like vfs_root_node), or
 // NULL if it doesn't exist or isn't a directory. Lets a new Terminal start in the
 // logged-in user's home directory.
