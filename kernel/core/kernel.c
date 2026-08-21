@@ -3268,6 +3268,35 @@ static const char* shell_lookup_var(const char* name, int namelen) {
 static void shell_expand_vars(const char* in, char* out, int outsz) {
     int o = 0;
     for (int i = 0; in[i] && o < outsz - 1; ) {
+        if (in[i] == '$' && in[i + 1] == '(' && in[i + 2] == '(') {
+            // $((EXPR)) — arithmetic expansion via the KAT'd calc_eval. Find the
+            // matching "))" by tracking inner-paren depth (a ')' at depth 0 whose
+            // successor is ')' closes it). No recursion (bounded kernel stack), so
+            // EXPR is evaluated literally: a bad expression is left verbatim rather
+            // than silently dropped, and $VARs inside are not expanded (a later pass
+            // could, but the shell's space-tokenising already limits EXPR to one token).
+            int s = i + 3, e = s, depth = 0, ok = 0;
+            while (in[e]) {
+                if (in[e] == '(') depth++;
+                else if (in[e] == ')') { if (depth == 0) { ok = (in[e + 1] == ')'); break; } depth--; }
+                e++;
+            }
+            int64_t r = 0;
+            char expr[128]; int el = e - s;
+            if (ok && el < (int)sizeof(expr)) {
+                for (int k = 0; k < el; k++) expr[k] = in[s + k];
+                expr[el] = '\0';
+                if (calc_eval(expr, &r) == 0) {
+                    char num[24]; snprintf(num, sizeof(num), "%lld", (long long)r);
+                    for (int k = 0; num[k] && o < outsz - 1; k++) out[o++] = num[k];
+                    i = e + 2;                                  // consume EXPR + "))"
+                    continue;
+                }
+            }
+            // unterminated or non-evaluable: copy the '$' literally and re-scan the rest
+            out[o++] = in[i++];
+            continue;
+        }
         if (in[i] == '$' && (sh_name_start(in[i + 1]) || in[i + 1] == '{')) {
             int braced = (in[i + 1] == '{');
             int s = i + 1 + braced, e = s;
@@ -3311,6 +3340,13 @@ static int shell_expand_selftest(void) {
     SX("cost$5",       "cost$5");         // 10 '$' before a digit -> literal
     SX("end$",         "end$");           // 11 trailing '$'       -> literal
     SX("${FOO",        "${FOO");          // 12 unclosed '${'      -> literal
+    SX("$((2+3))",     "5");              // 13 arithmetic expansion
+    SX("x$((2*3))y",   "x6y");            // 14 embedded arithmetic
+    SX("$((10-20))",   "-10");            // 15 negative result
+    SX("$((0x10+1))",  "17");             // 16 hex literal in arithmetic
+    SX("$(((2+3)*4))", "20");             // 17 nested parens inside
+    SX("$((1+))",      "$((1+))");        // 18 calc error -> left verbatim
+    SX("$((2+2",       "$((2+2");         // 19 unterminated -> left verbatim
     #undef SX
 done:
     env_count = saved;
