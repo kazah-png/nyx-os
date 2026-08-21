@@ -253,6 +253,7 @@ static void cmd_stackcheck(int argc, char** argv);
 extern int stack_canary_sweep(void);      // process.c — scan task-stack canaries
 extern int stack_canary_selftest(void);   // process.c — canary KAT
 extern int term_paste_selftest(void);      // gui/apps/terminal_win.c — Ctrl+V paste KAT
+extern int editor_find_selftest(void);      // gui/apps/editor_win.c — Ctrl+F find-search KAT
 extern int ext2_format_selftest(void);      // fs/ext2.c — mkfs.ext2 layout KAT
 extern int ext2_format_mg_selftest(void);   // fs/ext2.c — multi-group mkfs KAT
 extern int notify_selftest(void);           // gui/core/compositor.c — toast ring KAT
@@ -8037,6 +8038,7 @@ static void run_selftests(void) {
         {"wavparse",     wav_parse_selftest},
         {"imgident",     image_identify_selftest},
         {"uuid",         uuid_selftest},
+        {"edfind",       editor_find_selftest},
         {"securezero",   secure_zero_selftest},
         {"chacha20",     chacha20_selftest},        {"siphash",       siphash_selftest},
         {"poly1305",     poly1305_selftest},        {"chachapoly",    chacha20poly1305_selftest},

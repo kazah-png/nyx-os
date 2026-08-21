@@ -304,11 +304,95 @@ void editor_win_click(window_t* win, int mx, int my, int btn) {
     }
 }
 
+// First index >= `start` where `pat` occurs in NUL-terminated `s`, or -1.
+static int editor_line_find(const char* s, int start, const char* pat) {
+    int slen = (int)strlen(s), plen = (int)strlen(pat);
+    if (start < 0) start = 0;
+    for (int i = start; i + plen <= slen; i++) {
+        int k = 0;
+        while (k < plen && s[i + k] == pat[k]) k++;
+        if (k == plen) return i;
+    }
+    return -1;
+}
+
+// Search `lines[0..count)` for `pat`, starting at (from_y, from_x) and wrapping once to
+// the top so every position is visited exactly once. On a match sets *my/*mx and returns
+// 1; returns 0 if `pat` is empty or not found anywhere. Pure — pinned by editor_find_selftest.
+int editor_find_in(char lines[][EDITOR_LINE_LEN], int count, int from_y, int from_x,
+                   const char* pat, int* my, int* mx) {
+    if (!pat || !pat[0] || count <= 0) return 0;
+    if (from_y < 0 || from_y >= count) from_y = 0;
+    for (int i = 0; i <= count; i++) {
+        int y = (from_y + i) % count;
+        int start = (i == 0) ? from_x : 0;
+        int hit = editor_line_find(lines[y], start, pat);
+        if (hit >= 0) { if (my) *my = y; if (mx) *mx = hit; return 1; }
+        if (i == count) break;                     // completed the wrap back onto from_y
+    }
+    return 0;
+}
+
+// KAT: forward search, next-after-cursor, a later line, not-found, and the wrap-around.
+int editor_find_selftest(void) {
+    static char L[4][EDITOR_LINE_LEN];
+    strcpy(L[0], "the quick brown fox");
+    strcpy(L[1], "jumps over the lazy");
+    strcpy(L[2], "dog and the cat");
+    L[3][0] = '\0';
+    int my = 0, mx = 0;
+    if (!editor_find_in(L, 4, 0, 0, "the",   &my, &mx) || my != 0 || mx != 0)  return 1;
+    if (!editor_find_in(L, 4, 0, 1, "the",   &my, &mx) || my != 1 || mx != 11) return 2;
+    if (!editor_find_in(L, 4, 0, 0, "cat",   &my, &mx) || my != 2 || mx != 12) return 3;
+    if ( editor_find_in(L, 4, 0, 0, "zebra", &my, &mx))                         return 4;
+    if (!editor_find_in(L, 4, 2, 0, "quick", &my, &mx) || my != 0 || mx != 4)  return 5;
+    return 0;
+}
+
 void editor_win_key(window_t* win, int key) {
     editor_win_t* ed = (editor_win_t*)win->reserved;
     if (!ed) return;
 
     ed->cursor_tick = get_ticks();
+
+    // Ctrl+F — enter incremental find mode (type a pattern, Enter = jump to next match,
+    // Enter again = keep advancing, Esc = back to editing).
+    if (key == 0x06) {
+        ed->find_active = 1; ed->find_len = 0; ed->find_pat[0] = '\0';
+        snprintf(ed->status, sizeof(ed->status), "Find: ");
+        return;
+    }
+    if (ed->find_active) {
+        if (key == 0x1B) {                          // Esc — leave find mode
+            ed->find_active = 0;
+            snprintf(ed->status, sizeof(ed->status), "Ln %d, Col %d", ed->cursor_y + 1, ed->cursor_x + 1);
+            return;
+        }
+        if (key == '\r' || key == '\n') {           // Enter — jump to the next match
+            if (ed->find_len == 0) return;
+            int my, mx;
+            if (editor_find_in(ed->lines, ed->line_count, ed->cursor_y, ed->cursor_x + 1,
+                               ed->find_pat, &my, &mx)) {
+                ed->cursor_y = my; ed->cursor_x = mx;
+                editor_adjust_scroll(ed, win);
+                snprintf(ed->status, sizeof(ed->status), "Found '%s' (Ln %d)", ed->find_pat, my + 1);
+            } else {
+                snprintf(ed->status, sizeof(ed->status), "Not found: %s", ed->find_pat);
+            }
+            return;
+        }
+        if (key == '\b') {                          // edit the pattern
+            if (ed->find_len > 0) ed->find_pat[--ed->find_len] = '\0';
+            snprintf(ed->status, sizeof(ed->status), "Find: %s", ed->find_pat);
+            return;
+        }
+        if (key >= 0x20 && key <= 0x7E && ed->find_len < (int)sizeof(ed->find_pat) - 1) {
+            ed->find_pat[ed->find_len++] = (char)key;
+            ed->find_pat[ed->find_len] = '\0';
+            snprintf(ed->status, sizeof(ed->status), "Find: %s", ed->find_pat);
+        }
+        return;                                     // swallow every other key while finding
+    }
 
     if (key == 0x13) { // Ctrl+S
         editor_save(ed);

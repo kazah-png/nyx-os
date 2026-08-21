@@ -16,6 +16,9 @@ typedef struct {
     int modified;
     char status[64];
     uint32_t cursor_tick;
+    int  find_active;          // Ctrl+F find mode: capturing a search pattern
+    char find_pat[64];         // the pattern typed in find mode
+    int  find_len;
 } editor_win_t;
 
 editor_win_t* editor_create_ctx(void);
@@ -23,5 +26,6 @@ void editor_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch);
 void editor_win_click(window_t* win, int mx, int my, int btn);
 void editor_win_key(window_t* win, int key);
 void editor_load_file(editor_win_t* ed, const char* path);  // load `path` into this editor
+int  editor_find_selftest(void);                            // KAT for the Ctrl+F search core (editor_win.c)
 
 #endif
