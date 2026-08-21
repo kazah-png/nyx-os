@@ -90,10 +90,12 @@ strict-C99 output — and is verified three ways:
    anonymous `mmap` through the W^X-typed flags, the `own`-struct demo
    moves a must-consume handle through its whole life (branch-aware
    consumption and `#[drop]` auto-close included), and the M5 chain — a
-   lexer covering comments, string literals, and two-char operators, a
-   parser that compiles N-syntax statement programs from a token buffer
-   to stack code, and the VM that executes the emitted code — **runs the
-   whole toy compiler loop inside NyxOS**. (This
+   lexer covering comments, string literals, and two-char operators (and
+   real `.n` files read off the ext2 disk), a parser that builds a
+   *checked* AST for its expressions and compiles N-syntax programs from
+   a token buffer to stack code (refusing unknown variables with located
+   errors, on target), and the VM that executes the emitted code — **runs
+   the whole toy compiler loop inside NyxOS**. (This
    workload also uncovered — and keeps profiling — a kernel VFS
    node-pool exhaustion,
    [#66](https://github.com/kazah-png/nyx-os/issues/66) — the language
