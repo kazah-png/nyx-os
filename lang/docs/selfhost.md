@@ -180,10 +180,20 @@ type picks PRINT or PRINTS at emit — same syntax, different code,
 decided by the checker), while arithmetic, comparisons, conditions,
 call arguments and body values stay int-only, each refusal located
 ("cannot use a string in arithmetic or comparison", "a name cannot
-change type", "a condition must be an integer"). From here: string
-equality and concatenation as typed operators, or the subset simply
-grows until the toy parses the examples directory — at which point
-it stops being a toy.
+change type", "a condition must be an integer").
+
+The column's second dividend followed: **typed string equality**. `==`
+over two strings is legal — and is a *different operation*: the
+checker rewrites the node's opcode from EQ to STREQ (byte-compare the
+spans, push 0/1) — overload resolution at toy scale, with the tree
+recording the resolved operation so the emit walker stays type-blind
+for operators. Since `==` yields an int, `if name == "nyx" { ... }`
+composes with plain conditions for free; two literal strings fold at
+compile time (the fold pass carries the string table now); mixed `==`
+and `<`/`>` on strings stay refused. From here: concatenation as the
+next typed operator (it needs a runtime table append — a real design
+question), or the subset simply grows until the toy parses the
+examples directory — at which point it stops being a toy.
 
 ## Definition of done for M5
 

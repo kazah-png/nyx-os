@@ -123,7 +123,8 @@
 //   · 13 JZ target · 14 JMP target · 15 CALL target (pushes the return
 //   address) · 16 RET (returns the top value) · 17 SWAP · 18 PRINT
 //   (pop, write the number + newline) · 19 PRINTS (pop a string-table
-//   index, write that entry + newline).
+//   index, write that entry + newline) · 20 STREQ (pop two table
+//   indexes, byte-compare the spans, push 0/1).
 //
 //   THE TYPE COLUMN. Strings are real VALUES now, and the check pass
 //   is what makes that safe. A double-quoted literal lexes into a
@@ -147,6 +148,15 @@
 //   decided by the checker. The VM carries the string table alongside
 //   the code; PRINTS pops the index and writes the bytes through the
 //   same audited boundary every other output uses.
+//   And `==` over two strings is legal — and IS A DIFFERENT
+//   OPERATION: the checker REWRITES the node's opcode from EQ to
+//   STREQ (byte-compare the spans, push 0/1). Overload resolution at
+//   toy scale: the tree records the RESOLVED operation, so the emit
+//   walker stays type-blind for operators and just emits nv. Since ==
+//   yields an int, `if name == "nyx" { ... }` composes with plain
+//   conditions for free. Two literal strings even fold at compile
+//   time (the fold pass carries the table now). Mixed == and </> on
+//   strings stay refused.
 
 #[caps(syscall)]
 extern syscall {
@@ -532,10 +542,17 @@ fn check_node(a: Ast, env: Scope, bc: i64, idx: i64) {
         }
         a.nt[idx] = env.vt[a.nv[idx]];
     }
-    if a.nk[idx] == 2 {                    // binop: both children, both int
-        check_node(a, env, bc, a.nl[idx]);
+    if a.nk[idx] == 2 {                    // binop: children first, then the
+        check_node(a, env, bc, a.nl[idx]); // types resolve the OPERATION
         check_node(a, env, bc, a.nr[idx]);
-        if a.nt[a.nl[idx]] == 1 || a.nt[a.nr[idx]] == 1 {
+        lt := a.nt[a.nl[idx]];
+        rt := a.nt[a.nr[idx]];
+        mut resolved := false;
+        if a.nv[idx] == 10 && lt == 1 && rt == 1 {
+            a.nv[idx] = 20;                // == over two strings IS STREQ:
+            resolved = true;               // the checker rewrites the opcode,
+        }                                  // emit stays type-blind
+        if !resolved && (lt == 1 || rt == 1) {
             fail(a.nline[idx], "cannot use a string in arithmetic or comparison");
         }
         a.nt[idx] = 0;
@@ -567,10 +584,10 @@ fn check_node(a: Ast, env: Scope, bc: i64, idx: i64) {
 // stay allocated but unreachable, which a transient per-expression
 // tree can afford. DIV/MOD by a literal zero stay unfolded (zerodiv):
 // the compiler must not crash computing what the program would.
-fn fold_node(a: Ast, idx: i64) {
+fn fold_node(a: Ast, st: Strs, idx: i64) {
     if a.nk[idx] == 2 {                    // binop: fold children, then try
-        fold_node(a, a.nl[idx]);
-        fold_node(a, a.nr[idx]);
+        fold_node(a, st, a.nl[idx]);
+        fold_node(a, st, a.nr[idx]);
         l := a.nl[idx];
         r := a.nr[idx];
         if a.nk[l] == 0 && a.nk[r] == 0 {
@@ -592,9 +609,24 @@ fn fold_node(a: Ast, idx: i64) {
                 a.nv[idx] = val;
             }
         }
+        if a.nv[idx] == 20 && a.nk[l] == 10 && a.nk[r] == 10 {
+            mut eq := 0;                   // two literals: compare them NOW
+            if st.stl[a.nv[l]] == st.stl[a.nv[r]] {
+                eq = 1;
+                mut q := 0;
+                while q < st.stl[a.nv[l]] {
+                    if st.sb[st.sts[a.nv[l]] + q] as i64 != st.sb[st.sts[a.nv[r]] + q] as i64 {
+                        eq = 0;
+                    }
+                    q += 1;
+                }
+            }
+            a.nk[idx] = 0;                 // the comparison happened at
+            a.nv[idx] = eq;                // compile time
+        }
     }
     if a.nk[idx] == 3 {                    // negation of a folded number
-        fold_node(a, a.nl[idx]);
+        fold_node(a, st, a.nl[idx]);
         c := a.nl[idx];
         if a.nk[c] == 0 {
             a.nk[idx] = 0;
@@ -604,7 +636,7 @@ fn fold_node(a: Ast, idx: i64) {
     if a.nk[idx] == 4 {                    // call: arguments fold, calls never
         mut q := 0;
         while q < a.nl[idx] {
-            fold_node(a, a.na[idx * 4 + q]);
+            fold_node(a, st, a.na[idx * 4 + q]);
             q += 1;
         }
     }
@@ -814,38 +846,38 @@ fn check_stmt(a: Ast, env: Scope, bc: i64, idx: i64) -> i64 {
 // from the tree — never emitted. A while over constant FALSE becomes
 // an empty wrapper the same way; over constant TRUE it is left alone
 // (an infinite loop is the program's right), body still folding.
-fn fold_stmt(a: Ast, idx: i64) {
+fn fold_stmt(a: Ast, st: Strs, idx: i64) {
     if idx < 0 {
         return;
     }
-    if a.nk[idx] == 8 { fold_stmt(a, a.nl[idx]); fold_stmt(a, a.nr[idx]); }
-    if a.nk[idx] == 5 { fold_node(a, a.nl[idx]); }
-    if a.nk[idx] == 9 { fold_node(a, a.nl[idx]); }
+    if a.nk[idx] == 8 { fold_stmt(a, st, a.nl[idx]); fold_stmt(a, st, a.nr[idx]); }
+    if a.nk[idx] == 5 { fold_node(a, st, a.nl[idx]); }
+    if a.nk[idx] == 9 { fold_node(a, st, a.nl[idx]); }
     if a.nk[idx] == 6 {
-        fold_node(a, a.nl[idx]);
+        fold_node(a, st, a.nl[idx]);
         if a.nk[a.nl[idx]] == 0 {          // constant condition: dead-arm
             mut live := a.nr[idx];         // elimination — nonzero keeps
             if a.nv[a.nl[idx]] == 0 {      // then, zero keeps else
                 live = a.na[idx * 4];
             }
-            fold_stmt(a, live);
+            fold_stmt(a, st, live);
             a.nk[idx] = 8;                 // the if dissolves into a seq
             a.nl[idx] = live;              // wrapper around the live arm
             a.nr[idx] = -1;                // (or around nothing at all)
             return;
         }
-        fold_stmt(a, a.nr[idx]);
-        fold_stmt(a, a.na[idx * 4]);
+        fold_stmt(a, st, a.nr[idx]);
+        fold_stmt(a, st, a.na[idx * 4]);
     }
     if a.nk[idx] == 7 {
-        fold_node(a, a.nl[idx]);
+        fold_node(a, st, a.nl[idx]);
         if a.nk[a.nl[idx]] == 0 && a.nv[a.nl[idx]] == 0 {
             a.nk[idx] = 8;                 // while false: it never runs —
             a.nl[idx] = -1;                // an empty wrapper remains
             a.nr[idx] = -1;
             return;
         }
-        fold_stmt(a, a.nr[idx]);
+        fold_stmt(a, st, a.nr[idx]);
     }
 }
 
@@ -903,7 +935,7 @@ fn emit_stmt(a: Ast, fe: *i64, fp: *i64, code: *i64, cp: i64, idx: i64) -> i64 {
 // with nseed already-bound names sitting in bv), fold, emit. This is
 // the compiler's whole shape in eight lines — ncc's parse → check →
 // gen, at toy scale, shared by function bodies and the main program.
-fn gen_body(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, a: Ast, env: Scope, nseed: i64, pos: i64, code: *i64, cp: i64) -> EP {
+fn gen_body(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, a: Ast, env: Scope, st: Strs, nseed: i64, pos: i64, code: *i64, cp: i64) -> EP {
     mut p := pos;
     mut n2 := 0;
     mut head := -1;
@@ -929,8 +961,8 @@ fn gen_body(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, a: Ast, e
     if a.nt[t.root] == 1 {                 // values and returns stay int —
         fail(a.nline[t.root], "a body's value must be an integer");
     }
-    fold_stmt(a, head);                    // pass 2: fold
-    fold_node(a, t.root);
+    fold_stmt(a, st, head);                    // pass 2: fold
+    fold_node(a, st, t.root);
     c := emit_stmt(a, fe, fp, code, cp, head);   // pass 3: emit
     EP{ pos: t.pos, cp: emit_node(a, fe, fp, code, c, t.root) }
 }
@@ -946,7 +978,7 @@ fn gen_body(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, a: Ast, e
 //   must be bound by its own statements. The flat runtime table would
 //   let a body read main's names, but that is caller-save's private
 //   business — the checker enforces the lexical story.
-fn parse_fndef(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, a: Ast, env: Scope, pos: i64, code: *i64, cp: i64) -> EP {
+fn parse_fndef(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, a: Ast, env: Scope, st: Strs, pos: i64, code: *i64, cp: i64) -> EP {
     f := v[pos + 1];
     fe[f] = cp;
     mut p := pos + 3;                      // fn +0, name +1, '(' +2, params...
@@ -967,7 +999,7 @@ fn parse_fndef(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, a: Ast
         }
     }
     fpc[f] = j;
-    t := gen_body(k, v, ln, fe, fp, fpc, a, env, j, p + 2, code, cp);
+    t := gen_body(k, v, ln, fe, fp, fpc, a, env, st, j, p + 2, code, cp);
     EP{ pos: t.pos + 1, cp: emit1(code, t.cp, 16) }   // skip '}', RET
 }
 
@@ -975,7 +1007,7 @@ fn parse_fndef(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, a: Ast
 //   If any functions exist, a JMP with a placeholder target is emitted
 //   first and patched to hop over their bodies — execution starts at
 //   the main statements, functions are entered only by CALL.
-fn parse_program(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, a: Ast, env: Scope, pos: i64, code: *i64, cp: i64) -> EP {
+fn parse_program(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, a: Ast, env: Scope, st: Strs, pos: i64, code: *i64, cp: i64) -> EP {
     mut p := pos;
     mut c := cp;
     if k[p] == 7 {
@@ -985,7 +1017,7 @@ fn parse_program(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, a: A
         while fns {
             fns = false;
             if k[p] == 7 {
-                r := parse_fndef(k, v, ln, fe, fp, fpc, a, env, p, code, c);
+                r := parse_fndef(k, v, ln, fe, fp, fpc, a, env, st, p, code, c);
                 p = r.pos;
                 c = r.cp;
                 fns = true;
@@ -993,7 +1025,7 @@ fn parse_program(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, a: A
         }
         code[hole] = c;                    // main statements start here
     }
-    t := gen_body(k, v, ln, fe, fp, fpc, a, env, 0, p, code, c);
+    t := gen_body(k, v, ln, fe, fp, fpc, a, env, st, 0, p, code, c);
     if k[t.pos] != 9 {                     // main's scope starts empty
         fail(ln[t.pos], "unexpected input after the tail expression");
     }
@@ -1067,6 +1099,24 @@ fn run(prog: *i64, stk: *i64, vars: *i64, st: Strs) -> i64 {
             put("\n");
             pc += 1;
         }
+        if op == 20 {                      // STREQ: pop two table indexes,
+            y := stk[sp - 1];              // byte-compare the spans
+            x := stk[sp - 2];
+            mut eq := 0;
+            if st.stl[x] == st.stl[y] {
+                eq = 1;
+                mut q := 0;
+                while q < st.stl[x] {
+                    if st.sb[st.sts[x] + q] as i64 != st.sb[st.sts[y] + q] as i64 {
+                        eq = 0;
+                    }
+                    q += 1;
+                }
+            }
+            stk[sp - 2] = eq;
+            sp -= 1;
+            pc += 1;
+        }
     }
     stk[0]
 }
@@ -1076,7 +1126,7 @@ fn show(src: str, k: *i64, v: *i64, ln: *i64, code: *i64, stk: *i64, vars: *i64,
         fe: *i64, fp: *i64, fpc: *i64, a: Ast, env: Scope, nb: *u8, ss: *i64, sl: *i64,
         st: Strs) {
     lex(src, k, v, ln, nb, ss, sl, st);
-    r := parse_program(k, v, ln, fe, fp, fpc, a, env, 0, code, 0);
+    r := parse_program(k, v, ln, fe, fp, fpc, a, env, st, 0, code, 0);
     words := emit1(code, r.cp, 0);         // HALT closes the program
     put("{src}\n");                        // echo first: a program's prints
     val := run(code, stk, vars, st);       // land under its source
@@ -1128,6 +1178,11 @@ fn main() -> i64 {
     // computed (and folded — PUSH 42) number takes PRINT instead:
     // one syntax, two opcodes, decided by the checker.
     show("greet := \"hello from the toy\"; print greet; print 6 * 7; 0",
+         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, nb, ss, sl, st);
+    // The type column's second dividend: == over two strings resolves
+    // to STREQ — and since == yields an int, string equality composes
+    // with plain conditions for free.
+    show("name := \"nyx\"; if name == \"nyx\" \{ print \"the goddess\"; \} print name == \"day\"; 0",
          k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, nb, ss, sl, st);
     // The broken program runs LAST (fail() ends the process — one failing
     // demo per run). It PARSES cleanly; what is wrong is a TYPE: a string
