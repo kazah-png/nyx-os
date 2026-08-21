@@ -7,7 +7,7 @@
 <p align="center">
   <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.9.0-LTS"><img src="https://img.shields.io/badge/release-v5.9.0--LTS-825AD2?style=flat" /></a>
   &nbsp;
-  <img src="https://img.shields.io/badge/version-v6.4.301-825AD2?style=flat" />
+  <img src="https://img.shields.io/badge/version-v6.4.302-825AD2?style=flat" />
   &nbsp;
   <img src="https://img.shields.io/badge/arch-x86__64-825AD2?style=flat" />
   &nbsp;
@@ -69,7 +69,7 @@ nyx:root$ nyxfetch
     .:oo.. :o.               ---------
   :oo:.oo.o:                 OS:         NyxOS x86_64
  .#o:.   :.                  Host:       QEMU Standard PC
- #:::....:                   Kernel:     NyxOS 6.4.301 (GUI Suite)
+ #:::....:                   Kernel:     NyxOS 6.4.302 (GUI Suite)
 o#::. . o.                   Uptime:     00:00:12
 o#.o:   :o                   Shell:      nyxsh
 o###o   o#                   Resolution: 1024 x 768
@@ -196,7 +196,9 @@ command, a render demo, a wallpaper, or a CI self-test — see
 memory protection, safe program loading, and how untrusted input is handled — is in
 [docs/SECURITY.md](docs/SECURITY.md). How processes are represented, scheduled, and
 retired — the process table, states, the weighted round-robin scheduler, threads,
-signals, and job control — is in [docs/PROCESS.md](docs/PROCESS.md).
+signals, and job control — is in [docs/PROCESS.md](docs/PROCESS.md). How files are
+named and stored — the VFS, the ramdisk tree, the EXT2 disk at `/mnt`, and the
+`/dev` and `/proc` special filesystems — is in [docs/FILESYSTEM.md](docs/FILESYSTEM.md).
 
 ---
 
