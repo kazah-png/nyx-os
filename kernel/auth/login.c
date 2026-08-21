@@ -341,6 +341,7 @@ int login_screen(void) {
                 g_login_avatar = avatar;
                 setup_user_home();
                 serial_puts("[LOGIN] OK.\n");
+                secure_zero(pass, sizeof pass);   // wipe the plaintext before entering the session (CWE-316)
                 return 1;
             }
             msg = "Could not create (name taken?)"; mode = 1; continue;
@@ -354,9 +355,11 @@ int login_screen(void) {
             g_login_avatar = auth_get_avatar(user);
             setup_user_home();
             serial_puts("[LOGIN] OK.\n");
+            secure_zero(pass, sizeof pass);   // wipe the plaintext before entering the session (CWE-316)
             return 1;
         }
 
+        secure_zero(pass, sizeof pass);   // a rejected password must not linger either
         attempts++;
         serial_puts("[LOGIN] FAIL.\n");
         // Brute-force defence: escalate the delay, and after LOGIN_MAX_ATTEMPTS

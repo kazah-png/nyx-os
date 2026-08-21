@@ -2305,6 +2305,21 @@ static int fmt_selftest(void) {
     return 0;
 }
 
+// KAT for secure_zero (the kernel's explicit_bzero): it must zero EXACTLY the n bytes
+// asked for — no under-run leaving a secret byte, no over-run clobbering a neighbour —
+// and a zero-length wipe must touch nothing. Returns 0 on pass, else the failing case.
+static int secure_zero_selftest(void) {
+    unsigned char buf[32];
+    for (int i = 0; i < 32; i++) buf[i] = (unsigned char)(0xA5 ^ i);   // poison pattern (incl. a 0 at i=0xA5^..)
+    secure_zero(buf + 4, 16);                                          // wipe [4, 20)
+    for (int i = 0; i < 4;  i++) if (buf[i] != (unsigned char)(0xA5 ^ i)) return 1;  // before region untouched
+    for (int i = 4; i < 20; i++) if (buf[i] != 0)                        return 2;  // wiped region all zero
+    for (int i = 20; i < 32; i++) if (buf[i] != (unsigned char)(0xA5 ^ i)) return 3; // after region untouched
+    secure_zero(buf, 0);                                              // zero-length: no-op
+    if (buf[0] != (unsigned char)0xA5) return 4;
+    return 0;
+}
+
 // nl [-b a|t|n] [-w N] [-s SEP] <file> — number the lines of <file>. By default
 // (-b t) only non-empty lines are numbered; -b a numbers every line, -b n none.
 // The number is right-justified in N columns (default 6) and followed by SEP
@@ -7407,6 +7422,7 @@ static void run_selftests(void) {
         {"histexpand",   history_expand_selftest},
         {"sed",          sed_subst_selftest},
         {"fmt",          fmt_selftest},
+        {"securezero",   secure_zero_selftest},
         {"chacha20",     chacha20_selftest},        {"siphash",       siphash_selftest},
         {"poly1305",     poly1305_selftest},        {"chachapoly",    chacha20poly1305_selftest},
         {"blake2s",      blake2s_selftest},         {"cmac",          aes_cmac_selftest},

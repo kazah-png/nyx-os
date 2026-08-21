@@ -18,7 +18,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.4.311"
+#define KERNEL_VERSION "6.4.312"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -694,6 +694,15 @@ static inline size_t strlen(const char *s) {
     size_t len = 0;
     while (*s++) len++;
     return len;
+}
+// Overwrite a buffer holding a secret (a typed password, key material) with zeros in a
+// way the compiler may NOT optimise away: the `volatile` pointer forces every store to
+// really happen, whereas a plain memset to a soon-out-of-scope/freed buffer is a legal
+// dead-store the optimiser can delete — leaving the secret in RAM (CWE-316). This is the
+// kernel's explicit_bzero: call it the moment a plaintext secret is no longer needed.
+static inline void secure_zero(void *p, size_t n) {
+    volatile unsigned char *vp = (volatile unsigned char *)p;
+    while (n--) *vp++ = 0;
 }
 static inline int strcmp(const char *s1, const char *s2) {
     while (*s1 && (*s1 == *s2)) { s1++; s2++; }
