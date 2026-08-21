@@ -259,6 +259,7 @@ static void cmd_tcpdrop(int argc, char** argv);
 static void cmd_tcploop(int argc, char** argv);
 static void cmd_tcpserve(int argc, char** argv);
 static void cmd_httpget(int argc, char** argv);
+static void cmd_httpd(int argc, char** argv);
 static void cmd_tls(int argc, char** argv);
 static void cmd_posttest(int argc, char** argv);
 static void cmd_tlsstrict(int argc, char** argv);
@@ -447,6 +448,7 @@ static const command_t commands[] = {
     {"tcploop",   cmd_tcploop,   "In-guest TCP loopback self-test: tcploop [drop]", false},
     {"tcpserve",  cmd_tcpserve,  "Serve one TCP/HTTP connection: tcpserve [port]", false},
     {"httpget",   cmd_httpget,   "HTTP GET: httpget <url>", false},
+    {"httpd",     cmd_httpd,     "Serve one HTTP request from the VFS: httpd <port>", false},
     {"tls",       cmd_tls,       "TLS handshake test: tls <host> (https :443)", false},
     {"posttest",  cmd_posttest,  "Live HTTP POST self-test (POST a form to httpbin over TLS)", false},
     {"tlsstrict", cmd_tlsstrict, "Strict TLS cert enforcement: tlsstrict [on|off]", false},
@@ -675,7 +677,7 @@ static const char* const HC_files[] = {"ls","cd","pwd","cat","file","tar","inige
 static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","sed","fold","nl","expand","unexpand","factor","isprime","strings","sha256sum","seq","paste","clip","cut","uniq","join","comm","printf","wc","write","hexdump",0};
 static const char* const HC_sys[]   = {"ps","kill","pgrep","pkill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat","screenshot","stackcheck",0};
 static const char* const HC_user[]  = {"useradd","users",0};
-static const char* const HC_net[]   = {"ifconfig","arp","netstat","dhcp","dns","ping","setip","httpget","tls","ipcalc",0};
+static const char* const HC_net[]   = {"ifconfig","arp","netstat","dhcp","dns","ping","setip","httpget","httpd","tls","ipcalc",0};
 static const char* const HC_dev[]   = {"cc","xbm","semver","fnv","urlcode","crc32c","fletcher","murmur","base58","bech32","deflate","gzip","calc","expr","json","hmac","totp",0};
 static const char* const HC_media[] = {"play","sb16play","imageview","selene",0};
 static const char* const HC_games[] = {"doom","pong","voxel","fire","matrix","lava","fractal","julia","particles","snake","tetris",0};
@@ -878,6 +880,7 @@ static const man_page_t man_pages[] = {
     {"sb16play", "Test Sound Blaster 16 playback: `sb16play [freq] [ms]` emits a tone at [freq] Hz for [ms] milliseconds through the SB16 DMA path (defaults if omitted), verifying the audio driver end to end."},
     {"fastfetch","Alias for `nyxfetch`: print the NyxOS logo beside a summary of the running system — kernel version, CPU, memory and uptime — the neofetch-style banner."},
     {"httpget",  "Fetch a URL over HTTP and print the response: `httpget <url>`. Resolves the host via DNS, opens a TCP connection, sends the GET and shows the status and body. Plain HTTP only; HTTPS is handled by the TLS stack (see `tls`)."},
+    {"httpd",    "Serve one HTTP request over TCP: `httpd <port>`. It listens on <port>, waits up to ~30 s for a browser or `httpget` to connect, serves the requested file from the VFS (GET / maps to /index.html; .html is sent as text/html, anything else as text/plain), then closes and returns — it is single-shot, not a background daemon, so the shell prompt comes back after one request. Missing files get a 404. The server counterpart to httpget."},
     {"tls",      "Run a TLS 1.2 handshake test against a host: `tls <host>` connects on :443 (HTTPS), performs the full handshake and certificate-chain verification, and reports the negotiated connection — a diagnostic for the crypto/TLS stack."},
     {"setip",    "Assign a static IPv4 configuration to the network interface: `setip <ip> <mask> <gw>` (address, netmask, gateway). Use instead of DHCP when you need a fixed address; check the result with `ifconfig`."},
     {"setres",   "Set the screen resolution, e.g. `setres 800 600`. Picks the matching VBE mode and re-inits the framebuffer; the desktop redraws at the new size. See `mode` for full width/height/bpp control."},
@@ -5112,6 +5115,91 @@ static void cmd_tcpserve(int argc, char** argv) {
     printf("Response sent. Closing.\n");
     tcp_close(child);
     tcp_close(srv);
+}
+
+// Serve one HTTP/1.0 GET on an ESTABLISHED connection: read the request, map the path
+// to a VFS file (GET / -> /index.html), send a 200 with the file body or a 404. Best-effort
+// and bounded (iteration caps, not wall-clock, so it can't hang if the timer is idle). The
+// request is small and already buffered by the time we're called, so tcp_recv drains without
+// blocking (tcp_recv is non-blocking: >0 bytes, or 0 when nothing is ready yet).
+static void httpd_serve_conn(int conn) {
+    char req[512]; int rn = 0;
+    for (int iter = 0; iter < 6000 && rn < (int)sizeof(req) - 1; iter++) {
+        kernel_poll_net();
+        int n = tcp_recv(conn, (uint8_t*)req + rn, (uint32_t)(sizeof(req) - 1 - rn));
+        if (n > 0) {
+            rn += n;
+            if (rn >= 4 && req[rn-4]=='\r' && req[rn-3]=='\n' && req[rn-2]=='\r' && req[rn-1]=='\n') break;
+        } else {
+            for (int d = 0; d < 300; d++) inb(0x80);   // brief spin, then re-poll
+        }
+    }
+    req[rn] = '\0';
+
+    char path[256]; path[0] = '/'; path[1] = '\0';
+    if (rn >= 5 && req[0]=='G' && req[1]=='E' && req[2]=='T' && req[3]==' ') {
+        int i = 4, o = 0;
+        while (req[i] && req[i] != ' ' && req[i] != '\r' && o < (int)sizeof(path) - 1) path[o++] = req[i++];
+        path[o] = '\0';
+    }
+    const char* fpath = (strcmp(path, "/") == 0) ? "/index.html" : path;
+    int plen = (int)strlen(fpath);
+    const char* ctype = (plen >= 5 && strcmp(fpath + plen - 5, ".html") == 0) ? "text/html" : "text/plain";
+
+    char hdr[256];
+    uint32_t size = 0; int isdir = 0;
+    if (vfs_stat(fpath, &size, &isdir) == 0 && !isdir) {
+        int fd = vfs_open(fpath, 0, 0);
+        if (fd >= 0) {
+            snprintf(hdr, sizeof(hdr),
+                     "HTTP/1.0 200 OK\r\nContent-Length: %u\r\nContent-Type: %s\r\nConnection: close\r\n\r\n",
+                     (unsigned)size, ctype);
+            tcp_send(conn, (const uint8_t*)hdr, (uint32_t)strlen(hdr));
+            uint8_t* buf = (uint8_t*)kmalloc(1024);
+            if (buf) {
+                uint32_t off = 0;
+                while (off < size) {
+                    int n = vfs_pread(fd, buf, 1024, off);
+                    if (n <= 0) break;
+                    tcp_send(conn, buf, (uint32_t)n);
+                    off += (uint32_t)n;
+                    for (int k = 0; k < 6; k++) kernel_poll_net();   // let the send window drain
+                }
+                kfree(buf);
+            }
+            vfs_close(fd);
+            return;
+        }
+    }
+    const char* body = "404 Not Found\n";
+    snprintf(hdr, sizeof(hdr),
+             "HTTP/1.0 404 Not Found\r\nContent-Length: %u\r\nContent-Type: text/plain\r\nConnection: close\r\n\r\n%s",
+             (unsigned)strlen(body), body);
+    tcp_send(conn, (const uint8_t*)hdr, (uint32_t)strlen(hdr));
+}
+
+// httpd <port> — a minimal one-request HTTP server: listen, accept one connection, serve the
+// requested file from the VFS, then close and return. Handy to share a file over the LAN; it
+// is single-shot (not a background daemon), so the shell gets its prompt back after one GET.
+static void cmd_httpd(int argc, char** argv) {
+    if (argc < 2) { printf("Usage: httpd <port>   (serves files from / ; GET / -> /index.html; one request)\n"); return; }
+    int port = atoi(argv[1]);
+    if (port < 1 || port > 65535) { printf("httpd: port must be 1..65535\n"); return; }
+    int srv = tcp_listen((uint16_t)port);
+    if (srv < 0) { printf("httpd: listen on port %d failed\n", port); return; }
+    printf("httpd: listening on port %d (one request, ~30s)...\n", port);
+    int child = -1;
+    uint32_t deadline = get_ticks() + 30000;
+    while (child < 0 && (int32_t)(get_ticks() - deadline) < 0) {
+        kernel_poll_net();
+        child = tcp_accept(srv);
+        for (int d = 0; d < 500; d++) inb(0x80);
+    }
+    if (child < 0) { printf("httpd: no connection (timed out)\n"); tcp_close(srv); return; }
+    httpd_serve_conn(child);
+    tcp_close(child);
+    tcp_close(srv);
+    printf("httpd: served one request, done.\n");
 }
 
 static void cmd_httpget(int argc, char** argv) {
