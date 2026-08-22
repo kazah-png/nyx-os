@@ -5,6 +5,63 @@
 #include "../../drivers/video/font.h"
 #include "../../auth/login.h"
 
+// ---- command-history ring (Up/Down recall, v6.4.326) ---------------------------------
+// A small fixed ring of past command lines. term_hist_get/add are pure (no window state)
+// so they can be unit-tested off-target by term_hist_selftest; the Up/Down key handling
+// (term_hist_nav) layers the fresh-line stash on top. Newest entry is the last added.
+static int th_streq(const char* a, const char* b) {
+    while (*a && *a == *b) { a++; b++; }
+    return *a == *b;
+}
+const char* term_hist_get(const term_hist_t* h, int back) {
+    if (!h || back < 0 || back >= h->count) return 0;     // 0..count-1 only; 0 ptr otherwise
+    int idx = ((h->head - 1 - back) % TERM_HIST_MAX + TERM_HIST_MAX) % TERM_HIST_MAX;
+    return h->line[idx];
+}
+void term_hist_add(term_hist_t* h, const char* line) {
+    if (!h || !line || line[0] == '\0') return;           // never record a blank line
+    const char* newest = term_hist_get(h, 0);
+    if (newest && th_streq(newest, line)) return;         // ignore an exact repeat (ignoredups)
+    char* dst = h->line[h->head];
+    int i = 0;
+    for (; line[i] && i < TERM_INPUT_MAX - 1; i++) dst[i] = line[i];
+    dst[i] = '\0';
+    h->head = (h->head + 1) % TERM_HIST_MAX;
+    if (h->count < TERM_HIST_MAX) h->count++;             // ring saturates, never overflows
+}
+// KAT: newest-first ordering, blank/dup skipping, ring wrap-around eviction, range guards.
+int term_hist_selftest(void) {
+    static term_hist_t h;                 // static: term_hist_t is ~4 KB — too big for the kernel stack
+    memset_asm(&h, 0, sizeof h); h.nav = -1;
+
+    if (term_hist_get(&h, 0) != 0) return 1;              // empty ring recalls nothing
+    term_hist_add(&h, "");                                 // a blank line is ignored
+    if (h.count != 0) return 2;
+
+    term_hist_add(&h, "one"); term_hist_add(&h, "two"); term_hist_add(&h, "three");
+    if (h.count != 3) return 3;
+    if (!th_streq(term_hist_get(&h, 0), "three")) return 4;   // back=0 is the newest
+    if (!th_streq(term_hist_get(&h, 1), "two"))   return 5;
+    if (!th_streq(term_hist_get(&h, 2), "one"))   return 6;
+    if (term_hist_get(&h, 3)  != 0) return 7;                 // past the oldest
+    if (term_hist_get(&h, -1) != 0) return 8;                 // negative guard
+
+    term_hist_add(&h, "three");                              // exact repeat of newest -> skipped
+    if (h.count != 3) return 9;
+    term_hist_add(&h, "four");                               // a different line is recorded
+    if (h.count != 4 || !th_streq(term_hist_get(&h, 0), "four")) return 10;
+
+    static const char hx[] = "0123456789abcdef";             // overflow the ring with MAX distinct lines
+    for (int i = 0; i < TERM_HIST_MAX; i++) { char b[4]; b[0]='h'; b[1]=hx[i]; b[2]='\0'; term_hist_add(&h, b); }
+    if (h.count != TERM_HIST_MAX) return 11;                 // saturated at the cap, never beyond
+    { char last[4];   last[0]='h';   last[1]=hx[TERM_HIST_MAX-1]; last[2]='\0';
+      if (!th_streq(term_hist_get(&h, 0), last)) return 12; }              // newest = last pushed
+    { char oldest[4]; oldest[0]='h'; oldest[1]=hx[0];            oldest[2]='\0';
+      if (!th_streq(term_hist_get(&h, TERM_HIST_MAX - 1), oldest)) return 13; }  // oldest survivor
+    if (term_hist_get(&h, TERM_HIST_MAX) != 0) return 14;    // exactly cap entries live
+    return 0;
+}
+
 static void term_add_line(terminal_win_t* term, const char* text, uint8_t color) {
     if (term->line_count >= TERM_LINES) {
         for (int i = 1; i < TERM_LINES; i++) {
@@ -99,6 +156,7 @@ terminal_win_t* terminal_create_ctx(void) {
     terminal_win_t* term = (terminal_win_t*)kmalloc(sizeof(terminal_win_t));
     if (!term) return NULL;
     memset_asm(term, 0, sizeof(terminal_win_t));
+    term->hist.nav = -1;                  // start editing a fresh line, not navigating history
     term->cwd = login_home_node();        // each terminal starts in the user's home dir
     term_set_prompt(term);
     term->visible_rows = 20;
@@ -372,6 +430,35 @@ int term_paste_selftest(void) {
     return 0;
 }
 
+// Replace the input line with `s` (bounded) and park the cursor at its end.
+static void term_load_input(terminal_win_t* t, const char* s, int len) {
+    if (len > TERM_INPUT_MAX - 1) len = TERM_INPUT_MAX - 1;
+    for (int i = 0; i < len; i++) t->input[i] = s[i];
+    t->input_len  = len;
+    t->cursor_pos = len;
+}
+
+// Up/Down history recall. dir = +1 walks OLDER (Up), -1 walks NEWER (Down). The fresh
+// line the user was typing is stashed the moment recall begins and restored when they
+// come back down past the newest entry (nav returns to -1).
+static void term_hist_nav(terminal_win_t* t, int dir) {
+    term_hist_t* h = &t->hist;
+    if (h->count == 0) return;                       // nothing recorded yet
+    int nn = h->nav + dir;
+    if (nn < -1) nn = -1;                            // no newer than the fresh line
+    if (nn > h->count - 1) nn = h->count - 1;        // clamp at the oldest entry
+    if (nn == h->nav) return;                         // already at that edge — no change
+    if (h->nav == -1) {                               // leaving the fresh line: save it
+        int n = t->input_len; if (n > TERM_INPUT_MAX - 1) n = TERM_INPUT_MAX - 1;
+        for (int i = 0; i < n; i++) h->stash[i] = t->input[i];
+        h->stash_len = n;
+    }
+    h->nav = nn;
+    if (nn == -1) { term_load_input(t, h->stash, h->stash_len); return; }   // back to fresh line
+    const char* e = term_hist_get(h, nn);
+    if (e) { int L = 0; while (e[L]) L++; term_load_input(t, e, L); }
+}
+
 void terminal_win_key(window_t* win, int key) {
     terminal_win_t* term = (terminal_win_t*)win->reserved;
     if (!term) return;
@@ -395,6 +482,12 @@ void terminal_win_key(window_t* win, int key) {
     // Extended keycodes (arrows, etc.)
     if (key >= 0x80) {
         switch (key) {
+            case KEY_UP:                 // recall an older command
+                term_hist_nav(term, +1);
+                break;
+            case KEY_DOWN:               // walk back toward the fresh line
+                term_hist_nav(term, -1);
+                break;
             case KEY_LEFT:
                 if (term->cursor_pos > 0) term->cursor_pos--;
                 break;
@@ -488,6 +581,9 @@ void terminal_win_key(window_t* win, int key) {
             full_line[fl++] = term->input[i];
         full_line[fl] = '\0';
         term_add_line(term, full_line, VGA_LIGHT_GREEN | (VGA_BLACK << 4));
+
+        term_hist_add(&term->hist, term->input);    // record for Up/Down recall (skips blank + dup)
+        term->hist.nav = -1;                         // Enter ends any history navigation
 
         if (term->input_len > 0) {
             capture_term = term;

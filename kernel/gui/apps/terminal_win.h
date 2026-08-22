@@ -8,6 +8,21 @@
 #define TERM_COLS       80
 #define TERM_INPUT_MAX  256
 #define TERM_OUTPUT_MAX 4096
+#define TERM_HIST_MAX   16     // command lines kept for Up/Down recall (ring buffer)
+
+// Command-line history ring (Up/Down recall, v6.4.326). Newest entry is the one added
+// last; term_hist_add skips blank lines and an exact repeat of the newest (bash-style
+// ignoredups). `nav` is -1 while the user edits a fresh line, else the 0-based number
+// of steps back into history currently shown; `stash` keeps that fresh line so coming
+// back down past the newest entry restores what was typed.
+typedef struct {
+    char line[TERM_HIST_MAX][TERM_INPUT_MAX];
+    int  count;                    // live entries (0..TERM_HIST_MAX)
+    int  head;                     // ring index the next push writes to
+    int  nav;                      // -1 = not navigating; else steps back from newest
+    char stash[TERM_INPUT_MAX];    // the in-progress line saved when recall began
+    int  stash_len;
+} term_hist_t;
 
 typedef struct {
     char lines[TERM_LINES][TERM_COLS];
@@ -35,6 +50,7 @@ typedef struct {
     // output_buf so a scrollback line keeps per-char color (e.g. `ls --color`).
     uint8_t cur_color;
     uint8_t out_color[TERM_OUTPUT_MAX];
+    term_hist_t hist;       // Up/Down command history (v6.4.326)
 } terminal_win_t;
 
 #define TERM_SCREEN_ROWS 45    // rows cleared/addressable in screen mode (>= any window)
@@ -48,5 +64,10 @@ void terminal_capture_reset(terminal_win_t* t);   // leave screen mode when a cm
 int term_input_paste(char* input, int* input_len, int* cursor_pos, int cap,
                      const char* clip, int clip_len);   // Ctrl+V insert (bounded)
 int term_paste_selftest(void);
+
+// Command-history ring core (pure, unit-tested by term_hist_selftest).
+void term_hist_add(term_hist_t* h, const char* line);     // record a command (skip blank/dup)
+const char* term_hist_get(const term_hist_t* h, int back); // back=0 newest; 0 ptr if out of range
+int  term_hist_selftest(void);
 
 #endif

@@ -253,6 +253,7 @@ static void cmd_stackcheck(int argc, char** argv);
 extern int stack_canary_sweep(void);      // process.c — scan task-stack canaries
 extern int stack_canary_selftest(void);   // process.c — canary KAT
 extern int term_paste_selftest(void);      // gui/apps/terminal_win.c — Ctrl+V paste KAT
+extern int term_hist_selftest(void);        // gui/apps/terminal_win.c — Up/Down history-ring KAT
 extern int editor_find_selftest(void);      // gui/apps/editor_win.c — Ctrl+F find-search KAT
 extern int ext2_format_selftest(void);      // fs/ext2.c — mkfs.ext2 layout KAT
 extern int ext2_format_mg_selftest(void);   // fs/ext2.c — multi-group mkfs KAT
@@ -8011,7 +8012,7 @@ static void run_selftests(void) {
         {"auth-lockout", auth_lockout_selftest},
         {"xbm-deps",     xbm_deps_selftest},
         {"clipboard",    clipboard_selftest},
-        {"term-paste",   term_paste_selftest},
+        {"term-paste",   term_paste_selftest},   {"term-hist",     term_hist_selftest},
         {"du",           du_selftest},
         {"pci",          pci_selftest},
         {"nvme",         nvme_selftest},
