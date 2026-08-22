@@ -39,4 +39,7 @@ int cut_parse_list(const char* list, cut_spec_t* spec);
 uint32_t cut_line(const cut_spec_t* spec, const char* line, uint32_t len,
                   char* out, uint32_t outcap);
 
+// KAT: LIST parse (valid + malformed) + field/open-range/no-delim/suppress/char-mode. 0 = pass.
+int cut_selftest(void);
+
 #endif

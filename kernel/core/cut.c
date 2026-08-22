@@ -97,3 +97,45 @@ uint32_t cut_line(const cut_spec_t* spec, const char* line, uint32_t len,
         if (cut_selected(spec, pos) && o < outcap) out[o++] = line[pos - 1];
     return o;
 }
+
+// KAT for the pure cut core: LIST parsing (valid + every malformed form), field extraction
+// with explicit and open-ended ranges, the GNU no-delimiter passthrough, the -s suppress
+// (CUT_SKIP), and character mode. Returns 0 on pass, else the failing case number.
+static int cut_streq(const char* out, uint32_t n, const char* want) {
+    uint32_t wl = 0; while (want[wl]) wl++;
+    if (n != wl) return 0;
+    for (uint32_t i = 0; i < n; i++) if (out[i] != want[i]) return 0;
+    return 1;
+}
+int cut_selftest(void) {
+    cut_spec_t s, e; char out[64]; uint32_t n;
+    // LIST parsing: a valid list sets the right bitmap + open range...
+    memset_asm(&s, 0, sizeof s);
+    if (cut_parse_list("1,3-5,7-", &s) != 0) return 1;
+    if (!s.sel[1] || s.sel[2] || !s.sel[3] || !s.sel[4] || !s.sel[5] || s.open_from != 7) return 2;
+    // ...and every malformed form is rejected.
+    memset_asm(&e, 0, sizeof e); if (cut_parse_list("",    &e) == 0) return 3;   // empty
+    memset_asm(&e, 0, sizeof e); if (cut_parse_list("-",   &e) == 0) return 4;   // bare dash
+    memset_asm(&e, 0, sizeof e); if (cut_parse_list("0",   &e) == 0) return 5;   // zero position
+    memset_asm(&e, 0, sizeof e); if (cut_parse_list("5-3", &e) == 0) return 6;   // decreasing range
+    memset_asm(&e, 0, sizeof e); if (cut_parse_list("2a",  &e) == 0) return 7;   // stray non-digit
+    // Field mode: explicit fields joined by the output delimiter.
+    memset_asm(&s, 0, sizeof s); s.mode = CUT_FIELDS; s.delim = ','; s.odelim = ',';
+    if (cut_parse_list("1,3", &s) != 0) return 8;
+    n = cut_line(&s, "a,b,c,d", 7, out, sizeof out); if (!cut_streq(out, n, "a,c")) return 9;
+    // Open-ended "N-" range.
+    memset_asm(&s, 0, sizeof s); s.mode = CUT_FIELDS; s.delim = ','; s.odelim = ',';
+    if (cut_parse_list("2-", &s) != 0) return 10;
+    n = cut_line(&s, "a,b,c,d", 7, out, sizeof out); if (!cut_streq(out, n, "b,c,d")) return 11;
+    // A line with no delimiter passes through unchanged (GNU behaviour).
+    n = cut_line(&s, "abc", 3, out, sizeof out); if (!cut_streq(out, n, "abc")) return 12;
+    // -s suppresses a no-delimiter line entirely.
+    memset_asm(&s, 0, sizeof s); s.mode = CUT_FIELDS; s.delim = ','; s.odelim = ','; s.suppress = 1;
+    if (cut_parse_list("1", &s) != 0) return 13;
+    if (cut_line(&s, "abc", 3, out, sizeof out) != CUT_SKIP) return 14;
+    // Character mode: selected positions, no separator.
+    memset_asm(&s, 0, sizeof s); s.mode = CUT_CHARS; s.delim = ','; s.odelim = ',';
+    if (cut_parse_list("1,3-4", &s) != 0) return 15;
+    n = cut_line(&s, "hello", 5, out, sizeof out); if (!cut_streq(out, n, "hll")) return 16;
+    return 0;
+}
