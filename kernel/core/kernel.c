@@ -129,6 +129,7 @@ static void cmd_pwd(int argc, char** argv);
 static void cmd_cat(int argc, char** argv);
 static void cmd_touch(int argc, char** argv);
 static void cmd_truncate(int argc, char** argv);
+static void cmd_mktemp(int argc, char** argv);
 static void cmd_mkdir(int argc, char** argv);
 static void cmd_rm(int argc, char** argv);
 static void cmd_shred(int argc, char** argv);
@@ -353,6 +354,7 @@ static const command_t commands[] = {
     {"open",      cmd_open,      "Open a file in the GUI Text Editor: open <file>", false},
     {"touch",     cmd_touch,     "Create empty file: touch <file>", false},
     {"truncate",  cmd_truncate,  "Set a file's size: truncate -s <size> <file>", false},
+    {"mktemp",    cmd_mktemp,    "Create a uniquely-named temp file/dir: mktemp [-d] [-u] [template]", false},
     {"mkdir",     cmd_mkdir,     "Create directory: mkdir <dir>", false},
     {"rm",        cmd_rm,        "Remove file or directory: rm <path>", false},
     {"shred",     cmd_shred,     "Overwrite a file's data, then optionally remove it: shred [-n N] [-u] <file>", false},
@@ -967,6 +969,7 @@ static const man_page_t man_pages[] = {
     {"du",       "Disk usage: sum the sizes of every file in the subtree rooted at [path] (the current directory by default) and print the total, both human-readable (B/K/M/G) and in exact bytes, with a file and directory count. The walk is iterative with a bounded off-stack frontier (the 4 KB kernel task stack forbids deep recursion); a subtree wider than that many pending directories reports the total as a floor. Complements `df`, which reports whole-filesystem free space rather than per-directory usage."},
     {"find",     "Search for files whose name matches <name>, starting at [path] (the current directory by default), and print the path of every match."},
     {"touch",    "Create <file> as a new, empty file if it does not already exist."},
+    {"mktemp", "Create a uniquely-named temporary file and print its path: `mktemp [-d] [-u] [template]`. The template's trailing run of `X`s is replaced with random characters from the CSPRNG (default template `/tmp/tmp.XXXXXX`), so two callers won't pick the same name; a name that already exists is skipped and another drawn. `-d` makes a directory instead of a file; `-u` only prints an unused name without creating anything (inherently racy — prefer the default). Useful in scripts that need a scratch file no one else will clobber."},
     {"truncate", "Set a file's length: `truncate -s <size> <file>`. The size is `N` (bytes), `NK`/`NM`/`NG` (1024-based), or `+N`/`-N` to grow/shrink relative to the current size (`-N` clamps at 0). Growing zero-fills the new tail; shrinking discards the excess. The file is created if it doesn't exist. Sizes are capped at 16 MB (files are held as one contiguous buffer, so there are no sparse holes). Handy for making a fixed-size test file — e.g. `truncate -s 1M /tmp/big` — or trimming one."},
     {"which",    "Look <name> up as a shell command and report how it would run: as a built-in, or as the program at a particular path."},
     {"env",      "Print the shell's environment variables, one NAME=value pair per line."},
@@ -7312,6 +7315,68 @@ static void cmd_truncate(int argc, char** argv) {
     printf("truncate: %s now %u bytes\n", path, n);
 }
 
+// mktemp: create a uniquely-named temporary file (or directory) and print its path. The name
+// comes from a template whose trailing run of 'X's is filled with random characters from the
+// CSPRNG, so concurrent callers (or repeat runs) don't collide.
+#define MKTEMP_CHARS "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"  /* 62 */
+
+// Expand the trailing run of 'X' in `tmpl` into random chars from MKTEMP_CHARS (one rnd byte
+// per X, reduced mod 62). Only the LAST contiguous run of X is substituted, GNU-style; any
+// embedded X is left alone. Returns the count of X's replaced (0 = no placeholder, -1 = the
+// template does not fit in `out`). Pure — pinned by mktemp_selftest.
+static int mktemp_expand(const char* tmpl, char* out, int outcap, const uint8_t* rnd) {
+    int n = 0; while (tmpl[n]) n++;
+    if (n + 1 > outcap) return -1;
+    for (int i = 0; i <= n; i++) out[i] = tmpl[i];          // copy including the NUL
+    int start = n;
+    while (start > 0 && out[start - 1] == 'X') start--;
+    int count = n - start;
+    for (int i = 0; i < count; i++)
+        out[start + i] = MKTEMP_CHARS[rnd[i] % 62];
+    return count;
+}
+
+int mktemp_selftest(void) {
+    char out[64];
+    // MKTEMP_CHARS index map: 0-9='0'..'9', 10-35='a'..'z', 36-61='A'..'Z'
+    static const uint8_t rnd[6] = {0, 1, 61, 62, 10, 35};   // -> '0','1','Z','0','a','z'
+    if (mktemp_expand("/tmp/tmp.XXXXXX", out, sizeof(out), rnd) != 6) return 1;
+    if (strcmp(out, "/tmp/tmp.01Z0az")) return 2;
+    if (mktemp_expand("/tmp/plain", out, sizeof(out), rnd) != 0) return 3;   // no placeholder
+    if (strcmp(out, "/tmp/plain")) return 4;
+    if (mktemp_expand("aXbXXX", out, sizeof(out), rnd) != 3) return 5;       // only the trailing run
+    if (strcmp(out, "aXb01Z")) return 6;                                     // embedded X kept
+    char tiny[4];
+    if (mktemp_expand("abcdef", tiny, sizeof(tiny), rnd) != -1) return 7;    // too long -> -1
+    return 0;
+}
+
+static void cmd_mktemp(int argc, char** argv) {
+    const char* tmpl = "/tmp/tmp.XXXXXX";
+    int make_dir = 0, dry = 0;
+    for (int i = 1; i < argc; i++) {
+        if      (!strcmp(argv[i], "-d")) make_dir = 1;
+        else if (!strcmp(argv[i], "-u")) dry = 1;
+        else tmpl = argv[i];
+    }
+    char name[128];
+    for (int attempt = 0; attempt < 8; attempt++) {
+        uint8_t rnd[128];
+        csprng_bytes(rnd, sizeof(rnd));
+        int nx = mktemp_expand(tmpl, name, sizeof(name), rnd);
+        if (nx < 0)  { printf("mktemp: template too long\n"); return; }
+        if (nx == 0) { printf("mktemp: template '%s' has no trailing X's\n", tmpl); return; }
+        uint32_t sz; int isdir;
+        if (vfs_stat(name, &sz, &isdir) == 0) continue;                     // name taken — draw again
+        if (dry) { printf("%s\n", name); return; }                         // -u: just report a free name
+        int ok = make_dir ? (vfs_mkdir(name, 0755) == 0) : (vfs_touch(name) == 0);
+        if (ok) { printf("%s\n", name); return; }
+        printf("mktemp: cannot create '%s'\n", name);
+        return;
+    }
+    printf("mktemp: could not find an unused name for '%s'\n", tmpl);
+}
+
 static void cmd_touch(int argc, char** argv) {
     if (argc < 2) { printf("Usage: touch <file>\n"); return; }
     if (!path_last_component_ok(argv[1])) { printf("touch: invalid file name '%s'\n", argv[1]); return; }
@@ -8626,6 +8691,7 @@ static void run_selftests(void) {
         {"edfind",       editor_find_selftest},   {"edreplace",     editor_replace_selftest},
         {"cut",          cut_selftest},           {"xargs",         xargs_selftest},
         {"trunc",        trunc_selftest},         {"pstree",        pstree_selftest},
+        {"mktemp",       mktemp_selftest},
         {"shuf",         shuf_selftest},
         {"comm",         comm_selftest},          {"join",          join_selftest},
         {"securezero",   secure_zero_selftest},
