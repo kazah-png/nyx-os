@@ -158,6 +158,8 @@ static void cmd_strings(int argc, char** argv);
 static void cmd_sha256sum(int argc, char** argv);
 static void cmd_hmac(int argc, char** argv);
 static void cmd_totp(int argc, char** argv);
+static void cmd_encrypt(int argc, char** argv);
+static void cmd_decrypt(int argc, char** argv);
 static void cmd_uuid(int argc, char** argv);
 static void cmd_semver(int argc, char** argv);
 static void cmd_fnv(int argc, char** argv);
@@ -404,6 +406,8 @@ static const command_t commands[] = {
     {"sha256sum", cmd_sha256sum, "Print the SHA-256 digest of each file: sha256sum <file>...", false},
     {"hmac",      cmd_hmac,      "HMAC-SHA256 of a message under a key: hmac <key> <message>", false},
     {"totp",      cmd_totp,      "RFC 6238 auth code: totp <base32-secret> [unix-time]", false},
+    {"encrypt",   cmd_encrypt,   "Encrypt a file with a password: encrypt <in> <out> <password>", false},
+    {"decrypt",   cmd_decrypt,   "Decrypt a file made by encrypt: decrypt <in> <out> <password>", false},
     {"uuid",      cmd_uuid,      "Generate random RFC-4122 v4 UUIDs: uuid [count]", false},
     {"seq",       cmd_seq,       "Integer sequence: seq [FIRST [STEP]] LAST", false},
     {"paste",     cmd_paste,     "Merge lines of files: paste [-s] [-d LIST] <file ...>", false},
@@ -885,6 +889,8 @@ static const man_page_t man_pages[] = {
     {"isprime",  "Test each integer argument for primality and print `N is prime` or `N is not prime`. Uses an exact deterministic Miller-Rabin (the twelve witnesses 2..37, proven correct for all 64-bit N), so the answer is definitive — not probabilistic — and it correctly rejects Carmichael numbers that fool a naive Fermat test. Much faster than `factor` for a large prime, since it never has to find the factors. A non-numeric or negative argument is reported and skipped."},
     {"strings",  "Print each run of at least MIN (default 4, or -n MIN) consecutive printable characters found in <file>, one run per line — the classic way to read the text embedded in a binary (an ELF, an image, a package). A printable character is a space through `~` (0x20-0x7E) or a tab; any other byte ends the current run. The file is streamed in fixed chunks, so even a large binary needs no whole-file buffer."},
     {"hmac","Compute HMAC-SHA256 of <message> keyed by <key> and print it as 64 lowercase hex digits: `hmac <key> <message>`. HMAC is the standard keyed-hash message authentication code (RFC 2104 / FIPS 198) — the way API requests are signed, JWT `HS256` tokens are built, and webhook payloads are verified: the same key + message always yields the same tag, and without the key the tag can't be forged. Both arguments are taken as text (quote a message with spaces). Backed by the same KAT'd `hmac_sha256` the CSPRNG, HKDF and PBKDF2 auth path use; the RFC 4231 test vectors pin it (the `hmac` self-test)."},
+    {"encrypt",  "Encrypt a file under a password: `encrypt <in> <out> <password>`. A 128-bit key is derived from the password with PBKDF2-HMAC-SHA256 (4096 iterations) over a random 16-byte salt, and the file is sealed with AES-128-GCM using a random 12-byte nonce. The output is `\"NYXC\" | salt | nonce | 16-byte auth tag | ciphertext`, so encrypting the same file twice yields different bytes and any tampering is detectable. Decrypt it with `decrypt` and the same password. Payloads up to 4 MB. Keys are wiped from memory after use. (A convenience tool — for real archival use a vetted implementation.)"},
+    {"decrypt",  "Decrypt a file produced by `encrypt`: `decrypt <in> <out> <password>`. It re-derives the key from the password and the salt stored in the file, then AES-128-GCM verifies the authentication tag BEFORE writing anything: a wrong password or a corrupted/tampered file fails the check and no output is written (`auth failed`). On success the recovered plaintext is written to <out>."},
     {"totp",     "Generate a time-based one-time password (RFC 6238) — the 6-digit authenticator code used for two-factor login: `totp <base32-secret> [unix-time]`. The shared secret is decoded from strict, padded, upper-case Base32 (A-Z, 2-7); the code is HMAC-SHA1 over a 30-second counter, the Google Authenticator default. With no time it uses the RTC clock (so it matches a phone authenticator when the clock is correct); pass a Unix time to reproduce a specific code — e.g. `totp GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ 59` prints 287082, the RFC 6238 test vector. Backed by the KAT'd totp_sha1/hmac_sha1 primitives."},
     {"uuid",     "Generate random RFC-4122 version-4 UUIDs: `uuid` prints one, `uuid <count>` prints up to 100. Each is 16 bytes drawn from the CSPRNG with the version (4) and variant bits set, formatted as the canonical 8-4-4-4-12 lower-case hex (e.g. `550e8400-e29b-41d4-a716-446655440000`). Useful for unique identifiers in scripts, configs and test data. The formatting/bit-setting is pinned by the `uuid` self-test; the randomness comes from the same HMAC-DRBG the crypto stack uses."},
     {"sha256sum","Print the SHA-256 digest of each file argument as `<64-hex-digits>  <name>` (two spaces between, the GNU sha256sum format), the standard way to check a file's integrity — e.g. that a downloaded package matches a published hash. Each file is streamed through the hash in fixed chunks, so a large binary needs no whole-file buffer, and the total is capped so an endless special like /dev/zero cannot spin forever. A file that cannot be opened is reported and skipped."},
@@ -1608,6 +1614,123 @@ static void cmd_totp(int argc, char** argv) {
     uint32_t code = totp_sha1(key, keylen, t, 30, 6);
     char out[8]; snprintf(out, sizeof(out), "%06u", (unsigned)code);
     printf("%s\n", out);
+}
+
+// ---- encrypt / decrypt: password-based file encryption (AES-128-GCM + PBKDF2) ----------
+// On-disk layout: "NYXC" | salt(16) | iv(12) | tag(16) | ciphertext. The AES key is
+// PBKDF2-HMAC-SHA256(password, random salt, ENC_ITERS) truncated to 16 bytes; GCM
+// authenticates the ciphertext, so a wrong password or any tampering fails the tag check
+// on decrypt (nothing is written). salt + nonce come from the CSPRNG, so encrypting the
+// same file twice gives different output. All key material is secure_zero'd after use.
+#define ENC_SALT  16u
+#define ENC_IV    12u
+#define ENC_TAG   16u
+#define ENC_HDR   (4u + ENC_SALT + ENC_IV + ENC_TAG)   // 48-byte header
+#define ENC_ITERS 4096u
+#define ENC_MAXSZ (4u * 1024 * 1024)                   // 4 MB payload ceiling
+
+static void enc_key_from_pw(const char* pw, const uint8_t* salt, uint8_t key[16]) {
+    uint8_t dk[SHA256_DIGEST_SIZE];
+    pbkdf2_hmac_sha256((const uint8_t*)pw, (uint32_t)strlen(pw), salt, ENC_SALT, ENC_ITERS, dk);
+    for (int i = 0; i < 16; i++) key[i] = dk[i];
+    secure_zero(dk, sizeof dk);
+}
+
+// Read a whole file (up to ENC_MAXSZ + extra) into a fresh kmalloc'd buffer; *out_n = bytes.
+static uint8_t* enc_read_file(const char* path, int* out_n, uint32_t extra) {
+    int fd = vfs_open(path, 0, 0);
+    if (fd < 0) return NULL;
+    uint32_t cap = ENC_MAXSZ + extra;
+    uint8_t* buf = (uint8_t*)kmalloc(cap);
+    if (!buf) { vfs_close(fd); return NULL; }
+    int n = 0, r;
+    while (n < (int)cap && (r = vfs_read(fd, buf + n, (int)cap - n)) > 0) n += r;
+    vfs_close(fd);
+    *out_n = (n < 0) ? 0 : n;
+    return buf;
+}
+
+// Pure seal/open cores (no file I/O) so the format + crypto can be KAT'd off-target.
+// enc_seal writes ENC_HDR+n bytes into out; enc_open returns 0 + plaintext on success or -1
+// on a bad header / failed auth tag (wrong password OR tampering). Key material is wiped.
+static void enc_seal(const uint8_t* pt, uint32_t n, const char* pw, uint8_t* out, uint32_t* outlen) {
+    uint8_t salt[ENC_SALT], iv[ENC_IV], key[16], tag[ENC_TAG];
+    csprng_bytes(salt, ENC_SALT);
+    csprng_bytes(iv, ENC_IV);
+    enc_key_from_pw(pw, salt, key);
+    const char* mg = "NYXC";
+    for (int i = 0; i < 4; i++)             out[i] = (uint8_t)mg[i];
+    for (uint32_t i = 0; i < ENC_SALT; i++) out[4 + i] = salt[i];
+    for (uint32_t i = 0; i < ENC_IV; i++)   out[4 + ENC_SALT + i] = iv[i];
+    aes128_gcm_encrypt(key, iv, NULL, 0, pt, n, out + ENC_HDR, tag);
+    for (uint32_t i = 0; i < ENC_TAG; i++)  out[4 + ENC_SALT + ENC_IV + i] = tag[i];
+    secure_zero(key, sizeof key);
+    *outlen = ENC_HDR + n;
+}
+static int enc_open(const uint8_t* in, uint32_t n, const char* pw, uint8_t* pt, uint32_t* ptlen) {
+    if (n < ENC_HDR || in[0] != 'N' || in[1] != 'Y' || in[2] != 'X' || in[3] != 'C') return -1;
+    const uint8_t* salt = in + 4, *iv = in + 4 + ENC_SALT, *tag = in + 4 + ENC_SALT + ENC_IV, *ct = in + ENC_HDR;
+    uint32_t ctlen = n - ENC_HDR;
+    uint8_t key[16];
+    enc_key_from_pw(pw, salt, key);
+    int ok = aes128_gcm_decrypt(key, iv, NULL, 0, ct, ctlen, tag, pt);
+    secure_zero(key, sizeof key);
+    if (ok != 0) return -1;
+    *ptlen = ctlen;
+    return 0;
+}
+
+// KAT: seal a fixed plaintext, reopen with the right password (recovers it exactly), and prove
+// a wrong password AND a single flipped ciphertext byte both fail the GCM tag. All in-memory.
+int enc_selftest(void) {
+    static const uint8_t pt[] = "The quick brown fox jumps -- nyx secret 0123456789";
+    uint32_t n = (uint32_t)sizeof(pt) - 1;                 // drop the trailing NUL
+    static uint8_t sealed[ENC_HDR + 64], back[64];
+    uint32_t sl = 0, bl = 0;
+    enc_seal(pt, n, "correct horse", sealed, &sl);
+    if (sl != ENC_HDR + n) return 1;
+    if (sealed[0] != 'N' || sealed[1] != 'Y' || sealed[2] != 'X' || sealed[3] != 'C') return 2;
+    if (enc_open(sealed, sl, "correct horse", back, &bl) != 0) return 3;   // right password opens
+    if (bl != n) return 4;
+    for (uint32_t i = 0; i < n; i++) if (back[i] != pt[i]) return 5;       // plaintext recovered exactly
+    if (enc_open(sealed, sl, "wrong horse", back, &bl) == 0) return 6;     // wrong password -> auth fail
+    sealed[ENC_HDR] ^= 0x01;                                               // flip one ciphertext byte
+    if (enc_open(sealed, sl, "correct horse", back, &bl) == 0) return 7;   // tamper -> auth fail
+    return 0;
+}
+
+static void cmd_encrypt(int argc, char** argv) {
+    if (argc < 4) { printf("Usage: encrypt <in> <out> <password>\n"); return; }
+    int n = 0;
+    uint8_t* pt = enc_read_file(argv[1], &n, 0);
+    if (!pt) { printf("encrypt: cannot read '%s'\n", argv[1]); return; }
+    int outlen = (int)ENC_HDR + n;
+    uint8_t* out = (uint8_t*)kmalloc((uint32_t)outlen);
+    if (!out) { kfree(pt); printf("encrypt: out of memory\n"); return; }
+    uint32_t sl = 0;
+    enc_seal(pt, (uint32_t)n, argv[3], out, &sl);
+    kfree(pt);
+    int wrote = vfs_write_file(argv[2], out, (uint32_t)outlen);
+    kfree(out);
+    if (wrote != outlen) { printf("encrypt: cannot write '%s'\n", argv[2]); return; }
+    printf("encrypt: %d bytes -> %s (AES-128-GCM, PBKDF2-SHA256 x%u)\n", n, argv[2], ENC_ITERS);
+}
+
+static void cmd_decrypt(int argc, char** argv) {
+    if (argc < 4) { printf("Usage: decrypt <in> <out> <password>\n"); return; }
+    int n = 0;
+    uint8_t* buf = enc_read_file(argv[1], &n, ENC_HDR);
+    if (!buf) { printf("decrypt: cannot read '%s'\n", argv[1]); return; }
+    uint8_t* pt = (uint8_t*)kmalloc((n > (int)ENC_HDR) ? (uint32_t)(n - (int)ENC_HDR) : 1u);
+    if (!pt) { kfree(buf); printf("decrypt: out of memory\n"); return; }
+    uint32_t ptlen = 0;
+    int ok = enc_open(buf, (uint32_t)n, argv[3], pt, &ptlen);
+    kfree(buf);
+    if (ok != 0) { kfree(pt); printf("decrypt: wrong password or corrupt file (auth failed)\n"); return; }
+    int wrote = vfs_write_file(argv[2], pt, ptlen);
+    kfree(pt);
+    if (wrote != (int)ptlen) { printf("decrypt: cannot write '%s'\n", argv[2]); return; }
+    printf("decrypt: %s -> %u bytes (authenticated)\n", argv[2], ptlen);
 }
 
 // Format 16 bytes as a canonical RFC-4122 version-4 UUID (36 chars + NUL into `out`,
@@ -8231,7 +8354,7 @@ static void run_selftests(void) {
         {"factor",       factor_selftest},
         {"strings",      strings_selftest},
         {"sha256sum",    sha256sum_selftest},
-        {"hmac",         hmac_selftest},
+        {"hmac",         hmac_selftest},          {"encfile",       enc_selftest},
         {"shellvar",     shell_expand_selftest},
         {"semver",       semver_selftest},
         {"tls_prf",      tls_prf_selftest},       {"tls_keysched",  tls_keyschedule_selftest},
