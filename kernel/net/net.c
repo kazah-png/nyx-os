@@ -166,7 +166,7 @@ int nsock_connect(int s, uint32_t ip, uint16_t port) {
         int st = tcp_state(c);
         if (st == TCP_STATE_ESTABLISHED) return 0;
         if (st == TCP_STATE_CLOSED) break;        // reset / handshake gave up
-        for (volatile int d = 0; d < 1500; d++) inb(0x80);
+        sleep(1);   // yield the CPU to the scheduler between polls instead of busy-spinning (#62)
     }
     return -1;
 }
@@ -220,7 +220,7 @@ int nsock_accept(int s) {
         spin_unlock_irqrestore(&net_lock, fl);
         if (result != -2) return result;          // got a child (slot j, or -1 full)
         kernel_poll_net();
-        for (volatile int d = 0; d < 1500; d++) inb(0x80);
+        sleep(1);   // yield the CPU to the scheduler between polls instead of busy-spinning (#62)
     }
     return -1;                                    // timed out with no client
 }
@@ -248,7 +248,7 @@ int nsock_recv(int s, void* buf, int len) {
         if (n > 0) return n;
         if (tcp_state(c) == TCP_STATE_CLOSED) return 0;   // closed, nothing buffered
         kernel_poll_net();
-        for (volatile int d = 0; d < 1500; d++) inb(0x80);   // lock released: peers progress
+        sleep(1);   // lock released: yield to the scheduler so peers/RX progress (not busy-spin) (#62)
     }
     return 0;                                     // timed out -> treat as EOF
 }
@@ -286,7 +286,7 @@ int nsock_recvfrom(int s, void* buf, int len, uint32_t* src_ip, uint16_t* src_po
         }
         spin_unlock_irqrestore(&net_lock, fl);
         kernel_poll_net();
-        for (volatile int d = 0; d < 1500; d++) inb(0x80);
+        sleep(1);   // yield the CPU to the scheduler between polls instead of busy-spinning (#62)
     }
     return -1;                                     // timed out, no datagram
 }
