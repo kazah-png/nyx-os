@@ -91,8 +91,11 @@ strict-C99 output — and is verified three ways:
    moves a must-consume handle through its whole life (branch-aware
    consumption and `#[drop]` auto-close included), and the M5 chain — a
    lexer covering comments, string literals, and two-char operators (and
-   real `.n` files read off the ext2 disk), a parser that builds whole
-   program bodies as a *checked, folded* AST — statements included — and
+   real `.n` files read off the ext2 disk), a toy compiler whose full
+   surface — typed strings with make/compare/measure, the complete
+   comparison and logical operator set, else-if chains, comments, and
+   disk-file compilation — is exercised on target every batch, a parser
+   that builds whole program bodies as a *checked, folded* AST — statements included — and
    compiles them from a token buffer to stack code (refusing unknown
    variables and type errors with located messages, resolving string
    `==` to a byte-comparing STREQ and string `+` to a table-appending
