@@ -204,6 +204,16 @@ mechanism, two moments, and a fold-made entry survives into the run
 (the demo PRINTS one). Runtime strings are per-program transient (the
 next lex reseeds), and capacity is trusted like every toy buffer.
 
+And the toy is FILE-DRIVEN end to end now — not just the lexer (rung
+1, ntokens) but the whole compiler: an audited `#[caps]` wrapper reads
+a toy-language source file the binary does not embed, and the same
+pipeline lexes, parses, checks, folds, emits, and runs it. The move
+that made it one pipeline instead of two: `lex` takes raw bytes plus
+a length (`*u8 + i64` — ncc's own SRC shape) rather than a `str`, so
+embedded demos hand over their `.ptr`/`.len` and a file buffer
+arrives as itself. N still cannot wrap a pointer back into a `str` —
+and now nothing ever asks it to.
+
 Subset growth is now the whole remaining ladder, and it has begun:
 the toy compiler honors **line comments** (they vanish in the lexer
 like whitespace, with the line counter still ticking so diagnostics

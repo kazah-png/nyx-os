@@ -120,6 +120,16 @@
 //   11 = 'print', 12 = '!=', 13 = '<=', 14 = '>='. Line comments (//
 //   to end of line) vanish in the lexer like whitespace — the line
 //   counter still ticks, so diagnostics stay honest around them.
+//
+//   FILE-DRIVEN, the selfhost optic: the toy also compiles a program
+//   its binary does NOT embed — an audited #[caps] wrapper reads a
+//   toy-language source file from disk (in-OS, off /mnt) and the SAME
+//   pipeline lexes, parses, checks, folds, emits, and RUNS it. The
+//   move that made it one pipeline: the lexer takes RAW BYTES plus a
+//   length (*u8 + i64 — ncc's own SRC shape) instead of a str, so an
+//   embedded demo hands over its .ptr/.len and a file buffer arrives
+//   as itself; N cannot wrap a pointer back into a str (the ntokens
+//   finding), and now nothing ever asks it to.
 //   Opcodes: 0 HALT · 1 PUSH arg · 2 ADD · 3 SUB · 4 MUL · 5 DIV ·
 //   6 MOD · 7 NEG · 8 LT · 9 GT · 10 EQ · 11 LOAD slot · 12 STORE slot
 //   · 13 JZ target · 14 JMP target · 15 CALL target (pushes the return
@@ -179,6 +189,9 @@
 #[caps(syscall)]
 extern syscall {
     fn write(fd: i32, buf: #[user] *u8, len: isize) -> i64 = 1
+    fn sys_open(path: *u8, flags: i64, mode: i64) -> i64   = 3
+    fn sys_read(fd: i64, buf: *u8, len: isize) -> i64      = 4
+    fn sys_close(fd: i64) -> i64                           = 5
     fn sys_sbrk(incr: i64) -> i64                          = 7
     fn sys_exit(code: i64) -> never                        = 0
 }
@@ -214,9 +227,8 @@ fn is_letter(b: i64) -> bool { b >= 97 && b <= 122 }
 // symbol table (nb = names bytes, ss/sl = per-symbol start/len): a
 // span already seen yields its existing index, a new one is appended —
 // the same move ncc's vars_find/vars_add makes over its VARS table.
-fn lex(src: str, k: *i64, v: *i64, ln: *i64, nb: *u8, ss: *i64, sl: *i64,
+fn lex(p: *u8, n: i64, k: *i64, v: *i64, ln: *i64, nb: *u8, ss: *i64, sl: *i64,
        st: Strs) -> i64 {
-    n := src.len as i64;
     mut i := 0;
     mut t := 0;
     mut ns := 0;                           // interned symbol count
@@ -225,7 +237,7 @@ fn lex(src: str, k: *i64, v: *i64, ln: *i64, nb: *u8, ss: *i64, sl: *i64,
     mut sbl := 0;                          // string bytes-buffer length
     mut line := 1;                         // 1-based, for diagnostics (rung 2)
     while i < n {
-        b := src[i] as i64;
+        b := p[i] as i64;
         if b == 32 || b == 9 || b == 13 {  // space / tab / CR
             i += 1;
             continue;
@@ -235,8 +247,8 @@ fn lex(src: str, k: *i64, v: *i64, ln: *i64, nb: *u8, ss: *i64, sl: *i64,
             i += 1;
             continue;
         }
-        if b == 47 && i + 1 < n && src[i + 1] as i64 == 47 {
-            while i < n && src[i] as i64 != 10 {
+        if b == 47 && i + 1 < n && p[i + 1] as i64 == 47 {
+            while i < n && p[i] as i64 != 10 {
                 i += 1;                    // a line comment vanishes here;
             }                              // the newline arm keeps the count
             continue;
@@ -244,8 +256,8 @@ fn lex(src: str, k: *i64, v: *i64, ln: *i64, nb: *u8, ss: *i64, sl: *i64,
         ln[t] = line;                      // every token records its line
         if b == 34 {                       // string literal: bytes into the
             mut j := i + 1;                // side table (no escapes yet —
-            while j < n && src[j] as i64 != 34 {   // scan to the next quote)
-                st.sb[sbl + (j - i - 1)] = src[j];
+            while j < n && p[j] as i64 != 34 {   // scan to the next quote)
+                st.sb[sbl + (j - i - 1)] = p[j];
                 j += 1;
             }
             st.sts[sc] = sbl;
@@ -258,8 +270,8 @@ fn lex(src: str, k: *i64, v: *i64, ln: *i64, nb: *u8, ss: *i64, sl: *i64,
         }
         if is_digit(b) {
             mut val := 0;
-            while i < n && is_digit(src[i] as i64) {
-                val = val * 10 + (src[i] as i64 - 48);
+            while i < n && is_digit(p[i] as i64) {
+                val = val * 10 + (p[i] as i64 - 48);
                 i += 1;
             }
             k[t] = 0; v[t] = val; t += 1;
@@ -268,29 +280,29 @@ fn lex(src: str, k: *i64, v: *i64, ln: *i64, nb: *u8, ss: *i64, sl: *i64,
         if is_letter(b) {                  // keyword or identifier
             st := i;
             mut j := i;
-            while j < n && is_letter(src[j] as i64) {
+            while j < n && is_letter(p[j] as i64) {
                 j += 1;
             }
             len := j - st;
             mut kind := 1;
-            if len == 2 && src[st] as i64 == 105 && src[st + 1] as i64 == 102 {
+            if len == 2 && p[st] as i64 == 105 && p[st + 1] as i64 == 102 {
                 kind = 5;                  // if
             }
-            if len == 2 && src[st] as i64 == 102 && src[st + 1] as i64 == 110 {
+            if len == 2 && p[st] as i64 == 102 && p[st + 1] as i64 == 110 {
                 kind = 7;                  // fn
             }
-            if len == 5 && src[st] as i64 == 119 && src[st + 1] as i64 == 104
-                && src[st + 2] as i64 == 105 && src[st + 3] as i64 == 108
-                && src[st + 4] as i64 == 101 {
+            if len == 5 && p[st] as i64 == 119 && p[st + 1] as i64 == 104
+                && p[st + 2] as i64 == 105 && p[st + 3] as i64 == 108
+                && p[st + 4] as i64 == 101 {
                 kind = 6;                  // while
             }
-            if len == 4 && src[st] as i64 == 101 && src[st + 1] as i64 == 108
-                && src[st + 2] as i64 == 115 && src[st + 3] as i64 == 101 {
+            if len == 4 && p[st] as i64 == 101 && p[st + 1] as i64 == 108
+                && p[st + 2] as i64 == 115 && p[st + 3] as i64 == 101 {
                 kind = 8;                  // else
             }
-            if len == 5 && src[st] as i64 == 112 && src[st + 1] as i64 == 114
-                && src[st + 2] as i64 == 105 && src[st + 3] as i64 == 110
-                && src[st + 4] as i64 == 116 {
+            if len == 5 && p[st] as i64 == 112 && p[st + 1] as i64 == 114
+                && p[st + 2] as i64 == 105 && p[st + 3] as i64 == 110
+                && p[st + 4] as i64 == 116 {
                 kind = 11;                 // print
             }
             mut val := 0;
@@ -302,7 +314,7 @@ fn lex(src: str, k: *i64, v: *i64, ln: *i64, nb: *u8, ss: *i64, sl: *i64,
                         mut eq := true;
                         mut q := 0;
                         while q < len {
-                            if nb[ss[s] + q] as i64 != src[st + q] as i64 {
+                            if nb[ss[s] + q] as i64 != p[st + q] as i64 {
                                 eq = false;
                             }
                             q += 1;
@@ -316,7 +328,7 @@ fn lex(src: str, k: *i64, v: *i64, ln: *i64, nb: *u8, ss: *i64, sl: *i64,
                     sl[ns] = len;
                     mut q := 0;
                     while q < len {
-                        nb[nl + q] = src[st + q];
+                        nb[nl + q] = p[st + q];
                         q += 1;
                     }
                     nl += len;
@@ -329,27 +341,27 @@ fn lex(src: str, k: *i64, v: *i64, ln: *i64, nb: *u8, ss: *i64, sl: *i64,
             i = j;
             continue;
         }
-        if b == 58 && i + 1 < n && src[i + 1] as i64 == 61 {
+        if b == 58 && i + 1 < n && p[i + 1] as i64 == 61 {
             k[t] = 4; v[t] = 0; t += 1;    // :=
             i += 2;
             continue;
         }
-        if b == 61 && i + 1 < n && src[i + 1] as i64 == 61 {
+        if b == 61 && i + 1 < n && p[i + 1] as i64 == 61 {
             k[t] = 3; v[t] = 0; t += 1;    // ==
             i += 2;
             continue;
         }
-        if b == 33 && i + 1 < n && src[i + 1] as i64 == 61 {
+        if b == 33 && i + 1 < n && p[i + 1] as i64 == 61 {
             k[t] = 12; v[t] = 0; t += 1;   // !=
             i += 2;
             continue;
         }
-        if b == 60 && i + 1 < n && src[i + 1] as i64 == 61 {
+        if b == 60 && i + 1 < n && p[i + 1] as i64 == 61 {
             k[t] = 13; v[t] = 0; t += 1;   // <=
             i += 2;
             continue;
         }
-        if b == 62 && i + 1 < n && src[i + 1] as i64 == 61 {
+        if b == 62 && i + 1 < n && p[i + 1] as i64 == 61 {
             k[t] = 14; v[t] = 0; t += 1;   // >=
             i += 2;
             continue;
@@ -1240,11 +1252,41 @@ fn run(prog: *i64, stk: *i64, vars: *i64, st: Strs) -> i64 {
 fn show(src: str, k: *i64, v: *i64, ln: *i64, code: *i64, stk: *i64, vars: *i64,
         fe: *i64, fp: *i64, fpc: *i64, a: Ast, env: Scope, nb: *u8, ss: *i64, sl: *i64,
         st: Strs) {
-    lex(src, k, v, ln, nb, ss, sl, st);
+    lex(src.ptr as *u8, src.len as i64, k, v, ln, nb, ss, sl, st);
     r := parse_program(k, v, ln, fe, fp, fpc, a, env, st, 0, code, 0);
     words := emit1(code, r.cp, 0);         // HALT closes the program
     put("{src}\n");                        // echo first: a program's prints
     val := run(code, stk, vars, st);       // land under its source
+    put("  ->  {val}   [{words} code words]\n");
+}
+
+// The selfhost optic, at toy scale: compile and run a program this
+// binary does NOT embed. The audited wrapper owns every kernel
+// crossing (open/sbrk/read/close); the same single lexer that eats
+// the embedded demos eats the file's bytes, because it never wanted a
+// str in the first place — just bytes and a length. Missing file =
+// a graceful skip (the fsio pattern; in-OS the file comes from /mnt).
+#[caps(syscall)]
+fn run_file(path: str, k: *i64, v: *i64, ln: *i64, code: *i64, stk: *i64, vars: *i64,
+            fe: *i64, fp: *i64, fpc: *i64, a: Ast, env: Scope, nb: *u8, ss: *i64, sl: *i64,
+            st: Strs) {
+    fd := sys_open(path.ptr as *u8, 0, 0);
+    if fd < 0 {
+        put("(no toy demo file - file demo skipped)\n");
+        return;
+    }
+    buf := sys_sbrk(1024) as *u8;
+    len := sys_read(fd, buf, 1024);
+    sys_close(fd);
+    if len < 1 {
+        put("(no toy demo file - file demo skipped)\n");
+        return;
+    }
+    put("compiling n_toy_demo.n from disk:\n");
+    lex(buf, len, k, v, ln, nb, ss, sl, st);
+    r := parse_program(k, v, ln, fe, fp, fpc, a, env, st, 0, code, 0);
+    words := emit1(code, r.cp, 0);         // HALT closes the program
+    val := run(code, stk, vars, st);
     put("  ->  {val}   [{words} code words]\n");
 }
 
@@ -1310,6 +1352,10 @@ fn main() -> i64 {
     // The rest of the comparison set, each its own opcode.
     show("n := 7; print n != 7; print n <= 7; print n >= 9; 0",
          k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, nb, ss, sl, st);
+    // And a program this binary does not carry: read off the disk,
+    // compiled by the same pipeline, run by the same VM.
+    run_file("/tmp/n_toy_demo.n",
+             k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, nb, ss, sl, st);
     // The broken program runs LAST (fail() ends the process — one failing
     // demo per run). It PARSES cleanly; what is wrong is a TYPE: a string
     // fed to +. The check pass refuses it with the operator's line — a
