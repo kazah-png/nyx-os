@@ -24,6 +24,24 @@ int32_t tri_edge(int ax, int ay, int bx, int by, int px, int py);
 void tri_fill_flat(tri_putpx_t put, void* ctx, int minx, int miny, int maxx, int maxy,
                    int x0, int y0, int x1, int y1, int x2, int y2, uint32_t color);
 
-int tri_selftest(void);   // KAT for the rasterizer core
+// Barycentric interpolation of a per-vertex attribute at a pixel: given the three edge
+// weights (w0,w1,w2 from tri_edge) and the triangle's total signed area, return
+// (w0*a0 + w1*a1 + w2*a2) / area. Works for either winding; area==0 returns 0. Pure — the
+// building block for z / colour / uv interpolation. (v6.4.344)
+int32_t tri_bary_interp(int32_t w0, int32_t w1, int32_t w2, int32_t area,
+                        int32_t a0, int32_t a1, int32_t a2);
+
+// Z-buffered flat fill: like tri_fill_flat but interpolates a per-vertex depth (z0,z1,z2)
+// across the triangle and writes a pixel ONLY where it is nearer (smaller z) than zbuf's
+// current value, updating zbuf. `zbuf` is a caller-owned int32 array of `fbw`*height entries
+// indexed [y*fbw + x]; the caller clears it to a far value (e.g. INT32_MAX) before a frame.
+// This gives correct PER-PIXEL occlusion (two triangles can interpenetrate). (v6.4.344)
+void tri_fill_flat_z(tri_putpx_t put, void* ctx, int32_t* zbuf, int fbw,
+                     int minx, int miny, int maxx, int maxy,
+                     int x0, int y0, int z0, int x1, int y1, int z1,
+                     int x2, int y2, int z2, uint32_t color);
+
+int tri_selftest(void);    // KAT for the flat rasterizer core
+int triz_selftest(void);   // KAT for barycentric-Z interpolation + the z-buffer test
 
 #endif
