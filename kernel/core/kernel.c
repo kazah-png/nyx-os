@@ -8154,6 +8154,7 @@ static void run_selftests(void) {
         {"uuid",         uuid_selftest},
         {"edfind",       editor_find_selftest},
         {"cut",          cut_selftest},           {"xargs",         xargs_selftest},
+        {"comm",         comm_selftest},          {"join",          join_selftest},
         {"securezero",   secure_zero_selftest},
         {"chacha20",     chacha20_selftest},        {"siphash",       siphash_selftest},
         {"poly1305",     poly1305_selftest},        {"chachapoly",    chacha20poly1305_selftest},

@@ -124,3 +124,45 @@ void join_run(const char* t1, uint32_t l1, const char* t2, uint32_t l2,
         uint32_t x = 0; for (uint32_t z = 0; z < kn; z++) rec[x++] = k[z];
         join_append_rest(rec, &x, &L2[j], o->delim, o->jf2, osep); emit(ctx, rec, x); }
 }
+
+// ---- known-answer self-test (`join`) ----------------------------------------------------
+// A recording emit: append the record bytes then a newline into a bounded buffer.
+typedef struct { char* buf; uint32_t len; uint32_t cap; } join_rec_t;
+static void join_rec_emit(void* ctx, const char* out, uint32_t len) {
+    join_rec_t* r = (join_rec_t*)ctx;
+    for (uint32_t i = 0; i < len && r->len < r->cap - 1; i++) r->buf[r->len++] = out[i];
+    if (r->len < r->cap - 1) r->buf[r->len++] = '\n';
+    r->buf[r->len] = '\0';
+}
+static int join_seq(const char* s, const char* want) {
+    uint32_t i = 0; while (s[i] && want[i]) { if (s[i] != want[i]) return 0; i++; }
+    return s[i] == want[i];
+}
+// Pins the inner join (field-1, default blank delim), -a1 unpaired pass-through, the cartesian
+// product on a repeated key, a custom delimiter, and joining on differing field numbers.
+int join_selftest(void) {
+    char out[256]; join_rec_t r; r.buf = out; r.cap = (uint32_t)sizeof out;
+    join_opts_t o;
+    o.delim = 0; o.jf1 = 1; o.jf2 = 1; o.a1 = 0; o.a2 = 0;                         // 1) basic inner join
+    { const char* t1 = "1 apple\n2 banana\n3 cherry\n"; const char* t2 = "1 red\n2 yellow\n4 blue\n";
+      r.len = 0; out[0] = '\0';
+      join_run(t1, (uint32_t)strlen(t1), t2, (uint32_t)strlen(t2), &o, join_rec_emit, &r);
+      if (!join_seq(out, "1 apple red\n2 banana yellow\n")) return 1; }
+    { const char* t1 = "1 apple\n2 banana\n3 cherry\n"; const char* t2 = "1 red\n2 yellow\n";  // 2) -a1
+      o.a1 = 1; o.a2 = 0; r.len = 0; out[0] = '\0';
+      join_run(t1, (uint32_t)strlen(t1), t2, (uint32_t)strlen(t2), &o, join_rec_emit, &r);
+      if (!join_seq(out, "1 apple red\n2 banana yellow\n3 cherry\n")) return 2; }
+    { const char* t1 = "x 1\nx 2\n"; const char* t2 = "x a\n";                     // 3) cartesian product
+      o.a1 = 0; o.a2 = 0; r.len = 0; out[0] = '\0';
+      join_run(t1, (uint32_t)strlen(t1), t2, (uint32_t)strlen(t2), &o, join_rec_emit, &r);
+      if (!join_seq(out, "x 1 a\nx 2 a\n")) return 3; }
+    { const char* t1 = "1,apple\n2,banana\n"; const char* t2 = "1,red\n2,yellow\n"; // 4) custom delimiter
+      o.delim = ','; o.jf1 = 1; o.jf2 = 1; o.a1 = 0; o.a2 = 0; r.len = 0; out[0] = '\0';
+      join_run(t1, (uint32_t)strlen(t1), t2, (uint32_t)strlen(t2), &o, join_rec_emit, &r);
+      if (!join_seq(out, "1,apple,red\n2,banana,yellow\n")) return 4; }
+    { const char* t1 = "apple 1\nbanana 2\n"; const char* t2 = "1 red\n2 yellow\n"; // 5) differing key fields
+      o.delim = 0; o.jf1 = 2; o.jf2 = 1; o.a1 = 0; o.a2 = 0; r.len = 0; out[0] = '\0';
+      join_run(t1, (uint32_t)strlen(t1), t2, (uint32_t)strlen(t2), &o, join_rec_emit, &r);
+      if (!join_seq(out, "1 apple red\n2 banana yellow\n")) return 5; }
+    return 0;
+}

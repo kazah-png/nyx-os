@@ -15,4 +15,7 @@ typedef void (*comm_emit_fn)(int tabs, const char* line, int len, void* ctx);
 void comm_run(const char* a, int alen, const char* b, int blen,
               int show1, int show2, int show3, comm_emit_fn emit, void* ctx);
 
+// KAT: three-column merge + tab-stop suppression + tail drain + no-trailing-newline. 0 = pass.
+int comm_selftest(void);
+
 #endif // COMM_H
