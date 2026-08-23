@@ -226,7 +226,12 @@ chains** came free: the else slot always held a statement index and a
 nested `if` is a statement, so the parser just recurses instead of
 demanding braces — no walker changed, and dead-arm elimination
 cascades straight through a chain of constant conditions (a three-way
-chain over constants collapses to the one live `print`, 6 words). The subset
+chain over constants collapses to the one live `print`, 6 words).
+And `len(s)` completed the string toolkit — make (`+`), compare
+(`==`), **measure**: a typed builtin (str in, int out, "len takes a
+string" otherwise), one STRLEN opcode, and `len` of a literal folds
+to a plain number at compile time. `len` is a reserved word now, like
+`print`. The subset
 grows until the toy parses the examples directory — at which point it
 stops being a toy.
 

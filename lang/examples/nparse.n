@@ -39,6 +39,7 @@
 //               8 = seq (nl = statement, nr = next link or -1)
 //               9 = print (nl = expr; the operand's TYPE picks the
 //                   opcode)                10 = string literal (nv)
+//               11 = len (nl = a str operand; the measuring builtin)
 //   A separate walker, emit_node, then emits by postorder recursion —
 //   children first, the node's own operation last. Postfix is no
 //   longer a lucky consequence of parse order; it is a property of the
@@ -121,7 +122,8 @@
 //   (val = its SYMBOL INDEX), 2 = operator/punct (val = its byte),
 //   3 = '==', 4 = ':=', 5 = 'if', 6 = 'while', 7 = 'fn', 8 = 'else',
 //   9 = end, 10 = string literal (val = STRING-TABLE index),
-//   11 = 'print', 12 = '!=', 13 = '<=', 14 = '>='. Line comments (//
+//   11 = 'print', 12 = '!=', 13 = '<=', 14 = '>=', 15 = 'len' (a
+//   reserved word now, like print). Line comments (//
 //   to end of line) vanish in the lexer like whitespace — the line
 //   counter still ticks, so diagnostics stay honest around them.
 //
@@ -144,7 +146,11 @@
 //   table indexes, append a fresh entry = both spans joined, push its
 //   index) · 22 NEQ · 23 LE · 24 GE (the full comparison set, each a
 //   dedicated pop-two-push-0/1 like LT/GT/EQ — on integers; == stays
-//   the only STRING comparison, != over strings is a future rung).
+//   the only STRING comparison, != over strings is a future rung) ·
+//   25 STRLEN (pop a table index, push its span's length). `len(s)`
+//   completes the string toolkit — make (+), compare (==), measure —
+//   typed str-in/int-out, and len of a literal folds to a number at
+//   compile time.
 //
 //   THE TYPE COLUMN. Strings are real VALUES now, and the check pass
 //   is what makes that safe. A double-quoted literal lexes into a
@@ -308,6 +314,10 @@ fn lex(p: *u8, n: i64, k: *i64, v: *i64, ln: *i64, nb: *u8, ss: *i64, sl: *i64,
                 && p[st + 2] as i64 == 105 && p[st + 3] as i64 == 110
                 && p[st + 4] as i64 == 116 {
                 kind = 11;                 // print
+            }
+            if len == 3 && p[st] as i64 == 108 && p[st + 1] as i64 == 101
+                && p[st + 2] as i64 == 110 {
+                kind = 15;                 // len (a reserved word now)
             }
             mut val := 0;
             if kind == 1 {                 // intern: look the span up ...
@@ -503,6 +513,19 @@ fn ast_factor(k: *i64, v: *i64, ln: *i64, fpc: *i64, a: Ast, pos: i64, nn: i64) 
         }
         return NP{ pos: r.pos + 1, nn: r.nn, root: r.root };
     }
+    if k[pos] == 15 {                      // len ( cmp ) — the measuring
+        idx := nn;                         // builtin: str in, int out
+        a.nline[idx] = ln[pos];
+        if !(k[pos + 1] == 2 && v[pos + 1] == 40) {
+            fail(ln[pos], "expected '(' after len");
+        }
+        r := ast_cmp(k, v, ln, fpc, a, pos + 2, nn + 1);
+        if !(k[r.pos] == 2 && v[r.pos] == 41) {
+            fail(ln[r.pos], "expected ')'");
+        }
+        a.nk[idx] = 11; a.nl[idx] = r.root; a.nr[idx] = -1; a.nv[idx] = 0;
+        return NP{ pos: r.pos + 1, nn: r.nn, root: idx };
+    }
     fail(ln[pos], "expected an expression");
     NP{ pos: pos, nn: nn, root: 0 }        // unreachable; keeps the lowering total
 }
@@ -634,6 +657,13 @@ fn check_node(a: Ast, env: Scope, bc: i64, idx: i64) {
         }
         a.nt[idx] = 0;
     }
+    if a.nk[idx] == 11 {                   // len: measures a STRING, is int
+        check_node(a, env, bc, a.nl[idx]);
+        if a.nt[a.nl[idx]] != 1 {
+            fail(a.nline[idx], "len takes a string");
+        }
+        a.nt[idx] = 0;
+    }
     if a.nk[idx] == 4 {                    // call: int arguments, int result
         mut q := 0;
         while q < a.nl[idx] {
@@ -726,6 +756,14 @@ fn fold_node(a: Ast, st: Strs, idx: i64) {
             a.nv[idx] = -a.nv[c];
         }
     }
+    if a.nk[idx] == 11 {                   // len of a literal: its span
+        fold_node(a, st, a.nl[idx]);       // length is known right now
+        c := a.nl[idx];
+        if a.nk[c] == 10 {
+            a.nk[idx] = 0;
+            a.nv[idx] = st.stl[a.nv[c]];
+        }
+    }
     if a.nk[idx] == 4 {                    // call: arguments fold, calls never
         mut q := 0;
         while q < a.nl[idx] {
@@ -761,6 +799,10 @@ fn emit_node(a: Ast, fe: *i64, fp: *i64, code: *i64, cp: i64, idx: i64) -> i64 {
     if a.nk[idx] == 3 {                    // unary minus: operand, then NEG
         c := emit_node(a, fe, fp, code, cp, a.nl[idx]);
         return emit1(code, c, 7);
+    }
+    if a.nk[idx] == 11 {                   // len: operand, then STRLEN
+        c := emit_node(a, fe, fp, code, cp, a.nl[idx]);
+        return emit1(code, c, 25);
     }
     f := a.nv[idx];                        // call
     cnt := a.nl[idx];
@@ -1253,6 +1295,10 @@ fn run(prog: *i64, stk: *i64, vars: *i64, st: Strs) -> i64 {
             if stk[sp - 2] >= stk[sp - 1] { t = 1; }
             stk[sp - 2] = t; sp -= 1; pc += 1;
         }
+        if op == 25 {                      // STRLEN: a table index becomes
+            stk[sp - 1] = st.stl[stk[sp - 1]];   // its span's length
+            pc += 1;
+        }
     }
     stk[0]
 }
@@ -1344,7 +1390,7 @@ fn main() -> i64 {
     // LOAD as any integer, with the type column picking PRINTS. The
     // computed (and folded — PUSH 42) number takes PRINT instead:
     // one syntax, two opcodes, decided by the checker.
-    show("greet := \"hello from the toy\"; print greet; print 6 * 7; 0",
+    show("greet := \"hello from the toy\"; print greet; print len(greet); print 6 * 7; 0",
          k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, nb, ss, sl, st);
     // The type column's second dividend: == over two strings resolves
     // to STREQ — and since == yields an int, string equality composes
