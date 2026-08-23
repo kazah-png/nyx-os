@@ -172,6 +172,7 @@ static void cmd_cut(int argc, char** argv);
 static void cmd_xargs(int argc, char** argv);
 static void cmd_timeout(int argc, char** argv);
 static void cmd_uniq(int argc, char** argv);
+static void cmd_shuf(int argc, char** argv);
 static void cmd_join(int argc, char** argv);
 static void cmd_tac(int argc, char** argv);
 static void cmd_csv(int argc, char** argv);
@@ -422,6 +423,7 @@ static const command_t commands[] = {
     {"xargs",     cmd_xargs,     "Build command lines from piped words: <producer> | xargs [-n N] [cmd]", false},
     {"join",      cmd_join,      "Join two sorted files on a field: join [-t C] [-1/-2/-j N] [-a 1|2] <f1> <f2>", false},
     {"tac",       cmd_tac,       "Print a file's lines in reverse order: tac [-s SEP] <file>", false},
+    {"shuf",      cmd_shuf,      "Print a file's lines in random order: shuf [-n N] <file>", false},
     {"csv",       cmd_csv,       "View a CSV file as an aligned table: csv [-d DELIM] <file>", false},
     {"tsort",     cmd_tsort,     "Topological sort of a dependency list: tsort <file>", false},
     {"comm",      cmd_comm,      "Compare two sorted files: comm [-123] <f1> <f2>", false},
@@ -909,6 +911,7 @@ static const man_page_t man_pages[] = {
     {"cut",      "Print selected parts of each line of <file>. Choose one mode: -f LIST cuts fields (a field is text between delimiters; the delimiter is a TAB by default, or the single character given by -d C), -c LIST cuts characters, -b LIST cuts bytes. A LIST is a comma-separated set of 1-based ranges: 'N' one position, 'N-M' the inclusive range, 'N-' from N to the end, '-M' the same as '1-M'. Selected parts are always emitted in increasing position order, never duplicated, so the order the ranges are written in does not matter. In field mode a line that contains no delimiter is printed unchanged, unless -s suppresses such lines; selected fields are re-joined with the delimiter. Matches GNU cut byte-for-byte for newline-delimited text (chars and bytes coincide for ASCII). Reads a bounded chunk of each file; several files may be given."},
     {"join",     "Join two files, <f1> and <f2>, on a common field — the relational join of the shell. Both files must already be SORTED on their join field (join is a merge join; sort first). For every pair of lines whose join fields match it prints the join field, then the other fields of <f1>, then the other fields of <f2>; a repeated key prints the full cartesian product of the matching lines. By default the join field is field 1 and fields are separated by runs of blanks (collapsed to a single space on output). -t C uses the single character C as the field separator on input and output. -1 N / -2 N set the join field for file 1 / file 2 (or -j N for both). -a 1 or -a 2 additionally prints the unpaired lines of that file (reformatted). Matches GNU join byte-for-byte under the C locale (byte-ordered keys). Reads a bounded chunk of each file."},
     {"xargs",    "Build and run command lines from a list of words. Used at the end of a pipe: `<producer> | xargs [-n N] [command [args...]]` reads the producer's output, splits it into whitespace-separated words (spaces, tabs and newlines all separate), and runs `command` with those words appended as extra arguments. With no command it defaults to `echo`, so `ls | xargs` prints every name on one line. -n N runs the command repeatedly with at most N words each time (e.g. `... | xargs -n 1 echo` echoes one word per line). The command must be a builtin (dispatched the same way the pipe operator dispatches its right-hand side). Handy for turning a column of names into arguments — the classic `find ... | xargs ...` shape."},
+    {"shuf",     "Print the lines of <file> in random order: `shuf [-n N] <file>`. Every permutation is equally likely — an unbiased Fisher-Yates shuffle driven by the kernel CSPRNG (the same source the crypto uses), so the order is genuinely random and different each run. -n N prints at most the first N lines of the shuffled result (a random sample). Reads a bounded chunk of the file, up to 512 lines. Useful for picking a random line, sampling, or randomising a playlist/word list."},
     {"uniq",     "Collapse ADJACENT equal lines of <file> into one — the classic companion to sort (uniq does not sort; it only folds neighbouring duplicates, so run `sort` first to remove all duplicates). Prints the first line of each run. -c prefixes each line with the number of times it occurred (a 7-wide count, then a space). -d prints only lines that repeat (runs of 2+); -u prints only lines that occur exactly once. -i compares case-insensitively. -f N ignores the first N blank-separated fields when comparing, -s N then ignores the next N characters, and -w N compares at most N characters of what remains — the whole (unmodified) line is still what gets printed. Matches GNU uniq byte-for-byte. Reads a bounded chunk of the file."},
     {"tac",      "Print the lines of <file> in reverse order — the last line first, the first line last (the line-order companion to rev, which reverses characters within a line). The newline stays attached to its line, so a file without a trailing newline joins its last two lines when reversed, exactly like GNU tac. -s SEP uses SEP (one or more characters) as the record separator instead of newline. Reads a bounded chunk of the file."},
     {"tsort",    "Topologically sort a dependency list. The file holds whitespace-separated tokens in pairs; each pair 'A B' means A must come before B. Prints one item per line in an order that respects every dependency (Kahn's algorithm), matching GNU tsort byte-for-byte including its tie-break (roots emitted in sorted order). If the pairs contain a cycle the order is impossible, so the acyclic part is printed and a loop is reported; an odd number of tokens is a malformed input. Useful for build/order-of-operations problems."},
@@ -2472,6 +2475,56 @@ static void uniq_emit_puts(void* ctx, const char* out, uint32_t len) {
     (void)ctx;
     for (uint32_t i = 0; i < len; i++) putchar(out[i]);
     putchar('\n');
+}
+
+// shuf — print a file's lines in random order (Fisher-Yates over the CSPRNG). The shuffle is a
+// pure function of the index array + a supplied random stream, so the KAT pins the permutation
+// deterministically; cmd_shuf only reads the file, draws real randomness, and prints.
+static void shuf_fisher_yates(int* idx, int n, const uint32_t* rnd) {
+    int k = 0;
+    for (int i = n - 1; i >= 1; i--) {                      // classic unbiased Fisher-Yates
+        int j = (int)(rnd[k++] % (uint32_t)(i + 1));        // j in [0, i]
+        int t = idx[i]; idx[i] = idx[j]; idx[j] = t;
+    }
+}
+// KAT: a fixed random stream gives a fixed permutation, the result is a permutation of 0..n-1,
+// and n<=1 is a no-op (consumes no randomness).
+int shuf_selftest(void) {
+    int idx[5] = {0, 1, 2, 3, 4};
+    static const uint32_t rnd[4] = {2, 0, 3, 1};            // steps for i = 4,3,2,1
+    shuf_fisher_yates(idx, 5, rnd);
+    static const int want[5] = {4, 1, 3, 0, 2};            // hand-traced from rnd[]
+    for (int i = 0; i < 5; i++) if (idx[i] != want[i]) return 1;
+    int seen[5] = {0, 0, 0, 0, 0};                          // still a permutation of 0..4
+    for (int i = 0; i < 5; i++) { if (idx[i] < 0 || idx[i] >= 5 || seen[idx[i]]) return 2; seen[idx[i]] = 1; }
+    int one[1] = {7}; shuf_fisher_yates(one, 1, rnd); if (one[0] != 7) return 3;   // n=1 no-op
+    return 0;
+}
+static void cmd_shuf(int argc, char** argv) {
+    int ai = 1, maxout = -1;
+    if (ai + 1 < argc && strcmp(argv[ai], "-n") == 0) { maxout = atoi(argv[ai + 1]); ai += 2; }
+    if (ai >= argc) { printf("Usage: shuf [-n N] <file>\n"); return; }
+    int fd = vfs_open(argv[ai], 0, 0);
+    if (fd < 0) { printf("shuf: cannot open '%s'\n", argv[ai]); return; }
+    static char buf[8192];
+    int n = vfs_read(fd, buf, (int)sizeof buf - 1);
+    vfs_close(fd);
+    if (n <= 0) return;
+    buf[n] = '\0';
+    static char* lines[512]; int nlines = 0;               // split into lines in place
+    int start = 0;
+    for (int i = 0; i <= n && nlines < 512; i++) {
+        if (i == n || buf[i] == '\n') {
+            if (i > start || i < n) { buf[i] = '\0'; lines[nlines++] = &buf[start]; }
+            start = i + 1;
+        }
+    }
+    if (nlines == 0) return;
+    static int idx[512]; for (int i = 0; i < nlines; i++) idx[i] = i;
+    static uint32_t rnd[512]; csprng_bytes((uint8_t*)rnd, (uint32_t)nlines * 4);
+    shuf_fisher_yates(idx, nlines, rnd);
+    int limit = (maxout >= 0 && maxout < nlines) ? maxout : nlines;
+    for (int i = 0; i < limit; i++) printf("%s\n", lines[idx[i]]);
 }
 
 // uniq [-c|-d|-u|-i|-f N|-s N|-w N] <file> — collapse ADJACENT equal lines, byte-for-byte with
@@ -8570,6 +8623,7 @@ static void run_selftests(void) {
         {"edfind",       editor_find_selftest},
         {"cut",          cut_selftest},           {"xargs",         xargs_selftest},
         {"trunc",        trunc_selftest},         {"pstree",        pstree_selftest},
+        {"shuf",         shuf_selftest},
         {"comm",         comm_selftest},          {"join",          join_selftest},
         {"securezero",   secure_zero_selftest},
         {"chacha20",     chacha20_selftest},        {"siphash",       siphash_selftest},
