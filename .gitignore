@@ -12,6 +12,14 @@ iso/boot/nyx-kernel.bin
 iso/boot/initramfs.cpio.gz
 iso/boot/grub/i386-pc/
 
+# === Copyrighted game ROMs / assets — NEVER commit or distribute ===
+# SM64 base ROM (asset source for the port) and any N64 ROM: copyright, DMCA-grey.
+# Kept local / build-time only, like the DOOM WAD. See memory nyxos-sm64-port-plan.
+*.z64
+*.n64
+*.v64
+baserom*.z64
+
 # === Cross-compiler & toolchain ===
 cross/
 i686-elf-tools-linux.zip
