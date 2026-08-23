@@ -62,6 +62,52 @@ int term_hist_selftest(void) {
     return 0;
 }
 
+// True if `hay` contains `needle` as a substring (empty needle → true). Pure, local.
+static int th_contains(const char* hay, const char* needle) {
+    if (!needle || !needle[0]) return 1;
+    for (int i = 0; hay[i]; i++) {
+        int k = 0;
+        while (needle[k] && hay[i + k] == needle[k]) k++;
+        if (!needle[k]) return 1;
+    }
+    return 0;
+}
+
+// Reverse incremental history search: the 'back' index (0 = newest) of the most recent entry
+// at or older than start_back whose text contains `query`, or -1 if none. Empty query matches
+// any entry. Walking start_back forward (older) gives "next older match". Pure — KAT-able.
+int term_hist_rsearch(const term_hist_t* h, const char* query, int start_back) {
+    if (!h || h->count == 0) return -1;
+    if (start_back < 0) start_back = 0;
+    for (int b = start_back; b < h->count; b++) {
+        const char* e = term_hist_get(h, b);
+        if (e && th_contains(e, query)) return b;
+    }
+    return -1;
+}
+
+// KAT: newest-first matching, next-older advance, no-match, empty query, substring, and the
+// (find, then continue from idx+1) advance the Ctrl+R key path uses.
+int term_rsearch_selftest(void) {
+    static term_hist_t h;                 // static: ~4 KB, too big for the kernel stack
+    memset_asm(&h, 0, sizeof h); h.nav = -1;
+    term_hist_add(&h, "echo one");
+    term_hist_add(&h, "ls -la");
+    term_hist_add(&h, "echo two");
+    term_hist_add(&h, "cat file");        // back: 0=cat file 1=echo two 2=ls -la 3=echo one
+    if (term_hist_rsearch(&h, "echo", 0) != 1) return 1;   // newest 'echo' = "echo two" (back 1)
+    if (term_hist_rsearch(&h, "echo", 2) != 3) return 2;   // next older from back 2 = "echo one" (back 3)
+    if (term_hist_rsearch(&h, "echo", 4) != -1) return 3;  // past the oldest
+    if (term_hist_rsearch(&h, "cat",  0) != 0) return 4;   // newest overall
+    if (term_hist_rsearch(&h, "zzz",  0) != -1) return 5;  // no match anywhere
+    if (term_hist_rsearch(&h, "",     0) != 0) return 6;   // empty query -> newest
+    if (term_hist_rsearch(&h, "la",   0) != 2) return 7;   // substring inside "ls -la"
+    if (term_hist_rsearch(&h, "echo", -3) != 1) return 8;  // negative start clamps to 0
+    int b = term_hist_rsearch(&h, "echo", 0);              // repeated-Ctrl+R advance semantics
+    if (term_hist_rsearch(&h, "echo", b + 1) != 3) return 9;
+    return 0;
+}
+
 static void term_add_line(terminal_win_t* term, const char* text, uint8_t color) {
     if (term->line_count >= TERM_LINES) {
         for (int i = 1; i < TERM_LINES; i++) {
@@ -459,9 +505,73 @@ static void term_hist_nav(terminal_win_t* t, int dir) {
     if (e) { int L = 0; while (e[L]) L++; term_load_input(t, e, L); }
 }
 
+// --- Ctrl+R reverse-incremental history search (v6.4.339) -----------------------------
+// Recompute the match for the current query, searching older from `from_back`, and reflect
+// it on the input line + the search prompt. A failing search keeps the last match shown.
+static void term_rsearch_apply(terminal_win_t* t, int from_back) {
+    int b = term_hist_rsearch(&t->hist, t->rsearch_q, from_back);
+    if (b >= 0) {
+        t->rsearch_idx = b;
+        const char* e = term_hist_get(&t->hist, b);
+        if (e) { int L = 0; while (e[L]) L++; term_load_input(t, e, L); }
+    }
+    snprintf(t->prompt, sizeof(t->prompt), "%s(r-search)`%s': ",
+             b < 0 ? "failing " : "", t->rsearch_q);
+    t->prompt_len = (int)strlen(t->prompt);
+}
+
+// Enter reverse-i-search: stash the input line + prompt, then show the (empty-query) search.
+static void term_rsearch_begin(terminal_win_t* t) {
+    t->rsearch_active = 1;
+    t->rsearch_len = 0; t->rsearch_q[0] = '\0';
+    t->rsearch_idx = -1;
+    int n = t->input_len; if (n > TERM_INPUT_MAX - 1) n = TERM_INPUT_MAX - 1;
+    for (int i = 0; i < n; i++) t->rsearch_saved[i] = t->input[i];
+    t->rsearch_saved_len = n;
+    int pn = t->prompt_len; if (pn > 63) pn = 63;
+    for (int i = 0; i < pn; i++) t->rsearch_prompt_save[i] = t->prompt[i];
+    t->rsearch_prompt_save[pn] = '\0';
+    t->rsearch_prompt_save_len = pn;
+    term_rsearch_apply(t, 0);
+}
+
+// Leave search: restore the real prompt; on cancel also restore the pre-search input line.
+static void term_rsearch_end(terminal_win_t* t, int accept) {
+    for (int i = 0; i < t->rsearch_prompt_save_len; i++) t->prompt[i] = t->rsearch_prompt_save[i];
+    t->prompt[t->rsearch_prompt_save_len] = '\0';
+    t->prompt_len = t->rsearch_prompt_save_len;
+    t->rsearch_active = 0;
+    if (!accept) term_load_input(t, t->rsearch_saved, t->rsearch_saved_len);
+    // accept: the matched command is already on the input line — a subsequent Enter runs it.
+}
+
+// Every key while searching flows through here.
+static void term_rsearch_key(terminal_win_t* t, int key) {
+    if (key == 0x1B) { term_rsearch_end(t, 0); return; }                  // Esc  — cancel
+    if (key == '\r' || key == '\n') { term_rsearch_end(t, 1); return; }   // Enter — accept onto the line
+    if (key == 0x12) {                                                    // Ctrl+R — next older match
+        term_rsearch_apply(t, (t->rsearch_idx < 0 ? 0 : t->rsearch_idx + 1));
+        return;
+    }
+    if (key == '\b' || key == 0x7F) {                                     // edit the query
+        if (t->rsearch_len > 0) t->rsearch_q[--t->rsearch_len] = '\0';
+        term_rsearch_apply(t, 0);
+        return;
+    }
+    if (key >= 0x20 && key <= 0x7E && t->rsearch_len < TERM_INPUT_MAX - 1) {
+        t->rsearch_q[t->rsearch_len++] = (char)key;
+        t->rsearch_q[t->rsearch_len] = '\0';
+        term_rsearch_apply(t, 0);                                         // narrow from the newest
+    }
+    // swallow everything else while searching
+}
+
 void terminal_win_key(window_t* win, int key) {
     terminal_win_t* term = (terminal_win_t*)win->reserved;
     if (!term) return;
+
+    // Ctrl+R reverse-i-search owns every key while active.
+    if (term->rsearch_active) { term_rsearch_key(term, key); return; }
 
     // Scrollback navigation — moves the VIEW only (not the input line) and never snaps
     // back to the tail. A page is one screenful minus a row of overlap; a wheel notch
@@ -508,6 +618,11 @@ void terminal_win_key(window_t* win, int key) {
                 }
                 break;
         }
+        return;
+    }
+
+    if (c == 0x12) {                    // Ctrl+R — enter reverse-i-search
+        term_rsearch_begin(term);
         return;
     }
 

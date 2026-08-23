@@ -51,6 +51,17 @@ typedef struct {
     uint8_t cur_color;
     uint8_t out_color[TERM_OUTPUT_MAX];
     term_hist_t hist;       // Up/Down command history (v6.4.326)
+    // Ctrl+R reverse-incremental history search (v6.4.339). While active, the prompt shows
+    // "(r-search)`query': " and the input line holds the current match; typing narrows it,
+    // Ctrl+R jumps to the next older match, Enter accepts onto the line, Esc cancels.
+    int  rsearch_active;
+    char rsearch_q[TERM_INPUT_MAX];        // the incremental query
+    int  rsearch_len;
+    int  rsearch_idx;                      // 'back' index of the current match (-1 = none)
+    char rsearch_saved[TERM_INPUT_MAX];    // input line before search (restored on Esc)
+    int  rsearch_saved_len;
+    char rsearch_prompt_save[64];          // real prompt text, restored when search ends
+    int  rsearch_prompt_save_len;
 } terminal_win_t;
 
 #define TERM_SCREEN_ROWS 45    // rows cleared/addressable in screen mode (>= any window)
@@ -69,5 +80,9 @@ int term_paste_selftest(void);
 void term_hist_add(term_hist_t* h, const char* line);     // record a command (skip blank/dup)
 const char* term_hist_get(const term_hist_t* h, int back); // back=0 newest; 0 ptr if out of range
 int  term_hist_selftest(void);
+// Reverse-i-search core (pure): 'back' index (0=newest) of the most recent entry at or older
+// than start_back whose text contains `query` (empty query matches any), or -1 if none.
+int  term_hist_rsearch(const term_hist_t* h, const char* query, int start_back);
+int  term_rsearch_selftest(void);
 
 #endif
