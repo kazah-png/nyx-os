@@ -40,6 +40,7 @@
 //               9 = print (nl = expr; the operand's TYPE picks the
 //                   opcode)                10 = string literal (nv)
 //               11 = len (nl = a str operand; the measuring builtin)
+//               12 = logical not (nl = an int operand; bare '!')
 //   A separate walker, emit_node, then emits by postorder recursion —
 //   children first, the node's own operation last. Postfix is no
 //   longer a lucky consequence of parse order; it is a property of the
@@ -150,7 +151,10 @@
 //   25 STRLEN (pop a table index, push its span's length). `len(s)`
 //   completes the string toolkit — make (+), compare (==), measure —
 //   typed str-in/int-out, and len of a literal folds to a number at
-//   compile time.
+//   compile time. · 26 NOT (pop, push the logical flip: zero to one,
+//   anything else to zero) — bare `!` as a factor, int-only, folding
+//   over constants; the `!=` two-char arm eats its pair first, so a
+//   lone '!' can only ever mean this.
 //
 //   THE TYPE COLUMN. Strings are real VALUES now, and the check pass
 //   is what makes that safe. A double-quoted literal lexes into a
@@ -506,6 +510,12 @@ fn ast_factor(k: *i64, v: *i64, ln: *i64, fpc: *i64, a: Ast, pos: i64, nn: i64) 
         a.nline[r.nn] = ln[pos];
         return NP{ pos: r.pos, nn: r.nn + 1, root: r.nn };
     }
+    if k[pos] == 2 && v[pos] == 33 {       // logical not (a bare '!' — the
+        r := ast_factor(k, v, ln, fpc, a, pos + 1, nn);   // != arm ate '!='
+        a.nk[r.nn] = 12; a.nl[r.nn] = r.root; a.nr[r.nn] = -1; a.nv[r.nn] = 0;
+        a.nline[r.nn] = ln[pos];           // before this could ever see it)
+        return NP{ pos: r.pos, nn: r.nn + 1, root: r.nn };
+    }
     if k[pos] == 2 && v[pos] == 40 {       // '(' — mutual recursion
         r := ast_cmp(k, v, ln, fpc, a, pos + 1, nn);
         if !(k[r.pos] == 2 && v[r.pos] == 41) {
@@ -664,6 +674,13 @@ fn check_node(a: Ast, env: Scope, bc: i64, idx: i64) {
         }
         a.nt[idx] = 0;
     }
+    if a.nk[idx] == 12 {                   // logical not: int in, int out
+        check_node(a, env, bc, a.nl[idx]);
+        if a.nt[a.nl[idx]] == 1 {
+            fail(a.nline[idx], "! takes an integer");
+        }
+        a.nt[idx] = 0;
+    }
     if a.nk[idx] == 4 {                    // call: int arguments, int result
         mut q := 0;
         while q < a.nl[idx] {
@@ -764,6 +781,16 @@ fn fold_node(a: Ast, st: Strs, idx: i64) {
             a.nv[idx] = st.stl[a.nv[c]];
         }
     }
+    if a.nk[idx] == 12 {                   // not of a folded number
+        fold_node(a, st, a.nl[idx]);
+        c := a.nl[idx];
+        if a.nk[c] == 0 {
+            mut nv := 0;
+            if a.nv[c] == 0 { nv = 1; }
+            a.nk[idx] = 0;
+            a.nv[idx] = nv;
+        }
+    }
     if a.nk[idx] == 4 {                    // call: arguments fold, calls never
         mut q := 0;
         while q < a.nl[idx] {
@@ -803,6 +830,10 @@ fn emit_node(a: Ast, fe: *i64, fp: *i64, code: *i64, cp: i64, idx: i64) -> i64 {
     if a.nk[idx] == 11 {                   // len: operand, then STRLEN
         c := emit_node(a, fe, fp, code, cp, a.nl[idx]);
         return emit1(code, c, 25);
+    }
+    if a.nk[idx] == 12 {                   // logical not: operand, then NOT
+        c := emit_node(a, fe, fp, code, cp, a.nl[idx]);
+        return emit1(code, c, 26);
     }
     f := a.nv[idx];                        // call
     cnt := a.nl[idx];
@@ -1299,6 +1330,12 @@ fn run(prog: *i64, stk: *i64, vars: *i64, st: Strs) -> i64 {
             stk[sp - 1] = st.stl[stk[sp - 1]];   // its span's length
             pc += 1;
         }
+        if op == 26 {                      // NOT: zero flips to one and
+            mut t := 0;                    // anything else to zero
+            if stk[sp - 1] == 0 { t = 1; }
+            stk[sp - 1] = t;
+            pc += 1;
+        }
     }
     stk[0]
 }
@@ -1405,7 +1442,7 @@ fn main() -> i64 {
     show("who := \"nyx\"; print who + \" rules\"; print \"nyx\" + \"os\"; print who + \"os\" == \"nyxos\"; 0",
          k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, nb, ss, sl, st);
     // The rest of the comparison set, each its own opcode.
-    show("n := 7; print n != 7; print n <= 7; print n >= 9; 0",
+    show("n := 7; print n != 7; print n <= 7; print n >= 9; print !(n >= 9); 0",
          k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, nb, ss, sl, st);
     // else-if chains: free structure — the else slot held a statement
     // all along, and a nested if is a statement.

@@ -231,7 +231,9 @@ And `len(s)` completed the string toolkit — make (`+`), compare
 (`==`), **measure**: a typed builtin (str in, int out, "len takes a
 string" otherwise), one STRLEN opcode, and `len` of a literal folds
 to a plain number at compile time. `len` is a reserved word now, like
-`print`. The subset
+`print`. Bare `!` closed the integer operator set — logical not as a
+factor (int-only, folding over constants), unambiguous because the
+`!=` two-char arm eats its pair before a lone `!` can ever be seen. The subset
 grows until the toy parses the examples directory — at which point it
 stops being a toy.
 
