@@ -163,6 +163,7 @@ static void cmd_seq(int argc, char** argv);
 static void cmd_urlcode(int argc, char** argv);
 static void cmd_paste(int argc, char** argv);
 static void cmd_cut(int argc, char** argv);
+static void cmd_xargs(int argc, char** argv);
 static void cmd_uniq(int argc, char** argv);
 static void cmd_join(int argc, char** argv);
 static void cmd_tac(int argc, char** argv);
@@ -404,6 +405,7 @@ static const command_t commands[] = {
     {"notify",    cmd_notify,    "Show a desktop notification: notify <title> [message...]", false},
     {"cut",       cmd_cut,       "Select fields/chars of each line: cut -f|-c|-b LIST [-d C] [-s] <file>", false},
     {"uniq",      cmd_uniq,      "Collapse adjacent equal lines: uniq [-c|-d|-u|-i|-f N|-s N|-w N] <file>", false},
+    {"xargs",     cmd_xargs,     "Build command lines from piped words: <producer> | xargs [-n N] [cmd]", false},
     {"join",      cmd_join,      "Join two sorted files on a field: join [-t C] [-1/-2/-j N] [-a 1|2] <f1> <f2>", false},
     {"tac",       cmd_tac,       "Print a file's lines in reverse order: tac [-s SEP] <file>", false},
     {"csv",       cmd_csv,       "View a CSV file as an aligned table: csv [-d DELIM] <file>", false},
@@ -850,6 +852,7 @@ static const man_page_t man_pages[] = {
     {"paste",    "Merge corresponding lines of files. By default the i-th line of each file is printed on one row, separated by a tab, continuing until every file runs out (a spent file leaves its column empty). -s writes each file's lines onto a single line instead. -d LIST replaces the tab with the characters of LIST used in turn (\\t, \\n, \\\\ escapes recognised). Reads each whole file; up to 16 files. Matches GNU paste for newline-delimited text."},
     {"cut",      "Print selected parts of each line of <file>. Choose one mode: -f LIST cuts fields (a field is text between delimiters; the delimiter is a TAB by default, or the single character given by -d C), -c LIST cuts characters, -b LIST cuts bytes. A LIST is a comma-separated set of 1-based ranges: 'N' one position, 'N-M' the inclusive range, 'N-' from N to the end, '-M' the same as '1-M'. Selected parts are always emitted in increasing position order, never duplicated, so the order the ranges are written in does not matter. In field mode a line that contains no delimiter is printed unchanged, unless -s suppresses such lines; selected fields are re-joined with the delimiter. Matches GNU cut byte-for-byte for newline-delimited text (chars and bytes coincide for ASCII). Reads a bounded chunk of each file; several files may be given."},
     {"join",     "Join two files, <f1> and <f2>, on a common field — the relational join of the shell. Both files must already be SORTED on their join field (join is a merge join; sort first). For every pair of lines whose join fields match it prints the join field, then the other fields of <f1>, then the other fields of <f2>; a repeated key prints the full cartesian product of the matching lines. By default the join field is field 1 and fields are separated by runs of blanks (collapsed to a single space on output). -t C uses the single character C as the field separator on input and output. -1 N / -2 N set the join field for file 1 / file 2 (or -j N for both). -a 1 or -a 2 additionally prints the unpaired lines of that file (reformatted). Matches GNU join byte-for-byte under the C locale (byte-ordered keys). Reads a bounded chunk of each file."},
+    {"xargs",    "Build and run command lines from a list of words. Used at the end of a pipe: `<producer> | xargs [-n N] [command [args...]]` reads the producer's output, splits it into whitespace-separated words (spaces, tabs and newlines all separate), and runs `command` with those words appended as extra arguments. With no command it defaults to `echo`, so `ls | xargs` prints every name on one line. -n N runs the command repeatedly with at most N words each time (e.g. `... | xargs -n 1 echo` echoes one word per line). The command must be a builtin (dispatched the same way the pipe operator dispatches its right-hand side). Handy for turning a column of names into arguments — the classic `find ... | xargs ...` shape."},
     {"uniq",     "Collapse ADJACENT equal lines of <file> into one — the classic companion to sort (uniq does not sort; it only folds neighbouring duplicates, so run `sort` first to remove all duplicates). Prints the first line of each run. -c prefixes each line with the number of times it occurred (a 7-wide count, then a space). -d prints only lines that repeat (runs of 2+); -u prints only lines that occur exactly once. -i compares case-insensitively. -f N ignores the first N blank-separated fields when comparing, -s N then ignores the next N characters, and -w N compares at most N characters of what remains — the whole (unmodified) line is still what gets printed. Matches GNU uniq byte-for-byte. Reads a bounded chunk of the file."},
     {"tac",      "Print the lines of <file> in reverse order — the last line first, the first line last (the line-order companion to rev, which reverses characters within a line). The newline stays attached to its line, so a file without a trailing newline joins its last two lines when reversed, exactly like GNU tac. -s SEP uses SEP (one or more characters) as the record separator instead of newline. Reads a bounded chunk of the file."},
     {"tsort",    "Topologically sort a dependency list. The file holds whitespace-separated tokens in pairs; each pair 'A B' means A must come before B. Prints one item per line in an order that respects every dependency (Kahn's algorithm), matching GNU tsort byte-for-byte including its tie-break (roots emitted in sorted order). If the pairs contain a cycle the order is impossible, so the acyclic part is printed and a loop is reported; an odd number of tokens is a malformed input. Useful for build/order-of-operations problems."},
@@ -2025,6 +2028,116 @@ static void cmd_csv(int argc, char** argv) {
 // (host-diff-verified against GNU cut); this wrapper does the argv parsing and file I/O, then
 // splits each file into newline-delimited lines. Every emitted line is newline-terminated,
 // even a final unterminated one, matching GNU. Reads a bounded chunk of each file.
+// ---- xargs: build and run command lines from a word list (v6.4.327) ------------------
+// `producer | xargs [-n N] [cmd [args...]]` reads whitespace-separated words from its input
+// and runs cmd (default: echo) with the words appended, at most N per run. The two pieces of
+// real logic — splitting the input into words and packing one argv batch — are pure so they
+// can be unit-tested off-target (xargs_selftest); cmd_xargs only does the file I/O + dispatch.
+
+// Split `text` (len bytes, mutated in place — each word gets a trailing NUL) into words,
+// storing up to `maxw` word pointers in words[]. Whitespace = space/tab/newline/CR. Returns
+// the number of words found.
+static int xargs_is_ws(char c) { return c == ' ' || c == '\t' || c == '\n' || c == '\r'; }
+static int xargs_split(char* text, uint32_t len, char** words, int maxw) {
+    int nw = 0; uint32_t i = 0;
+    while (i < len && nw < maxw) {
+        while (i < len && xargs_is_ws(text[i])) i++;         // skip leading whitespace
+        if (i >= len) break;
+        words[nw++] = &text[i];                              // start of a word
+        while (i < len && !xargs_is_ws(text[i])) i++;        // scan to its end
+        if (i < len) text[i++] = '\0';                       // terminate it in place
+    }
+    return nw;
+}
+
+// Pack ONE argv batch: out[0]=cmd, then cmd_args[0..na), then up to `maxn` words from
+// words[start..n) (maxn<=0 => take all remaining). Never exceeds `outcap` argv slots. Sets
+// *next to the first unconsumed word index and returns the number of argv entries placed.
+static int xargs_batch(char* cmd, char** cmd_args, int na, char** words, int n,
+                       int start, int maxn, char** out, int outcap, int* next) {
+    int oc = 0;
+    if (outcap < 1) { *next = start; return 0; }
+    out[oc++] = cmd;
+    for (int i = 0; i < na && oc < outcap; i++) out[oc++] = cmd_args[i];
+    int taken = 0, i = start;
+    for (; i < n && oc < outcap; i++) {
+        if (maxn > 0 && taken >= maxn) break;
+        out[oc++] = words[i]; taken++;
+    }
+    *next = i;
+    return oc;
+}
+
+// KAT for the two pure cores: word splitting (whitespace variety + collapse + empty) and argv
+// batching (all/limited/with-args/outcap-bound/empty). Returns 0 on pass, else the case number.
+static int xargs_selftest(void) {
+    char buf[64]; char* w[16]; int nw;
+    { const char* s = "  a b\tc\n d  "; int L = 0; while (s[L]) { buf[L] = s[L]; L++; } buf[L] = '\0';
+      nw = xargs_split(buf, (uint32_t)L, w, 16);
+      if (nw != 4) return 1;
+      if (strcmp(w[0],"a") || strcmp(w[1],"b") || strcmp(w[2],"c") || strcmp(w[3],"d")) return 2; }
+    { const char* s = "   \t\n "; int L = 0; while (s[L]) { buf[L] = s[L]; L++; } buf[L] = '\0';
+      if (xargs_split(buf, (uint32_t)L, w, 16) != 0) return 3; }                 // all whitespace -> 0
+    char aa[] = "a", bb[] = "b", cc[] = "c"; char* words[3] = { aa, bb, cc };
+    char* out[8]; int next, oc;
+    oc = xargs_batch("echo", 0, 0, words, 3, 0, 0, out, 8, &next);               // all words, one batch
+    if (oc != 4 || next != 3 || strcmp(out[0],"echo") || strcmp(out[3],"c")) return 4;
+    oc = xargs_batch("echo", 0, 0, words, 3, 0, 2, out, 8, &next);               // -n 2: first batch
+    if (oc != 3 || next != 2) return 5;
+    oc = xargs_batch("echo", 0, 0, words, 3, next, 2, out, 8, &next);            //        second batch
+    if (oc != 2 || next != 3 || strcmp(out[1],"c")) return 6;
+    char ee[] = "-e"; char* ca[1] = { ee };
+    oc = xargs_batch("echo", ca, 1, words, 3, 0, 0, out, 8, &next);              // with a base arg
+    if (oc != 5 || strcmp(out[1],"-e") || strcmp(out[2],"a")) return 7;
+    oc = xargs_batch("echo", 0, 0, words, 3, 0, 0, out, 3, &next);               // outcap caps the batch
+    if (oc != 3 || next != 2) return 8;
+    oc = xargs_batch("echo", 0, 0, words, 3, 3, 0, out, 8, &next);              // nothing left -> just cmd
+    if (oc != 1 || next != 3) return 9;
+    return 0;
+}
+
+static void cmd_xargs(int argc, char** argv) {
+    // producer | xargs [-n N] [command [args...]]  — the shell's pipe appends /tmp/pipe as the
+    // final argv, so the LAST arg is the input file. Words from it are appended to the command
+    // (default: echo), at most N per run; builtins are dispatched like the pipe path.
+    if (argc < 2) { printf("usage: <producer> | xargs [-n N] [command [args...]]\n"); return; }
+    int ai = 1, maxn = 0;
+    if (ai + 1 < argc && strcmp(argv[ai], "-n") == 0) { maxn = atoi(argv[ai + 1]); if (maxn < 1) maxn = 1; ai += 2; }
+    const char* infile = argv[argc - 1];                     // pipe-appended input file
+    char def_echo[] = "echo";
+    char* cmd; char* cmd_args[MAX_CMD_ARGS]; int na = 0;
+    if (ai <= argc - 2) {                                    // an explicit command was given
+        cmd = argv[ai];
+        for (int k = ai + 1; k <= argc - 2 && na < MAX_CMD_ARGS - 2; k++) cmd_args[na++] = argv[k];
+    } else cmd = def_echo;                                   // no command -> echo (like GNU xargs)
+
+    int fd = vfs_open(infile, 0, 0);
+    if (fd < 0) { printf("xargs: cannot read input\n"); return; }
+    static char inbuf[4096];
+    int bytes = vfs_read(fd, inbuf, sizeof(inbuf) - 1);
+    vfs_close(fd);
+    if (bytes <= 0) return;
+    inbuf[bytes] = '\0';
+
+    static char* words[256];
+    int nw = xargs_split(inbuf, (uint32_t)bytes, words, 256);
+    if (nw == 0) return;
+
+    void (*func)(int, char**) = 0;                           // resolve the builtin once
+    for (int i = 0; commands[i].name; i++)
+        if (strcmp(cmd, commands[i].name) == 0) { func = commands[i].func; break; }
+    if (!func) { printf("xargs: %s: not a builtin command\n", cmd); return; }
+
+    int start = 0;
+    while (start < nw) {
+        char* xa[MAX_CMD_ARGS]; int next;
+        int xc = xargs_batch(cmd, cmd_args, na, words, nw, start, maxn, xa, MAX_CMD_ARGS, &next);
+        func(xc, xa);
+        if (next <= start) break;                            // guarantee forward progress
+        start = next;
+    }
+}
+
 static void cmd_cut(int argc, char** argv) {
     cut_spec_t spec;
     spec.mode = CUT_FIELDS; spec.suppress = 0; spec.any = 0; spec.open_from = 0;
@@ -8040,7 +8153,7 @@ static void run_selftests(void) {
         {"imgident",     image_identify_selftest},
         {"uuid",         uuid_selftest},
         {"edfind",       editor_find_selftest},
-        {"cut",          cut_selftest},
+        {"cut",          cut_selftest},           {"xargs",         xargs_selftest},
         {"securezero",   secure_zero_selftest},
         {"chacha20",     chacha20_selftest},        {"siphash",       siphash_selftest},
         {"poly1305",     poly1305_selftest},        {"chachapoly",    chacha20poly1305_selftest},
