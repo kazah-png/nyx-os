@@ -7,7 +7,7 @@
 <p align="center">
   <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.9.0-LTS"><img src="https://img.shields.io/badge/release-v5.9.0--LTS-825AD2?style=flat" /></a>
   &nbsp;
-  <img src="https://img.shields.io/badge/version-v6.4.329-825AD2?style=flat" />
+  <img src="https://img.shields.io/badge/version-v6.4.330-825AD2?style=flat" />
   &nbsp;
   <img src="https://img.shields.io/badge/arch-x86__64-825AD2?style=flat" />
   &nbsp;
@@ -69,7 +69,7 @@ nyx:root$ nyxfetch
     .:oo.. :o.               ---------
   :oo:.oo.o:                 OS:         NyxOS x86_64
  .#o:.   :.                  Host:       QEMU Standard PC
- #:::....:                   Kernel:     NyxOS 6.4.329 (GUI Suite)
+ #:::....:                   Kernel:     NyxOS 6.4.330 (GUI Suite)
 o#::. . o.                   Uptime:     00:00:12
 o#.o:   :o                   Shell:      nyxsh
 o###o   o#                   Resolution: 1024 x 768
@@ -201,7 +201,9 @@ named and stored — the VFS, the ramdisk tree, the EXT2 disk at `/mnt`, and the
 `/dev` and `/proc` special filesystems — is in [docs/FILESYSTEM.md](docs/FILESYSTEM.md).
 How NyxOS compiles and installs C programs from inside the running OS — the `cc`
 compiler, the vendored self-hosting TinyCC port, and the `xbm` package manager — is in
-[docs/TOOLCHAIN.md](docs/TOOLCHAIN.md).
+[docs/TOOLCHAIN.md](docs/TOOLCHAIN.md). How NyxOS keeps itself correct — the in-kernel
+known-answer self-test battery, running it, adding a test, and the CI that gates every
+push on it — is in [docs/TESTING.md](docs/TESTING.md).
 
 ---
 
