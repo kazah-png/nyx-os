@@ -203,8 +203,17 @@ same cursors** when two literals concatenate at compile time — one
 mechanism, two moments, and a fold-made entry survives into the run
 (the demo PRINTS one). Runtime strings are per-program transient (the
 next lex reseeds), and capacity is trusted like every toy buffer.
-From here: the subset simply grows until the toy parses the examples
-directory — at which point it stops being a toy.
+
+Subset growth is now the whole remaining ladder, and it has begun:
+the toy compiler honors **line comments** (they vanish in the lexer
+like whitespace, with the line counter still ticking so diagnostics
+stay honest around them) and carries the **full comparison set** —
+`!=`, `<=`, `>=` joined `<`, `>`, `==` as two-char tokens with
+dedicated opcodes, each folding over constants like every other
+operator (`print 3 <= 3;` emits `PUSH 1`). `==` remains the only
+*string* comparison; `!=` over strings is a later rung. The subset
+grows until the toy parses the examples directory — at which point it
+stops being a toy.
 
 ## Definition of done for M5
 

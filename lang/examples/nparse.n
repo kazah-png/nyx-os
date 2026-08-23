@@ -117,7 +117,9 @@
 //   (val = its SYMBOL INDEX), 2 = operator/punct (val = its byte),
 //   3 = '==', 4 = ':=', 5 = 'if', 6 = 'while', 7 = 'fn', 8 = 'else',
 //   9 = end, 10 = string literal (val = STRING-TABLE index),
-//   11 = 'print'.
+//   11 = 'print', 12 = '!=', 13 = '<=', 14 = '>='. Line comments (//
+//   to end of line) vanish in the lexer like whitespace — the line
+//   counter still ticks, so diagnostics stay honest around them.
 //   Opcodes: 0 HALT · 1 PUSH arg · 2 ADD · 3 SUB · 4 MUL · 5 DIV ·
 //   6 MOD · 7 NEG · 8 LT · 9 GT · 10 EQ · 11 LOAD slot · 12 STORE slot
 //   · 13 JZ target · 14 JMP target · 15 CALL target (pushes the return
@@ -126,7 +128,9 @@
 //   index, write that entry + newline) · 20 STREQ (pop two table
 //   indexes, byte-compare the spans, push 0/1) · 21 CONCAT (pop two
 //   table indexes, append a fresh entry = both spans joined, push its
-//   index).
+//   index) · 22 NEQ · 23 LE · 24 GE (the full comparison set, each a
+//   dedicated pop-two-push-0/1 like LT/GT/EQ — on integers; == stays
+//   the only STRING comparison, != over strings is a future rung).
 //
 //   THE TYPE COLUMN. Strings are real VALUES now, and the check pass
 //   is what makes that safe. A double-quoted literal lexes into a
@@ -231,6 +235,12 @@ fn lex(src: str, k: *i64, v: *i64, ln: *i64, nb: *u8, ss: *i64, sl: *i64,
             i += 1;
             continue;
         }
+        if b == 47 && i + 1 < n && src[i + 1] as i64 == 47 {
+            while i < n && src[i] as i64 != 10 {
+                i += 1;                    // a line comment vanishes here;
+            }                              // the newline arm keeps the count
+            continue;
+        }
         ln[t] = line;                      // every token records its line
         if b == 34 {                       // string literal: bytes into the
             mut j := i + 1;                // side table (no escapes yet —
@@ -326,6 +336,21 @@ fn lex(src: str, k: *i64, v: *i64, ln: *i64, nb: *u8, ss: *i64, sl: *i64,
         }
         if b == 61 && i + 1 < n && src[i + 1] as i64 == 61 {
             k[t] = 3; v[t] = 0; t += 1;    // ==
+            i += 2;
+            continue;
+        }
+        if b == 33 && i + 1 < n && src[i + 1] as i64 == 61 {
+            k[t] = 12; v[t] = 0; t += 1;   // !=
+            i += 2;
+            continue;
+        }
+        if b == 60 && i + 1 < n && src[i + 1] as i64 == 61 {
+            k[t] = 13; v[t] = 0; t += 1;   // <=
+            i += 2;
+            continue;
+        }
+        if b == 62 && i + 1 < n && src[i + 1] as i64 == 61 {
+            k[t] = 14; v[t] = 0; t += 1;   // >=
             i += 2;
             continue;
         }
@@ -511,15 +536,19 @@ fn ast_sum(k: *i64, v: *i64, ln: *i64, fpc: *i64, a: Ast, pos: i64, nn: i64) -> 
     r
 }
 
-// cmp := sum [('<' | '>' | '==') sum]   — lowest tier, pushes 0 or 1
+// cmp := sum [('<' | '>' | '==' | '!=' | '<=' | '>=') sum]
+//   — lowest tier, pushes 0 or 1: the full comparison set.
 fn ast_cmp(k: *i64, v: *i64, ln: *i64, fpc: *i64, a: Ast, pos: i64, nn: i64) -> NP {
     l := ast_sum(k, v, ln, fpc, a, pos, nn);
-    two := k[l.pos] == 3;
+    two := k[l.pos] == 3 || k[l.pos] == 12 || k[l.pos] == 13 || k[l.pos] == 14;
     one := k[l.pos] == 2 && (v[l.pos] == 60 || v[l.pos] == 62);
     if two || one {
         mut oc := 10;                      // EQ
-        if one && v[l.pos] == 60 { oc = 8; }   // LT
-        if one && v[l.pos] == 62 { oc = 9; }   // GT
+        if one && v[l.pos] == 60 { oc = 8; }    // LT
+        if one && v[l.pos] == 62 { oc = 9; }    // GT
+        if k[l.pos] == 12 { oc = 22; }          // NEQ
+        if k[l.pos] == 13 { oc = 23; }          // LE
+        if k[l.pos] == 14 { oc = 24; }          // GE
         opl := ln[l.pos];
         r := ast_sum(k, v, ln, fpc, a, l.pos + 1, l.nn);
         a.nk[r.nn] = 2; a.nl[r.nn] = l.root; a.nr[r.nn] = r.root; a.nv[r.nn] = oc;
@@ -630,6 +659,9 @@ fn fold_node(a: Ast, st: Strs, idx: i64) {
                 if oc == 8 { if x < y { val = 1; } }
                 if oc == 9 { if x > y { val = 1; } }
                 if oc == 10 { if x == y { val = 1; } }
+                if oc == 22 { if x != y { val = 1; } }
+                if oc == 23 { if x <= y { val = 1; } }
+                if oc == 24 { if x >= y { val = 1; } }
                 a.nk[idx] = 0;             // the operation happened NOW
                 a.nv[idx] = val;
             }
@@ -1185,6 +1217,21 @@ fn run(prog: *i64, stk: *i64, vars: *i64, st: Strs) -> i64 {
             sp -= 1;
             pc += 1;
         }
+        if op == 22 {                      // NEQ / LE / GE: the rest of the
+            mut t := 0;                    // comparison set, LT/GT/EQ-shaped
+            if stk[sp - 2] != stk[sp - 1] { t = 1; }
+            stk[sp - 2] = t; sp -= 1; pc += 1;
+        }
+        if op == 23 {
+            mut t := 0;
+            if stk[sp - 2] <= stk[sp - 1] { t = 1; }
+            stk[sp - 2] = t; sp -= 1; pc += 1;
+        }
+        if op == 24 {
+            mut t := 0;
+            if stk[sp - 2] >= stk[sp - 1] { t = 1; }
+            stk[sp - 2] = t; sp -= 1; pc += 1;
+        }
     }
     stk[0]
 }
@@ -1234,7 +1281,7 @@ fn main() -> i64 {
     // fold pass collapses 2*3+4 to 10 and 10-8 to 2 at compile time and
     // 10 words remain. (The flagship demos above fold nothing — their
     // constants sit alone as call arguments — so their counts held.)
-    show("d := 2 * 3 + 4; d * (10 - 8)",
+    show("d := 2 * 3 + 4; // constants fold\nd * (10 - 8)",
          k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, nb, ss, sl, st);
     // Dead-arm elimination, visible: the condition folds to 0, the if
     // dissolves, and 7 words remain of an unfolded 18. The dead arm was
@@ -1259,6 +1306,9 @@ fn main() -> i64 {
     // through the same cursor and PRINTS a ready-made entry), and the
     // result chains into == like any string.
     show("who := \"nyx\"; print who + \" rules\"; print \"nyx\" + \"os\"; print who + \"os\" == \"nyxos\"; 0",
+         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, nb, ss, sl, st);
+    // The rest of the comparison set, each its own opcode.
+    show("n := 7; print n != 7; print n <= 7; print n >= 9; 0",
          k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, nb, ss, sl, st);
     // The broken program runs LAST (fail() ends the process — one failing
     // demo per run). It PARSES cleanly; what is wrong is a TYPE: a string
