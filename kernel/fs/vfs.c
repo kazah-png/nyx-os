@@ -77,19 +77,13 @@ typedef struct vfs_node {
 #define PROC_PID_MAPS    8   // /proc/<pid>/maps    (mapped memory regions)
 #define PROC_MOUNTS      9   // /proc/mounts        (mounted filesystems)
 
-/* xorshift64 PRNG for /dev/random, lazily seeded from the tick counter. */
-static uint64_t dev_rng_state = 0;
-static uint8_t dev_rand_byte(void) {
-    extern uint32_t get_ticks(void);
-    if (!dev_rng_state) {
-        dev_rng_state = ((uint64_t)get_ticks() << 16) ^ 0x9E3779B97F4A7C15ULL;
-        if (!dev_rng_state) dev_rng_state = 0x1234567ABCDEFULL;
-    }
-    dev_rng_state ^= dev_rng_state << 13;
-    dev_rng_state ^= dev_rng_state >> 7;
-    dev_rng_state ^= dev_rng_state << 17;
-    return (uint8_t)(dev_rng_state >> 33);
-}
+/* /dev/random and /dev/urandom are served by the kernel CSPRNG (an HMAC-DRBG seeded from
+ * RDSEED/RDRAND hardware entropy) — the same source uuid/mktemp/shuf/encrypt already use.
+ * This replaced a tick-seeded xorshift64 PRNG: xorshift output is predictable (its 64-bit
+ * state can be recovered from a handful of samples, then every future byte is known) and a
+ * tick seed carries little entropy — both unacceptable for a device programs read to make
+ * keys, nonces, and tokens. csprng_bytes lazily seeds itself, so it is safe to call here. */
+extern void csprng_bytes(uint8_t* out, uint32_t n);
 
 static vfs_node_t nodes[MAX_INODES];
 static uint32_t node_count = 0;
@@ -727,9 +721,7 @@ int vfs_pread(int fd, void* buf, uint32_t count, uint32_t offset) {
         switch (ino->dev_type) {
             case DEV_NULL:   return 0;         // always EOF
             case DEV_ZERO:   memset_asm(buf, 0, count); return (int)count;
-            case DEV_RANDOM: for (uint32_t i = 0; i < count; i++)
-                                 ((uint8_t*)buf)[i] = dev_rand_byte();
-                             return (int)count;
+            case DEV_RANDOM: csprng_bytes((uint8_t*)buf, count); return (int)count;
         }
     }
     if (ino->proc_type) {                      // /proc: content synthesized on read
