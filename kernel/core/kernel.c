@@ -106,6 +106,7 @@ static void cmd_nyxfetch(int argc, char** argv);
 static void cmd_echo(int argc, char** argv);
 static void cmd_reboot(int argc, char** argv);
 static void cmd_ps(int argc, char** argv);
+static void cmd_pstree(int argc, char** argv);
 static void cmd_uptime(int argc, char** argv);
 static void cmd_time(int argc, char** argv);
 static void cmd_mtdemo(int argc, char** argv);
@@ -326,6 +327,7 @@ static const command_t commands[] = {
     {"uname",     cmd_uname,     "Show system information", false},
     {"reboot",    cmd_reboot,    "Reboot the system", false},
     {"ps",        cmd_ps,        "List processes", false},
+    {"pstree",    cmd_pstree,    "Show processes as a parent->child tree", false},
     {"uptime",    cmd_uptime,    "Show uptime, process count, load, and CPUs", false},
     {"time",      cmd_time,      "Time a command's wall-clock run: time <command> [args...]", false},
     {"timeout",   cmd_timeout,   "Run a command, killing it after N seconds: timeout <secs> <cmd> [args]", false},
@@ -967,6 +969,7 @@ static const man_page_t man_pages[] = {
     {"alias",    "Define or list command aliases, bash-style. `alias ll=ls -l` makes typing `ll` run `ls -l` (the value is the whole rest of the line after `=`, so no quotes are needed); `alias ll foo` then runs `ls -l foo`. With no arguments, `alias` lists every defined alias; `alias <name>` prints just that one. The first word of every command you type is expanded through the alias table, with a recursion cap so a self-referential alias can't loop. Aliases live for the session (they are not saved to disk). Remove one with `unalias`."},
     {"unalias",  "Remove a command alias defined with `alias`: `unalias <name>`."},
     {"ps",       "List the running processes with their PID, scheduler state and name. Use kill to stop one."},
+    {"pstree",   "Show the processes as a tree, each child indented under its parent (grouped by PPID) — the hierarchical companion to the flat `ps` list. Every line is `name(pid)`; a process whose parent is no longer running is shown as its own root. Handy for seeing which process spawned which (e.g. the compositor and the jobs launched from a terminal). Read-only; recursion is depth-capped so a broken parent chain can't loop."},
     {"uptime",   "Print a one-line system summary in the classic Unix format: the wall-clock time, how long the kernel has been up (days + HH:MM:SS, from the 1000 Hz tick counter), the number of live processes, an instantaneous load figure (how many processes are runnable right now), and the count of online CPUs. A focused, scriptable subset of what `nyxfetch` shows."},
     {"time",     "Run a command and report how long it took: `time <command> [args...]` runs the rest of the line as a command and, when it finishes, prints the elapsed wall-clock time as `real   S.mmm s` (from the 1000 Hz tick counter). Useful for benchmarking a builtin — e.g. `time cc hello.c -o hello`, `time sha256sum bigfile`, or `time sort words.txt`. Times whole-command execution, not per-call CPU."},
     {"timeout",  "Run an external command with a time limit: `timeout <seconds> <command> [args...]` starts <command> (a userspace program, e.g. `timeout 3 sleep 10`) and, if it is still running after <seconds>, kills it with SIGKILL and reports status 124 — otherwise it reports the child's own exit code. The wall clock comes from the 1000 Hz tick counter. Only external programs can be timed out (builtins run to completion synchronously and cannot be interrupted). Handy for bounding a network fetch or any command that might hang."},
@@ -1278,6 +1281,69 @@ static void cmd_ps(int argc, char** argv) {
                 process_table[i]->comm);
         }
     }
+}
+
+// ---- pstree: a hierarchical (parent -> children) view of the process table ---------------
+// The renderer is PURE (flat pid/ppid/name arrays -> indented text) so a KAT can pin the tree
+// shape + ordering. A depth cap stops a cyclic or pathologically deep ppid chain from
+// overflowing the kernel stack; a root is any process whose parent pid is not itself listed.
+#define PSTREE_MAXD 32
+static void pstree_emit(char* out, int* o, int cap, int depth, const char* name, int pid) {
+    for (int d = 0; d < depth && *o < cap - 1; d++) { out[(*o)++] = ' '; out[(*o)++] = ' '; }
+    for (int k = 0; name[k] && *o < cap - 1; k++) out[(*o)++] = name[k];
+    if (*o < cap - 1) out[(*o)++] = '(';
+    char tmp[12]; int t = 0; int v = pid < 0 ? 0 : pid;
+    if (v == 0) tmp[t++] = '0'; else while (v > 0) { tmp[t++] = (char)('0' + v % 10); v /= 10; }
+    while (t > 0 && *o < cap - 1) out[(*o)++] = tmp[--t];
+    if (*o < cap - 1) out[(*o)++] = ')';
+    if (*o < cap - 1) out[(*o)++] = '\n';
+}
+static void pstree_walk(const int* pid, const int* ppid, const char* const* name, int n,
+                        int parent, int depth, char* out, int* o, int cap) {
+    if (depth > PSTREE_MAXD) return;
+    for (int i = 0; i < n; i++) {
+        if (ppid[i] != parent) continue;
+        pstree_emit(out, o, cap, depth, name[i], pid[i]);
+        pstree_walk(pid, ppid, name, n, pid[i], depth + 1, out, o, cap);
+    }
+}
+static void pstree_render(const int* pid, const int* ppid, const char* const* name, int n,
+                          char* out, int cap) {
+    int o = 0;
+    for (int i = 0; i < n; i++) {                          // emit each root, then its subtree
+        int is_root = 1;
+        for (int j = 0; j < n; j++) if (pid[j] == ppid[i]) { is_root = 0; break; }
+        if (!is_root) continue;
+        pstree_emit(out, &o, cap, 0, name[i], pid[i]);
+        pstree_walk(pid, ppid, name, n, pid[i], 1, out, &o, cap);
+    }
+    out[(o < cap) ? o : (cap - 1)] = '\0';
+}
+// KAT: a fixed 4-process forest -> the exact indented tree (roots, depth-first order, indent).
+int pstree_selftest(void) {
+    static const int   pids[]  = {1, 2, 3, 4};
+    static const int   ppids[] = {0, 1, 2, 1};
+    static const char* names[] = {"init", "sh", "cc", "ed"};
+    char out[128];
+    pstree_render(pids, ppids, names, 4, out, sizeof out);
+    const char* want = "init(1)\n  sh(2)\n    cc(3)\n  ed(4)\n";
+    int i = 0;
+    for (; want[i]; i++) if (out[i] != want[i]) return i + 1;
+    return (out[i] == '\0') ? 0 : 100;
+}
+static void cmd_pstree(int argc, char** argv) {
+    (void)argc; (void)argv;
+    static int pids[MAX_PROCESSES], ppids[MAX_PROCESSES];
+    static const char* names[MAX_PROCESSES];
+    int n = 0;
+    for (int i = 0; i < MAX_PROCESSES; i++) {
+        process_t* p = process_table[i];
+        if (!p || p->state == PROC_ZOMBIE) continue;
+        pids[n] = (int)p->pid; ppids[n] = (int)p->ppid; names[n] = p->comm; n++;
+    }
+    static char out[4096];
+    pstree_render(pids, ppids, names, n, out, sizeof out);
+    printf("%s", out);
 }
 
 static void cmd_mtdemo(int argc, char** argv) {
@@ -8503,7 +8569,7 @@ static void run_selftests(void) {
         {"uuid",         uuid_selftest},
         {"edfind",       editor_find_selftest},
         {"cut",          cut_selftest},           {"xargs",         xargs_selftest},
-        {"trunc",        trunc_selftest},
+        {"trunc",        trunc_selftest},         {"pstree",        pstree_selftest},
         {"comm",         comm_selftest},          {"join",          join_selftest},
         {"securezero",   secure_zero_selftest},
         {"chacha20",     chacha20_selftest},        {"siphash",       siphash_selftest},
