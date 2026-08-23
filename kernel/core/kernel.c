@@ -127,6 +127,7 @@ static void cmd_cd(int argc, char** argv);
 static void cmd_pwd(int argc, char** argv);
 static void cmd_cat(int argc, char** argv);
 static void cmd_touch(int argc, char** argv);
+static void cmd_truncate(int argc, char** argv);
 static void cmd_mkdir(int argc, char** argv);
 static void cmd_rm(int argc, char** argv);
 static void cmd_shred(int argc, char** argv);
@@ -346,6 +347,7 @@ static const command_t commands[] = {
     {"cat",       cmd_cat,       "Display file contents: cat <file>", false},
     {"open",      cmd_open,      "Open a file in the GUI Text Editor: open <file>", false},
     {"touch",     cmd_touch,     "Create empty file: touch <file>", false},
+    {"truncate",  cmd_truncate,  "Set a file's size: truncate -s <size> <file>", false},
     {"mkdir",     cmd_mkdir,     "Create directory: mkdir <dir>", false},
     {"rm",        cmd_rm,        "Remove file or directory: rm <path>", false},
     {"shred",     cmd_shred,     "Overwrite a file's data, then optionally remove it: shred [-n N] [-u] <file>", false},
@@ -958,6 +960,7 @@ static const man_page_t man_pages[] = {
     {"du",       "Disk usage: sum the sizes of every file in the subtree rooted at [path] (the current directory by default) and print the total, both human-readable (B/K/M/G) and in exact bytes, with a file and directory count. The walk is iterative with a bounded off-stack frontier (the 4 KB kernel task stack forbids deep recursion); a subtree wider than that many pending directories reports the total as a floor. Complements `df`, which reports whole-filesystem free space rather than per-directory usage."},
     {"find",     "Search for files whose name matches <name>, starting at [path] (the current directory by default), and print the path of every match."},
     {"touch",    "Create <file> as a new, empty file if it does not already exist."},
+    {"truncate", "Set a file's length: `truncate -s <size> <file>`. The size is `N` (bytes), `NK`/`NM`/`NG` (1024-based), or `+N`/`-N` to grow/shrink relative to the current size (`-N` clamps at 0). Growing zero-fills the new tail; shrinking discards the excess. The file is created if it doesn't exist. Sizes are capped at 16 MB (files are held as one contiguous buffer, so there are no sparse holes). Handy for making a fixed-size test file — e.g. `truncate -s 1M /tmp/big` — or trimming one."},
     {"which",    "Look <name> up as a shell command and report how it would run: as a built-in, or as the program at a particular path."},
     {"env",      "Print the shell's environment variables, one NAME=value pair per line."},
     {"export",   "Set an environment variable: `export NAME=value`. Exported variables are passed on to the programs the shell runs."},
@@ -7117,6 +7120,77 @@ static void cmd_open(int argc, char** argv) {
         printf("open: could not launch the editor\n");
 }
 
+// truncate — set a file's length. The size spec parser is pure so the KAT pins its forms:
+// "N" absolute, "NK/NM/NG" (1024-based), "+N"/"-N" relative to the current size. Bounded to
+// TRUNC_MAX (files are contiguous kmalloc'd buffers, so growth zero-fills — no sparse holes).
+#define TRUNC_MAX (16u * 1024 * 1024)
+static int trunc_parse_size(const char* s, uint64_t cur, uint64_t* out) {
+    if (!s || !*s) return -1;
+    int rel = 0;
+    if      (*s == '+') { rel = 1;  s++; }
+    else if (*s == '-') { rel = -1; s++; }
+    if (*s < '0' || *s > '9') return -1;                    // need at least one digit
+    uint64_t v = 0;
+    while (*s >= '0' && *s <= '9') { v = v * 10 + (uint64_t)(*s - '0'); if (v > 0xFFFFFFFFull) return -1; s++; }
+    if (*s) {                                               // optional single-letter unit
+        char c = (char)(*s | 0x20);
+        uint64_t mult = (c == 'k') ? 1024ull : (c == 'm') ? 1024ull * 1024
+                      : (c == 'g') ? 1024ull * 1024 * 1024 : 0;
+        if (mult == 0 || s[1]) return -1;                  // bad unit, or trailing junk
+        v *= mult;
+    }
+    uint64_t target = (rel == 0) ? v : (rel == 1) ? cur + v : (cur > v ? cur - v : 0);
+    if (target > TRUNC_MAX) return -1;
+    *out = target;
+    return 0;
+}
+// KAT: absolute / K,M,G units / relative +,- (with clamp-at-0) / malformed rejection.
+int trunc_selftest(void) {
+    uint64_t o = 0;
+    if (trunc_parse_size("100", 0, &o) != 0 || o != 100) return 1;
+    if (trunc_parse_size("2K", 0, &o)  != 0 || o != 2048) return 2;
+    if (trunc_parse_size("1M", 0, &o)  != 0 || o != 1048576u) return 3;
+    if (trunc_parse_size("+10", 5, &o) != 0 || o != 15) return 4;
+    if (trunc_parse_size("-3", 10, &o) != 0 || o != 7) return 5;
+    if (trunc_parse_size("-100", 10, &o) != 0 || o != 0) return 6;      // clamps at 0
+    if (trunc_parse_size("abc", 0, &o) == 0) return 7;                  // no digits
+    if (trunc_parse_size("5X", 0, &o)  == 0) return 8;                  // bad unit
+    if (trunc_parse_size("1T", 0, &o)  == 0) return 9;                  // unit exists but > TRUNC_MAX? actually 'T' is a bad unit
+    if (trunc_parse_size("64M", 0, &o) == 0) return 10;                 // over TRUNC_MAX (16M)
+    if (trunc_parse_size("", 0, &o)    == 0) return 11;                 // empty
+    return 0;
+}
+static void cmd_truncate(int argc, char** argv) {
+    if (argc < 4 || strcmp(argv[1], "-s") != 0) {
+        printf("Usage: truncate -s <size> <file>   (size: N, NK, NM, NG, +N, -N)\n");
+        return;
+    }
+    const char* spec = argv[2]; const char* path = argv[3];
+    uint32_t cursz = 0; int isdir = 0;
+    int existed = (vfs_stat(path, &cursz, &isdir) == 0);
+    if (existed && isdir) { printf("truncate: '%s' is a directory\n", path); return; }
+    uint64_t target = 0;
+    if (trunc_parse_size(spec, existed ? (uint64_t)cursz : 0, &target) != 0) {
+        printf("truncate: invalid size '%s' (max %u bytes)\n", spec, TRUNC_MAX); return;
+    }
+    uint32_t n = (uint32_t)target;
+    uint8_t* buf = (uint8_t*)kmalloc(n ? n : 1);
+    if (!buf) { printf("truncate: out of memory\n"); return; }
+    memset_asm(buf, 0, n);                                  // grow => zero-filled tail
+    if (existed && cursz > 0) {                             // keep the existing prefix (up to n)
+        int fd = vfs_open(path, 0, 0);
+        if (fd >= 0) {
+            uint32_t toread = (cursz < n) ? cursz : n, got = 0; int r;
+            while (got < toread && (r = vfs_read(fd, buf + got, (int)(toread - got))) > 0) got += r;
+            vfs_close(fd);
+        }
+    }
+    int wrote = vfs_write_file(path, buf, n);
+    kfree(buf);
+    if (wrote != (int)n) { printf("truncate: cannot write '%s'\n", path); return; }
+    printf("truncate: %s now %u bytes\n", path, n);
+}
+
 static void cmd_touch(int argc, char** argv) {
     if (argc < 2) { printf("Usage: touch <file>\n"); return; }
     if (!path_last_component_ok(argv[1])) { printf("touch: invalid file name '%s'\n", argv[1]); return; }
@@ -8429,6 +8503,7 @@ static void run_selftests(void) {
         {"uuid",         uuid_selftest},
         {"edfind",       editor_find_selftest},
         {"cut",          cut_selftest},           {"xargs",         xargs_selftest},
+        {"trunc",        trunc_selftest},
         {"comm",         comm_selftest},          {"join",          join_selftest},
         {"securezero",   secure_zero_selftest},
         {"chacha20",     chacha20_selftest},        {"siphash",       siphash_selftest},
