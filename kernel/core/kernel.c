@@ -106,6 +106,7 @@ static void cmd_nyxfetch(int argc, char** argv);
 static void cmd_echo(int argc, char** argv);
 static void cmd_reboot(int argc, char** argv);
 static void cmd_ps(int argc, char** argv);
+static void cmd_uptime(int argc, char** argv);
 static void cmd_time(int argc, char** argv);
 static void cmd_mtdemo(int argc, char** argv);
 static void cmd_mem(int argc, char** argv);
@@ -321,6 +322,7 @@ static const command_t commands[] = {
     {"uname",     cmd_uname,     "Show system information", false},
     {"reboot",    cmd_reboot,    "Reboot the system", false},
     {"ps",        cmd_ps,        "List processes", false},
+    {"uptime",    cmd_uptime,    "Show uptime, process count, load, and CPUs", false},
     {"time",      cmd_time,      "Time a command's wall-clock run: time <command> [args...]", false},
     {"timeout",   cmd_timeout,   "Run a command, killing it after N seconds: timeout <secs> <cmd> [args]", false},
     {"mtdemo",    cmd_mtdemo,    "Preemptive multitasking self-test", false},
@@ -953,6 +955,7 @@ static const man_page_t man_pages[] = {
     {"alias",    "Define or list command aliases, bash-style. `alias ll=ls -l` makes typing `ll` run `ls -l` (the value is the whole rest of the line after `=`, so no quotes are needed); `alias ll foo` then runs `ls -l foo`. With no arguments, `alias` lists every defined alias; `alias <name>` prints just that one. The first word of every command you type is expanded through the alias table, with a recursion cap so a self-referential alias can't loop. Aliases live for the session (they are not saved to disk). Remove one with `unalias`."},
     {"unalias",  "Remove a command alias defined with `alias`: `unalias <name>`."},
     {"ps",       "List the running processes with their PID, scheduler state and name. Use kill to stop one."},
+    {"uptime",   "Print a one-line system summary in the classic Unix format: the wall-clock time, how long the kernel has been up (days + HH:MM:SS, from the 1000 Hz tick counter), the number of live processes, an instantaneous load figure (how many processes are runnable right now), and the count of online CPUs. A focused, scriptable subset of what `nyxfetch` shows."},
     {"time",     "Run a command and report how long it took: `time <command> [args...]` runs the rest of the line as a command and, when it finishes, prints the elapsed wall-clock time as `real   S.mmm s` (from the 1000 Hz tick counter). Useful for benchmarking a builtin — e.g. `time cc hello.c -o hello`, `time sha256sum bigfile`, or `time sort words.txt`. Times whole-command execution, not per-call CPU."},
     {"timeout",  "Run an external command with a time limit: `timeout <seconds> <command> [args...]` starts <command> (a userspace program, e.g. `timeout 3 sleep 10`) and, if it is still running after <seconds>, kills it with SIGKILL and reports status 124 — otherwise it reports the child's own exit code. The wall clock comes from the 1000 Hz tick counter. Only external programs can be timed out (builtins run to completion synchronously and cannot be interrupted). Handy for bounding a network fetch or any command that might hang."},
     {"kill",     "Terminate the process with the given <pid>. Run ps first to find the pid you want."},
@@ -1096,6 +1099,33 @@ static void cmd_setres(int argc, char** argv) {
         }
     }
     printf("setres: unsupported mode %ux%u (try `setres` for the list)\n", w, h);
+}
+
+// uptime — the standard one-liner: wall-clock time, how long the kernel has been up
+// (from the 1000 Hz tick counter), the live process count, and an instantaneous load
+// proxy (how many processes are runnable right now), plus the online CPU count.
+static void cmd_uptime(int argc, char** argv) {
+    (void)argc; (void)argv;
+    uint32_t total_sec = get_ticks() / 1000;
+    uint32_t days  = total_sec / 86400;
+    uint32_t hours = (total_sec % 86400) / 3600;
+    uint32_t mins  = (total_sec % 3600) / 60;
+    uint32_t secs  = total_sec % 60;
+
+    int nproc = 0, runnable = 0;                  // live (non-zombie) processes + runnable now
+    for (int i = 0; i < MAX_PROCESSES; i++) {
+        process_t* p = process_table[i];
+        if (!p || p->state == PROC_ZOMBIE) continue;
+        nproc++;
+        if (p->state == PROC_RUN) runnable++;
+    }
+
+    rtc_time_t rtc; rtc_read_time(&rtc);
+    printf(" %02u:%02u:%02u up ", rtc.hour, rtc.minute, rtc.second);
+    if (days > 0) printf("%u day%s, ", days, days == 1 ? "" : "s");
+    printf("%02u:%02u:%02u,  %d process%s,  %u CPU%s,  load: %d runnable\n",
+           hours, mins, secs, nproc, nproc == 1 ? "" : "es",
+           cpu_count, cpu_count == 1 ? "" : "s", runnable);
 }
 
 static void cmd_nyxfetch(int argc, char** argv) {
