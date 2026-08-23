@@ -221,7 +221,12 @@ stay honest around them) and carries the **full comparison set** —
 `!=`, `<=`, `>=` joined `<`, `>`, `==` as two-char tokens with
 dedicated opcodes, each folding over constants like every other
 operator (`print 3 <= 3;` emits `PUSH 1`). `==` remains the only
-*string* comparison; `!=` over strings is a later rung. The subset
+*string* comparison; `!=` over strings is a later rung. **`else if`
+chains** came free: the else slot always held a statement index and a
+nested `if` is a statement, so the parser just recurses instead of
+demanding braces — no walker changed, and dead-arm elimination
+cascades straight through a chain of constant conditions (a three-way
+chain over constants collapses to the one live `print`, 6 words). The subset
 grows until the toy parses the examples directory — at which point it
 stops being a toy.
 

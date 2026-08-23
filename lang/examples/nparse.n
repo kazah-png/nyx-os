@@ -10,9 +10,13 @@
 //     program := { fndef } { stmt } cmp
 //     fndef   := 'fn' name '(' name { ',' name } ')' '{' { stmt } cmp '}'
 //     stmt    := name ':=' cmp ';'
-//              | 'if' cmp block [ 'else' block ]
+//              | 'if' cmp block [ 'else' ( block | if-stmt ) ]
 //              | 'while' cmp block
 //              | 'print' cmp ';'      (strings are factors now)
+//   `else if` CHAINS are free structure, not new machinery: the else
+//   slot always held a statement index, and a nested if IS a
+//   statement — the parser just recurses into ast_stmt instead of
+//   demanding braces, and no walker changed at all.
 //
 //   THE WHOLE PROGRAM IS A TREE NOW. The old parser emitted code while
 //   it descended — postfix fell out of parse order, which works
@@ -806,8 +810,13 @@ fn ast_stmt(k: *i64, v: *i64, ln: *i64, fpc: *i64, a: Ast, pos: i64, nn: i64) ->
         a.nk[idx] = 6; a.nl[idx] = c.root; a.nr[idx] = t.root; a.nv[idx] = 0;
         a.na[idx * 4] = -1;                // no else (yet)
         if k[t.pos] == 8 {
+            if k[t.pos + 1] == 5 {         // else IF: the chain. The else
+                e := ast_stmt(k, v, ln, fpc, a, t.pos + 1, t.nn);
+                a.na[idx * 4] = e.root;    // arm IS the next if statement —
+                return NP{ pos: e.pos, nn: e.nn, root: idx };
+            }                              // no walker cares: the else slot
             e := ast_block(k, v, ln, fpc, a, t.pos + 1, t.nn);
-            a.na[idx * 4] = e.root;
+            a.na[idx * 4] = e.root;        // held any statement all along
             return NP{ pos: e.pos, nn: e.nn, root: idx };
         }
         return NP{ pos: t.pos, nn: t.nn, root: idx };
@@ -1351,6 +1360,10 @@ fn main() -> i64 {
          k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, nb, ss, sl, st);
     // The rest of the comparison set, each its own opcode.
     show("n := 7; print n != 7; print n <= 7; print n >= 9; 0",
+         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, nb, ss, sl, st);
+    // else-if chains: free structure — the else slot held a statement
+    // all along, and a nested if is a statement.
+    show("g := 72;\nif g >= 90 \{ print \"gold\"; \} else if g >= 60 \{ print \"silver\"; \} else \{ print \"bronze\"; \}\ng",
          k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, nb, ss, sl, st);
     // And a program this binary does not carry: read off the disk,
     // compiled by the same pipeline, run by the same VM.
