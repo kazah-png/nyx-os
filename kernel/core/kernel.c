@@ -149,6 +149,7 @@ static void cmd_realpath(int argc, char** argv);
 static void cmd_head(int argc, char** argv);
 static void cmd_file(int argc, char** argv);
 static void cmd_identify(int argc, char** argv);
+static void cmd_convert(int argc, char** argv);
 static void cmd_tar(int argc, char** argv);
 static void cmd_iniget(int argc, char** argv);
 static void cmd_factor(int argc, char** argv);
@@ -366,6 +367,7 @@ static const command_t commands[] = {
     {"head",      cmd_head,      "Show first lines of a file: head <file> [lines]", false},
     {"file",      cmd_file,      "Identify a file's type: file <file>...", false},
     {"identify",  cmd_identify,  "Show an image's format + dimensions: identify <image>...", false},
+    {"convert",   cmd_convert,   "Convert an image: convert <in> <out.png|out.ppm>", false},
     {"tar",       cmd_tar,       "List a tar archive: tar t[v] <file.tar>", false},
     {"iniget",    cmd_iniget,    "Read an INI/conf value: iniget <file> <section|-> <key>", false},
     {"tree",      cmd_tree,      "Show filesystem tree: tree [path]", false},
@@ -860,6 +862,7 @@ static const man_page_t man_pages[] = {
     {"pwd",      "Print the full path of the current working directory."},
     {"cat",      "Write the contents of <file> to standard output. The usual way to view a text file."},
     {"file",     "Identify the type of each <file> from its leading bytes (magic numbers: ELF, PNG, GIF, JPEG, PDF, Zip, gzip, WAV, BMP, tar, #! scripts) and, for text, whether it is ASCII or UTF-8 (with a source-extension hint like `C source`). Prints `<file>: <type>`."},
+    {"convert",  "Convert an image from one format to another: `convert <in> <out.png|out.ppm>`. The input may be PNG, BMP, GIF or JPEG (the format is detected from the file's header, not its name); the output format is chosen by the output extension — `.png` writes a real DEFLATE-compressed PNG, `.ppm`/`.pnm` writes an uncompressed Netpbm P6. It decodes the input to RGBA, then re-encodes with the same codecs the screenshot tool uses. Images up to 1280x720 are supported (larger inputs are rejected rather than risk exhausting the kernel heap). Example: `convert /mnt/photo.jpg /mnt/photo.png`."},
     {"identify", "Print an image's format and pixel dimensions from its header alone -- `identify <image>...` prints `<file>: <FMT> image, <W> x <H>` for PNG, GIF, BMP, NetPBM (P1-P6) and JPEG. It reads only the header (no full decode, so it is fast and light even on a large image) and reports the width/height the file declares. The dimension companion to `file`, which reports only the type. Pinned by the `imgident` self-test."},
     {"tar",      "List the members of a POSIX ustar (.tar) archive: `tar t <file.tar>` prints each member's path, and `tar tv` also prints its type flag and byte size. Listing only — extraction is not yet supported."},
     {"iniget",   "Read one value from an INI/.conf file: `iniget <file> <section> <key>` prints the trimmed value under [section], or `iniget <file> - <key>` reads the global section (keys before any [section]). '=' is the delimiter; ';'/'#' begin whole-line comments. Prints nothing and reports not-found if the key is absent."},
@@ -5416,6 +5419,83 @@ int ppm_selftest(void) {
     for (uint32_t i = 0; i < n; i++) if (out[i] != want[i]) return 2;
     if (ppm_encode(px, 2, 2, out, 10) != 0) return 3;   // too-small cap -> 0
     return 0;
+}
+
+static int str_ends_ppm(const char* s) {
+    int n = 0; while (s[n]) n++;
+    if (n < 4 || s[n-4] != '.') return 0;
+    int a = s[n-3]|0x20, b = s[n-2]|0x20, c = s[n-1]|0x20;
+    return (a=='p' && b=='p' && c=='m') || (a=='p' && b=='n' && c=='m');   // .ppm or .pnm
+}
+
+// convert <in> <out.png|out.ppm> — decode a PNG/BMP/GIF/JPEG image and re-encode it as PNG or
+// PPM, chosen by the output extension. Composes the existing decoders with png_encode/ppm_encode;
+// the only new step is repacking each decoder's RGBA bytes into the encoders' 0xRRGGBB words.
+// Buffers are kmalloc'd and freed as it goes (input freed before the repack, pixels before the
+// encode) so a 720p image stays within the kernel heap; anything bigger is rejected up front.
+#define CONVERT_MAXPX  (1280u * 720u)
+static void cmd_convert(int argc, char** argv) {
+    if (argc < 3) { printf("Usage: convert <in> <out.png|out.ppm>\n"); return; }
+    const char* inpath = argv[1]; const char* outpath = argv[2];
+    int to_png = str_ends_png(outpath), to_ppm = str_ends_ppm(outpath);
+    if (!to_png && !to_ppm) { printf("convert: output name must end in .png or .ppm\n"); return; }
+
+    int fd = vfs_open(inpath, 0, 0);
+    if (fd < 0) { printf("convert: cannot open '%s'\n", inpath); return; }
+    uint32_t cap = 4u * 1024 * 1024;                     // 4 MB input ceiling
+    uint8_t* in = (uint8_t*)kmalloc(cap);
+    if (!in) { vfs_close(fd); printf("convert: out of memory\n"); return; }
+    int total = 0, r;
+    while (total < (int)cap && (r = vfs_read(fd, in + total, (int)cap - total)) > 0) total += r;
+    vfs_close(fd);
+    if (total <= 0) { kfree(in); printf("convert: empty input\n"); return; }
+
+    const char* fmt = ""; uint32_t iw = 0, ih = 0;
+    if (image_identify(in, (uint32_t)total, &fmt, &iw, &ih) != 0) {
+        kfree(in); printf("convert: unrecognised image format\n"); return;
+    }
+    if ((uint64_t)iw * ih > CONVERT_MAXPX) {
+        kfree(in); printf("convert: image too large (%ux%u; max %u px)\n", iw, ih, CONVERT_MAXPX); return;
+    }
+    image_t img; img.pixels = NULL; img.width = img.height = 0;
+    int rc = -1;
+    if      (strcmp(fmt, "PNG")  == 0) rc = png_decode(in, (uint32_t)total, &img);
+    else if (strcmp(fmt, "BMP")  == 0) rc = bmp_decode(in, (uint32_t)total, &img);
+    else if (strcmp(fmt, "GIF")  == 0) rc = gif_decode(in, (uint32_t)total, &img);
+    else if (strcmp(fmt, "JPEG") == 0) rc = jpeg_decode(in, (uint32_t)total, &img);
+    else { kfree(in); printf("convert: cannot decode %s input (PNG/BMP/GIF/JPEG only)\n", fmt); return; }
+    kfree(in);
+    if (rc != 0 || !img.pixels) { if (img.pixels) kfree(img.pixels); printf("convert: %s decode failed (rc=%d)\n", fmt, rc); return; }
+
+    uint32_t w = img.width, h = img.height, n = w * h;
+    uint32_t* px = (uint32_t*)kmalloc(n * 4);            // repack RGBA bytes -> 0xRRGGBB words
+    if (!px) { kfree(img.pixels); printf("convert: out of memory\n"); return; }
+    for (uint32_t i = 0; i < n; i++) {
+        const uint8_t* p = img.pixels + (uint64_t)i * 4;
+        px[i] = ((uint32_t)p[0] << 16) | ((uint32_t)p[1] << 8) | p[2];
+    }
+    kfree(img.pixels);
+
+    uint8_t* out = NULL; uint32_t outlen = 0;
+    if (to_ppm) {
+        uint32_t ocap = 64 + n * 3;
+        out = (uint8_t*)kmalloc(ocap);
+        if (out) outlen = ppm_encode(px, w, h, out, ocap);
+    } else {
+        uint32_t rawcap = h * (1 + w * 3) + 64;
+        uint32_t ocap = rawcap + rawcap / 8 + 1024;      // deflate worst-case slack
+        uint8_t* raw = (uint8_t*)kmalloc(rawcap);
+        out = (uint8_t*)kmalloc(ocap);
+        if (raw && out) outlen = png_encode(px, w, h, out, ocap, raw, rawcap);
+        if (raw) kfree(raw);
+    }
+    kfree(px);
+    if (!out || outlen == 0) { if (out) kfree(out); printf("convert: encode failed (out of memory?)\n"); return; }
+
+    int wrote = vfs_write_file(outpath, out, outlen);
+    kfree(out);
+    if (wrote != (int)outlen) { printf("convert: cannot write '%s'\n", outpath); return; }
+    printf("convert: %s %ux%u -> %s (%u bytes)\n", fmt, w, h, outpath, outlen);
 }
 
 // `screenshot [path]` — save a snapshot of the screen (default /tmp/screenshot.png; a real PNG
