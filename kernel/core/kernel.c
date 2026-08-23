@@ -164,6 +164,7 @@ static void cmd_urlcode(int argc, char** argv);
 static void cmd_paste(int argc, char** argv);
 static void cmd_cut(int argc, char** argv);
 static void cmd_xargs(int argc, char** argv);
+static void cmd_timeout(int argc, char** argv);
 static void cmd_uniq(int argc, char** argv);
 static void cmd_join(int argc, char** argv);
 static void cmd_tac(int argc, char** argv);
@@ -321,6 +322,7 @@ static const command_t commands[] = {
     {"reboot",    cmd_reboot,    "Reboot the system", false},
     {"ps",        cmd_ps,        "List processes", false},
     {"time",      cmd_time,      "Time a command's wall-clock run: time <command> [args...]", false},
+    {"timeout",   cmd_timeout,   "Run a command, killing it after N seconds: timeout <secs> <cmd> [args]", false},
     {"mtdemo",    cmd_mtdemo,    "Preemptive multitasking self-test", false},
     {"mem",       cmd_mem,       "Show memory usage", false},
     {"cpus",      cmd_cpus,      "List CPU cores (SMP)", false},
@@ -643,6 +645,45 @@ static int resolve_user_elf(const char* name, char* out, int outsz) {
     return 0;
 }
 
+// timeout <seconds> <command> [args...] — run an EXTERNAL command (a userspace ELF) as a
+// foreground job, but SIGKILL it if it is still running after <seconds>. Mirrors
+// run_foreground_elf's spawn+pump+reap loop, adding a get_ticks() deadline (get_ticks is the
+// 1000 Hz tick counter). Prints the child's exit code, or a note + the GNU-style 124 status on
+// a timeout. Builtins run synchronously and cannot be interrupted, so only ELFs are accepted.
+static void cmd_timeout(int argc, char** argv) {
+    if (argc < 3) { printf("Usage: timeout <seconds> <command> [args...]\n"); return; }
+    int secs = atoi(argv[1]);
+    if (secs <= 0) { printf("timeout: invalid duration '%s'\n", argv[1]); return; }
+    char path[256];
+    if (!resolve_user_elf(argv[2], path, sizeof path)) {
+        printf("timeout: %s: not an external command\n", argv[2]);
+        return;
+    }
+    int pid = spawn_user_path_args(path, &argv[2], argc - 2);
+    if (pid < 0) { printf("timeout: could not start %s (err %d)\n", argv[2], pid); return; }
+    extern uint32_t g_foreground_pid;
+    g_foreground_pid = (uint32_t)pid;            // Ctrl-C still targets the child while it runs
+    uint32_t t0 = get_ticks();
+    uint32_t deadline = (uint32_t)secs * 1000u;  // milliseconds
+    int timed_out = 0;
+    for (;;) {
+        process_t* child = find_process((uint32_t)pid);
+        if (!child || child->state == PROC_ZOMBIE) break;
+        if (child->state == PROC_STOPPED) signal_raise(child, SIGCONT);
+        if (!timed_out && (get_ticks() - t0) >= deadline) {   // past the deadline: kill it once
+            signal_raise(child, SIGKILL);
+            timed_out = 1;
+        }
+        compositor_redraw_now();
+        sleep(60);
+    }
+    int code = find_process((uint32_t)pid) ? kwait((uint32_t)pid) : 0;   // reap
+    g_foreground_pid = 0;
+    compositor_redraw_now();
+    if (timed_out) printf("timeout: '%s' terminated after %ds (status 124)\n", argv[2], secs);
+    else           printf("[timeout] PID %d exited (code %d)\n", pid, code);
+}
+
 static void shell_expand_vars(const char* in, char* out, int outsz);   // $VAR / ${VAR} expansion (defined below)
 
 // Shell command aliases (bash-style). Defined with `alias name=value`, expanded by
@@ -913,6 +954,7 @@ static const man_page_t man_pages[] = {
     {"unalias",  "Remove a command alias defined with `alias`: `unalias <name>`."},
     {"ps",       "List the running processes with their PID, scheduler state and name. Use kill to stop one."},
     {"time",     "Run a command and report how long it took: `time <command> [args...]` runs the rest of the line as a command and, when it finishes, prints the elapsed wall-clock time as `real   S.mmm s` (from the 1000 Hz tick counter). Useful for benchmarking a builtin — e.g. `time cc hello.c -o hello`, `time sha256sum bigfile`, or `time sort words.txt`. Times whole-command execution, not per-call CPU."},
+    {"timeout",  "Run an external command with a time limit: `timeout <seconds> <command> [args...]` starts <command> (a userspace program, e.g. `timeout 3 sleep 10`) and, if it is still running after <seconds>, kills it with SIGKILL and reports status 124 — otherwise it reports the child's own exit code. The wall clock comes from the 1000 Hz tick counter. Only external programs can be timed out (builtins run to completion synchronously and cannot be interrupted). Handy for bounding a network fetch or any command that might hang."},
     {"kill",     "Terminate the process with the given <pid>. Run ps first to find the pid you want."},
     {"pgrep",    "List the PIDs of processes whose name contains <pattern> (a substring match, like ps | grep). With -l also print each name. Prints one PID per line so you can act on them; reports when nothing matches."},
     {"pkill",    "Terminate every process whose name contains <pattern> (substring match). Kernel threads (init/idle/compositor) are protected and refused, exactly like kill. Reports how many were signalled."},
