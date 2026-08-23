@@ -552,6 +552,10 @@ void ap_main(uint32_t cpu_id) {
     // ring-0 isolation (a no-op on CPUs that don't advertise them). The silent
     // variant — an AP must not call printf, which is shared and unlocked.
     cpu_apply_smep_smap();
+    // CR0/CR4 FPU+SSE are also per-CPU: without this an AP would #UD on the
+    // fxsave/fxrstor that sched_target()->fpu_switch() issues once a userspace
+    // (SSE) task is scheduled onto it (#40).
+    cpu_enable_sse_fpu();
 
     // ORDER MATTERS HERE. The trampoline left us on its own throwaway GDT and
     // with NO IDT at all, so until the next two calls any fault is a triple

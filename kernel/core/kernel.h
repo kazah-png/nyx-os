@@ -18,7 +18,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.4.341"
+#define KERNEL_VERSION "6.4.342"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -387,6 +387,12 @@ typedef struct process {
     // reads with arrows as ANSI escapes. NOT inherited on fork, reset by execve —
     // only the process that asked for raw mode sees it.
     uint32_t tty_raw;
+    // FPU/SSE (XMM) state saved across context switches (#40). fxsave/fxrstor need a
+    // 16-byte-aligned 512-byte area; process_t is kmalloc'd (only 8-aligned), so we keep
+    // 16 bytes of slack and align at runtime (fpu_area_of()). fpu_ready is 0 until this
+    // task's FP state has been initialised from the clean template on its first switch-in.
+    uint8_t  fpu_area[512 + 16];
+    uint32_t fpu_ready;
     struct process* next;
     struct process* parent;
     struct process* children;
@@ -780,6 +786,8 @@ void load_tss(void);
 void load_tss_for_cpu(uint32_t cpu);   // each core loads its OWN TSS (see gdt.c)
 void sched_target(process_t* p);       // aim this CPU's next_rsp/next_cr3/TSS at p
 void sched_forget(process_t* p);       // clear p from every core's sched_cur before freeing it
+void cpu_enable_sse_fpu(void);         // per-CPU CR0/CR4 FPU+SSE enable (kernel.c); every core calls it
+extern uint8_t g_fpu_initial[];        // clean 512-byte fxsave template (process.c), 16-byte aligned
 void init_idt(void);
 void idt_set_gate(uint8_t num, uint64_t base, uint16_t sel, uint8_t flags);
 void idt_set_gate_ist(uint8_t num, uint64_t base, uint16_t sel, uint8_t flags, uint8_t ist);

@@ -62,6 +62,12 @@ typedef struct {
     // BSP's scheduler outright. "Don't preempt me" is inherently a statement
     // about one core, so it belongs here.
     volatile int preempt_count;
+
+    // #40 FPU/SSE context save: the process whose XMM/x87 state is currently live in
+    // THIS core's registers (NULL = none yet, or the last owner was freed). sched_target's
+    // fpu_switch() fxsave's it out and fxrstor's the incoming task in. void* to keep this
+    // header free of process.h ordering constraints; only ever set to a process_t*.
+    void*    fpu_owner;
 } cpu_info_t;
 
 /* Pin the assembler contract. If this line fails to compile, someone moved a

@@ -914,8 +914,45 @@ void preempt_enable(void)  {
 // picks, and irq_scheduler_tick treats NULL as "fall back to current_idx".
 void sched_forget(process_t* p) {
     if (!p) return;
-    for (int i = 0; i < MAX_CPUS; i++)
+    for (int i = 0; i < MAX_CPUS; i++) {
         if (cpu_info[i].sched_cur == (void*)p) cpu_info[i].sched_cur = NULL;
+        // #40: a freed task must not be fxsave'd into later — drop it as any core's FPU
+        // owner (its XMM state dies with it; the next userspace switch-in restores its own).
+        if (cpu_info[i].fpu_owner == (void*)p) cpu_info[i].fpu_owner = NULL;
+    }
+}
+
+// --- #40 FPU/SSE context save ---------------------------------------------------------
+// A clean fxsave template (x87 fninit'd, XMM at CPU-reset zeros, MXCSR default), captured
+// once at boot by enable_sse_fpu(); each task's first switch-in fxrstor's this so no XMM
+// state leaks between tasks. 16-byte aligned for fxsave/fxrstor.
+uint8_t g_fpu_initial[512] __attribute__((aligned(16)));
+
+// fxsave/fxrstor need a 16-byte-aligned pointer; process_t is only 8-aligned (kmalloc), so
+// align into the 16-byte slack reserved in process_t.fpu_area[512+16].
+static inline uint8_t* fpu_area_of(process_t* p) {
+    return (uint8_t*)(((uintptr_t)p->fpu_area + 15u) & ~(uintptr_t)15u);
+}
+
+// Switch the live FPU/SSE register file from this core's current owner to `next`. Only
+// userspace tasks carry FP state (kernel threads are -mno-sse and never touch XMM), so a
+// switch INTO a kernel thread is a no-op: the outgoing task's state stays live in the
+// registers (nothing clobbers it) and is banked only when the next userspace task arrives.
+// Runs at the single switch chokepoint sched_target() — the BSP's irq_scheduler_tick and
+// every AP's ap_scheduler_tick. fpu_owner is cleared by sched_forget() when a task is freed.
+static void fpu_switch(process_t* next) {
+    if (!next || !next->page_directory) return;          // kernel thread: nothing to manage
+    cpu_info_t* me = cpu_self();
+    process_t* prev = (process_t*)me->fpu_owner;
+    if (prev == next) return;                            // registers already hold next's state
+    if (prev) __asm__ volatile("fxsave (%0)" :: "r"(fpu_area_of(prev)) : "memory");  // bank outgoing
+    if (next->fpu_ready)
+        __asm__ volatile("fxrstor (%0)" :: "r"(fpu_area_of(next)) : "memory");
+    else {
+        __asm__ volatile("fxrstor (%0)" :: "r"(g_fpu_initial) : "memory");           // first run: clean
+        next->fpu_ready = 1;
+    }
+    me->fpu_owner = (void*)next;
 }
 
 // Point next_rsp/next_cr3 at process p (about to be resumed). Kernel threads run
@@ -948,6 +985,7 @@ void sched_target(process_t* p) {
     } else {
         next_cr3 = (uint64_t)kernel_pml4_phys;
     }
+    fpu_switch(p);   // #40: bank the outgoing task's XMM/x87, restore p's (userspace only)
 }
 
 void irq_scheduler_tick(void) {

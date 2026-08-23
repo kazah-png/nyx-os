@@ -8275,11 +8275,14 @@ void enable_smep_smap(void) {
 // which uses XMM registers for float math AND for 16-byte struct/mem copies (movups) —
 // can run. The boot path only turns on PAE/long-mode/paging, leaving CR4.OSFXSR clear,
 // so any SSE instruction #UDs. NyxOS's own kernel and coreutils are all built -mno-sse,
-// so nothing else ever touches XMM/x87: DOOM (the sole SSE user) therefore keeps its
-// vector state across context switches for free, without per-task fxsave/fxrstor. If a
-// second SSE userspace program is ever added, this must grow into an fxsave-on-switch
-// (or lazy-FPU) scheme. Added v5.9.34 for the DOOM port.
-static void enable_sse_fpu(void) {
+// so nothing else ever touches XMM/x87. Added v5.9.34 for the DOOM port; since v6.4.342
+// the scheduler fxsave/fxrstor's per-task FPU state at each switch (sched_target), so
+// MULTIPLE SSE userspace programs (DOOM, SM64, …) can now run concurrently without
+// clobbering each other's XMM/x87 — see fpu_switch() in process.c and issue #40.
+
+// Per-CPU: turn on the FPU/SSE so fxsave/fxrstor and XMM instructions work on THIS core.
+// Idempotent; must run on every core (the BSP here, each AP in smp.c) — CR0/CR4 are per-CPU.
+void cpu_enable_sse_fpu(void) {
     uint64_t cr0 = read_cr0();
     cr0 &= ~(1ULL << 2);        // CR0.EM = 0: use the real x87 FPU, don't emulate/trap it
     cr0 |=  (1ULL << 1);        // CR0.MP = 1: monitor coprocessor
@@ -8289,6 +8292,16 @@ static void enable_sse_fpu(void) {
     cr4 |= (1ULL << 10);        // CR4.OSXMMEXCPT: unmasked SIMD FP faults raise #XF, not #UD
     write_cr4(cr4);
     __asm__ volatile ("fninit"); // bring the x87 unit to a known state
+}
+
+static void enable_sse_fpu(void) {
+    cpu_enable_sse_fpu();
+    // Capture a pristine FP state as the template every new task starts from: right here in
+    // early boot x87 was just fninit'd, the XMM registers are still at their CPU-reset zeros
+    // (nothing -mno-sse touched them), and MXCSR holds its default — so fxsave banks a clean
+    // slate. fpu_switch() fxrstor's this into each task on its first switch-in (no cross-task
+    // XMM leakage). g_fpu_initial is 16-byte aligned in process.c.
+    __asm__ volatile ("fxsave (%0)" :: "r"(g_fpu_initial) : "memory");
 }
 
 // The offline known-answer self-tests (crypto + image decoders), each returning 0
