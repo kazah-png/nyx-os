@@ -349,6 +349,68 @@ int editor_find_selftest(void) {
     return 0;
 }
 
+// Replace every non-overlapping occurrence of `pat` with `with` in NUL-terminated `line`
+// (capacity EDITOR_LINE_LEN). Returns the number of replacements made. Builds the result in
+// a scratch buffer and never overflows: if the growing result would exceed the buffer it
+// stops replacing and copies the remaining input raw. The replacement is not re-scanned, so
+// a `with` that contains `pat` can't loop. Pure — pinned by editor_replace_selftest.
+static int editor_line_replace(char* line, const char* pat, const char* with) {
+    int plen = (int)strlen(pat);
+    if (plen == 0) return 0;
+    int wlen = (int)strlen(with), llen = (int)strlen(line);
+    char out[EDITOR_LINE_LEN];
+    int oi = 0, i = 0, n = 0;
+    while (i < llen) {
+        int k = 0;
+        while (k < plen && line[i + k] == pat[k]) k++;
+        if (k == plen) {
+            if (oi + wlen >= EDITOR_LINE_LEN) break;   // would overflow — stop replacing
+            memcpy_asm(out + oi, with, wlen);
+            oi += wlen; i += plen; n++;
+        } else {
+            if (oi + 1 >= EDITOR_LINE_LEN) break;
+            out[oi++] = line[i++];
+        }
+    }
+    while (i < llen && oi + 1 < EDITOR_LINE_LEN) out[oi++] = line[i++];  // raw tail if we broke early
+    out[oi] = '\0';
+    if (n > 0) memcpy_asm(line, out, oi + 1);
+    return n;
+}
+
+// Replace `pat` with `with` across every line of `lines[0..count)`. Returns the total number
+// of replacements. Empty pattern or empty file → 0, no change. Pure — KAT-able off-target.
+static int editor_replace_all(char lines[][EDITOR_LINE_LEN], int count,
+                              const char* pat, const char* with) {
+    if (!pat || !pat[0] || count <= 0) return 0;
+    int total = 0;
+    for (int y = 0; y < count; y++) total += editor_line_replace(lines[y], pat, with);
+    return total;
+}
+
+// KAT: multi-line replace, same-length / growing / shrinking replacements, empty pattern,
+// no-match, and a replacement that contains the pattern (must not re-scan or loop).
+int editor_replace_selftest(void) {
+    static char L[4][EDITOR_LINE_LEN];
+    strcpy(L[0], "the cat sat on the mat");
+    strcpy(L[1], "cat cat cat");
+    strcpy(L[2], "no match here");
+    L[3][0] = '\0';
+    if (editor_replace_all(L, 4, "cat", "dog") != 4)         return 1;   // 1 + 3 across two lines
+    if (strcmp(L[0], "the dog sat on the mat"))              return 2;
+    if (strcmp(L[1], "dog dog dog"))                         return 3;
+    if (strcmp(L[2], "no match here"))                       return 4;   // untouched
+    if (editor_replace_all(L, 4, "dog", "puppy") != 4)       return 5;   // grow 3->5
+    if (strcmp(L[1], "puppy puppy puppy"))                   return 6;
+    if (editor_replace_all(L, 4, "puppy", "x") != 4)         return 7;   // shrink 5->1
+    if (strcmp(L[1], "x x x"))                               return 8;
+    if (editor_replace_all(L, 4, "", "z") != 0)              return 9;   // empty pattern: no-op
+    if (editor_replace_all(L, 4, "zzz", "q") != 0)           return 10;  // not present: no-op
+    if (editor_replace_all(L, 4, "x", "xx") != 4)            return 11;  // 1 in L0 + 3 in L1
+    if (strcmp(L[1], "xx xx xx"))                            return 12;  // replacement holds pattern, no loop
+    return 0;
+}
+
 void editor_win_key(window_t* win, int key) {
     editor_win_t* ed = (editor_win_t*)win->reserved;
     if (!ed) return;
@@ -357,7 +419,7 @@ void editor_win_key(window_t* win, int key) {
 
     // Ctrl+F — enter incremental find mode (type a pattern, Enter = jump to next match,
     // Enter again = keep advancing, Esc = back to editing).
-    if (key == 0x06) {
+    if (key == 0x06 && !ed->repl_active) {
         ed->find_active = 1; ed->find_len = 0; ed->find_pat[0] = '\0';
         snprintf(ed->status, sizeof(ed->status), "Find: ");
         return;
@@ -392,6 +454,60 @@ void editor_win_key(window_t* win, int key) {
             snprintf(ed->status, sizeof(ed->status), "Find: %s", ed->find_pat);
         }
         return;                                     // swallow every other key while finding
+    }
+
+    // Ctrl+R — find-and-replace. Phase 1: type the text to find, Enter. Phase 2: type the
+    // replacement, Enter = replace every occurrence across the file. Esc cancels either phase.
+    if (key == 0x12) {
+        ed->repl_active = 1;
+        ed->repl_find_len = 0; ed->repl_find[0] = '\0';
+        ed->repl_with_len = 0; ed->repl_with[0] = '\0';
+        snprintf(ed->status, sizeof(ed->status), "Replace - find: ");
+        return;
+    }
+    if (ed->repl_active) {
+        if (key == 0x1B) {                          // Esc — cancel
+            ed->repl_active = 0;
+            snprintf(ed->status, sizeof(ed->status), "Ln %d, Col %d", ed->cursor_y + 1, ed->cursor_x + 1);
+            return;
+        }
+        if (key == '\r' || key == '\n') {
+            if (ed->repl_active == 1) {             // finished the find text → ask for replacement
+                if (ed->repl_find_len == 0) return; // need something to find
+                ed->repl_active = 2;
+                snprintf(ed->status, sizeof(ed->status), "Replace '%s' with: ", ed->repl_find);
+                return;
+            }
+            int n = editor_replace_all(ed->lines, ed->line_count, ed->repl_find, ed->repl_with);
+            if (n > 0) ed->modified = 1;
+            if (ed->cursor_y >= ed->line_count) ed->cursor_y = ed->line_count - 1;   // clamp after edits
+            int llen = strlen(ed->lines[ed->cursor_y]);
+            if (ed->cursor_x > llen) ed->cursor_x = llen;
+            ed->repl_active = 0;
+            snprintf(ed->status, sizeof(ed->status), "Replaced %d occurrence%s of '%s'",
+                     n, n == 1 ? "" : "s", ed->repl_find);
+            return;
+        }
+        if (key == '\b') {                          // edit whichever field is active
+            if (ed->repl_active == 1) {
+                if (ed->repl_find_len > 0) ed->repl_find[--ed->repl_find_len] = '\0';
+                snprintf(ed->status, sizeof(ed->status), "Replace - find: %s", ed->repl_find);
+            } else {
+                if (ed->repl_with_len > 0) ed->repl_with[--ed->repl_with_len] = '\0';
+                snprintf(ed->status, sizeof(ed->status), "Replace '%s' with: %s", ed->repl_find, ed->repl_with);
+            }
+            return;
+        }
+        if (key >= 0x20 && key <= 0x7E) {
+            if (ed->repl_active == 1 && ed->repl_find_len < (int)sizeof(ed->repl_find) - 1) {
+                ed->repl_find[ed->repl_find_len++] = (char)key; ed->repl_find[ed->repl_find_len] = '\0';
+                snprintf(ed->status, sizeof(ed->status), "Replace - find: %s", ed->repl_find);
+            } else if (ed->repl_active == 2 && ed->repl_with_len < (int)sizeof(ed->repl_with) - 1) {
+                ed->repl_with[ed->repl_with_len++] = (char)key; ed->repl_with[ed->repl_with_len] = '\0';
+                snprintf(ed->status, sizeof(ed->status), "Replace '%s' with: %s", ed->repl_find, ed->repl_with);
+            }
+        }
+        return;                                     // swallow every other key while replacing
     }
 
     if (key == 0x13) { // Ctrl+S
