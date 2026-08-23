@@ -190,10 +190,21 @@ recording the resolved operation so the emit walker stays type-blind
 for operators. Since `==` yields an int, `if name == "nyx" { ... }`
 composes with plain conditions for free; two literal strings fold at
 compile time (the fold pass carries the string table now); mixed `==`
-and `<`/`>` on strings stay refused. From here: concatenation as the
-next typed operator (it needs a runtime table append — a real design
-question), or the subset simply grows until the toy parses the
-examples directory — at which point it stops being a toy.
+and `<`/`>` on strings stay refused.
+
+Concatenation answered its design question cleanly: `+` over two
+strings resolves (same checker rewrite) to a CONCAT opcode whose
+result type is *str* — the first operator that **makes** a string, so
+concatenations bind, print, compare, and chain. The append mechanism
+is one and shared: the table's write cursors live behind a pointer
+field (`Strs.cur`), seeded by the lexer; the VM advances them when a
+runtime CONCAT appends a fresh entry, and the **fold pass advances the
+same cursors** when two literals concatenate at compile time — one
+mechanism, two moments, and a fold-made entry survives into the run
+(the demo PRINTS one). Runtime strings are per-program transient (the
+next lex reseeds), and capacity is trusted like every toy buffer.
+From here: the subset simply grows until the toy parses the examples
+directory — at which point it stops being a toy.
 
 ## Definition of done for M5
 

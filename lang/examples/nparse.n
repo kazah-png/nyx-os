@@ -124,7 +124,9 @@
 //   address) · 16 RET (returns the top value) · 17 SWAP · 18 PRINT
 //   (pop, write the number + newline) · 19 PRINTS (pop a string-table
 //   index, write that entry + newline) · 20 STREQ (pop two table
-//   indexes, byte-compare the spans, push 0/1).
+//   indexes, byte-compare the spans, push 0/1) · 21 CONCAT (pop two
+//   table indexes, append a fresh entry = both spans joined, push its
+//   index).
 //
 //   THE TYPE COLUMN. Strings are real VALUES now, and the check pass
 //   is what makes that safe. A double-quoted literal lexes into a
@@ -157,6 +159,18 @@
 //   conditions for free. Two literal strings even fold at compile
 //   time (the fold pass carries the table now). Mixed == and </> on
 //   strings stay refused.
+//   `+` over two strings is CONCAT — the first operator that MAKES a
+//   string. The checker resolves it the same way (nv becomes opcode
+//   21, and the node's type is str, so concatenations bind, print,
+//   compare, and chain). At run time the VM appends a fresh table
+//   entry — both spans copied to the end of the bytes buffer — and
+//   pushes its index; the table's write cursors live behind a pointer
+//   field (Strs.cur), seeded by the lexer and advanced by whoever
+//   appends: the VM at run time, or the FOLD pass, which concatenates
+//   two literals at compile time through the very same cursor — one
+//   append mechanism, two moments. Runtime strings are per-program
+//   transient (the next lex resets the cursors), and the toy trusts
+//   its programs to fit the table, as it does every other buffer.
 
 #[caps(syscall)]
 extern syscall {
@@ -319,6 +333,8 @@ fn lex(src: str, k: *i64, v: *i64, ln: *i64, nb: *u8, ss: *i64, sl: *i64,
         i += 1;
     }
     k[t] = 9; v[t] = 0; ln[t] = line;      // end marker
+    st.cur[0] = sc;                        // seed the table's write cursors:
+    st.cur[1] = sbl;                       // appends (fold or VM) start here
     t + 1
 }
 
@@ -342,9 +358,12 @@ struct Ast { nk: *i64, nl: *i64, nr: *i64, nv: *i64, na: *i64, nline: *i64,
              nt: *i64 }
 
 // The string table, one by-value bundle: literal bytes + per-entry
-// start/len spans. (Bundling matters practically too: N caps functions
-// at 16 parameters, and the toy's plumbing was at the door.)
-struct Strs { sb: *u8, sts: *i64, stl: *i64 }
+// start/len spans + the WRITE CURSORS (cur[0] = entry count, cur[1] =
+// bytes used) behind a pointer, so every by-value copy shares them —
+// the lexer seeds them, and the fold pass or the VM advances them
+// when a CONCAT appends. (Bundling matters practically too: N caps
+// functions at 16 parameters, and the toy's plumbing was at the door.)
+struct Strs { sb: *u8, sts: *i64, stl: *i64, cur: *i64 }
 
 // The checker's environment: the bound-name list (which symbols are
 // live, bv + a threaded count) and the per-symbol type table (vt —
@@ -548,14 +567,20 @@ fn check_node(a: Ast, env: Scope, bc: i64, idx: i64) {
         lt := a.nt[a.nl[idx]];
         rt := a.nt[a.nr[idx]];
         mut resolved := false;
+        mut ty := 0;
         if a.nv[idx] == 10 && lt == 1 && rt == 1 {
             a.nv[idx] = 20;                // == over two strings IS STREQ:
             resolved = true;               // the checker rewrites the opcode,
         }                                  // emit stays type-blind
+        if a.nv[idx] == 2 && lt == 1 && rt == 1 {
+            a.nv[idx] = 21;                // + over two strings IS CONCAT —
+            resolved = true;               // the first operator that MAKES a
+            ty = 1;                        // string, so the result is str
+        }
         if !resolved && (lt == 1 || rt == 1) {
             fail(a.nline[idx], "cannot use a string in arithmetic or comparison");
         }
-        a.nt[idx] = 0;
+        a.nt[idx] = ty;
     }
     if a.nk[idx] == 3 {                    // unary minus: an int operand
         check_node(a, env, bc, a.nl[idx]);
@@ -623,6 +648,26 @@ fn fold_node(a: Ast, st: Strs, idx: i64) {
             }
             a.nk[idx] = 0;                 // the comparison happened at
             a.nv[idx] = eq;                // compile time
+        }
+        if a.nv[idx] == 21 && a.nk[l] == 10 && a.nk[r] == 10 {
+            base := st.cur[1];             // two literals: append the joined
+            mut q := 0;                    // entry NOW, through the same
+            while q < st.stl[a.nv[l]] {    // cursor the VM would use
+                st.sb[base + q] = st.sb[st.sts[a.nv[l]] + q];
+                q += 1;
+            }
+            mut w := 0;
+            while w < st.stl[a.nv[r]] {
+                st.sb[base + st.stl[a.nv[l]] + w] = st.sb[st.sts[a.nv[r]] + w];
+                w += 1;
+            }
+            ni := st.cur[0];
+            st.sts[ni] = base;
+            st.stl[ni] = st.stl[a.nv[l]] + st.stl[a.nv[r]];
+            st.cur[0] = ni + 1;
+            st.cur[1] = base + st.stl[ni];
+            a.nk[idx] = 10;                // the node becomes that literal
+            a.nv[idx] = ni;
         }
     }
     if a.nk[idx] == 3 {                    // negation of a folded number
@@ -1117,6 +1162,29 @@ fn run(prog: *i64, stk: *i64, vars: *i64, st: Strs) -> i64 {
             sp -= 1;
             pc += 1;
         }
+        if op == 21 {                      // CONCAT: pop two indexes, append
+            y := stk[sp - 1];              // a fresh entry = x's bytes then
+            x := stk[sp - 2];              // y's, push the new index
+            base := st.cur[1];
+            mut q := 0;
+            while q < st.stl[x] {
+                st.sb[base + q] = st.sb[st.sts[x] + q];
+                q += 1;
+            }
+            mut w := 0;
+            while w < st.stl[y] {
+                st.sb[base + st.stl[x] + w] = st.sb[st.sts[y] + w];
+                w += 1;
+            }
+            ni := st.cur[0];
+            st.sts[ni] = base;
+            st.stl[ni] = st.stl[x] + st.stl[y];
+            st.cur[0] = ni + 1;
+            st.cur[1] = base + st.stl[ni];
+            stk[sp - 2] = ni;
+            sp -= 1;
+            pc += 1;
+        }
     }
     stk[0]
 }
@@ -1152,7 +1220,8 @@ fn main() -> i64 {
                 nt: alloc_words(96) };     // the TYPE COLUMN (0 int, 1 str)
     env := Scope{ bv: alloc_words(64), vt: alloc_words(64) };
     st := Strs{ sb: alloc_bytes(256),      // the string table: bytes + spans
-                sts: alloc_words(32), stl: alloc_words(32) };
+                sts: alloc_words(32), stl: alloc_words(32),
+                cur: alloc_words(2) };     // + the shared write cursors
     put("a type column over the toy - lex -> parse -> check -> fold -> emit -> run:\n");
     // Braces are escaped so they read as text, not interpolation (§2.5).
     show("fn max(a, b) \{ m := 0; if a > b \{ m := a; \} else \{ m := b; \} m \} max(3, 9) + max(7, 2)",
@@ -1183,6 +1252,13 @@ fn main() -> i64 {
     // to STREQ — and since == yields an int, string equality composes
     // with plain conditions for free.
     show("name := \"nyx\"; if name == \"nyx\" \{ print \"the goddess\"; \} print name == \"day\"; 0",
+         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, nb, ss, sl, st);
+    // And + MAKES strings: the first print concatenates at RUN time (a
+    // load meets a literal — the VM appends a fresh table entry), the
+    // second at COMPILE time (two literals — the fold pass appends
+    // through the same cursor and PRINTS a ready-made entry), and the
+    // result chains into == like any string.
+    show("who := \"nyx\"; print who + \" rules\"; print \"nyx\" + \"os\"; print who + \"os\" == \"nyxos\"; 0",
          k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, nb, ss, sl, st);
     // The broken program runs LAST (fail() ends the process — one failing
     // demo per run). It PARSES cleanly; what is wrong is a TYPE: a string
