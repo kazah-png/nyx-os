@@ -12,6 +12,7 @@
 #include "../drivers/misc/blockdev.h"
 #include "../drivers/misc/rtc.h"
 #include "../drivers/audio/speaker.h"
+#include "../drivers/audio/ac97.h"
 #include "../net/tcp.h"
 #include "../drivers/audio/sb16.h"
 #include "../fs/ext2.h"
@@ -110,6 +111,7 @@ static void cmd_ps(int argc, char** argv);
 static void cmd_pstree(int argc, char** argv);
 static void cmd_uptime(int argc, char** argv);
 static void cmd_nproc(int argc, char** argv);
+static void cmd_ac97(int argc, char** argv);
 static void cmd_time(int argc, char** argv);
 static void cmd_mtdemo(int argc, char** argv);
 static void cmd_mem(int argc, char** argv);
@@ -350,6 +352,7 @@ static const command_t commands[] = {
     {"pstree",    cmd_pstree,    "Show processes as a parent->child tree", false},
     {"uptime",    cmd_uptime,    "Show uptime, process count, load, and CPUs", false},
     {"nproc",     cmd_nproc,     "Print the number of online CPUs (for -j$(nproc) scripts)", false},
+    {"ac97",      cmd_ac97,      "Probe for an AC97 audio controller and show its PCI BARs/IRQ", false},
     {"time",      cmd_time,      "Time a command's wall-clock run: time <command> [args...]", false},
     {"timeout",   cmd_timeout,   "Run a command, killing it after N seconds: timeout <secs> <cmd> [args]", false},
     {"mtdemo",    cmd_mtdemo,    "Preemptive multitasking self-test", false},
@@ -1005,6 +1008,7 @@ static const man_page_t man_pages[] = {
     {"pstree",   "Show the processes as a tree, each child indented under its parent (grouped by PPID) — the hierarchical companion to the flat `ps` list. Every line is `name(pid)`; a process whose parent is no longer running is shown as its own root. Handy for seeing which process spawned which (e.g. the compositor and the jobs launched from a terminal). Read-only; recursion is depth-capped so a broken parent chain can't loop."},
     {"uptime",   "Print a one-line system summary in the classic Unix format: the wall-clock time, how long the kernel has been up (days + HH:MM:SS, from the 1000 Hz tick counter), the number of live processes, an instantaneous load figure (how many processes are runnable right now), and the count of online CPUs. A focused, scriptable subset of what `nyxfetch` shows."},
     {"nproc",    "Print the number of online CPUs as a single integer, the count the SMP bring-up counted (the same number `uptime` reports inside its prose line). Unlike `uptime` it prints just the number, so it drops into a command substitution — e.g. a parallel build `cc -j$(nproc)`."},
+    {"ac97",     "Probe the PCI bus for an AC'97 audio controller (class 04:01, e.g. QEMU `-device AC97`) and print what the driver found: the controller's PCI vendor:device id and bus address, its two I/O register windows — NAMBAR (the codec/mixer) and NABMBAR (the bus-master DMA engine) — and its interrupt line. Detection only for now; codec bring-up and DMA playback are the next driver rungs. `soundinfo` for the SB16 side."},
     {"time",     "Run a command and report how long it took: `time <command> [args...]` runs the rest of the line as a command and, when it finishes, prints the elapsed wall-clock time as `real   S.mmm s` (from the 1000 Hz tick counter). Useful for benchmarking a builtin — e.g. `time cc hello.c -o hello`, `time sha256sum bigfile`, or `time sort words.txt`. Times whole-command execution, not per-call CPU."},
     {"timeout",  "Run an external command with a time limit: `timeout <seconds> <command> [args...]` starts <command> (a userspace program, e.g. `timeout 3 sleep 10`) and, if it is still running after <seconds>, kills it with SIGKILL and reports status 124 — otherwise it reports the child's own exit code. The wall clock comes from the 1000 Hz tick counter. Only external programs can be timed out (builtins run to completion synchronously and cannot be interrupted). Handy for bounding a network fetch or any command that might hang."},
     {"kill",     "Terminate the process with the given <pid>. Run ps first to find the pid you want."},
@@ -1188,6 +1192,23 @@ static void cmd_nyxfetch(int argc, char** argv) {
 static void cmd_nproc(int argc, char** argv) {
     (void)argc; (void)argv;
     printf("%u\n", cpu_count ? cpu_count : 1);
+}
+
+// ac97 — probe + report the AC'97 audio controller (driver rung 1: detection only).
+static void cmd_ac97(int argc, char** argv) {
+    (void)argc; (void)argv;
+    ac97_detect();
+    const ac97_dev_t* d = ac97_get();
+    if (!d->found) {
+        printf("AC97 audio: not found (no PCI class 04:01 device)\n");
+        return;
+    }
+    printf("AC97 audio: found %04x:%04x at %02u:%02u.%u\n",
+           d->vendor, d->device, d->bus, d->slot, d->func);
+    printf("  NAMBAR  (mixer/codec) = 0x%04x\n", d->nam_base);
+    printf("  NABMBAR (bus master)  = 0x%04x\n", d->nabm_base);
+    printf("  IRQ line              = %u\n", d->irq);
+    printf("  codec bring-up + DMA playback: later rungs\n");
 }
 
 static void cmd_echo(int argc, char** argv) {
