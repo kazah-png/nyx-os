@@ -1,6 +1,6 @@
 # N++ — Design Document
 
-**Status:** staged into `ncc` (P1–P4 complete, P5 started) · **Base language:** [N](spec-n.md) · **Compiler (planned):** `n++`
+**Status:** staged into `ncc` (P1–P5 complete at bootstrap scale) · **Base language:** [N](spec-n.md) · **Compiler (planned):** `n++`
 
 N++ is to N what C++ was to C: a superset that keeps the base language intact
 and adds the abstraction and safety layer on top. The contract:
@@ -221,7 +221,7 @@ floor it lowers to.
 | N language surface (extern block, `own` + `#[drop]` handle, event loop) | **compiles today** — every construct shipped v0.12–v0.19 |
 | Kernel syscalls 57–60 | **do not exist** — the ask above |
 | Compositor support | needs a *user-buffer window* variant: a `window_t` whose draw callback blits from the owning process's presented buffer, plus a per-window event queue filled where `on_key`/`on_click` fire today |
-| P5 gate ("a windowed N++ app on the NyxOS desktop") | unblocked the day 57–60 land |
+| P5 gate ("a windowed N++ app on the NyxOS desktop") | **unblocked — 57–60 landed (v6.4.354), and nwin.n runs** |
 
 Structured concurrency (`task` blocks whose children cannot outlive them)
 maps onto NyxOS's preemptive scheduler — design follows once the kernel's
@@ -247,7 +247,7 @@ feature is debuggable by reading the generated C.
 | P2 | ✅ **complete**: `struct` (v0.5) · `defer` (v0.6) · `enum` + `match` (v0.7) · `impl` methods (v0.8, static dispatch) | structs.n, defer.n, enums.n, methods.n |
 | P3 | ✅ **complete** (bootstrap side): match-as-expression (v0.9) · `?` over structural Ok/Err result enums (v0.10 — same-type pass-through, cross-type Err rewrap, defers honored) · fs bindings sketch (`fsio.n`: the negative-return→Result boundary conversion of §2.2, `?` chains, deferred close). Generic `Result<T, E>` and the idiomatic `.npp` rewrite move to the `n++` front-end (P5 era) | `fsio.n` runs the §2.2 shape end-to-end |
 | P4 | ✅ **complete** (bootstrap side): `#[user]` pointer flavor (v0.12 — hard no-implicit-conversion boundary, `as` as the audited crossing) · `pageflags` W^X bitset (v0.13 — total compile-time W^X proof, live-mmap verified) · capabilities (v0.14 — `#[caps(syscall)]` gates extern blocks, direct callers must hold the cap, wrapper = audited boundary). The canonical-half range proof, further capability names (`mmio`, `ports`), and ring heights move to the `n++` front-end and kernel-side modules | a kernel-module example checked at `ring0` |
-| P5 | 🔨 **started**: `own` structs shipped (v0.17 — move-not-copy, must-consume; leaks/double-use/discards are compile errors), the tracking is **branch-aware** (v0.18 — `if`/`else` arms may consume, both exits must agree, a `return`-ending arm is exempt; moves stay refused in loops, `while` conditions, and match arms), and **destructors shipped** (v0.19 — `#[drop(fn)]` wires an ordinary consuming fn; live values auto-drop at scope end, defers first then drops LIFO, held params never auto-drop, no drop flags). The own-types contract of §2.4 is complete. Remaining: GUI bindings — the binding surface is now DRAFTED (§2.5: syscalls 57–60 proposed in [#77](https://github.com/kazah-png/nyx-os/issues/77), the N-side extern block and `own`+`#[drop]` Window handle compile today); waits only on the kernel side | a windowed N++ app on the NyxOS desktop |
+| P5 | 🔨 **started**: `own` structs shipped (v0.17 — move-not-copy, must-consume; leaks/double-use/discards are compile errors), the tracking is **branch-aware** (v0.18 — `if`/`else` arms may consume, both exits must agree, a `return`-ending arm is exempt; moves stay refused in loops, `while` conditions, and match arms), and **destructors shipped** (v0.19 — `#[drop(fn)]` wires an ordinary consuming fn; live values auto-drop at scope end, defers first then drops LIFO, held params never auto-drop, no drop flags). The own-types contract of §2.4 is complete. And the GUI bindings are REAL: the kernel implemented the drafted surface verbatim in v6.4.354 (syscalls 57–60, the 4×i64 event encoding — [#77](https://github.com/kazah-png/nyx-os/issues/77) closed), and [nwin.n](../examples/nwin.n) is the running program — an `own`+`#[drop]` Window handle over a real kernel resource, the gradient-and-square frame presented from a process-owned buffer, events polled, gracefully skipping where no desktop composites it. **P5 complete at bootstrap scale** | a windowed N++ app on the NyxOS desktop — the N bootstrap ran first |
 
 P1 is the enabling investment: everything later depends on the checker
 existing. It also immediately improves plain N (better errors from `ncc`).

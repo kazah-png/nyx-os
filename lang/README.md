@@ -84,7 +84,7 @@ strict-C99 output — and is verified three ways:
 1. **Real programs run on NyxOS.** The in-OS TinyCC builds the current
    `ncc` from source inside the running system, and that compiler
    transpiles, compiles, and runs the **entire example suite** — all
-   twenty-one programs, v0.1 through v0.22 — in a single boot, with
+   twenty-two programs, v0.1 through v0.22 — in a single boot, with
    output identical to the host runs: the fs bindings exercise real
    kernel `open`/`read`/`close`, the `pageflags` demo performs a live
    anonymous `mmap` through the W^X-typed flags, the `own`-struct demo
@@ -156,7 +156,8 @@ lang/
     ├── nemit.n          ← M5 link 3: stack-code emitter in N (read→parse→emit)
     ├── nstack.n         ← v0.16 index writes: a VM in N runs nemit's code
     ├── own.n            ← own structs: leaks/double-use refused, #[drop] auto-close
-    └── nparse.n         ← M5: a complete toy compiler — AST + check pass, diagnostics
+    ├── nparse.n         ← M5: a complete toy compiler — AST + check pass, diagnostics
+    └── nwin.n           ← P5: a REAL desktop window — own+drop handle over syscalls 57-60
 ```
 
 The runtime N programs link against lives with the rest of user space:

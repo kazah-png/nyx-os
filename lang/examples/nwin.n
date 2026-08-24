@@ -1,0 +1,139 @@
+// nwin.n — a REAL desktop window from N. The GUI binding surface was
+//   drafted in design-npp §2.5 (and this program's ancestor compiled
+//   against it) long before the kernel could honor it; with v6.4.354
+//   the window syscalls landed (#77) — create/destroy/present/
+//   poll_event, numbers 57-60, the event encoding exactly as drafted —
+//   and the draft became a running program.
+//   The shape is the inverted model the draft argued for: the window's
+//   pixels live in THIS process (an XRGB u32 buffer), win_present blits
+//   them whole, and input arrives as a POLLED queue of 4×i64 events
+//   {kind, a, b, c}: 1 key (a=code) · 2 click (a=x, b=y, c=button) ·
+//   3 move · 4 close · 5 resize. No kernel callback ever crosses the
+//   boundary.
+//   The window HANDLE is an own struct with a #[drop] destructor — the
+//   ownership story finally meets a real kernel resource: open it and
+//   it MUST be consumed; forget, and the leak error names the line;
+//   fall off scope, and close_window runs. win_destroy is idempotent
+//   in the kernel, so dropping a failed handle is safe by design.
+//   Headless (the test suites, or the host shim where syscalls 57-60
+//   simply return -1), win_create fails and the demo skips gracefully
+//   — the fsio pattern. On a live NyxOS desktop it opens a 200x120
+//   window, draws the wintest gradient with a marching white square,
+//   polls its events, and closes clean.
+
+#[caps(syscall)]
+extern syscall {
+    fn write(fd: i32, buf: #[user] *u8, len: isize) -> i64            = 1
+    fn sys_sbrk(incr: i64) -> i64                                     = 7
+    fn win_create(w: i64, h: i64, t: #[user] *u8, tl: isize) -> i64   = 57
+    fn win_destroy(id: i64) -> i64                                    = 58
+    fn win_present(id: i64, buf: #[user] *u32, w: i64, h: i64) -> i64 = 59
+    fn win_poll_event(id: i64, ev: #[user] *i64) -> i64               = 60
+}
+
+#[caps(syscall)]
+fn put(s: str) {
+    write(1, s.ptr as #[user] *u8, s.len as isize);
+}
+
+#[caps(syscall)]
+fn alloc_words(n: i64) -> *i64 {
+    sys_sbrk(n * 8) as *i64
+}
+
+#[caps(syscall)]
+fn alloc_pixels(n: i64) -> *u32 {
+    sys_sbrk(n * 4) as *u32
+}
+
+// The handle: an own struct over a kernel resource. Opening obliges
+// closing — the checker enforces what the kernel merely hopes for.
+#[drop(close_window)]
+own struct Window { id: i64 }
+
+#[caps(syscall)]
+fn close_window(win: Window) {
+    win_destroy(win.id);                   // idempotent — a failed handle
+}                                          // drops as safely as a live one
+
+// The audited boundary: creating a window is a kernel crossing, and
+// the capability + the ownership obligation both start here.
+#[caps(syscall)]
+fn open_window(w: i64, h: i64, title: str) -> Window {
+    Window{ id: win_create(w, h, title.ptr as #[user] *u8, title.len as isize) }
+}
+
+// One frame of the wintest picture: a purple gradient (R and B ramp
+// down the rows, G stays low) with a white square at sqx marking
+// motion. Pure pixel arithmetic — shifts are just multiplications.
+fn draw(buf: *u32, w: i64, h: i64, sqx: i64) {
+    mut y := 0;
+    while y < h {
+        r := 40 + y * 130 / h;
+        b := 70 + y * 150 / h;
+        col := r * 65536 + 6144 + b;       // (r<<16) | (0x18<<8) | b
+        mut x := 0;
+        while x < w {
+            mut c := col;
+            if x >= sqx && x < sqx + 30 && y >= h / 2 - 15 && y < h / 2 + 15 {
+                c = 16777215;              // 0xFFFFFF: the white marker
+            }
+            buf[y * w + x] = c as u32;
+            x += 1;
+        }
+        y += 1;
+    }
+}
+
+// Present frames and drain the event queue until the close box, an
+// event error, or the frame budget ends the run. The window is HELD
+// here (a parameter), so the explicit close at the end is the
+// consumption — exactly the sink-fn rule from the own design.
+#[caps(syscall)]
+fn run_window(win: Window, buf: *u32, w: i64, h: i64) {
+    ev := alloc_words(4);
+    mut frames := 0;
+    mut events := 0;
+    mut running := true;
+    while running && frames < 60 {
+        draw(buf, w, h, (frames * 3) % (w - 30));
+        if win_present(win.id, buf as #[user] *u32, w, h) != 0 {
+            running = false;
+        }
+        mut more := true;
+        while more {
+            more = false;
+            r := win_poll_event(win.id, ev as #[user] *i64);
+            if r > 0 {
+                events += 1;
+                if ev[0] == 2 { put("click at {ev[1]},{ev[2]}\n"); }
+                if ev[0] == 1 { put("key {ev[1]}\n"); }
+                if ev[0] == 4 {
+                    put("close requested\n");
+                    running = false;
+                }
+                more = running;
+            }
+            if r < 0 { running = false; }
+        }
+        frames += 1;
+    }
+    put("presented {frames} frames, saw {events} events\n");
+    close_window(win);
+}
+
+fn main() -> i64 {
+    win := open_window(200, 120, "hello from N");
+    if win.id < 0 {
+        // No desktop to composite us (a headless suite run, or the
+        // host shim where these syscalls return -1): skip gracefully.
+        // The drop still runs — a failed handle is still a handle.
+        put("(no desktop - window demo skipped)\n");
+        close_window(win);
+        return 0;
+    }
+    put("window {win.id} open\n");
+    buf := alloc_pixels(200 * 120);
+    run_window(win, buf, 200, 120);
+    0
+}
