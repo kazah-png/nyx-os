@@ -104,6 +104,47 @@ void tri_fill_gouraud(tri_putpx_t put, void* ctx, int minx, int miny, int maxx, 
     }
 }
 
+int32_t tri_persp_interp(int32_t we0, int32_t we1, int32_t we2,
+                         int32_t wd0, int32_t wd1, int32_t wd2,
+                         int32_t a0, int32_t a1, int32_t a2) {
+    // Multiply through by wd0*wd1*wd2 so every term is integer: each vertex's contribution is
+    // scaled by the product of the OTHER two depths, which is exactly weighting a/w by 1/w.
+    int64_t p12 = (int64_t)wd1 * wd2, p02 = (int64_t)wd0 * wd2, p01 = (int64_t)wd0 * wd1;
+    int64_t den = (int64_t)we0 * p12 + (int64_t)we1 * p02 + (int64_t)we2 * p01;
+    if (den == 0) return 0;
+    int64_t num = (int64_t)we0 * a0 * p12 + (int64_t)we1 * a1 * p02 + (int64_t)we2 * a2 * p01;
+    return (int32_t)(num / den);
+}
+
+void tri_fill_tex(tri_putpx_t put, void* ctx, int minx, int miny, int maxx, int maxy,
+                  int x0, int y0, int w0d, int u0, int v0,
+                  int x1, int y1, int w1d, int u1, int v1,
+                  int x2, int y2, int w2d, int u2, int v2,
+                  tri_tex_t tex, void* texctx) {
+    if (!put || !tex) return;
+    int32_t area = tri_edge(x0, y0, x1, y1, x2, y2);
+    if (area == 0) return;
+    int bx0 = imin3(x0, x1, x2), bx1 = imax3(x0, x1, x2);
+    int by0 = imin3(y0, y1, y2), by1 = imax3(y0, y1, y2);
+    if (bx0 < minx) bx0 = minx;
+    if (by0 < miny) by0 = miny;
+    if (bx1 > maxx) bx1 = maxx;
+    if (by1 > maxy) by1 = maxy;
+    for (int py = by0; py <= by1; py++) {
+        for (int px = bx0; px <= bx1; px++) {
+            int32_t we0 = tri_edge(x1, y1, x2, y2, px, py);
+            int32_t we1 = tri_edge(x2, y2, x0, y0, px, py);
+            int32_t we2 = tri_edge(x0, y0, x1, y1, px, py);
+            int neg = (we0 < 0) || (we1 < 0) || (we2 < 0);
+            int pos = (we0 > 0) || (we1 > 0) || (we2 > 0);
+            if (neg && pos) continue;
+            int u = tri_persp_interp(we0, we1, we2, w0d, w1d, w2d, u0, u1, u2);
+            int v = tri_persp_interp(we0, we1, we2, w0d, w1d, w2d, v0, v1, v2);
+            put(ctx, px, py, tex(texctx, u, v));
+        }
+    }
+}
+
 // KAT scratch: a coverage counter + a 16x16 hit grid so exact pixels can be asserted.
 typedef struct { int count; uint8_t hit[16 * 16]; } tri_kat_t;
 static void tri_kat_put(void* c, int x, int y, uint32_t color) {
@@ -203,5 +244,22 @@ int trigou_selftest(void) {
     if (k.col[3 * 16 + 3] != 0xFF555555u) return 8;   // centroid (3,3) -> avg 85,85,85 = 0x55
     return 0;
 }
+
+int tritex_selftest(void) {
+    // Vertex recovery: all edge-weight on one vertex yields that vertex's attribute.
+    if (tri_persp_interp(50, 0, 0, 2, 3, 4, 111, 222, 333) != 111) return 1;
+    if (tri_persp_interp(0, 50, 0, 2, 3, 4, 111, 222, 333) != 222) return 2;
+    if (tri_persp_interp(0, 0, 50, 2, 3, 4, 111, 222, 333) != 333) return 3;
+    // Edge midpoint (we0==we1, we2==0) with UNEQUAL depth: perspective pulls toward the near
+    // vertex. v0 near (wd0=1,a0=0), v1 far (wd1=3,a1=100) -> (a0*wd1+a1*wd0)/(wd1+wd0)=25,
+    // where the affine midpoint would be 50. (Independent of v2's depth/attr since we2=0.)
+    if (tri_persp_interp(10, 10, 0, 1, 3, 7, 0, 100, 555) != 25) return 4;
+    // Equal depths degrade to the affine average (50).
+    if (tri_persp_interp(10, 10, 0, 2, 2, 7, 0, 100, 555) != 50) return 5;
+    // Degenerate denominator guard.
+    if (tri_persp_interp(0, 0, 0, 1, 1, 1, 5, 5, 5) != 0) return 6;
+    return 0;
+}
+
 
 

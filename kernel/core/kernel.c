@@ -270,6 +270,7 @@ extern int editor_replace_selftest(void);   // gui/apps/editor_win.c — Ctrl+R 
 extern int tri_selftest(void);              // gui/core/tri.c — software triangle rasterizer KAT
 extern int triz_selftest(void);             // gui/core/tri.c — barycentric-Z + z-buffer KAT
 extern int trigou_selftest(void);           // gui/core/tri.c — RGB pack + Gouraud colour KAT
+extern int tritex_selftest(void);           // gui/core/tri.c — perspective-correct interp KAT
 extern int ext2_format_selftest(void);      // fs/ext2.c — mkfs.ext2 layout KAT
 extern int ext2_format_mg_selftest(void);   // fs/ext2.c — multi-group mkfs KAT
 extern int notify_selftest(void);           // gui/core/compositor.c — toast ring KAT
@@ -8709,6 +8710,7 @@ static void run_selftests(void) {
         {"trunc",        trunc_selftest},         {"pstree",        pstree_selftest},
         {"mktemp",       mktemp_selftest},        {"tri",           tri_selftest},
         {"triz",         triz_selftest},          {"trigou",        trigou_selftest},
+        {"tritex",       tritex_selftest},
         {"shuf",         shuf_selftest},
         {"comm",         comm_selftest},          {"join",          join_selftest},
         {"securezero",   secure_zero_selftest},

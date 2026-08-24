@@ -52,8 +52,33 @@ void tri_fill_gouraud(tri_putpx_t put, void* ctx, int minx, int miny, int maxx, 
                       int x0, int y0, int x1, int y1, int x2, int y2,
                       const uint8_t* c0, const uint8_t* c1, const uint8_t* c2);
 
+// Texture sampler: map a (u,v) texel coordinate to a packed RGB word. `texctx` is opaque.
+typedef uint32_t (*tri_tex_t)(void* texctx, int u, int v);
+
+// Perspective-correct interpolation of a per-vertex attribute at a pixel. Given the three
+// edge weights (we0,we1,we2 from tri_edge), the per-vertex depths (wd0,wd1,wd2, all > 0), and
+// the attribute at each vertex (a0,a1,a2), returns the depth-weighted value
+//   (Σ we_i·a_i·Π_{j≠i}wd_j) / (Σ we_i·Π_{j≠i}wd_j)
+// which equals a linear interp of a/w divided by a linear interp of 1/w — i.e. the true
+// perspective-correct value, not the affine (screen-linear) one. 64-bit; either winding;
+// den==0 returns 0. Pure. (v6.4.346)
+int32_t tri_persp_interp(int32_t we0, int32_t we1, int32_t we2,
+                         int32_t wd0, int32_t wd1, int32_t wd2,
+                         int32_t a0, int32_t a1, int32_t a2);
+
+// Perspective-correct textured fill: each vertex carries a depth (w*) and a (u,v) texcoord;
+// per pixel the (u,v) is recovered with tri_persp_interp and passed to the sampler `tex`,
+// whose returned colour is emitted. Same clip + either-winding rules as the other fills. A
+// checkerboard on a receding quad shows correct foreshortening (not the affine warp). (v6.4.346)
+void tri_fill_tex(tri_putpx_t put, void* ctx, int minx, int miny, int maxx, int maxy,
+                  int x0, int y0, int w0d, int u0, int v0,
+                  int x1, int y1, int w1d, int u1, int v1,
+                  int x2, int y2, int w2d, int u2, int v2,
+                  tri_tex_t tex, void* texctx);
+
 int tri_selftest(void);      // KAT for the flat rasterizer core
 int triz_selftest(void);     // KAT for barycentric-Z interpolation + the z-buffer test
 int trigou_selftest(void);   // KAT for RGB packing + Gouraud vertex-colour interpolation
+int tritex_selftest(void);   // KAT for perspective-correct attribute interpolation
 
 #endif
