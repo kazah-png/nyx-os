@@ -14,6 +14,30 @@ void tcp_debug_drop(int n) { g_tcp_drop_tx = n; }
 static uint32_t g_tcp_rx_csum_drop = 0;
 uint32_t tcp_rx_csum_drops(void) { return g_tcp_rx_csum_drop; }
 
+// TCP receive-window flow control. The old stack advertised a FIXED 8192-byte window while
+// letting the per-connection recv buffer grow without bound (recv_cap = recv_len+payload each
+// segment) — a peer that never lets the app read could grow it until the kernel heap was
+// exhausted (a remote memory-DoS). TCP_RECV_MAX caps the buffer; the advertised window now
+// reflects the ACTUAL free space (min with the 16-bit field), reaching 0 (zero-window) when
+// full so a cooperating sender stops, and the RX path drops anything past the cap so it can't
+// grow past it regardless. tcp_advertised_window is pure — pinned by tcp_wnd_selftest.
+#define TCP_RECV_MAX (256 * 1024)
+uint32_t tcp_advertised_window(uint32_t recv_len) {
+    if (recv_len >= TCP_RECV_MAX) return 0;
+    uint32_t space = TCP_RECV_MAX - recv_len;
+    return space > 0xFFFF ? 0xFFFF : space;   // the TCP window field is 16-bit
+}
+
+int tcp_wnd_selftest(void) {
+    if (tcp_advertised_window(0) != 0xFFFF) return 1;                       // empty -> full 16-bit window
+    if (tcp_advertised_window(TCP_RECV_MAX) != 0) return 2;                 // full -> zero-window
+    if (tcp_advertised_window(TCP_RECV_MAX + 100) != 0) return 3;          // over-full clamps to 0
+    if (tcp_advertised_window(TCP_RECV_MAX - 1000) != 1000) return 4;      // near-full: exact free space
+    if (tcp_advertised_window(TCP_RECV_MAX - 0xFFFF) != 0xFFFF) return 5;  // exactly 65535 free
+    if (tcp_advertised_window(TCP_RECV_MAX - 0x10000) != 0xFFFF) return 6; // 65536 free clamps to 65535
+    return 0;
+}
+
 typedef struct __attribute__((packed)) {
     uint16_t src_port;
     uint16_t dst_port;
@@ -206,7 +230,7 @@ static int send_segment(tcp_conn_t* conn, uint8_t flags, const uint8_t* data, ui
     // window) so slirp rejected the segment.
     uint16_t of = ((5 << 12) & 0xF000) | (flags & 0x003F);
     hdr->offset_flags = htons(of);
-    hdr->window = htons(0x2000);
+    hdr->window = htons((uint16_t)tcp_advertised_window(conn->recv_len));   // real free space
     hdr->checksum = 0;
     hdr->urgent = 0;
 
@@ -692,6 +716,11 @@ static void tcp_handle_packet_inner(uint8_t* packet, uint32_t len, uint32_t src_
         // drop the segment: don't advance recv_len/ack and don't ACK, so the peer retransmits later.
         // (The old code dereferenced a NULL recv_buf / new_buf right below and crashed the kernel
         // under memory pressure — a remote peer sending data while the heap was exhausted.)
+        // Flow control cap: never buffer past TCP_RECV_MAX. Drop the segment WITHOUT ACKing its
+        // data (don't advance recv_len/ack) so the peer retransmits once the app drains and space
+        // frees up; the advertised window (0 when full) already tells a cooperating peer to pause.
+        // This is what bounds the recv buffer against a remote memory-DoS.
+        if (conn->recv_len + payload_len > TCP_RECV_MAX) goto recv_drop;
         if (conn->recv_buf == NULL) {
             conn->recv_cap = payload_len > 4096 ? payload_len : 4096;
             conn->recv_buf = (uint8_t*)kmalloc(conn->recv_cap);
