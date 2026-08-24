@@ -58,6 +58,10 @@
 #define SYS_FBINFO    54
 #define SYS_FBPRESENT 55
 #define SYS_GETKEYEVENT 56
+#define SYS_WIN_CREATE     57
+#define SYS_WIN_DESTROY    58
+#define SYS_WIN_PRESENT    59
+#define SYS_WIN_POLL_EVENT 60
 
 /* Threads (v5.8.87). CLONE_VM makes the new task SHARE this address space — a real
  * thread — instead of getting fork()'s copy-on-write duplicate. */
@@ -244,6 +248,43 @@ static inline int getkeyevent(int* pressed, int* code) {
     if (pressed) *pressed = (int)((r >> 8) & 1);
     if (code)    *code    = (int)(r & 0xFF);
     return 1;
+}
+
+/* --- User-space windows (v6.4.354, issue #77) ------------------------------
+ * Open a REAL desktop window from a ring-3 program: unlike the fullscreen fb*
+ * calls, the compositor keeps running and composites the window among the others.
+ * win_create() returns a window id; win_present() blits a whole-client XRGB
+ * (0x00RRGGBB) buffer; win_poll_event() pops one input event (non-blocking).
+ * A window opened this way is drawn while the launcher pumps the desktop. */
+#define UWE_KEY    1   /* a = keycode */
+#define UWE_CLICK  2   /* a = x, b = y, c = button   (client-relative) */
+#define UWE_MOVE   3   /* a = x, b = y, c = buttons  (client-relative) */
+#define UWE_CLOSE  4   /* the window's close box was pressed */
+#define UWE_RESIZE 5   /* a = w, b = h */
+
+/* One event record — MUST match the kernel's four-i64 {kind,a,b,c} (syscall.c). */
+typedef struct { long kind, a, b, c; } win_event_t;
+
+/* win_create(w, h, title): open a window with a w x h client area. Returns a
+ * window id (>= 0), or -1 (bad size / table full). */
+static inline int win_create(unsigned int w, unsigned int h, const char* title) {
+    int tlen = 0;
+    if (title) while (title[tlen]) tlen++;
+    return (int)syscall4(SYS_WIN_CREATE, (long)w, (long)h, (long)title, (long)tlen);
+}
+/* win_destroy(id): close the window. Idempotent (returns 0 even if already gone). */
+static inline int win_destroy(int id) {
+    return (int)syscall1(SYS_WIN_DESTROY, id);
+}
+/* win_present(id, buf, w, h): blit a w*h XRGB buffer as the whole client area.
+ * w,h MUST equal the create-time size. Returns 0, or -1. Call once per frame. */
+static inline int win_present(int id, const void* buf, unsigned int w, unsigned int h) {
+    return (int)syscall4(SYS_WIN_PRESENT, id, (long)buf, (long)w, (long)h);
+}
+/* win_poll_event(id, ev): pop one input event into *ev. Returns 1 (got one),
+ * 0 (queue empty), or -1 (no such window — it was closed). Non-blocking. */
+static inline int win_poll_event(int id, win_event_t* ev) {
+    return (int)syscall2(SYS_WIN_POLL_EVENT, id, (long)ev);
 }
 
 static inline long open(const char* path, int flags, int mode) {
