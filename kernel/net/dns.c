@@ -43,27 +43,26 @@ static uint32_t dns_skip_name(const uint8_t* data, uint32_t len, uint32_t off) {
     return off;                                 // ran off the end of the packet
 }
 
-static void dns_response_handler(uint8_t* data, uint32_t len, uint32_t src_ip, uint16_t src_port) {
-    (void)src_ip;
-    (void)src_port;
-    if (len < sizeof(dns_header_t)) return;
-    dns_header_t* hdr = (dns_header_t*)data;
-    if (!(ntohs(hdr->flags) & DNS_FLAG_QR)) return;
+// Pure, global-free core of the response handler (so it can be unit-tested against
+// hostile packets). Every access into [data, data+len) is bounds-checked; names are
+// SKIPPED, never followed, so a compression-pointer loop cannot hang it. Returns 1
+// and the A-record IPv4 (network order) in *out_ip on the first match, else 0.
+int dns_parse_a_record(const uint8_t* data, uint32_t len, uint16_t expected_id, uint32_t* out_ip) {
+    if (len < sizeof(dns_header_t)) return 0;
+    const dns_header_t* hdr = (const dns_header_t*)data;
+    if (!(ntohs(hdr->flags) & DNS_FLAG_QR)) return 0;
     // Reject any response whose transaction ID does not match the query we sent.
     // Without this a blind off-path attacker (or any host that reaches the UDP
     // source port) could forge a reply and poison the answer; matching the random
     // 16-bit ID is the standard first line of defence against DNS spoofing.
-    if (ntohs(hdr->id) != dns_query_id) return;
+    if (ntohs(hdr->id) != expected_id) return 0;
     uint16_t ancount = ntohs(hdr->ancount);
-    if (ancount == 0) return;
+    if (ancount == 0) return 0;
 
-    // Skip header
     uint32_t off = sizeof(dns_header_t);
-
     // Skip the question section: NAME + QTYPE(2) + QCLASS(2).
     off = dns_skip_name(data, len, off) + 4;
 
-    // Parse answer section
     for (uint16_t a = 0; a < ancount && off < len; a++) {
         off = dns_skip_name(data, len, off);   // NAME: label sequence and/or a compression pointer
 
@@ -76,13 +75,77 @@ static void dns_response_handler(uint8_t* data, uint32_t len, uint32_t src_ip, u
         if (type == 1 && rdlength == 4 && off + 4 <= len) {
             // Store in network order (low byte = first octet) to match
             // net_interfaces[].ip and what ip_send/udp_send put on the wire.
-            dns_response_ip = (uint32_t)data[off] | ((uint32_t)data[off+1] << 8) |
-                              ((uint32_t)data[off+2] << 16) | ((uint32_t)data[off+3] << 24);
-            dns_response_ready = 1;
-            return;
+            *out_ip = (uint32_t)data[off] | ((uint32_t)data[off+1] << 8) |
+                      ((uint32_t)data[off+2] << 16) | ((uint32_t)data[off+3] << 24);
+            return 1;
         }
         off += rdlength;
     }
+    return 0;
+}
+
+static void dns_response_handler(uint8_t* data, uint32_t len, uint32_t src_ip, uint16_t src_port) {
+    (void)src_ip;
+    (void)src_port;
+    uint32_t ip;
+    if (dns_parse_a_record(data, len, dns_query_id, &ip)) {
+        dns_response_ip = ip;
+        dns_response_ready = 1;
+    }
+}
+
+// KAT: pins the A-record parser against a valid response and hostile ones (spoofed
+// id, a query not a response, truncation at several offsets, an oversized rdlength,
+// a self-referential compression pointer). Convention: 0 = PASS, else the failing case.
+int dns_parse_selftest(void) {
+    // A minimal well-formed response: header + question(www.xyz) + one A answer 1.2.3.4,
+    // the answer NAME being a compression pointer (0xC00C) back to the question at off 12.
+    uint8_t pkt[64];
+    int n = 0;
+    pkt[n++]=0x12; pkt[n++]=0x34; pkt[n++]=0x80; pkt[n++]=0x00;   // id=0x1234, flags=QR
+    pkt[n++]=0x00; pkt[n++]=0x01; pkt[n++]=0x00; pkt[n++]=0x01;   // qd=1, an=1
+    pkt[n++]=0x00; pkt[n++]=0x00; pkt[n++]=0x00; pkt[n++]=0x00;   // ns=0, ar=0
+    pkt[n++]=3; pkt[n++]='w'; pkt[n++]='w'; pkt[n++]='w';         // question NAME
+    pkt[n++]=3; pkt[n++]='x'; pkt[n++]='y'; pkt[n++]='z'; pkt[n++]=0;
+    pkt[n++]=0x00; pkt[n++]=0x01; pkt[n++]=0x00; pkt[n++]=0x01;   // QTYPE=A, QCLASS=IN
+    pkt[n++]=0xC0; pkt[n++]=0x0C;                                 // answer NAME: pointer -> off 12
+    pkt[n++]=0x00; pkt[n++]=0x01;                                 // TYPE=A
+    pkt[n++]=0x00; pkt[n++]=0x01;                                 // CLASS=IN
+    pkt[n++]=0x00; pkt[n++]=0x00; pkt[n++]=0x00; pkt[n++]=0x00;   // TTL
+    pkt[n++]=0x00; pkt[n++]=0x04;                                 // RDLENGTH=4
+    pkt[n++]=1; pkt[n++]=2; pkt[n++]=3; pkt[n++]=4;               // A = 1.2.3.4
+    uint32_t plen = (uint32_t)n;
+    uint32_t ip = 0;
+
+    // 1. valid, matching id -> extracts 1.2.3.4 (network order: low byte = first octet)
+    if (dns_parse_a_record(pkt, plen, 0x1234, &ip) != 1) return 1;
+    if (ip != ((uint32_t)1 | (2u<<8) | (3u<<16) | (4u<<24))) return 2;
+    // 2. spoofed / wrong transaction id -> rejected
+    if (dns_parse_a_record(pkt, plen, 0x9999, &ip) != 0) return 3;
+    // 3. QR bit clear (a query, not a response) -> rejected
+    { uint8_t s = pkt[2]; pkt[2] = 0x00; int r = dns_parse_a_record(pkt, plen, 0x1234, &ip); pkt[2] = s; if (r) return 4; }
+    // 4. truncated inside the answer RDATA -> no OOB, not found
+    if (dns_parse_a_record(pkt, plen - 2, 0x1234, &ip) != 0) return 5;
+    // 5. truncated mid-header -> not found
+    if (dns_parse_a_record(pkt, 6, 0x1234, &ip) != 0) return 6;
+    // 6. ancount = 0 -> not found
+    { uint8_t s = pkt[7]; pkt[7] = 0x00; int r = dns_parse_a_record(pkt, plen, 0x1234, &ip); pkt[7] = s; if (r) return 7; }
+    // 7. oversized RDLENGTH on a non-A record must not read past the packet (off += rdlength
+    //    overshoots, the loop's off<len guard ends it). Retype the answer + claim 0xFFFF.
+    { uint8_t t0 = pkt[28], t1 = pkt[29], l0 = pkt[36], l1 = pkt[37];
+      pkt[28]=0x00; pkt[29]=0x10;                 // TYPE = 16 (TXT), not A
+      pkt[36]=0xFF; pkt[37]=0xFF;                 // RDLENGTH = 65535
+      int r = dns_parse_a_record(pkt, plen, 0x1234, &ip);
+      pkt[28]=t0; pkt[29]=t1; pkt[36]=l0; pkt[37]=l1;
+      if (r) return 8; }
+    // 8. a self-referential compression pointer as the whole question name must terminate
+    //    (skip_name returns off+2, never follows) — parse just yields not-found, no hang.
+    { uint8_t loop[16];
+      for (int i = 0; i < 12; i++) loop[i] = pkt[i];   // header (id, QR, qd=1, an=1)
+      loop[12] = 0xC0; loop[13] = 0x0C;                // question NAME -> points to itself
+      loop[14] = 0x00; loop[15] = 0x00;
+      if (dns_parse_a_record(loop, 16, 0x1234, &ip)) return 9; }
+    return 0;
 }
 
 // Encode a domain name into DNS format (e.g. "www.google.com" -> \x03www\x06google\x03com\x00).
