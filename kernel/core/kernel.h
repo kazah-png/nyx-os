@@ -18,7 +18,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.4.350"
+#define KERNEL_VERSION "6.4.351"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -1132,6 +1132,8 @@ void* vfs_path_node(const char* path);   // opaque node for a path, or NULL (dir
 void vfs_list_dir(const char* path);
 void vfs_cat_file(const char* path);
 int vfs_touch(const char* path);
+int vfs_symlink(const char* linkpath, const char* target);  // create a symlink -> target
+int vfs_readlink(const char* path, char* buf, int cap);     // read a symlink's target (no follow)
 int vfs_write_file(const char* path, const void* buf, uint32_t len);
 int vfs_cp(const char* src, const char* dst);
 void vfs_rename(const char* old, const char* new);

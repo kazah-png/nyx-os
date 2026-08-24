@@ -132,6 +132,8 @@ static void cmd_touch(int argc, char** argv);
 static void cmd_truncate(int argc, char** argv);
 static void cmd_mktemp(int argc, char** argv);
 static void cmd_mkdir(int argc, char** argv);
+static void cmd_ln(int argc, char** argv);
+static void cmd_readlink(int argc, char** argv);
 static void cmd_rm(int argc, char** argv);
 static void cmd_shred(int argc, char** argv);
 static void cmd_cp(int argc, char** argv);
@@ -365,6 +367,8 @@ static const command_t commands[] = {
     {"truncate",  cmd_truncate,  "Set a file's size: truncate -s <size> <file>", false},
     {"mktemp",    cmd_mktemp,    "Create a uniquely-named temp file/dir: mktemp [-d] [-u] [template]", false},
     {"mkdir",     cmd_mkdir,     "Create directory: mkdir <dir>", false},
+    {"ln",        cmd_ln,        "Create a symbolic link: ln -s <target> <linkname>", false},
+    {"readlink",  cmd_readlink,  "Print a symlink's target: readlink <symlink>", false},
     {"rm",        cmd_rm,        "Remove file or directory: rm <path>", false},
     {"shred",     cmd_shred,     "Overwrite a file's data, then optionally remove it: shred [-n N] [-u] <file>", false},
     {"cp",        cmd_cp,        "Copy a file (cp <src> <dst>) or a tree (cp -r <srcdir> <dstdir>)", false},
@@ -894,6 +898,8 @@ static const man_page_t man_pages[] = {
     {"rm",       "Remove <path>. There is no recycle bin, so a removed file is gone for good."},
     {"shred",    "Destroy a file's contents by overwriting every byte with cryptographic random data before it can be recovered: shred [-n N] [-u] <file>. -n sets the number of overwrite passes (default 3); -u also removes the file afterwards (like shred -u on Linux). The overwrite is in place — on the ramdisk it rewrites the bytes directly, and on the EXT2 mount it is flushed back to the same disk blocks at close — so unlike rm alone, the old contents are actually gone. Operates on one file (not a directory)."},
     {"mkdir",    "Create a new, empty directory named <dir>."},
+    {"ln",       "Create a symbolic link: `ln -s <target> <linkname>` makes <linkname> a symlink pointing at <target>. Opening/`cat`/`cd` through the link transparently reaches the target (resolve_path follows it, bounded to 8 hops so a cyclic link can't loop); `readlink <linkname>` shows the raw target without following. Hard links aren't supported by the ramdisk node model, so `-s` is required."},
+    {"readlink", "Print the target path a symbolic link points at, without following it: `readlink <symlink>`."},
     {"echo",     "Write the arguments to standard output separated by spaces and followed by a newline. `echo text > file` writes to a file instead of the screen."},
     {"grep",     "Print the lines of <file> that match <pattern>. -i ignores letter case, -n prefixes each match with its line number, and -v inverts the search to print the lines that do NOT match."},
     {"sort",     "Sort the lines of <file>. -r reverses the result; -n sorts numerically by the integer at the start of each line instead of alphabetically."},
@@ -7415,6 +7421,24 @@ static void cmd_mkdir(int argc, char** argv) {
     if (argc < 2) { printf("Usage: mkdir <dir>\n"); return; }
     if (!path_last_component_ok(argv[1])) { printf("mkdir: invalid directory name '%s'\n", argv[1]); return; }
     if (vfs_mkdir(argv[1], 0755) < 0) printf("mkdir: failed to create %s\n", argv[1]);
+}
+
+// ln -s <target> <linkname> — create a symbolic link. Hard links aren't supported by the
+// ramdisk node model, so -s is required.
+static void cmd_ln(int argc, char** argv) {
+    if (argc == 4 && strcmp(argv[1], "-s") == 0) {
+        if (vfs_symlink(argv[3], argv[2]) != 0)
+            printf("ln: cannot create symlink '%s' -> '%s'\n", argv[3], argv[2]);
+    } else {
+        printf("Usage: ln -s <target> <linkname>   (only symbolic links are supported)\n");
+    }
+}
+
+static void cmd_readlink(int argc, char** argv) {
+    if (argc < 2) { printf("Usage: readlink <symlink>\n"); return; }
+    char buf[256];
+    if (vfs_readlink(argv[1], buf, sizeof(buf)) < 0) printf("readlink: %s: not a symbolic link\n", argv[1]);
+    else printf("%s\n", buf);
 }
 
 static void cmd_rm(int argc, char** argv) {

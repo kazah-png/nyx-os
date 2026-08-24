@@ -7,6 +7,8 @@
                             // 128, then 256; root alone holds ~58. See vfs_pool_report.)
 #define MAX_NAME      64
 #define MAX_CHILDREN  128   // per-directory child cap (was 64 — root `/` needs headroom)
+#define VFS_SYMLINK   2     // vfs_node_t.type: 0=file, 1=dir, 2=symlink (target string in ->data)
+#define SYMLINK_MAX   8     // max symlink hops before giving up (loop / too-deep guard)
 #define BLOCK_SIZE    512
 
 // Mount table
@@ -282,7 +284,21 @@ static char* path_token(char* path, char* token) {
     return path;
 }
 
-static vfs_node_t* resolve_path(const char* path) {
+static vfs_node_t* resolve_path_d(const char* path, int depth);
+
+// Follow a symlink node to its target node, bounded by `depth` hops (loop/too-deep guard).
+// A non-symlink passes straight through. The target string in ->data resolves as a path
+// (absolute from root, else relative to the cwd). Additive: only ever called on type==2
+// nodes, so ordinary file/dir resolution is byte-for-byte unchanged.
+static vfs_node_t* deref_link(vfs_node_t* n, int depth) {
+    while (n && n->type == VFS_SYMLINK) {
+        if (depth-- <= 0 || !n->data) return NULL;
+        n = resolve_path_d((const char*)n->data, depth);
+    }
+    return n;
+}
+
+static vfs_node_t* resolve_path_d(const char* path, int depth) {
     if (!path || !*path) return current_dir;
     char buf[256];
     strncpy(buf, path, 255);
@@ -306,17 +322,21 @@ static vfs_node_t* resolve_path(const char* path) {
         // Check if there are more components (i.e., this is a directory)
         if (*next) {
             result = find_child(dir, token);
+            if (result && result->type == VFS_SYMLINK) result = deref_link(result, depth);  // follow intermediate link
             if (!result || result->type != 1) return NULL;
             dir = result;
             p = next;
         } else {
-            // Last component - can be file or directory
+            // Last component - can be file, directory, or a symlink to follow
             result = find_child(dir, token);
+            if (result && result->type == VFS_SYMLINK) result = deref_link(result, depth);
             return result;
         }
     }
     return result;
 }
+
+static vfs_node_t* resolve_path(const char* path) { return resolve_path_d(path, SYMLINK_MAX); }
 
 // Resolve `path` to the directory that should CONTAIN its final component, and copy
 // that final component into `child_name`. Every INTERMEDIATE component must already
@@ -357,6 +377,47 @@ static vfs_node_t* resolve_parent(const char* path, char* child_name) {
         strncpy(token, peek, MAX_NAME-1);
         token[MAX_NAME-1] = '\0';
     }
+}
+
+// Create a symbolic link `linkpath` pointing at `target` (an arbitrary path string, stored
+// verbatim in the node's ->data and followed by resolve_path). Returns 0, or -1 if the parent
+// is missing/not-a-dir, the name already exists, the dir is full, or allocation fails.
+int vfs_symlink(const char* linkpath, const char* target) {
+    if (!linkpath || !target) return -1;
+    char child_name[MAX_NAME];
+    vfs_node_t* parent = resolve_parent(linkpath, child_name);
+    if (!parent || parent->type != 1) return -1;
+    if (find_child(parent, child_name)) return -1;             // name in use
+    if (parent->child_count >= MAX_CHILDREN) return -1;
+    int tlen = (int)strlen(target);
+    vfs_node_t* n = alloc_node();
+    if (!n) return -1;
+    n->data = (uint8_t*)kmalloc((uint32_t)tlen + 1);
+    if (!n->data) { free_node(n); return -1; }
+    memcpy(n->data, target, (uint32_t)tlen + 1);
+    n->type = VFS_SYMLINK;
+    n->size = (uint32_t)tlen;
+    strncpy(n->name, child_name, MAX_NAME - 1);
+    n->name[MAX_NAME - 1] = '\0';
+    n->parent = parent;
+    parent->children[parent->child_count++] = n;
+    return 0;
+}
+
+// Read a symlink's target into `buf` (NUL-terminated, up to `cap`) WITHOUT following it.
+// Returns the target length, or -1 if `path` is not a symlink.
+int vfs_readlink(const char* path, char* buf, int cap) {
+    if (!buf || cap <= 0) return -1;
+    char child_name[MAX_NAME];
+    vfs_node_t* parent = resolve_parent(path, child_name);
+    if (!parent) return -1;
+    vfs_node_t* n = find_child(parent, child_name);
+    if (!n || n->type != VFS_SYMLINK || !n->data) return -1;
+    int len = (int)strlen((const char*)n->data);
+    if (len >= cap) len = cap - 1;
+    memcpy(buf, n->data, (uint32_t)len);
+    buf[len] = '\0';
+    return len;
 }
 
 // ==================== /proc (generated filesystem) ====================
