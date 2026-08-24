@@ -18,7 +18,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.4.353"
+#define KERNEL_VERSION "6.4.354"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -124,6 +124,10 @@
 #define SYS_FBINFO    54  /* fbinfo(uint32_t out[3]) — screen width/height/bpp for a fullscreen app */
 #define SYS_FBPRESENT 55  /* fbpresent(buf, w, h) — blit a 32bpp buffer to the screen, scaled */
 #define SYS_GETKEYEVENT 56 /* getkeyevent() — next raw key event (pressed<<8)|scancode, or -1 */
+#define SYS_WIN_CREATE    57 /* win_create(w, h, title_ptr, title_len) -> id / -1 */
+#define SYS_WIN_DESTROY   58 /* win_destroy(id) -> 0 (idempotent) */
+#define SYS_WIN_PRESENT   59 /* win_present(id, buf, w, h) -> 0/-1 (whole XRGB client-area blit) */
+#define SYS_WIN_POLL_EVENT 60 /* win_poll_event(id, ev[4 i64]) -> 1 got / 0 empty / -1 bad id */
 
 /* ------------------------------------------------------------------ */
 /*  Threads (v5.8.89) — clone(CLONE_VM) + futex                        */

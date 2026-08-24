@@ -277,6 +277,7 @@ extern int triz_selftest(void);             // gui/core/tri.c — barycentric-Z 
 extern int trigou_selftest(void);           // gui/core/tri.c — RGB pack + Gouraud colour KAT
 extern int tritex_selftest(void);           // gui/core/tri.c — perspective-correct interp KAT
 extern int mat4_selftest(void);             // gui/core/mat4.c — 4x4 matrix/vector math KAT
+extern int uwin_selftest(void);             // gui/core/userwin.c — user-window registry + event ring KAT
 extern int ext2_format_selftest(void);      // fs/ext2.c — mkfs.ext2 layout KAT
 extern int ext2_format_mg_selftest(void);   // fs/ext2.c — multi-group mkfs KAT
 extern int notify_selftest(void);           // gui/core/compositor.c — toast ring KAT
@@ -8882,6 +8883,7 @@ static void run_selftests(void) {
         {"trunc",        trunc_selftest},         {"pstree",        pstree_selftest},
         {"mktemp",       mktemp_selftest},        {"tri",           tri_selftest},
         {"chmod",        chmod_selftest},         {"pr",            pr_selftest},
+        {"userwin",      uwin_selftest},
         {"triz",         triz_selftest},          {"trigou",        trigou_selftest},
         {"tritex",       tritex_selftest},        {"mat4",          mat4_selftest},
         {"shuf",         shuf_selftest},

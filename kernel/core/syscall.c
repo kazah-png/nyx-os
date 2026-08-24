@@ -1,5 +1,6 @@
 #include "kernel.h"
 #include "../proc/elf.h"
+#include "../gui/core/userwin.h"
 
 extern void* syscall_table[SYS_TABLE_SIZE];
 
@@ -1434,6 +1435,52 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
             // Next raw key make/break for a fullscreen app (DOOM's DG_GetKey): returns
             // (pressed<<8)|scancode, or -1 if the event ring is empty. Non-blocking.
             return (uint64_t)(int64_t)keyboard_next_event();
+        case SYS_WIN_CREATE: {
+            // win_create(w, h, title_ptr, title_len) -> id or -1. The title is copied
+            // at the crossing; everything past it is a kernel string.
+            uint32_t w = (uint32_t)a1, h = (uint32_t)a2;
+            char title[64];
+            title[0] = 0;
+            int tlen = (int)a4;
+            if (a3 && tlen > 0) {
+                if (tlen > (int)sizeof(title) - 1) tlen = sizeof(title) - 1;
+                if (!user_ptr_ok(a3, (uint64_t)tlen)) return -1;
+                if (copy_from_user(title, a3, (uint64_t)tlen) != 0) return -1;
+                title[tlen] = 0;
+            }
+            return (uint64_t)(int64_t)uwin_create(w, h, title);
+        }
+        case SYS_WIN_DESTROY:
+            return (uint64_t)(int64_t)uwin_destroy((int)a1);
+        case SYS_WIN_PRESENT: {
+            // win_present(id, buf, w, h) -> 0/-1. Copy the user XRGB buffer into a
+            // reusable kernel scratch (bounds-checked BEFORE multiplying, like FBPRESENT)
+            // so uwin_present never touches a user VA.
+            static uint32_t* win_scratch = 0;
+            static uint64_t win_scratch_sz = 0;
+            int id = (int)a1;
+            uint32_t w = (uint32_t)a3, h = (uint32_t)a4;
+            if (w == 0 || h == 0 || w > USERWIN_MAX_W || h > USERWIN_MAX_H) return -1;
+            uint64_t bytes = (uint64_t)w * h * 4;       // <= 2048*2048*4, no overflow
+            if (!user_ptr_ok(a2, bytes)) return -1;
+            if (bytes > win_scratch_sz) {
+                uint32_t* n = (uint32_t*)krealloc(win_scratch, bytes);
+                if (!n) return -1;
+                win_scratch = n; win_scratch_sz = bytes;
+            }
+            if (copy_from_user(win_scratch, a2, bytes) != 0) return -1;
+            return (uint64_t)(int64_t)uwin_present(id, win_scratch, w, h);
+        }
+        case SYS_WIN_POLL_EVENT: {
+            // win_poll_event(id, ev_ptr) -> 1 got / 0 empty / -1. ev = four i64 {kind,a,b,c}.
+            uwin_event_t ev;
+            int64_t r = uwin_poll_event((int)a1, &ev);
+            if (r == 1) {
+                if (!user_ptr_ok(a2, sizeof(ev)) || copy_to_user(a2, &ev, sizeof(ev)) != 0)
+                    return -1;
+            }
+            return (uint64_t)r;
+        }
         default:
             printf("[SYSCALL] Unknown syscall %lu\n", no);
             return -1;
