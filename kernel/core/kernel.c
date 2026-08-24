@@ -134,6 +134,7 @@ static void cmd_mktemp(int argc, char** argv);
 static void cmd_mkdir(int argc, char** argv);
 static void cmd_ln(int argc, char** argv);
 static void cmd_readlink(int argc, char** argv);
+static void cmd_chmod(int argc, char** argv);
 static void cmd_rm(int argc, char** argv);
 static void cmd_shred(int argc, char** argv);
 static void cmd_cp(int argc, char** argv);
@@ -369,6 +370,7 @@ static const command_t commands[] = {
     {"mkdir",     cmd_mkdir,     "Create directory: mkdir <dir>", false},
     {"ln",        cmd_ln,        "Create a symbolic link: ln -s <target> <linkname>", false},
     {"readlink",  cmd_readlink,  "Print a symlink's target: readlink <symlink>", false},
+    {"chmod",     cmd_chmod,     "Change permission bits: chmod <octal> <file>", false},
     {"rm",        cmd_rm,        "Remove file or directory: rm <path>", false},
     {"shred",     cmd_shred,     "Overwrite a file's data, then optionally remove it: shred [-n N] [-u] <file>", false},
     {"cp",        cmd_cp,        "Copy a file (cp <src> <dst>) or a tree (cp -r <srcdir> <dstdir>)", false},
@@ -900,6 +902,7 @@ static const man_page_t man_pages[] = {
     {"mkdir",    "Create a new, empty directory named <dir>."},
     {"ln",       "Create a symbolic link: `ln -s <target> <linkname>` makes <linkname> a symlink pointing at <target>. Opening/`cat`/`cd` through the link transparently reaches the target (resolve_path follows it, bounded to 8 hops so a cyclic link can't loop); `readlink <linkname>` shows the raw target without following. Hard links aren't supported by the ramdisk node model, so `-s` is required."},
     {"readlink", "Print the target path a symbolic link points at, without following it: `readlink <symlink>`."},
+    {"chmod",    "Change a file's permission bits: `chmod <octal> <file>` (e.g. `chmod 644 f`, `chmod 444 f`). Clearing the owner-write bit (e.g. `444`) makes the file read-only — `vfs_write_file`/overwrites are refused until you `chmod` it writable again. Applies to the ramdisk tree; new files default to 644, directories to 755."},
     {"echo",     "Write the arguments to standard output separated by spaces and followed by a newline. `echo text > file` writes to a file instead of the screen."},
     {"grep",     "Print the lines of <file> that match <pattern>. -i ignores letter case, -n prefixes each match with its line number, and -v inverts the search to print the lines that do NOT match."},
     {"sort",     "Sort the lines of <file>. -r reverses the result; -n sorts numerically by the integer at the start of each line instead of alphabetically."},
@@ -7441,6 +7444,52 @@ static void cmd_readlink(int argc, char** argv) {
     else printf("%s\n", buf);
 }
 
+// Parse an octal permission string ("644"/"0755"/"444") into mode bits, or -1 on a non-octal
+// digit / empty / out-of-range value. Pure — pinned by chmod_selftest.
+static int chmod_parse_octal(const char* s) {
+    if (!s || !*s) return -1;
+    int v = 0;
+    for (const char* p = s; *p; p++) {
+        if (*p < '0' || *p > '7') return -1;
+        v = v * 8 + (*p - '0');
+        if (v > 07777) return -1;
+    }
+    return v;
+}
+
+// Format the low 9 permission bits as "rwxr-xr-x" into buf[10]. Pure — pinned by chmod_selftest.
+static void mode_to_rwx(int mode, char* buf) {
+    static const char set[9] = {'r','w','x','r','w','x','r','w','x'};
+    for (int i = 0; i < 9; i++)
+        buf[i] = (mode & (0400 >> i)) ? set[i] : '-';
+    buf[9] = '\0';
+}
+
+int chmod_selftest(void) {
+    if (chmod_parse_octal("644")   != 0644) return 1;
+    if (chmod_parse_octal("0755")  != 0755) return 2;
+    if (chmod_parse_octal("444")   != 0444) return 3;
+    if (chmod_parse_octal("777")   != 0777) return 4;
+    if (chmod_parse_octal("8")     != -1)   return 5;   // non-octal digit
+    if (chmod_parse_octal("")      != -1)   return 6;   // empty
+    if (chmod_parse_octal("77777") != -1)   return 7;   // over-range (> 07777)
+    char b[10];
+    mode_to_rwx(0644, b); if (strcmp(b, "rw-r--r--")) return 8;
+    mode_to_rwx(0755, b); if (strcmp(b, "rwxr-xr-x")) return 9;
+    mode_to_rwx(0444, b); if (strcmp(b, "r--r--r--")) return 10;
+    mode_to_rwx(0777, b); if (strcmp(b, "rwxrwxrwx")) return 11;
+    return 0;
+}
+
+static void cmd_chmod(int argc, char** argv) {
+    if (argc < 3) { printf("Usage: chmod <octal> <file>\n"); return; }
+    int m = chmod_parse_octal(argv[1]);
+    if (m < 0) { printf("chmod: invalid mode '%s'\n", argv[1]); return; }
+    if (vfs_chmod(argv[2], (uint16_t)m) != 0) { printf("chmod: cannot access '%s'\n", argv[2]); return; }
+    char b[10]; mode_to_rwx(m, b);
+    printf("mode of '%s' -> %s (%o)\n", argv[2], b, (unsigned)m);
+}
+
 static void cmd_rm(int argc, char** argv) {
     if (argc < 2) { printf("Usage: rm <path>\n"); return; }
     if (vfs_unlink(argv[1]) < 0) printf("rm: failed to remove %s\n", argv[1]);
@@ -8759,6 +8808,7 @@ static void run_selftests(void) {
         {"cut",          cut_selftest},           {"xargs",         xargs_selftest},
         {"trunc",        trunc_selftest},         {"pstree",        pstree_selftest},
         {"mktemp",       mktemp_selftest},        {"tri",           tri_selftest},
+        {"chmod",        chmod_selftest},
         {"triz",         triz_selftest},          {"trigou",        trigou_selftest},
         {"tritex",       tritex_selftest},        {"mat4",          mat4_selftest},
         {"shuf",         shuf_selftest},

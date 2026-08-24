@@ -59,6 +59,8 @@ typedef struct vfs_node {
     uint32_t dev_type;    // 0 = regular file; else a /dev special (DEV_* below)
     uint32_t proc_type;   // 0 = not /proc; else a PROC_* generated node (below)
     uint32_t proc_pid;    // for PROC_PID_* nodes: which process this reflects
+    uint16_t mode;        // rwx permission bits (chmod); default 0644 file / 0755 dir. A
+                          // cleared owner-write bit (0200) makes vfs_write_file refuse (v6.4.352)
 } vfs_node_t;
 
 /* Special device nodes under /dev. read/write of these bypass ino->data. */
@@ -117,6 +119,7 @@ static vfs_node_t* alloc_node(void) {
     if (node) {
         memset_asm(node, 0, sizeof(vfs_node_t));
         node->node_id = (uint32_t)(node - nodes);
+        node->mode = 0644;   // default: owner-writable, world-readable (so writes work unless chmod'd)
     }
     spin_unlock_irqrestore(&node_pool_lock, fl);
     return node;
@@ -967,6 +970,7 @@ int vfs_mkdir(const char* path, mode_t mode) {
     if (!dir) return -1;
     strncpy(dir->name, child_name, MAX_NAME-1);
     dir->type = 1;
+    dir->mode = 0755;
     dir->parent = parent;
     if (vfs_append_child(parent, dir) != 0) { free_node(dir); return -1; }
     return 0;
@@ -1123,6 +1127,7 @@ static void ensure_mount_stub(const char* mount_point) {
     if (!dir) return;
     strncpy(dir->name, child_name, MAX_NAME - 1);
     dir->type = 1;
+    dir->mode = 0755;
     dir->parent = parent;
     parent->children[parent->child_count++] = dir;
 }
@@ -1502,12 +1507,28 @@ int vfs_write_file(const char* path, const void* buf, uint32_t len) {
         if (vfs_append_child(parent, ino) != 0) { free_node(ino); return -1; }
     }
     if (ino->type != 0) return -1;
+    if (!(ino->mode & 0200)) return -1;         // read-only (owner-write bit cleared by chmod): refuse
     if (ino->data) kfree(ino->data);
     ino->data = (uint8_t*)kmalloc(len);
     if (!ino->data && len > 0) return -1;
     if (len > 0) memcpy(ino->data, buf, len);
     ino->size = len;
     return len;
+}
+
+// Change a RAM-VFS node's permission bits (chmod). Mount-backed (/mnt) files don't carry
+// their own mode here yet, so this covers the ramdisk tree. Returns 0, or -1 if not found.
+int vfs_chmod(const char* path, uint16_t mode) {
+    vfs_node_t* n = resolve_path(path);
+    if (!n) return -1;
+    n->mode = (uint16_t)(mode & 07777);
+    return 0;
+}
+
+// Read a node's mode bits (for stat / ls -l). Returns -1 if the path doesn't resolve.
+int vfs_getmode(const char* path) {
+    vfs_node_t* n = resolve_path(path);
+    return n ? (int)n->mode : -1;
 }
 
 int vfs_cp(const char* src, const char* dst) {
