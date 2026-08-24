@@ -194,6 +194,7 @@ static void cmd_rev(int argc, char** argv);
 static void cmd_tr(int argc, char** argv);
 static void cmd_sed(int argc, char** argv);
 static void cmd_fold(int argc, char** argv);
+static void cmd_pr(int argc, char** argv);
 static void cmd_fmt(int argc, char** argv);
 static void cmd_nl(int argc, char** argv);
 static void cmd_printf(int argc, char** argv);
@@ -422,6 +423,7 @@ static const command_t commands[] = {
     {"sed",       cmd_sed,       "Substitute text: sed s/old/new/[g] <file>", false},
     {"patch",     cmd_patch,     "Apply a unified diff to a file in place: patch <file> <diff>", false},
     {"fold",      cmd_fold,      "Wrap long lines to a width: fold [-w width] <file>", false},
+    {"pr",        cmd_pr,        "Paginate text for printing: pr [-l lines] <file>", false},
     {"fmt",       cmd_fmt,       "Reflow text to fill lines up to a width: fmt [-w width] <file>", false},
     {"nl",        cmd_nl,        "Number lines: nl [-b a|t|n] [-w N] [-s SEP] <file>", false},
     {"factor",    cmd_factor,    "Prime factorization: factor N [N ...]", false},
@@ -911,6 +913,7 @@ static const man_page_t man_pages[] = {
     {"patch",    "Apply a unified diff to a file IN PLACE: `patch <file> <diff>` reads the unified diff in <diff> (the format `diff -u` and git produce) and edits <file> accordingly — added (`+`) lines inserted, removed (`-`) lines dropped, context (` `) lines kept. It is fail-safe: every hunk's context and removed lines must match <file> exactly at the hunk's position, or the whole patch is rejected with a reason and the file is left completely unchanged (no partial application). `---`/`+++` headers and `\\ No newline` markers are ignored. The read side of the existing `diff` — together they let you produce a diff, ship it, and apply it in-OS. Pinned by the `patch` self-test (insert/delete/change hunks + context-mismatch rejection)."},
     {"tr",       "Translate, delete or squeeze characters read from <file>. With two sets, each character of <file> that appears in SET1 is replaced by the character at the same position in SET2 (a shorter SET2 repeats its last character). -d deletes every SET1 character instead; -s collapses each run of a repeated result character into one. Sets may use ascending ranges such as a-z or 0-9."},
     {"fold",     "Wrap the lines of <file> so no output line is longer than the given width (80 by default, or -w width). A line longer than the width is broken with a hard newline at exactly that many characters; shorter lines and existing line breaks are left alone."},
+    {"pr",       "Paginate a text file for printing: `pr [-l lines] <file>` splits it into pages of `lines` content lines (56 by default) and prints a `--- Page N ---` header before each. Useful for chunking long output into page-sized sections."},
     {"fmt",      "Reflow (rewrap) the prose in <file> to fill lines up to a width (75 by default, or -w width) -- the paragraph formatter. Unlike `fold`, which only hard-breaks over-long lines at a fixed column, fmt COLLAPSES each paragraph's internal whitespace and repacks its words greedily, so short lines are joined and long ones split at word boundaries. A blank line separates paragraphs and is preserved as a single blank line; a word longer than the width is left whole on its own line rather than broken. Reads one bounded chunk of the file (like head/fold)."},
     {"nl",       "Number the lines of <file>. By default only non-empty lines are numbered (-b t); -b a numbers every line and -b n numbers none. Each line number is right-justified in a field N columns wide (6 by default, or -w N) and followed by a separator (a tab by default, or -s SEP), then the line text."},
     {"factor",   "Print the prime factorization of each integer argument, one per line, as `N: p1 p2 ...` with factors ascending and repeated by multiplicity (e.g. `factor 90` prints `90: 2 3 3 5`). 0 and 1 print just `N:`. Accepts any 64-bit unsigned value; a non-numeric or negative argument is reported and skipped. Small factors are peeled by trial division and the rest by Miller-Rabin + Pollard's rho, so even a large 64-bit semiprime factors quickly."},
@@ -2881,6 +2884,76 @@ int sed_subst_selftest(void) {
 // columns (default 80). A line longer than WIDTH is broken at exactly WIDTH
 // characters (classic `fold`: a hard break, no word boundaries); shorter lines and
 // the input's own newlines pass through unchanged. File-arg like rev/tr/wc.
+// pr: paginate text — split into fixed-size pages, each preceded by a "--- Page N ---"
+// header. The pagination is a pure core so it's unit-testable off any file.
+typedef void (*pr_put_t)(void* ctx, const char* line);
+
+// Emit `lines[0..n)` in pages of `per_page` content lines, each page preceded by a header
+// line, via put(). Returns the number of pages. Empty input -> 0 pages. Pure — KAT'd.
+int pr_paginate(const char* const* lines, int n, int per_page, pr_put_t put, void* ctx) {
+    if (!lines || !put) return 0;
+    if (per_page < 1) per_page = 1;
+    int pages = (n <= 0) ? 0 : (n + per_page - 1) / per_page;
+    for (int pg = 0; pg < pages; pg++) {
+        char hdr[32];
+        snprintf(hdr, sizeof(hdr), "--- Page %d ---", pg + 1);
+        put(ctx, hdr);
+        int start = pg * per_page, end = start + per_page;
+        if (end > n) end = n;
+        for (int i = start; i < end; i++) put(ctx, lines[i]);
+    }
+    return pages;
+}
+
+typedef struct { int count; int pages_seen; char first_hdr[32]; } pr_kat_t;
+static void pr_kat_put(void* c, const char* s) {
+    pr_kat_t* k = (pr_kat_t*)c;
+    k->count++;
+    if (s[0] == '-' && s[1] == '-' && s[2] == '-') {           // a header line
+        if (k->pages_seen == 0) { strncpy(k->first_hdr, s, 31); k->first_hdr[31] = '\0'; }
+        k->pages_seen++;
+    }
+}
+
+int pr_selftest(void) {
+    static const char* const L[5] = {"a", "b", "c", "d", "e"};
+    pr_kat_t k;
+    k.count = 0; k.pages_seen = 0; k.first_hdr[0] = '\0';
+    if (pr_paginate(L, 5, 2, pr_kat_put, &k) != 3) return 1;   // 5 lines / 2 = 3 pages (2+2+1)
+    if (k.pages_seen != 3) return 2;
+    if (k.count != 8)      return 3;                           // 3 headers + 5 content lines
+    if (strcmp(k.first_hdr, "--- Page 1 ---")) return 4;
+    k.count = 0; k.pages_seen = 0;
+    if (pr_paginate(L, 5, 0, pr_kat_put, &k) != 5)  return 5;  // per_page<1 clamps to 1 -> 5 pages
+    k.count = 0; k.pages_seen = 0;
+    if (pr_paginate(L, 0, 2, pr_kat_put, &k) != 0)  return 6;  // empty -> 0 pages
+    if (k.count != 0) return 7;
+    if (pr_paginate(L, 5, 10, pr_kat_put, &k) != 1) return 8;  // per_page>=n -> 1 page
+    return 0;
+}
+
+static void pr_print_put(void* c, const char* s) { (void)c; printf("%s\n", s); }
+
+static void cmd_pr(int argc, char** argv) {
+    int per_page = 56, ai = 1;
+    if (ai < argc && strcmp(argv[ai], "-l") == 0 && ai + 1 < argc) { per_page = atoi(argv[ai + 1]); ai += 2; }
+    if (ai >= argc) { printf("Usage: pr [-l lines] <file>\n"); return; }
+    int fd = vfs_open(argv[ai], 0, 0);
+    if (fd < 0) { printf("pr: cannot open '%s'\n", argv[ai]); return; }
+    static char buf[4096];
+    int bytes = vfs_read(fd, buf, sizeof(buf) - 1);
+    vfs_close(fd);
+    if (bytes <= 0) return;
+    buf[bytes] = '\0';
+    static const char* lines[512];
+    int n = 0;
+    lines[n++] = buf;
+    for (int i = 0; i < bytes && n < 512; i++)
+        if (buf[i] == '\n') { buf[i] = '\0'; if (i + 1 < bytes) lines[n++] = &buf[i + 1]; }
+    if (n > 0 && lines[n - 1][0] == '\0') n--;                 // drop a trailing empty line
+    pr_paginate(lines, n, per_page, pr_print_put, NULL);
+}
+
 static void cmd_fold(int argc, char** argv) {
     int width = 80, ai = 1;
     if (ai < argc && argv[ai][0] == '-' && argv[ai][1] == 'w') {
@@ -8808,7 +8881,7 @@ static void run_selftests(void) {
         {"cut",          cut_selftest},           {"xargs",         xargs_selftest},
         {"trunc",        trunc_selftest},         {"pstree",        pstree_selftest},
         {"mktemp",       mktemp_selftest},        {"tri",           tri_selftest},
-        {"chmod",        chmod_selftest},
+        {"chmod",        chmod_selftest},         {"pr",            pr_selftest},
         {"triz",         triz_selftest},          {"trigou",        trigou_selftest},
         {"tritex",       tritex_selftest},        {"mat4",          mat4_selftest},
         {"shuf",         shuf_selftest},
