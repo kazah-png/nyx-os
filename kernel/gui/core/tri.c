@@ -70,6 +70,40 @@ void tri_fill_flat_z(tri_putpx_t put, void* ctx, int32_t* zbuf, int fbw,
     }
 }
 
+static int clamp8(int v) { return v < 0 ? 0 : (v > 255 ? 255 : v); }
+
+uint32_t tri_pack_rgb(int r, int g, int b) {
+    return 0xFF000000u | ((uint32_t)clamp8(r) << 16) | ((uint32_t)clamp8(g) << 8) | (uint32_t)clamp8(b);
+}
+
+void tri_fill_gouraud(tri_putpx_t put, void* ctx, int minx, int miny, int maxx, int maxy,
+                      int x0, int y0, int x1, int y1, int x2, int y2,
+                      const uint8_t* c0, const uint8_t* c1, const uint8_t* c2) {
+    if (!put || !c0 || !c1 || !c2) return;
+    int32_t area = tri_edge(x0, y0, x1, y1, x2, y2);
+    if (area == 0) return;
+    int bx0 = imin3(x0, x1, x2), bx1 = imax3(x0, x1, x2);
+    int by0 = imin3(y0, y1, y2), by1 = imax3(y0, y1, y2);
+    if (bx0 < minx) bx0 = minx;
+    if (by0 < miny) by0 = miny;
+    if (bx1 > maxx) bx1 = maxx;
+    if (by1 > maxy) by1 = maxy;
+    for (int py = by0; py <= by1; py++) {
+        for (int px = bx0; px <= bx1; px++) {
+            int32_t w0 = tri_edge(x1, y1, x2, y2, px, py);
+            int32_t w1 = tri_edge(x2, y2, x0, y0, px, py);
+            int32_t w2 = tri_edge(x0, y0, x1, y1, px, py);
+            int neg = (w0 < 0) || (w1 < 0) || (w2 < 0);
+            int pos = (w0 > 0) || (w1 > 0) || (w2 > 0);
+            if (neg && pos) continue;
+            int r = tri_bary_interp(w0, w1, w2, area, c0[0], c1[0], c2[0]);
+            int g = tri_bary_interp(w0, w1, w2, area, c0[1], c1[1], c2[1]);
+            int b = tri_bary_interp(w0, w1, w2, area, c0[2], c1[2], c2[2]);
+            put(ctx, px, py, tri_pack_rgb(r, g, b));
+        }
+    }
+}
+
 // KAT scratch: a coverage counter + a 16x16 hit grid so exact pixels can be asserted.
 typedef struct { int count; uint8_t hit[16 * 16]; } tri_kat_t;
 static void tri_kat_put(void* c, int x, int y, uint32_t color) {
@@ -144,4 +178,30 @@ int triz_selftest(void) {
     if (k.z[1 * 16 + 6] != 100)    return 10;
     return 0;
 }
+
+typedef struct { uint32_t col[16 * 16]; } trigou_kat_t;
+static void trigou_kat_put(void* c, int x, int y, uint32_t color) {
+    trigou_kat_t* k = (trigou_kat_t*)c;
+    if (x >= 0 && x < 16 && y >= 0 && y < 16) k->col[y * 16 + x] = color;
+}
+
+int trigou_selftest(void) {
+    // RGB pack + clamp.
+    if (tri_pack_rgb(255, 0, 0)   != 0xFFFF0000u) return 1;
+    if (tri_pack_rgb(0, 255, 0)   != 0xFF00FF00u) return 2;
+    if (tri_pack_rgb(0, 0, 255)   != 0xFF0000FFu) return 3;
+    if (tri_pack_rgb(300, -5, 128) != 0xFFFF0080u) return 4;   // clamp hi (300->255) + lo (-5->0)
+
+    // Gouraud: each vertex keeps its own colour; the centroid is the average of the three.
+    static trigou_kat_t k;
+    for (int i = 0; i < 256; i++) k.col[i] = 0;
+    static const uint8_t red[3] = {255, 0, 0}, grn[3] = {0, 255, 0}, blu[3] = {0, 0, 255};
+    tri_fill_gouraud(trigou_kat_put, &k, 0, 0, 15, 15, 0, 0, 9, 0, 0, 9, red, grn, blu);
+    if (k.col[0 * 16 + 0] != 0xFFFF0000u) return 5;   // (0,0) vertex -> red
+    if (k.col[0 * 16 + 9] != 0xFF00FF00u) return 6;   // (9,0) vertex -> green
+    if (k.col[9 * 16 + 0] != 0xFF0000FFu) return 7;   // (0,9) vertex -> blue
+    if (k.col[3 * 16 + 3] != 0xFF555555u) return 8;   // centroid (3,3) -> avg 85,85,85 = 0x55
+    return 0;
+}
+
 

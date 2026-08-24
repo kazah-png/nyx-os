@@ -41,7 +41,19 @@ void tri_fill_flat_z(tri_putpx_t put, void* ctx, int32_t* zbuf, int fbw,
                      int x0, int y0, int z0, int x1, int y1, int z1,
                      int x2, int y2, int z2, uint32_t color);
 
-int tri_selftest(void);    // KAT for the flat rasterizer core
-int triz_selftest(void);   // KAT for barycentric-Z interpolation + the z-buffer test
+// Pack clamped R,G,B (each clamped to [0,255]) into the framebuffer's 32bpp word, matching
+// fb_rgb: 0xFF<<24 | r<<16 | g<<8 | b. (v6.4.345)
+uint32_t tri_pack_rgb(int r, int g, int b);
+
+// Gouraud fill: interpolate a per-vertex RGB colour (each c* is a 3-byte {r,g,b}) smoothly
+// across the triangle with tri_bary_interp per channel, packing + emitting each pixel. Same
+// clip + either-winding rules as tri_fill_flat; degenerate covers nothing. (v6.4.345)
+void tri_fill_gouraud(tri_putpx_t put, void* ctx, int minx, int miny, int maxx, int maxy,
+                      int x0, int y0, int x1, int y1, int x2, int y2,
+                      const uint8_t* c0, const uint8_t* c1, const uint8_t* c2);
+
+int tri_selftest(void);      // KAT for the flat rasterizer core
+int triz_selftest(void);     // KAT for barycentric-Z interpolation + the z-buffer test
+int trigou_selftest(void);   // KAT for RGB packing + Gouraud vertex-colour interpolation
 
 #endif
