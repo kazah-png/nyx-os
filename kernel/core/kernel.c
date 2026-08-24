@@ -105,6 +105,7 @@ static void cmd_clear(int argc, char** argv);
 static void cmd_nyxfetch(int argc, char** argv);
 static void cmd_echo(int argc, char** argv);
 static void cmd_reboot(int argc, char** argv);
+static void cmd_poweroff(int argc, char** argv);
 static void cmd_ps(int argc, char** argv);
 static void cmd_pstree(int argc, char** argv);
 static void cmd_uptime(int argc, char** argv);
@@ -335,6 +336,9 @@ static const command_t commands[] = {
     {"date",      cmd_date,      "Show date/time; date +FORMAT for strftime output", false},
     {"uname",     cmd_uname,     "Show system information", false},
     {"reboot",    cmd_reboot,    "Reboot the system", false},
+    {"poweroff",  cmd_poweroff,  "Power off the machine (ACPI soft-off)", false},
+    {"halt",      cmd_poweroff,  "Halt/power off the machine", false},
+    {"shutdown",  cmd_poweroff,  "Shut the machine down", false},
     {"ps",        cmd_ps,        "List processes", false},
     {"pstree",    cmd_pstree,    "Show processes as a parent->child tree", false},
     {"uptime",    cmd_uptime,    "Show uptime, process count, load, and CPUs", false},
@@ -999,6 +1003,7 @@ static const man_page_t man_pages[] = {
     {"clear",    "Clear the terminal and move the cursor back to the top-left corner."},
     {"history",  "List the most recently entered shell commands, oldest first."},
     {"reboot",   "Restart the machine immediately."},
+    {"poweroff", "Power the machine off via ACPI soft-off (aliases: `halt`, `shutdown`). Writes SLP_TYP|SLP_EN to the PM1a control port — powers down QEMU/VirtualBox; on real hardware without an ACPI FADT parse it halts safely instead. Complements `reboot`."},
     {"cpus",     "List the logical CPU cores the kernel started (SMP), with each core's id and state."},
     {"hexdump",  "Print a side-by-side hex and ASCII dump of memory, starting at <addr> for [bytes] bytes (256 by default)."},
     {"ifconfig", "Show each network interface with its IPv4 address, netmask and gateway. Configure one with dhcp or setip."},
@@ -1260,6 +1265,24 @@ static void cmd_reboot(int argc, char** argv) {
     printf("Rebooting...\n");
     outb(0x64, 0xFE);
     __asm__ volatile("int $0");
+}
+
+// poweroff / halt / shutdown — turn the machine off (ACPI soft-off). NyxOS had `reboot`
+// but no way to power down from the shell (the GUI menu's "Shutdown" only quit the desktop).
+static void cmd_poweroff(int argc, char** argv) {
+    (void)argc; (void)argv;
+    printf("Powering off...\n");
+    __asm__ volatile("cli");
+    // ACPI soft-off = write SLP_TYP | SLP_EN to the PM1a control register. The well-known
+    // emulator ports cover QEMU (modern 0x604, legacy 0xB004) and VirtualBox (0x4004); one
+    // of them powers the VM down. (Real hardware needs the FADT's PM1a_CNT + \_S5 SLP_TYP,
+    // which a full ACPI parse would supply — a future rung.)
+    outw(0x604, 0x2000);
+    outw(0xB004, 0x2000);
+    outw(0x4004, 0x3400);
+    // Still executing => no ACPI soft-off on this machine. Halt so power can be cut safely.
+    printf("ACPI power-off unavailable here; halted. Safe to power off now.\n");
+    for (;;) __asm__ volatile("cli; hlt");
 }
 
 // time <command> [args...] — run a command and report the wall-clock time it took.
