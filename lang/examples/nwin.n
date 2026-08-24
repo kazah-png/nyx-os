@@ -15,11 +15,13 @@
 //   it MUST be consumed; forget, and the leak error names the line;
 //   fall off scope, and close_window runs. win_destroy is idempotent
 //   in the kernel, so dropping a failed handle is safe by design.
-//   Headless (the test suites, or the host shim where syscalls 57-60
-//   simply return -1), win_create fails and the demo skips gracefully
-//   — the fsio pattern. On a live NyxOS desktop it opens a 200x120
-//   window, draws the wintest gradient with a marching white square,
-//   polls its events, and closes clean.
+//   Where the syscalls do not exist — the host shim maps unmapped
+//   numbers to a bare -1 — win_create fails and the demo skips
+//   gracefully, the fsio pattern. Inside NyxOS the window layer is
+//   live even in a headless suite boot: this program opens a real
+//   200x120 window, draws the wintest gradient with a marching white
+//   square, presents 60 frames, polls its events, and closes clean —
+//   verified on target end to end.
 
 #[caps(syscall)]
 extern syscall {
