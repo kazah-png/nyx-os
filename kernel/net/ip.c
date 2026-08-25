@@ -161,23 +161,36 @@ int ip_send(uint32_t dst_ip, uint8_t protocol, const uint8_t* data, uint32_t len
     return result;
 }
 
-void ip_handle_packet(uint8_t* packet, uint32_t len) {
-    if (len < sizeof(ip_header_t)) return;
-    ip_header_t* ip = (ip_header_t*)packet;
-
-    // Validate the header before trusting any field. Derive the real header length
-    // from IHL (don't assume 20 bytes) and bound it to the packet; then verify the
-    // header checksum over exactly that span and drop a corrupt header. Before this the
-    // RX checksum was never checked and IP options (IHL>5) were miscounted as payload,
-    // so a bad-checksum header or a malformed IHL was dispatched to TCP/UDP/ICMP
-    // unchecked. ip_len clamps to the IP total-length field rather than the frame length:
-    // small frames carry Ethernet padding past total_len that would otherwise count as
-    // payload (a padded 58->60 byte SYN-ACK once added 2 phantom bytes to the TCP ack).
+// ---- IPv4 header validation (pure, testable core of the RX gate) ------------
+// Validate an IPv4 header from UNTRUSTED wire data before any field is trusted.
+// The real header length comes from IHL (don't assume 20 bytes) and must fit the
+// packet; the effective length clamps to the IP total-length field rather than the
+// frame length, so Ethernet padding past total_len is not miscounted as payload (a
+// padded 58->60 byte SYN-ACK once added 2 phantom bytes to the TCP ack); and the
+// header checksum must verify over exactly the header span (before this gate the RX
+// checksum went unchecked and IP options with IHL>5 were counted as payload, so a
+// bad-checksum or malformed-IHL header reached TCP/UDP/ICMP unchecked). Returns 1
+// and, on accept, the header length in *out_ihl and the clamped total length in
+// *out_iplen; returns 0 for any malformed header. Kept pure (no dispatch) so the CI
+// self-test can pin the accept/drop decision against hostile packets.
+static int ipv4_hdr_check(const uint8_t* packet, uint32_t len,
+                          uint32_t* out_ihl, uint32_t* out_iplen) {
+    if (len < sizeof(ip_header_t)) return 0;
+    const ip_header_t* ip = (const ip_header_t*)packet;
     uint32_t ihl = (uint32_t)(ip->ver_ihl & 0x0F) * 4;
     uint16_t ip_total = ntohs(ip->total_len);
     uint32_t ip_len = (ip_total >= sizeof(ip_header_t) && ip_total <= len) ? ip_total : len;
-    if (ihl < sizeof(ip_header_t) || ihl > ip_len) return;   // malformed header length
-    if (ip_checksum(packet, ihl) != 0) return;               // corrupt header — drop
+    if (ihl < sizeof(ip_header_t) || ihl > ip_len) return 0;   // malformed header length
+    if (ip_checksum(packet, ihl) != 0) return 0;               // corrupt header
+    if (out_ihl)   *out_ihl   = ihl;
+    if (out_iplen) *out_iplen = ip_len;
+    return 1;
+}
+
+void ip_handle_packet(uint8_t* packet, uint32_t len) {
+    uint32_t ihl, ip_len;
+    if (!ipv4_hdr_check(packet, len, &ihl, &ip_len)) return;   // drop malformed/corrupt headers
+    ip_header_t* ip = (ip_header_t*)packet;
 
     uint32_t dst_ip = ip->dst_ip;
     for (int i = 0; i < 8; i++) {
@@ -194,4 +207,60 @@ void ip_handle_packet(uint8_t* packet, uint32_t len) {
             return;
         }
     }
+}
+
+// KAT for the IPv4 RX header gate (ipv4_hdr_check), which runs on UNTRUSTED wire
+// data. Pins the one's-complement checksum math against the canonical worked-example
+// header (RFC 1071 style), then asserts the accept/drop decision across a battery of
+// malformed headers: a short frame, a bad IHL (too small, or options that run off the
+// packet), a corrupted header byte, and the two length-clamp cases (Ethernet padding
+// past total_len, and a total_len that overruns the frame). Runs offline in the CI
+// self-test battery. Convention: 0 = PASS, else the failing case number.
+int ipv4_rx_selftest(void) {
+    // Canonical 20-byte header (IHL=5); its header checksum is 0xB861.
+    static const uint8_t KA[20] = {
+        0x45,0x00, 0x00,0x73, 0x00,0x00, 0x40,0x00,
+        0x40,0x11, 0xB8,0x61, 0xC0,0xA8,0x00,0x01, 0xC0,0xA8,0x00,0xC7
+    };
+    // 1. verify property: the checksum over a valid header folds to 0
+    if (ip_checksum(KA, 20) != 0) return 1;
+    // 2. known answer: with the checksum field zeroed, the computed value is 0xB861
+    { uint8_t h[20]; for (int i = 0; i < 20; i++) h[i] = KA[i]; h[10] = 0; h[11] = 0;
+      if (ip_checksum(h, 20) != 0xB861) return 2; }
+
+    // Self-consistent header-only packet (total_len = 20) for the gate tests.
+    uint8_t p[20];
+    for (int i = 0; i < 20; i++) p[i] = KA[i];
+    p[2] = 0x00; p[3] = 0x14;                      // total_len = 20
+    p[10] = 0; p[11] = 0;                          // zero, then fill the checksum
+    uint16_t ck = ip_checksum(p, 20);
+    p[10] = (uint8_t)(ck >> 8); p[11] = (uint8_t)(ck & 0xFF);
+
+    uint32_t ihl = 0, iplen = 0;
+    // 3. valid header, exact-length frame -> accept, ihl=20, ip_len=20
+    if (!ipv4_hdr_check(p, 20, &ihl, &iplen) || ihl != 20 || iplen != 20) return 3;
+    // 4. frame shorter than a header -> drop
+    if (ipv4_hdr_check(p, 19, 0, 0)) return 4;
+    // 5. IHL too small (4 words = 16 bytes) -> drop
+    { uint8_t q[20]; for (int i = 0; i < 20; i++) q[i] = p[i]; q[0] = 0x44;
+      if (ipv4_hdr_check(q, 20, 0, 0)) return 5; }
+    // 6. IHL claims options (15 words = 60 bytes) that overrun a 20-byte frame -> drop
+    { uint8_t q[20]; for (int i = 0; i < 20; i++) q[i] = p[i]; q[0] = 0x4F;
+      if (ipv4_hdr_check(q, 20, 0, 0)) return 6; }
+    // 7. corrupted header byte -> checksum fails -> drop
+    { uint8_t q[20]; for (int i = 0; i < 20; i++) q[i] = p[i]; q[16] ^= 0x01;
+      if (ipv4_hdr_check(q, 20, 0, 0)) return 7; }
+    // 8. Ethernet padding: a 60-byte frame carrying a total_len=20 header -> accept but
+    //    strip the 40 pad bytes (ip_len must be 20, not 60)
+    { uint8_t q[60]; for (int i = 0; i < 20; i++) q[i] = p[i]; for (int i = 20; i < 60; i++) q[i] = 0xEE;
+      ihl = iplen = 0;
+      if (!ipv4_hdr_check(q, 60, &ihl, &iplen) || iplen != 20) return 8; }
+    // 9. total_len overruns the frame -> clamp ip_len to the frame length (20)
+    { uint8_t q[20]; for (int i = 0; i < 20; i++) q[i] = p[i];
+      q[2] = 0x03; q[3] = 0xE8;                    // total_len = 1000
+      q[10] = 0; q[11] = 0; uint16_t c = ip_checksum(q, 20);
+      q[10] = (uint8_t)(c >> 8); q[11] = (uint8_t)(c & 0xFF);
+      ihl = iplen = 0;
+      if (!ipv4_hdr_check(q, 20, &ihl, &iplen) || iplen != 20) return 9; }
+    return 0;
 }
