@@ -1,12 +1,16 @@
 [submodule "components/hemera"]
 	path = components/hemera
 	url = https://github.com/nyxos-dev/hemera.git
+	branch = main
 [submodule "components/erebus"]
 	path = components/erebus
 	url = https://github.com/nyxos-dev/erebus.git
+	branch = main
 [submodule "components/selene"]
 	path = components/selene
 	url = https://github.com/nyxos-dev/selene.git
+	branch = main
 [submodule "components/mnemosyne"]
 	path = components/mnemosyne
 	url = https://github.com/nyxos-dev/mnemosyne.git
+	branch = main

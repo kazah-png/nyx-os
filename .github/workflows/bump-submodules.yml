@@ -1,0 +1,44 @@
+name: Bump component submodules
+
+# The desktop-component repos (hemera / erebus / selene / mnemosyne) refresh
+# their own sources from this monorepo every day. This job then advances the
+# submodule pointers recorded here, so `components/<name> @ <sha>` always
+# tracks each component's latest published snapshot. Runs after the component
+# syncs (they fire at 04:17 UTC); can also be triggered by hand.
+on:
+  schedule:
+    - cron: '0 5 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: bump-submodules
+  cancel-in-progress: false
+
+jobs:
+  bump:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Advance each submodule pointer to its component's latest commit
+        run: |
+          git submodule sync --recursive
+          git submodule update --init --remote --recursive components
+      - name: Commit and push if anything moved
+        run: |
+          git config user.name  "kazah-png"
+          git config user.email "kazah.png@proton.me"
+          git add components
+          if git diff --cached --quiet; then
+            echo "submodule pointers already current"
+            exit 0
+          fi
+          git commit -m "components: bump submodule pointers"
+          for i in 1 2 3; do
+            git pull --rebase origin master && git push origin master && exit 0
+            echo "push race, retry $i"; sleep 5
+          done
+          echo "could not push after retries"
+          exit 1
