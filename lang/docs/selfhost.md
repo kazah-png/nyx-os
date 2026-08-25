@@ -40,7 +40,7 @@ pipeline is proven on target, end to end.
 | Nested block comments | ✓ — depth-counted, the line counter ticking through | ✓ |
 | Attributes `#[...]` | ✗ | ✓ |
 | **Interpolation mode stack** (`T_STR_HEAD/MID/TAIL`) | ✓ at toy scale — segment tokens + one mode flag (single level) | ✓ — the hardest lexer feature |
-| Line/column tracking for diagnostics | ✓ lines (rung 2); columns ✗ | ✓ |
+| Line/column tracking for diagnostics | ✓ — line*1000+col packed in one array, `fail()` decodes | ✓ |
 | **Input from a file** | ✓ — rung 1 landed | ✓ |
 
 The last row is the cheapest and the most symbolic: the toy has never
@@ -273,8 +273,16 @@ The number spellings and comment forms then caught up with N's own:
 separators lex in the digit arm and fold and interpolate like any
 constant, and `/* block comments nest */` by a depth counter — with
 newlines inside them still ticking the line counter, so a diagnostic
-three lines below a two-line comment still names the right line. The
-lexer parity gaps are down to two: attributes and column tracking.
+three lines below a two-line comment still names the right line.
+
+And diagnostics now carry the **column**: every token records
+`line*1000 + col` packed into the one `ln` array, so the token
+machinery and every AST node's line slot carry both for free, and
+`fail()` is the single decode point — twenty-seven callers unchanged
+(toy lines stay under 1000 columns; ncc carries two fields, same
+idea). `line 2:9: error: cannot use a string...` points at the `+`
+itself, and the column survives interpolation holes and multi-line
+nested comments. The lexer parity gap is down to one row: attributes.
 
 ## Definition of done for M5
 

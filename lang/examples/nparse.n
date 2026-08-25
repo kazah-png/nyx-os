@@ -78,7 +78,7 @@
 //   the BOUND SET: the enclosing function's parameters plus the names
 //   bound by `:=` statements already compiled. Every node records its
 //   source line (nline, the sixth Ast array), so the refusal is
-//   located: "line N: error: unknown variable". Scope is honest and
+//   located: "line N:C: error: unknown variable". Scope is honest and
 //   conservative, and it lives entirely in the CHECK walk now: a seq
 //   chain threads the bound count forward, a bind adds its name only
 //   AFTER its right-hand side checks, and an if arm or while body
@@ -116,9 +116,15 @@
 //   Identifiers are INTERNED (a names byte-buffer plus per-symbol
 //   start/len; the token's value IS the symbol index, and slots,
 //   function entries and parameter tables key off it). Every token
-//   records its source line, and the parser refuses bad input at its
-//   expect points — "line N: error: ..." and stop, first violation
-//   wins. Function entries are recorded BEFORE bodies compile, so
+//   records its source line AND COLUMN — packed line*1000+col into the
+//   one ln array, so the token machinery and every node's nline carry
+//   both for free and fail() is the single decode point (toy lines
+//   stay under 1000 columns; ncc carries two fields, same idea) — and
+//   the parser refuses bad input at its expect points —
+//   "line N:C: error: ..." and stop, first violation wins. The column
+//   names the offending token, not just its neighborhood: the demo's
+//   type error points at the '+' itself. Function entries are
+//   recorded BEFORE bodies compile, so
 //   self-recursion resolves; a JMP patched over the fndefs starts
 //   execution at the main statements.
 //   Token encoding: kind 0 = number (val = its value), 1 = identifier
@@ -288,6 +294,8 @@ fn lex(p: *u8, n: i64, k: *i64, v: *i64, ln: *i64, nb: *u8, ss: *i64, sl: *i64,
     mut sc := 0;                           // string-table entry count
     mut sbl := 0;                          // string bytes-buffer length
     mut line := 1;                         // 1-based, for diagnostics (rung 2)
+    mut ls := 0;                           // index where the current line
+                                           // starts — column = i - ls + 1
     mut interp := 0;                       // 1 = inside a \{...\} hole: the
                                            // lexer is in EXPRESSION mode and
                                            // '}' resumes the string
@@ -300,6 +308,7 @@ fn lex(p: *u8, n: i64, k: *i64, v: *i64, ln: *i64, nb: *u8, ss: *i64, sl: *i64,
         if b == 10 {                       // newline: the diagnostic counter
             line += 1;
             i += 1;
+            ls = i;                        // and the new line starts here
             continue;
         }
         if b == 47 && i + 1 < n && p[i + 1] as i64 == 47 {
@@ -313,7 +322,7 @@ fn lex(p: *u8, n: i64, k: *i64, v: *i64, ln: *i64, nb: *u8, ss: *i64, sl: *i64,
             mut j := i + 2;                // like N's own — a depth counter,
             while depth > 0 && j < n {     // newlines still ticking the line
                 c := p[j] as i64;
-                if c == 10 { line += 1; j += 1; }
+                if c == 10 { line += 1; j += 1; ls = j; }
                 else if c == 47 && j + 1 < n && p[j + 1] as i64 == 42 {
                     depth += 1; j += 2;
                 }
@@ -325,10 +334,14 @@ fn lex(p: *u8, n: i64, k: *i64, v: *i64, ln: *i64, nb: *u8, ss: *i64, sl: *i64,
             i = j;
             continue;
         }
-        ln[t] = line;                      // every token records its line
+        ln[t] = line * 1000 + (i - ls + 1);   // every token records line AND
+                                           // column, packed line*1000+col —
+                                           // ONE array, and fail() decodes;
+                                           // toy lines stay under 1000 cols
         if b == 34 {                       // string start: scan the segment
             if interp == 1 {               // (no escapes; a brace ALWAYS
-                fail(line, "no string literals inside an interpolation");
+                fail(line * 1000 + (i - ls + 1),
+                     "no string literals inside an interpolation");
             }                              // opens a hole now, N's rule)
             mut j := i + 1;
             while j < n && p[j] as i64 != 34 && p[j] as i64 != 123 {
@@ -494,7 +507,8 @@ fn lex(p: *u8, n: i64, k: *i64, v: *i64, ln: *i64, nb: *u8, ss: *i64, sl: *i64,
         k[t] = 2; v[t] = b; t += 1;        // operator / punct, by byte
         i += 1;
     }
-    k[t] = 9; v[t] = 0; ln[t] = line;      // end marker
+    k[t] = 9; v[t] = 0;                    // end marker, placed like any
+    ln[t] = line * 1000 + (n - ls + 1);    // token: just past the input
     st.cur[0] = sc;                        // seed the table's write cursors:
     st.cur[1] = sbl;                       // appends (fold or VM) start here
     t + 1
@@ -502,14 +516,16 @@ fn lex(p: *u8, n: i64, k: *i64, v: *i64, ln: *i64, nb: *u8, ss: *i64, sl: *i64,
 
 // Rung 2 of the selfhost road: the toy REFUSES bad input instead of
 // wandering into undefined behavior. First error wins; the message
-// carries the token's source line. (It exits with status 0 so the test
+// carries the token's line and column. (It exits with status 0 so the test
 // harness — which treats a non-zero exit as an example crash — stays
 // strict for everything else; a real compiler would exit 1.)
 #[caps(syscall)]
-fn fail(line: i64, msg: str) -> never {
-    put("line {line}: error: {msg}\n");
-    sys_exit(0);
-}
+fn fail(lc: i64, msg: str) -> never {
+    put("line {lc / 1000}:{lc % 1000}: error: {msg}\n");
+    sys_exit(0);                           // lc = the packed line*1000+col
+}                                          // every token and node carries —
+                                           // one decode point, 27 callers
+                                           // unchanged
 
 // The expression tree, as parallel i64 arrays in one by-value struct:
 // nk = node kind, nl/nr = child indexes, nv = the node's value (a
@@ -1710,7 +1726,8 @@ fn main() -> i64 {
              k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, nb, ss, sl, st);
     // The broken program runs LAST (fail() ends the process — one failing
     // demo per run). It PARSES cleanly; what is wrong is a TYPE: a string
-    // fed to +. The check pass refuses it with the operator's line — a
+    // fed to +. The check pass refuses it AT the operator — line and
+    // column point at the '+' itself — a
     // bug the machine could never catch (an index adds like any number).
     // Earlier failing demos rotate through this slot as new checks land;
     // the unknown-variable and expect-point refusals still stand guard,
