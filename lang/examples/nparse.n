@@ -1651,7 +1651,11 @@ fn main() -> i64 {
     show("g := 72;\nif g >= 90 \{ print \"gold\"; \} else if g >= 60 \{ print \"silver\"; \} else \{ print \"bronze\"; \}\ng",
          k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, nb, ss, sl, st);
     // And a program this binary does not carry: read off the disk,
-    // compiled by the same pipeline, run by the same VM.
+    // compiled by the same pipeline, run by the same VM. Its source is
+    // examples/n_toy_demo.toy — and it uses the WHOLE surface: a fn, a
+    // while-sum, a bound string, and an interpolated print whose holes
+    // hold a variable, and a call — nothing about the pipeline knows
+    // or cares that the bytes came from a file.
     run_file("/tmp/n_toy_demo.n",
              k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, nb, ss, sl, st);
     // The broken program runs LAST (fail() ends the process — one failing

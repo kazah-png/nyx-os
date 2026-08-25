@@ -260,6 +260,14 @@ CONCATs above collapse, and `print "{1 + 2} and {40 + 2}";` compiles
 to a single PUSH of one ready-made literal — 6 code words, no
 CONCAT, no ITOS. The sugar compiles through the sugar-free tree.
 
+The file-driven bar rose with it: the disk program the toy compiles
+(now a checked-in source, [examples/n_toy_demo.toy](../examples/n_toy_demo.toy))
+uses the whole surface at once — a function, a `while` sum, a bound
+string, and an interpolated print whose holes hold a variable and a
+call — and it composed with **zero new machinery**: nothing in the
+pipeline knows the bytes came from a file, which was the point of the
+one-lexer design all along.
+
 ## Definition of done for M5
 
 `ncc` rewritten in N means: an N program that reads `.n` source, produces

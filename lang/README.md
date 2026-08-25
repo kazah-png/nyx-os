@@ -160,6 +160,8 @@ lang/
     ├── nstack.n         ← v0.16 index writes: a VM in N runs nemit's code
     ├── own.n            ← own structs: leaks/double-use refused, #[drop] auto-close
     ├── nparse.n         ← M5: a complete toy compiler — AST + check pass, diagnostics
+    ├── n_toy_demo.toy   ← the program nparse compiles OFF DISK: fn + while +
+    │                      string + interpolation, the whole toy surface from a file
     └── nwin.n           ← P5: a REAL desktop window — own+drop handle over syscalls 57-60,
                            60 frames presented and closed clean on target
 ```
