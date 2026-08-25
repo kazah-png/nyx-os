@@ -57,7 +57,7 @@ kernel `open`/`read` from N — wiring the two together makes the first
 | `else` | ✓ — rung 2 landed | ✓ |
 | **An AST** | ✓ expressions AND statements — whole bodies parse to a tree, then check → fold → emit run as passes (only fn headers + the fndef hop-over emit direct) | ✓ — parse → check → gen |
 | Types (everything is `i64` in the toy) | ✓ a real TYPE COLUMN — int/str inferred bottom-up on the tree, per-name types fixed for life, int-only ops refuse strings with located errors | full checker |
-| structs / enums / match / defer / own / caps | structs ✓ COMPLETE at toy scale; enums+match ✓ tag-only with checker-proved exhaustiveness; defer/own/caps ✗ | ✓ |
+| structs / enums / match / defer / own / caps | structs ✓ and enums+match ✓ COMPLETE at toy scale (payloads, arm binders, checker-proved exhaustiveness); defer/own/caps ✗ | ✓ |
 | `str` values and string literals as data | ✓ at toy scale — strings bind, load, and print (a string IS its table index at run time; the type column keeps the kinds apart) | ✓ |
 | Error diagnostics (`line N: message`) | ✓ expect points (rung 2) + a semantic pass: unknown variable, call arity | ✓ everywhere |
 
@@ -348,9 +348,16 @@ even lex one). The remaining ladder:
    first** (every variant exactly once; unknown variants, duplicates,
    and gaps are located errors). Tags cross calls via `fn pick(s:
    Shape)` annotations, and a callee can match on its parameter.
-   **Payload variants are the remaining rung** — a tag plus payload
-   words is a record with a discriminant, the struct store standing
-   ready.
+   **And payload variants landed**: `num(x)` flags a variant (payload =
+   one integer word); an enum with any payload variant represents ALL
+   its values as records — tag at word 0, payload after — built by
+   the same RNEW that builds structs, ncc's tag+union layout in
+   miniature (tag-only enums keep bare integers; the representation is
+   a per-enum choice). A match arm binds with `num(x) { ... }` — the
+   payload is stored into `x` for that arm's chain only, dying at the
+   brace — and construction arity is checked both ways ("the variant
+   takes a payload" / "takes no payload"). The enum row is COMPLETE at
+   toy scale.
 
 What does NOT carry over from ncc: field offsets in bytes (toy records
 are flat i64 words), methods, and ownership — those stay ncc-side.
