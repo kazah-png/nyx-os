@@ -1,9 +1,10 @@
 #include "libc.h"
 
-/* tail — print the last N lines of the input (default 10, set with `-n N`). Since
- * a stream can't be seeked, we keep the most recent N lines in a circular buffer
- * and print them at EOF. Works on a file or on stdin (`ls / | tail -n 3`). With
- * several files it prints the combined last N lines (a minimal v1). */
+/* tail — print the last N lines of the input (default 10, set GNU-style with `-n N`,
+ * `-nN`, or the bare `-N` shorthand). Since a stream can't be seeked, we keep the most
+ * recent N lines in a circular buffer and print them at EOF. Works on a file or on stdin
+ * (`ls / | tail -n 3`). With several files it prints the combined last N lines (a minimal
+ * v1). `-n0` prints nothing (matching GNU). */
 
 #define MAXKEEP 40
 #define LLEN    256
@@ -46,11 +47,30 @@ static void dump(void) {
     }
 }
 
-int main(int argc, char** argv) {
+/* Parse a leading GNU line-count option: `-n N`, `-nN`, or bare `-N`. Returns the index
+ * of the first non-option arg; sets *have_n when a count was given. */
+static int parse_count(int argc, char** argv, int* out, int* have_n) {
     int ai = 1;
-    if (argc >= 3 && strcmp(argv[1], "-n") == 0) { limit = atoi(argv[2]); ai = 3; }
-    if (limit <= 0) limit = 10;
+    if (ai < argc && argv[ai][0] == '-' && argv[ai][1]) {
+        const char* a = argv[ai];
+        if (a[1] == 'n') {
+            if (a[2]) { *out = atoi(a + 2); *have_n = 1; ai++; }                        /* -nN  */
+            else if (ai + 1 < argc) { *out = atoi(argv[ai + 1]); *have_n = 1; ai += 2; } /* -n N */
+        } else {
+            int dig = 1;
+            for (const char* p = a + 1; *p; p++) if (*p < '0' || *p > '9') { dig = 0; break; }
+            if (dig) { *out = atoi(a + 1); *have_n = 1; ai++; }                          /* -N   */
+        }
+    }
+    return ai;
+}
+
+int main(int argc, char** argv) {
+    int have_n = 0;
+    int ai = parse_count(argc, argv, &limit, &have_n);
+    if (have_n) { if (limit < 0) limit = 0; } else limit = 10;   /* -n0 -> 0 lines; no -n -> 10 */
     if (limit > MAXKEEP) limit = MAXKEEP;
+    if (limit == 0) return 0;   /* GNU tail -n0 prints nothing (also avoids total % 0) */
 
     if (ai >= argc) {
         tail_fd(0);                                     /* no files: stdin */
