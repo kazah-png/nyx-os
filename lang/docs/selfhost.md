@@ -57,7 +57,7 @@ kernel `open`/`read` from N — wiring the two together makes the first
 | `else` | ✓ — rung 2 landed | ✓ |
 | **An AST** | ✓ expressions AND statements — whole bodies parse to a tree, then check → fold → emit run as passes (only fn headers + the fndef hop-over emit direct) | ✓ — parse → check → gen |
 | Types (everything is `i64` in the toy) | ✓ a real TYPE COLUMN — int/str inferred bottom-up on the tree, per-name types fixed for life, int-only ops refuse strings with located errors | full checker |
-| structs / enums / match / defer / own / caps | ✗ | ✓ |
+| structs / enums / match / defer / own / caps | ✗ — structs SCOUTED as the next arc (see the verdict below) | ✓ |
 | `str` values and string literals as data | ✓ at toy scale — strings bind, load, and print (a string IS its table index at run time; the type column keeps the kinds apart) | ✓ |
 | Error diagnostics (`line N: message`) | ✓ expect points (rung 2) + a semantic pass: unknown variable, call arity | ✓ everywhere |
 
@@ -283,6 +283,39 @@ machinery and every AST node's line slot carry both for free, and
 idea). `line 2:9: error: cannot use a string...` points at the `+`
 itself, and the column survives interpolation holes and multi-line
 nested comments. The lexer parity gap is down to one row: attributes.
+
+## Scouted: structs in the toy — the next structural arc
+
+With the lexer effectively at parity, the big remaining ✗ is the
+parser/checker row: structs, enums, match. The honest scout verdict —
+**structs are feasible at toy scale, as a short arc, and the string
+table already proved the pattern.** A toy struct value would live in a
+side STRUCT TABLE exactly as a string lives in the string table: the
+value on the stack IS its table index, fields are words at
+`base + offset`, and the type column is what keeps a struct index from
+adding like a number — `nt` generalizes from 0 int / 1 str to type
+ids, which is the real design step (and precisely how a checker's type
+representation grows). The ladder, each rung one iteration:
+
+1. **Declarations + literals + field reads** — `struct P { x, y }`
+   interns field names per struct; `P{a, b}` allocates a record
+   through a shared cursor (the `Strs.cur` move) and pushes its index;
+   `p.x` compiles to one indexed load. Checker: literal arity, field
+   names must resolve, `nt` carries the struct's type id.
+2. **Field writes + structs through calls** — `p.x = e` stores through
+   the record; a struct index passes to a fn like any stack value, the
+   per-name type column keeping it honest across the call.
+3. **Enums + `match` — later.** Tags + payloads are a struct with a
+   discriminant; `match` lowers to the JZ chains the toy already
+   patches. Genuinely bigger: exhaustiveness lives in the checker.
+
+What does NOT carry over from ncc: field offsets in bytes (toy records
+are flat i64 words), methods, and ownership — those stay ncc-side.
+The arc's payoff mirrors every previous one: the tree records the
+resolved field slot, emit stays type-blind, and constant struct
+literals may even fold. After it, the toy's ✗ column is enums/match
+and the attribute row — and "parses the examples directory" stops
+being a slogan.
 
 ## Definition of done for M5
 
