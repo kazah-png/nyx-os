@@ -43,6 +43,10 @@
 //               12 = logical not (nl = an int operand; bare '!')
 //               13 = itos (nl = an interpolation hole's expression;
 //                    int in, its decimal text out)
+//               14 = struct literal (nv = struct id, nl = field count,
+//                    na = the field-value roots — the call-node shape)
+//               15 = field read (nl = base; nv holds the field SYMBOL
+//                    until the check pass resolves it to a slot)
 //   A separate walker, emit_node, then emits by postorder recursion —
 //   children first, the node's own operation last. Postfix is no
 //   longer a lucky consequence of parse order; it is a property of the
@@ -172,7 +176,29 @@
 //   integer, append its decimal image as a fresh table entry through
 //   the shared cursor, push the entry's index) — how an interpolation
 //   hole turns a number into text at run time; over a constant it
-//   folds instead, writing the digits at compile time.
+//   folds instead, writing the digits at compile time. · 29 RNEW k
+//   (pop k field values into a fresh record, push its base index) ·
+//   30 RGET off (replace a record index with one field's word).
+//
+//   STRUCTS (rung 1 of the struct arc — see docs/selfhost.md). A
+//   declaration `struct P \{ x, y \}` is tables, not code: the name and
+//   its field symbols (declarations lead the program, before fns). A
+//   literal `P\{3, 4\}` allocates a flat-i64-word record in a side
+//   RECORD store through a shared cursor — the string-table move — and
+//   the value on the stack IS the record's base index. `p.x` is one
+//   RGET at base+slot. The TYPE COLUMN grew type ids for this: nt is
+//   0 int / 1 str / 2+k struct k, so the checker resolves each field
+//   name against the BASE'S struct (the tree records the resolved
+//   slot; emit stays type-blind, the STREQ pattern), enforces literal
+//   arity and field-values-are-integers, and refuses a record index
+//   everywhere a number is expected — arithmetic, print, holes, call
+//   arguments — because the machine cannot tell them apart and the
+//   checker can. Parse-side, `name \{` opens a literal ONLY when the
+//   name is a declared struct, so `if ok \{ ... \}` keeps meaning what
+//   it meant (ncc refuses cond-position literals syntactically; the
+//   toy disambiguates by declaration — documented divergence). No
+//   struct folding: records exist at run time only, the VM being the
+//   one allocator. Field writes and structs-through-calls are rung 2.
 //
 //   INTERPOLATION — the real lexer's hardest feature, at toy scale. A
 //   double-quoted string containing a brace lexes as SEGMENTS: kind 16
@@ -277,7 +303,10 @@ fn bput(p: *u8, start: i64, len: i64) {
 }
 
 fn is_digit(b: i64) -> bool { b >= 48 && b <= 57 }
-fn is_letter(b: i64) -> bool { b >= 97 && b <= 122 }
+fn is_letter(b: i64) -> bool {             // N's identifier alphabet:
+    (b >= 97 && b <= 122) || (b >= 65 && b <= 90) || b == 95
+}                                          // a-z A-Z _ (digits can follow
+                                           // only via the number arm today)
 
 // Scan src into the two token arrays; returns the token count. The
 // last token is always the end marker (kind 9), so the parser can
@@ -285,8 +314,7 @@ fn is_letter(b: i64) -> bool { b >= 97 && b <= 122 }
 // symbol table (nb = names bytes, ss/sl = per-symbol start/len): a
 // span already seen yields its existing index, a new one is appended —
 // the same move ncc's vars_find/vars_add makes over its VARS table.
-fn lex(p: *u8, n: i64, k: *i64, v: *i64, ln: *i64, nb: *u8, ss: *i64, sl: *i64,
-       st: Strs) -> i64 {
+fn lex(p: *u8, n: i64, k: *i64, v: *i64, ln: *i64, sy: Syms, st: Strs) -> i64 {
     mut i := 0;
     mut t := 0;
     mut ns := 0;                           // interned symbol count
@@ -434,6 +462,11 @@ fn lex(p: *u8, n: i64, k: *i64, v: *i64, ln: *i64, nb: *u8, ss: *i64, sl: *i64,
                 && p[st + 2] as i64 == 115 && p[st + 3] as i64 == 101 {
                 kind = 8;                  // else
             }
+            if len == 6 && p[st] as i64 == 115 && p[st + 1] as i64 == 116
+                && p[st + 2] as i64 == 114 && p[st + 3] as i64 == 117
+                && p[st + 4] as i64 == 99 && p[st + 5] as i64 == 116 {
+                kind = 19;                 // struct (a reserved word)
+            }
             if len == 5 && p[st] as i64 == 112 && p[st + 1] as i64 == 114
                 && p[st + 2] as i64 == 105 && p[st + 3] as i64 == 110
                 && p[st + 4] as i64 == 116 {
@@ -448,11 +481,11 @@ fn lex(p: *u8, n: i64, k: *i64, v: *i64, ln: *i64, nb: *u8, ss: *i64, sl: *i64,
                 mut idx := -1;
                 mut s := 0;
                 while s < ns {
-                    if sl[s] == len {
+                    if sy.sl[s] == len {
                         mut eq := true;
                         mut q := 0;
                         while q < len {
-                            if nb[ss[s] + q] as i64 != p[st + q] as i64 {
+                            if sy.nb[sy.ss[s] + q] as i64 != p[st + q] as i64 {
                                 eq = false;
                             }
                             q += 1;
@@ -462,11 +495,11 @@ fn lex(p: *u8, n: i64, k: *i64, v: *i64, ln: *i64, nb: *u8, ss: *i64, sl: *i64,
                     s += 1;
                 }
                 if idx < 0 {               // ... or append a new symbol
-                    ss[ns] = nl;
-                    sl[ns] = len;
+                    sy.ss[ns] = nl;
+                    sy.sl[ns] = len;
                     mut q := 0;
                     while q < len {
-                        nb[nl + q] = p[st + q];
+                        sy.nb[nl + q] = p[st + q];
                         q += 1;
                     }
                     nl += len;
@@ -541,6 +574,16 @@ struct Ast { nk: *i64, nl: *i64, nr: *i64, nv: *i64, na: *i64, nline: *i64,
 // the lexer seeds them, and the fold pass or the VM advances them
 // when a CONCAT appends. (Bundling matters practically too: N caps
 // functions at 16 parameters, and the toy's plumbing was at the door.)
+struct Syms { nb: *u8, ss: *i64, sl: *i64 }
+
+// Struct definitions + the runtime record store, one bundle: sn = each
+// struct's name symbol, sf = its field symbols (four slots each, the
+// fp[f*4+j] move), sfc = field counts; rw = the flat record words the
+// VM allocates from, and cur behind a pointer so copies share it —
+// cur[0] = declared struct count, cur[1] = record words used. Both
+// reset per program (parse_program seeds them, like lex seeds Strs).
+struct Sdefs { sn: *i64, sf: *i64, sfc: *i64, rw: *i64, cur: *i64 }
+
 struct Strs { sb: *u8, sts: *i64, stl: *i64, cur: *i64 }
 
 // The checker's environment: the bound-name list (which symbols are
@@ -578,7 +621,30 @@ fn emit2(code: *i64, cp: i64, op: i64, arg: i64) -> i64 {
 //   fill its slice of the arg table in place; and with the whole call
 //   in hand as data, the parser finally checks it — the argument count
 //   must match the callee's parameter count.
-fn ast_factor(k: *i64, v: *i64, ln: *i64, fpc: *i64, a: Ast, pos: i64, nn: i64) -> NP {
+// factor := prim { '.' name }
+//   Field access binds tightest, like calls — a postfix loop over the
+//   primary. The node stores the field's SYMBOL; the check pass
+//   resolves it to a slot offset once the base's type is known.
+fn ast_factor(k: *i64, v: *i64, ln: *i64, fpc: *i64, sd: Sdefs, a: Ast, pos: i64, nn: i64) -> NP {
+    mut r := ast_prim(k, v, ln, fpc, sd, a, pos, nn);
+    mut going := true;
+    while going {
+        going = false;
+        if k[r.pos] == 2 && v[r.pos] == 46 {
+            if k[r.pos + 1] != 1 {
+                fail(ln[r.pos + 1], "expected a field name");
+            }
+            a.nk[r.nn] = 15; a.nl[r.nn] = r.root; a.nr[r.nn] = -1;
+            a.nv[r.nn] = v[r.pos + 1];
+            a.nline[r.nn] = ln[r.pos];
+            r = NP{ pos: r.pos + 2, nn: r.nn + 1, root: r.nn };
+            going = true;
+        }
+    }
+    r
+}
+
+fn ast_prim(k: *i64, v: *i64, ln: *i64, fpc: *i64, sd: Sdefs, a: Ast, pos: i64, nn: i64) -> NP {
     if k[pos] == 0 {                       // number
         a.nk[nn] = 0; a.nl[nn] = 0; a.nr[nn] = 0; a.nv[nn] = v[pos];
         a.nline[nn] = ln[pos];
@@ -599,7 +665,7 @@ fn ast_factor(k: *i64, v: *i64, ln: *i64, fpc: *i64, a: Ast, pos: i64, nn: i64) 
         mut p := pos + 1;                  // resolves str + str to CONCAT:
         mut going := true;                 // the sugar compiles through the
         while going {                      // sugar-free tree.
-            r := ast_cmp(k, v, ln, fpc, a, p, n2);
+            r := ast_cmp(k, v, ln, fpc, sd, a, p, n2);
             w := r.nn;                     // the hole's expression, wrapped
             a.nk[w] = 13; a.nl[w] = r.root; a.nr[w] = -1; a.nv[w] = 0;
             a.nline[w] = ln[p];
@@ -622,6 +688,40 @@ fn ast_factor(k: *i64, v: *i64, ln: *i64, fpc: *i64, a: Ast, pos: i64, nn: i64) 
         }
         return NP{ pos: p, nn: n2, root: cur };
     }
+    if k[pos] == 1 && k[pos + 1] == 2 && v[pos + 1] == 123 {
+        mut sid := -1;                     // name '{' opens a struct literal
+        mut si := 0;                       // ONLY if the name is a declared
+        while si < sd.cur[0] {             // struct — `if ok { ... }` keeps
+            if sd.sn[si] == v[pos] { sid = si; }   // meaning what it meant
+            si += 1;                       // (ncc refuses cond-position
+        }                                  // literals syntactically; the toy
+        if sid >= 0 {                      // disambiguates by declaration)
+            idx := nn;                     // the literal node, made first —
+            a.nline[idx] = ln[pos];        // field values fill its na slice,
+            mut n2 := nn + 1;              // the call-node move
+            mut p2 := pos + 2;
+            mut cnt := 0;
+            mut more := !(k[p2] == 2 && v[p2] == 125);
+            while more {
+                more = false;
+                r := ast_cmp(k, v, ln, fpc, sd, a, p2, n2);
+                if cnt == 4 { fail(ln[p2], "wrong number of fields"); }
+                a.na[idx * 4 + cnt] = r.root;
+                cnt += 1;
+                p2 = r.pos;
+                n2 = r.nn;
+                if k[p2] == 2 && v[p2] == 44 { p2 += 1; more = true; }
+            }
+            if !(k[p2] == 2 && v[p2] == 125) {
+                fail(ln[p2], "expected '\}' after the fields");
+            }
+            if cnt != sd.sfc[sid] {
+                fail(ln[p2], "wrong number of fields");
+            }
+            a.nk[idx] = 14; a.nl[idx] = cnt; a.nr[idx] = -1; a.nv[idx] = sid;
+            return NP{ pos: p2 + 1, nn: n2, root: idx };
+        }
+    }
     if k[pos] == 1 && k[pos + 1] == 2 && v[pos + 1] == 40 {
         f := v[pos];                       // name '(' — a call
         idx := nn;                         // the call node, made first
@@ -632,7 +732,7 @@ fn ast_factor(k: *i64, v: *i64, ln: *i64, fpc: *i64, a: Ast, pos: i64, nn: i64) 
         mut more := !(k[p] == 2 && v[p] == 41);
         while more {                       // comma-separated argument trees
             more = false;
-            r := ast_cmp(k, v, ln, fpc, a, p, n2);
+            r := ast_cmp(k, v, ln, fpc, sd, a, p, n2);
             if cnt == 4 {                  // the arg table holds four
                 fail(ln[p], "wrong number of arguments");
             }
@@ -660,19 +760,19 @@ fn ast_factor(k: *i64, v: *i64, ln: *i64, fpc: *i64, a: Ast, pos: i64, nn: i64) 
         return NP{ pos: pos + 1, nn: nn + 1, root: nn };
     }
     if k[pos] == 2 && v[pos] == 45 {       // unary minus
-        r := ast_factor(k, v, ln, fpc, a, pos + 1, nn);
+        r := ast_factor(k, v, ln, fpc, sd, a, pos + 1, nn);
         a.nk[r.nn] = 3; a.nl[r.nn] = r.root; a.nr[r.nn] = 0; a.nv[r.nn] = 0;
         a.nline[r.nn] = ln[pos];
         return NP{ pos: r.pos, nn: r.nn + 1, root: r.nn };
     }
     if k[pos] == 2 && v[pos] == 33 {       // logical not (a bare '!' — the
-        r := ast_factor(k, v, ln, fpc, a, pos + 1, nn);   // != arm ate '!='
+        r := ast_factor(k, v, ln, fpc, sd, a, pos + 1, nn);   // != arm ate '!='
         a.nk[r.nn] = 12; a.nl[r.nn] = r.root; a.nr[r.nn] = -1; a.nv[r.nn] = 0;
         a.nline[r.nn] = ln[pos];           // before this could ever see it)
         return NP{ pos: r.pos, nn: r.nn + 1, root: r.nn };
     }
     if k[pos] == 2 && v[pos] == 40 {       // '(' — mutual recursion
-        r := ast_cmp(k, v, ln, fpc, a, pos + 1, nn);
+        r := ast_cmp(k, v, ln, fpc, sd, a, pos + 1, nn);
         if !(k[r.pos] == 2 && v[r.pos] == 41) {
             fail(ln[r.pos], "expected ')'");
         }
@@ -684,7 +784,7 @@ fn ast_factor(k: *i64, v: *i64, ln: *i64, fpc: *i64, a: Ast, pos: i64, nn: i64) 
         if !(k[pos + 1] == 2 && v[pos + 1] == 40) {
             fail(ln[pos], "expected '(' after len");
         }
-        r := ast_cmp(k, v, ln, fpc, a, pos + 2, nn + 1);
+        r := ast_cmp(k, v, ln, fpc, sd, a, pos + 2, nn + 1);
         if !(k[r.pos] == 2 && v[r.pos] == 41) {
             fail(ln[r.pos], "expected ')'");
         }
@@ -698,15 +798,15 @@ fn ast_factor(k: *i64, v: *i64, ln: *i64, fpc: *i64, a: Ast, pos: i64, nn: i64) 
 // term := factor (('*' | '/' | '%') factor)*
 //   The operator tag stored in a binop node IS its VM opcode — one
 //   name for one thing, so the walker emits nv directly.
-fn ast_term(k: *i64, v: *i64, ln: *i64, fpc: *i64, a: Ast, pos: i64, nn: i64) -> NP {
-    mut r := ast_factor(k, v, ln, fpc, a, pos, nn);
+fn ast_term(k: *i64, v: *i64, ln: *i64, fpc: *i64, sd: Sdefs, a: Ast, pos: i64, nn: i64) -> NP {
+    mut r := ast_factor(k, v, ln, fpc, sd, a, pos, nn);
     mut going := true;
     while going {
         going = false;
         if k[r.pos] == 2 && (v[r.pos] == 42 || v[r.pos] == 47 || v[r.pos] == 37) {
             op := v[r.pos];
             opl := ln[r.pos];
-            n := ast_factor(k, v, ln, fpc, a, r.pos + 1, r.nn);
+            n := ast_factor(k, v, ln, fpc, sd, a, r.pos + 1, r.nn);
             mut oc := 4;                   // MUL
             if op == 47 { oc = 5; }        // DIV
             if op == 37 { oc = 6; }        // MOD
@@ -720,15 +820,15 @@ fn ast_term(k: *i64, v: *i64, ln: *i64, fpc: *i64, a: Ast, pos: i64, nn: i64) ->
 }
 
 // sum := term (('+' | '-') term)*
-fn ast_sum(k: *i64, v: *i64, ln: *i64, fpc: *i64, a: Ast, pos: i64, nn: i64) -> NP {
-    mut r := ast_term(k, v, ln, fpc, a, pos, nn);
+fn ast_sum(k: *i64, v: *i64, ln: *i64, fpc: *i64, sd: Sdefs, a: Ast, pos: i64, nn: i64) -> NP {
+    mut r := ast_term(k, v, ln, fpc, sd, a, pos, nn);
     mut going := true;
     while going {
         going = false;
         if k[r.pos] == 2 && (v[r.pos] == 43 || v[r.pos] == 45) {
             op := v[r.pos];
             opl := ln[r.pos];
-            n := ast_term(k, v, ln, fpc, a, r.pos + 1, r.nn);
+            n := ast_term(k, v, ln, fpc, sd, a, r.pos + 1, r.nn);
             mut oc := 2;                   // ADD
             if op == 45 { oc = 3; }        // SUB
             a.nk[n.nn] = 2; a.nl[n.nn] = r.root; a.nr[n.nn] = n.root; a.nv[n.nn] = oc;
@@ -742,8 +842,8 @@ fn ast_sum(k: *i64, v: *i64, ln: *i64, fpc: *i64, a: Ast, pos: i64, nn: i64) -> 
 
 // cmp := sum [('<' | '>' | '==' | '!=' | '<=' | '>=') sum]
 //   — lowest tier, pushes 0 or 1: the full comparison set.
-fn ast_cmp(k: *i64, v: *i64, ln: *i64, fpc: *i64, a: Ast, pos: i64, nn: i64) -> NP {
-    l := ast_sum(k, v, ln, fpc, a, pos, nn);
+fn ast_cmp(k: *i64, v: *i64, ln: *i64, fpc: *i64, sd: Sdefs, a: Ast, pos: i64, nn: i64) -> NP {
+    l := ast_sum(k, v, ln, fpc, sd, a, pos, nn);
     two := k[l.pos] == 3 || k[l.pos] == 12 || k[l.pos] == 13 || k[l.pos] == 14;
     one := k[l.pos] == 2 && (v[l.pos] == 60 || v[l.pos] == 62);
     if two || one {
@@ -754,7 +854,7 @@ fn ast_cmp(k: *i64, v: *i64, ln: *i64, fpc: *i64, a: Ast, pos: i64, nn: i64) -> 
         if k[l.pos] == 13 { oc = 23; }          // LE
         if k[l.pos] == 14 { oc = 24; }          // GE
         opl := ln[l.pos];
-        r := ast_sum(k, v, ln, fpc, a, l.pos + 1, l.nn);
+        r := ast_sum(k, v, ln, fpc, sd, a, l.pos + 1, l.nn);
         a.nk[r.nn] = 2; a.nl[r.nn] = l.root; a.nr[r.nn] = r.root; a.nv[r.nn] = oc;
         a.nline[r.nn] = opl;
         return NP{ pos: r.pos, nn: r.nn + 1, root: r.nn };
@@ -775,7 +875,7 @@ fn ast_cmp(k: *i64, v: *i64, ln: *i64, fpc: *i64, a: Ast, pos: i64, nn: i64) -> 
 // operations refuse strings with located errors. The predicted shape
 // held: rules accrete on this one walk — which is exactly how ncc's
 // check_expr grew.
-fn check_node(a: Ast, env: Scope, bc: i64, idx: i64) {
+fn check_node(a: Ast, sd: Sdefs, env: Scope, bc: i64, idx: i64) {
     if a.nk[idx] == 0 {                    // number: int, by construction
         a.nt[idx] = 0;
     }
@@ -795,8 +895,8 @@ fn check_node(a: Ast, env: Scope, bc: i64, idx: i64) {
         a.nt[idx] = env.vt[a.nv[idx]];
     }
     if a.nk[idx] == 2 {                    // binop: children first, then the
-        check_node(a, env, bc, a.nl[idx]); // types resolve the OPERATION
-        check_node(a, env, bc, a.nr[idx]);
+        check_node(a, sd, env, bc, a.nl[idx]); // types resolve the OPERATION
+        check_node(a, sd, env, bc, a.nr[idx]);
         lt := a.nt[a.nl[idx]];
         rt := a.nt[a.nr[idx]];
         mut resolved := false;
@@ -817,32 +917,69 @@ fn check_node(a: Ast, env: Scope, bc: i64, idx: i64) {
         if !resolved && (lt == 1 || rt == 1) {
             fail(a.nline[idx], "cannot use a string in arithmetic or comparison");
         }
+        if !resolved && (lt >= 2 || rt >= 2) {
+            fail(a.nline[idx], "cannot use a struct in arithmetic or comparison");
+        }
         a.nt[idx] = ty;
     }
+    if a.nk[idx] == 14 {                   // struct literal: every field
+        mut q := 0;                        // value an integer at this rung,
+        while q < a.nl[idx] {              // and the value's type IS the
+            check_node(a, sd, env, bc, a.na[idx * 4 + q]);
+            if a.nt[a.na[idx * 4 + q]] != 0 {
+                fail(a.nline[idx], "a field holds an integer");
+            }
+            q += 1;
+        }
+        a.nt[idx] = 2 + a.nv[idx];         // struct: type id 2+sid
+    }
+    if a.nk[idx] == 15 {                   // field read: the base must be a
+        check_node(a, sd, env, bc, a.nl[idx]);   // struct and the name one of
+        bt := a.nt[a.nl[idx]];             // ITS fields — then the tree
+        if bt < 2 {                        // records the RESOLVED slot and
+            fail(a.nline[idx], "only a struct value has fields");
+        }                                  // emit stays type-blind
+        sid := bt - 2;
+        mut off := -1;
+        mut q := 0;
+        while q < sd.sfc[sid] {
+            if sd.sf[sid * 4 + q] == a.nv[idx] { off = q; }
+            q += 1;
+        }
+        if off < 0 { fail(a.nline[idx], "unknown field"); }
+        a.nv[idx] = off;
+        a.nt[idx] = 0;
+    }
     if a.nk[idx] == 3 {                    // unary minus: an int operand
-        check_node(a, env, bc, a.nl[idx]);
+        check_node(a, sd, env, bc, a.nl[idx]);
         if a.nt[a.nl[idx]] == 1 {
             fail(a.nline[idx], "cannot negate a string");
+        }
+        if a.nt[a.nl[idx]] >= 2 {
+            fail(a.nline[idx], "cannot negate a struct");
         }
         a.nt[idx] = 0;
     }
     if a.nk[idx] == 11 {                   // len: measures a STRING, is int
-        check_node(a, env, bc, a.nl[idx]);
+        check_node(a, sd, env, bc, a.nl[idx]);
         if a.nt[a.nl[idx]] != 1 {
             fail(a.nline[idx], "len takes a string");
         }
         a.nt[idx] = 0;
     }
     if a.nk[idx] == 12 {                   // logical not: int in, int out
-        check_node(a, env, bc, a.nl[idx]);
-        if a.nt[a.nl[idx]] == 1 {
+        check_node(a, sd, env, bc, a.nl[idx]);
+        if a.nt[a.nl[idx]] != 0 {
             fail(a.nline[idx], "! takes an integer");
         }
         a.nt[idx] = 0;
     }
     if a.nk[idx] == 13 {                   // interpolation hole: an integer
         c := a.nl[idx];                    // becomes text (ITOS stays); a
-        check_node(a, env, bc, c);         // string inserts as ITSELF — the
+        check_node(a, sd, env, bc, c);         // string inserts as ITSELF — the
+        if a.nt[c] >= 2 {
+            fail(a.nline[idx], "cannot interpolate a struct");
+        }
         if a.nt[c] == 1 {                  // node REWRITES to its child (the
             a.nk[idx] = a.nk[c];           // checker's in-place move again),
             a.nl[idx] = a.nl[c];           // and the surrounding ADD chain
@@ -858,9 +995,12 @@ fn check_node(a: Ast, env: Scope, bc: i64, idx: i64) {
     if a.nk[idx] == 4 {                    // call: int arguments, int result
         mut q := 0;
         while q < a.nl[idx] {
-            check_node(a, env, bc, a.na[idx * 4 + q]);
+            check_node(a, sd, env, bc, a.na[idx * 4 + q]);
             if a.nt[a.na[idx * 4 + q]] == 1 {
                 fail(a.nline[idx], "cannot pass a string to a function");
+            }
+            if a.nt[a.na[idx * 4 + q]] >= 2 {
+                fail(a.nline[idx], "cannot pass a struct to a function");
             }
             q += 1;
         }
@@ -1003,6 +1143,16 @@ fn fold_node(a: Ast, st: Strs, idx: i64) {
             q += 1;
         }
     }
+    if a.nk[idx] == 14 {                   // struct literal: field VALUES
+        mut q := 0;                        // fold, the literal itself never
+        while q < a.nl[idx] {              // — records exist at run time
+            fold_node(a, st, a.na[idx * 4 + q]);   // only, by design: the VM
+            q += 1;                        // is the one allocator (fold has
+        }                                  // no record table on purpose)
+    }
+    if a.nk[idx] == 15 {                   // field read: the base folds
+        fold_node(a, st, a.nl[idx]);       // (its constants do); the read
+    }                                      // itself is runtime
 }
 
 // Phase two: the postorder walk. Children first, the node's own
@@ -1044,6 +1194,19 @@ fn emit_node(a: Ast, fe: *i64, fp: *i64, code: *i64, cp: i64, idx: i64) -> i64 {
         c := emit_node(a, fe, fp, code, cp, a.nl[idx]);
         return emit1(code, c, 28);
     }
+    if a.nk[idx] == 14 {                   // struct literal: field values in
+        mut c := cp;                       // order, then RNEW with the count
+        mut q := 0;
+        while q < a.nl[idx] {
+            c = emit_node(a, fe, fp, code, c, a.na[idx * 4 + q]);
+            q += 1;
+        }
+        return emit2(code, c, 29, a.nl[idx]);
+    }
+    if a.nk[idx] == 15 {                   // field read: base, then RGET
+        c := emit_node(a, fe, fp, code, cp, a.nl[idx]);   // with the slot the
+        return emit2(code, c, 30, a.nv[idx]);   // check pass resolved
+    }
     f := a.nv[idx];                        // call
     cnt := a.nl[idx];
     mut c := cp;
@@ -1083,21 +1246,21 @@ fn is_stmt_start(k: *i64, pos: i64) -> bool {
 //   statement node is allocated first (the call-node trick), its
 //   pieces land in nl/nr/na, and not one opcode is emitted here. The
 //   jump-patching craft lives in emit_stmt.
-fn ast_stmt(k: *i64, v: *i64, ln: *i64, fpc: *i64, a: Ast, pos: i64, nn: i64) -> NP {
+fn ast_stmt(k: *i64, v: *i64, ln: *i64, fpc: *i64, sd: Sdefs, a: Ast, pos: i64, nn: i64) -> NP {
     if k[pos] == 5 {                       // if cmp block [else block]
         idx := nn;
         a.nline[idx] = ln[pos];
-        c := ast_cmp(k, v, ln, fpc, a, pos + 1, nn + 1);
-        t := ast_block(k, v, ln, fpc, a, c.pos, c.nn);
+        c := ast_cmp(k, v, ln, fpc, sd, a, pos + 1, nn + 1);
+        t := ast_block(k, v, ln, fpc, sd, a, c.pos, c.nn);
         a.nk[idx] = 6; a.nl[idx] = c.root; a.nr[idx] = t.root; a.nv[idx] = 0;
         a.na[idx * 4] = -1;                // no else (yet)
         if k[t.pos] == 8 {
             if k[t.pos + 1] == 5 {         // else IF: the chain. The else
-                e := ast_stmt(k, v, ln, fpc, a, t.pos + 1, t.nn);
+                e := ast_stmt(k, v, ln, fpc, sd, a, t.pos + 1, t.nn);
                 a.na[idx * 4] = e.root;    // arm IS the next if statement —
                 return NP{ pos: e.pos, nn: e.nn, root: idx };
             }                              // no walker cares: the else slot
-            e := ast_block(k, v, ln, fpc, a, t.pos + 1, t.nn);
+            e := ast_block(k, v, ln, fpc, sd, a, t.pos + 1, t.nn);
             a.na[idx * 4] = e.root;        // held any statement all along
             return NP{ pos: e.pos, nn: e.nn, root: idx };
         }
@@ -1106,15 +1269,15 @@ fn ast_stmt(k: *i64, v: *i64, ln: *i64, fpc: *i64, a: Ast, pos: i64, nn: i64) ->
     if k[pos] == 6 {                       // while cmp block
         idx := nn;
         a.nline[idx] = ln[pos];
-        c := ast_cmp(k, v, ln, fpc, a, pos + 1, nn + 1);
-        b := ast_block(k, v, ln, fpc, a, c.pos, c.nn);
+        c := ast_cmp(k, v, ln, fpc, sd, a, pos + 1, nn + 1);
+        b := ast_block(k, v, ln, fpc, sd, a, c.pos, c.nn);
         a.nk[idx] = 7; a.nl[idx] = c.root; a.nr[idx] = b.root; a.nv[idx] = 0;
         return NP{ pos: b.pos, nn: b.nn, root: idx };
     }
     if k[pos] == 11 {                      // print cmp ; — ONE form: the
         idx := nn;                         // operand's TYPE picks the
         a.nline[idx] = ln[pos];            // opcode at emit
-        r := ast_cmp(k, v, ln, fpc, a, pos + 1, nn + 1);
+        r := ast_cmp(k, v, ln, fpc, sd, a, pos + 1, nn + 1);
         if !(k[r.pos] == 2 && v[r.pos] == 59) {
             fail(ln[r.pos], "expected ';' after print");
         }
@@ -1124,7 +1287,7 @@ fn ast_stmt(k: *i64, v: *i64, ln: *i64, fpc: *i64, a: Ast, pos: i64, nn: i64) ->
     idx := nn;                             // name ':=' cmp ';'
     a.nline[idx] = ln[pos];
     slot := v[pos];
-    r := ast_cmp(k, v, ln, fpc, a, pos + 2, nn + 1);
+    r := ast_cmp(k, v, ln, fpc, sd, a, pos + 2, nn + 1);
     if !(k[r.pos] == 2 && v[r.pos] == 59) {
         fail(ln[r.pos], "expected ';' after the binding");
     }
@@ -1137,7 +1300,7 @@ fn ast_stmt(k: *i64, v: *i64, ln: *i64, fpc: *i64, a: Ast, pos: i64, nn: i64) ->
 //   ends it), patched forward as statements arrive. An empty block is
 //   root -1. Scope needs no bookkeeping here any more — the check walk
 //   owns it.
-fn ast_block(k: *i64, v: *i64, ln: *i64, fpc: *i64, a: Ast, pos: i64, nn: i64) -> NP {
+fn ast_block(k: *i64, v: *i64, ln: *i64, fpc: *i64, sd: Sdefs, a: Ast, pos: i64, nn: i64) -> NP {
     if !(k[pos] == 2 && v[pos] == 123) {
         fail(ln[pos], "expected '\{'");
     }
@@ -1149,7 +1312,7 @@ fn ast_block(k: *i64, v: *i64, ln: *i64, fpc: *i64, a: Ast, pos: i64, nn: i64) -
     while more {
         more = false;
         if is_stmt_start(k, p) {
-            s := ast_stmt(k, v, ln, fpc, a, p, n2);
+            s := ast_stmt(k, v, ln, fpc, sd, a, p, n2);
             seq := s.nn;                   // the chain link
             a.nk[seq] = 8; a.nl[seq] = s.root; a.nr[seq] = -1; a.nv[seq] = 0;
             a.nline[seq] = a.nline[s.root];
@@ -1171,16 +1334,16 @@ fn ast_block(k: *i64, v: *i64, ln: *i64, fpc: *i64, a: Ast, pos: i64, nn: i64) -
 // AFTER its right-hand side checks (`x := x + 1` cannot self-feed);
 // if arms and while bodies check with the count they were given and
 // this fn hands back the ORIGINAL — branch names die with the branch.
-fn check_stmt(a: Ast, env: Scope, bc: i64, idx: i64) -> i64 {
+fn check_stmt(a: Ast, sd: Sdefs, env: Scope, bc: i64, idx: i64) -> i64 {
     if idx < 0 {                           // an empty chain binds nothing
         return bc;
     }
     if a.nk[idx] == 8 {                    // seq: this statement, then the rest
-        b := check_stmt(a, env, bc, a.nl[idx]);
-        return check_stmt(a, env, b, a.nr[idx]);
+        b := check_stmt(a, sd, env, bc, a.nl[idx]);
+        return check_stmt(a, sd, env, b, a.nr[idx]);
     }
     if a.nk[idx] == 5 {                    // bind: rhs first, THEN the name.
-        check_node(a, env, bc, a.nl[idx]);
+        check_node(a, sd, env, bc, a.nl[idx]);
         slot := a.nv[idx];                 // A name's type is FIXED for its
         mut seen := false;                 // lifetime: rebinding must keep
         mut i := 0;                        // it, or the flat runtime table
@@ -1196,23 +1359,26 @@ fn check_stmt(a: Ast, env: Scope, bc: i64, idx: i64) -> i64 {
         return bc + 1;
     }
     if a.nk[idx] == 6 {                    // if: an int condition; both arms
-        check_node(a, env, bc, a.nl[idx]);
-        if a.nt[a.nl[idx]] == 1 {
+        check_node(a, sd, env, bc, a.nl[idx]);
+        if a.nt[a.nl[idx]] != 0 {
             fail(a.nline[idx], "a condition must be an integer");
         }
-        check_stmt(a, env, bc, a.nr[idx]);
-        check_stmt(a, env, bc, a.na[idx * 4]);
+        check_stmt(a, sd, env, bc, a.nr[idx]);
+        check_stmt(a, sd, env, bc, a.na[idx * 4]);
         return bc;
     }
-    if a.nk[idx] == 9 {                    // print: either type is welcome —
-        check_node(a, env, bc, a.nl[idx]); // the operand's nt picks the
-        return bc;                         // opcode at emit
+    if a.nk[idx] == 9 {                    // print: an int or a str — the
+        check_node(a, sd, env, bc, a.nl[idx]); // operand's nt picks the
+        if a.nt[a.nl[idx]] >= 2 {          // opcode at emit; a struct has
+            fail(a.nline[idx], "cannot print a struct - read a field");
+        }                                  // no printed form, read a field
+        return bc;
     }
-    check_node(a, env, bc, a.nl[idx]);     // while: int cond + body, restored
-    if a.nt[a.nl[idx]] == 1 {
+    check_node(a, sd, env, bc, a.nl[idx]);     // while: int cond + body, restored
+    if a.nt[a.nl[idx]] != 0 {
         fail(a.nline[idx], "a condition must be an integer");
     }
-    check_stmt(a, env, bc, a.nr[idx]);
+    check_stmt(a, sd, env, bc, a.nr[idx]);
     bc
 }
 
@@ -1315,7 +1481,7 @@ fn emit_stmt(a: Ast, fe: *i64, fp: *i64, code: *i64, cp: i64, idx: i64) -> i64 {
 // with nseed already-bound names sitting in bv), fold, emit. This is
 // the compiler's whole shape in eight lines — ncc's parse → check →
 // gen, at toy scale, shared by function bodies and the main program.
-fn gen_body(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, a: Ast, env: Scope, st: Strs, nseed: i64, pos: i64, code: *i64, cp: i64) -> EP {
+fn gen_body(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, sd: Sdefs, a: Ast, env: Scope, st: Strs, nseed: i64, pos: i64, code: *i64, cp: i64) -> EP {
     mut p := pos;
     mut n2 := 0;
     mut head := -1;
@@ -1324,7 +1490,7 @@ fn gen_body(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, a: Ast, e
     while more {                           // the statement chain, if any
         more = false;
         if is_stmt_start(k, p) {
-            s := ast_stmt(k, v, ln, fpc, a, p, n2);
+            s := ast_stmt(k, v, ln, fpc, sd, a, p, n2);
             seq := s.nn;
             a.nk[seq] = 8; a.nl[seq] = s.root; a.nr[seq] = -1; a.nv[seq] = 0;
             a.nline[seq] = a.nline[s.root];
@@ -1335,10 +1501,10 @@ fn gen_body(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, a: Ast, e
             more = true;
         }
     }
-    t := ast_cmp(k, v, ln, fpc, a, p, n2); // the tail is the body's value
-    b := check_stmt(a, env, nseed, head);  // pass 1: check
-    check_node(a, env, b, t.root);
-    if a.nt[t.root] == 1 {                 // values and returns stay int —
+    t := ast_cmp(k, v, ln, fpc, sd, a, p, n2); // the tail is the body's value
+    b := check_stmt(a, sd, env, nseed, head);  // pass 1: check
+    check_node(a, sd, env, b, t.root);
+    if a.nt[t.root] != 0 {                 // values and returns stay int —
         fail(a.nline[t.root], "a body's value must be an integer");
     }
     fold_stmt(a, st, head);                    // pass 2: fold
@@ -1358,7 +1524,7 @@ fn gen_body(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, a: Ast, e
 //   must be bound by its own statements. The flat runtime table would
 //   let a body read main's names, but that is caller-save's private
 //   business — the checker enforces the lexical story.
-fn parse_fndef(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, a: Ast, env: Scope, st: Strs, pos: i64, code: *i64, cp: i64) -> EP {
+fn parse_fndef(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, sd: Sdefs, a: Ast, env: Scope, st: Strs, pos: i64, code: *i64, cp: i64) -> EP {
     f := v[pos + 1];
     fe[f] = cp;
     mut p := pos + 3;                      // fn +0, name +1, '(' +2, params...
@@ -1379,7 +1545,7 @@ fn parse_fndef(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, a: Ast
         }
     }
     fpc[f] = j;
-    t := gen_body(k, v, ln, fe, fp, fpc, a, env, st, j, p + 2, code, cp);
+    t := gen_body(k, v, ln, fe, fp, fpc, sd, a, env, st, j, p + 2, code, cp);
     EP{ pos: t.pos + 1, cp: emit1(code, t.cp, 16) }   // skip '}', RET
 }
 
@@ -1387,9 +1553,45 @@ fn parse_fndef(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, a: Ast
 //   If any functions exist, a JMP with a placeholder target is emitted
 //   first and patched to hop over their bodies — execution starts at
 //   the main statements, functions are entered only by CALL.
-fn parse_program(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, a: Ast, env: Scope, st: Strs, pos: i64, code: *i64, cp: i64) -> EP {
+fn parse_program(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, sd: Sdefs, a: Ast, env: Scope, st: Strs, pos: i64, code: *i64, cp: i64) -> EP {
     mut p := pos;
     mut c := cp;
+    sd.cur[0] = 0;                         // struct defs and records are
+    sd.cur[1] = 0;                         // per-program, like the strings
+    mut sds := true;
+    while sds {                            // struct declarations lead the
+        sds = false;                       // program: name, then up to four
+        if k[p] == 19 {                    // field names in braces — no
+            if k[p + 1] != 1 {             // code, just tables
+                fail(ln[p + 1], "expected a struct name");
+            }
+            sid := sd.cur[0];
+            sd.sn[sid] = v[p + 1];
+            mut q := p + 2;
+            if !(k[q] == 2 && v[q] == 123) {
+                fail(ln[q], "expected '\{' after the struct name");
+            }
+            q += 1;
+            mut fc := 0;
+            mut more := !(k[q] == 2 && v[q] == 125);
+            while more {
+                more = false;
+                if k[q] != 1 { fail(ln[q], "expected a field name"); }
+                if fc == 4 { fail(ln[q], "too many fields"); }
+                sd.sf[sid * 4 + fc] = v[q];
+                fc += 1;
+                q += 1;
+                if k[q] == 2 && v[q] == 44 { q += 1; more = true; }
+            }
+            if !(k[q] == 2 && v[q] == 125) {
+                fail(ln[q], "expected '\}' after the fields");
+            }
+            sd.sfc[sid] = fc;
+            sd.cur[0] = sid + 1;
+            p = q + 1;
+            sds = true;
+        }
+    }
     if k[p] == 7 {
         c = emit2(code, c, 14, 0);
         hole := c - 1;                     // the hop-over JMP's target
@@ -1397,7 +1599,7 @@ fn parse_program(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, a: A
         while fns {
             fns = false;
             if k[p] == 7 {
-                r := parse_fndef(k, v, ln, fe, fp, fpc, a, env, st, p, code, c);
+                r := parse_fndef(k, v, ln, fe, fp, fpc, sd, a, env, st, p, code, c);
                 p = r.pos;
                 c = r.cp;
                 fns = true;
@@ -1405,7 +1607,7 @@ fn parse_program(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, a: A
         }
         code[hole] = c;                    // main statements start here
     }
-    t := gen_body(k, v, ln, fe, fp, fpc, a, env, st, 0, p, code, c);
+    t := gen_body(k, v, ln, fe, fp, fpc, sd, a, env, st, 0, p, code, c);
     if k[t.pos] != 9 {                     // main's scope starts empty
         fail(ln[t.pos], "unexpected input after the tail expression");
     }
@@ -1417,7 +1619,7 @@ fn parse_program(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, a: A
 // consumes it beneath the return value; SWAP serves the caller-save
 // restore. The string table (sb/sts/stl) rides along so PRINTS can
 // reach its bytes.
-fn run(prog: *i64, stk: *i64, vars: *i64, st: Strs) -> i64 {
+fn run(prog: *i64, stk: *i64, vars: *i64, st: Strs, sd: Sdefs) -> i64 {
     mut pc := 0;
     mut sp := 0;
     mut running := true;
@@ -1587,19 +1789,37 @@ fn run(prog: *i64, stk: *i64, vars: *i64, st: Strs) -> i64 {
             stk[sp - 1] = ni;
             pc += 1;
         }
+        if op == 29 {                      // RNEW k: pop k field values into
+            cnt := prog[pc + 1];           // a fresh record (first field
+            base := sd.cur[1];             // lowest), push the record's base
+            mut q := 0;                    // index — a struct at run time IS
+            while q < cnt {                // its index, like a string
+                sd.rw[base + q] = stk[sp - cnt + q];
+                q += 1;
+            }
+            sd.cur[1] = base + cnt;
+            sp -= cnt;
+            stk[sp] = base;
+            sp += 1;
+            pc += 2;
+        }
+        if op == 30 {                      // RGET off: replace the record
+            stk[sp - 1] = sd.rw[stk[sp - 1] + prog[pc + 1]];   // index with
+            pc += 2;                       // the field's word
+        }
     }
     stk[0]
 }
 
 // The whole pipeline in one call: tokens in, code out, value from the VM.
 fn show(src: str, k: *i64, v: *i64, ln: *i64, code: *i64, stk: *i64, vars: *i64,
-        fe: *i64, fp: *i64, fpc: *i64, a: Ast, env: Scope, nb: *u8, ss: *i64, sl: *i64,
-        st: Strs) {
-    lex(src.ptr as *u8, src.len as i64, k, v, ln, nb, ss, sl, st);
-    r := parse_program(k, v, ln, fe, fp, fpc, a, env, st, 0, code, 0);
+        fe: *i64, fp: *i64, fpc: *i64, a: Ast, env: Scope, sy: Syms, st: Strs,
+        sd: Sdefs) {
+    lex(src.ptr as *u8, src.len as i64, k, v, ln, sy, st);
+    r := parse_program(k, v, ln, fe, fp, fpc, sd, a, env, st, 0, code, 0);
     words := emit1(code, r.cp, 0);         // HALT closes the program
     put("{src}\n");                        // echo first: a program's prints
-    val := run(code, stk, vars, st);       // land under its source
+    val := run(code, stk, vars, st, sd);       // land under its source
     put("  ->  {val}   [{words} code words]\n");
 }
 
@@ -1611,8 +1831,8 @@ fn show(src: str, k: *i64, v: *i64, ln: *i64, code: *i64, stk: *i64, vars: *i64,
 // a graceful skip (the fsio pattern; in-OS the file comes from /mnt).
 #[caps(syscall)]
 fn run_file(path: str, k: *i64, v: *i64, ln: *i64, code: *i64, stk: *i64, vars: *i64,
-            fe: *i64, fp: *i64, fpc: *i64, a: Ast, env: Scope, nb: *u8, ss: *i64, sl: *i64,
-            st: Strs) {
+            fe: *i64, fp: *i64, fpc: *i64, a: Ast, env: Scope, sy: Syms, st: Strs,
+            sd: Sdefs) {
     fd := sys_open(path.ptr as *u8, 0, 0);
     if fd < 0 {
         put("(no toy demo file - file demo skipped)\n");
@@ -1626,10 +1846,10 @@ fn run_file(path: str, k: *i64, v: *i64, ln: *i64, code: *i64, stk: *i64, vars: 
         return;
     }
     put("compiling n_toy_demo.n from disk:\n");
-    lex(buf, len, k, v, ln, nb, ss, sl, st);
-    r := parse_program(k, v, ln, fe, fp, fpc, a, env, st, 0, code, 0);
+    lex(buf, len, k, v, ln, sy, st);
+    r := parse_program(k, v, ln, fe, fp, fpc, sd, a, env, st, 0, code, 0);
     words := emit1(code, r.cp, 0);         // HALT closes the program
-    val := run(code, stk, vars, st);
+    val := run(code, stk, vars, st, sd);
     put("  ->  {val}   [{words} code words]\n");
 }
 
@@ -1645,6 +1865,7 @@ fn main() -> i64 {
     nb := alloc_bytes(256);                // the interned-names buffer
     ss := alloc_words(64);
     sl := alloc_words(64);
+    sy := Syms{ nb: nb, ss: ss, sl: sl };
     ln := alloc_words(96);                 // per-token source lines (rung 2)
     ast := Ast{ nk: alloc_words(96), nl: alloc_words(96), nr: alloc_words(96),
                 nv: alloc_words(96), na: alloc_words(384),
@@ -1654,45 +1875,49 @@ fn main() -> i64 {
     st := Strs{ sb: alloc_bytes(256),      // the string table: bytes + spans
                 sts: alloc_words(32), stl: alloc_words(32),
                 cur: alloc_words(2) };     // + the shared write cursors
+    sd := Sdefs{ sn: alloc_words(16), sf: alloc_words(64),
+                 sfc: alloc_words(16),     // struct defs: 16 x 4 fields
+                 rw: alloc_words(128),     // + the runtime record words
+                 cur: alloc_words(2) };    // + count / words-used cursors
     put("a type column over the toy - lex -> parse -> check -> fold -> emit -> run:\n");
     // Braces are escaped so they read as text, not interpolation (§2.5).
     show("fn max(a, b) \{ m := 0; if a > b \{ m := a; \} else \{ m := b; \} m \} max(3, 9) + max(7, 2)",
-         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, nb, ss, sl, st);
+         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, sy, st, sd);
     show("fn gcd(a, b) \{ r := a; if b > 0 \{ r := gcd(b, a % b); \} r \} gcd(48, 18)",
-         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, nb, ss, sl, st);
+         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, sy, st, sd);
     show("fn fact(n) \{ r := 1; if n > 1 \{ r := n * fact(n - 1); \} r \} fact(5)",
-         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, nb, ss, sl, st);
+         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, sy, st, sd);
     // Folding, visible: unfolded this program emits 19 code words; the
     // fold pass collapses 2*3+4 to 10 and 10-8 to 2 at compile time and
     // 10 words remain. (The flagship demos above fold nothing — their
     // constants sit alone as call arguments — so their counts held.)
     show("d := 2 * 3 + 4; // constants fold\nd * (10 - 8)",
-         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, nb, ss, sl, st);
+         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, sy, st, sd);
     // Dead-arm elimination, visible: the condition folds to 0, the if
     // dissolves, and 7 words remain of an unfolded 18. The dead arm was
     // still checked first — dead code must be legal code.
     show("if 1 > 2 \{ x := 999; \} y := 5; y",
-         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, nb, ss, sl, st);
+         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, sy, st, sd);
     // The toy speaks, and strings are VALUES: one is bound to a name,
     // loaded back, and printed — same stack, same vars table, same
     // LOAD as any integer, with the type column picking PRINTS. The
     // computed (and folded — PUSH 42) number takes PRINT instead:
     // one syntax, two opcodes, decided by the checker.
     show("greet := \"hello from the toy\"; print greet; print len(greet); print 6 * 7; 0",
-         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, nb, ss, sl, st);
+         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, sy, st, sd);
     // The type column's second dividend: == over two strings resolves
     // to STREQ (and != to STRNEQ — the equality pair is symmetric) —
     // and since both yield an int, string equality composes with
     // plain conditions for free.
     show("name := \"nyx\"; if name == \"nyx\" \{ print \"the goddess\"; \} print name == \"day\"; print name != \"day\"; 0",
-         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, nb, ss, sl, st);
+         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, sy, st, sd);
     // And + MAKES strings: the first print concatenates at RUN time (a
     // load meets a literal — the VM appends a fresh table entry), the
     // second at COMPILE time (two literals — the fold pass appends
     // through the same cursor and PRINTS a ready-made entry), and the
     // result chains into == like any string.
     show("who := \"nyx\"; print who + \" rules\"; print \"nyx\" + \"os\"; print who + \"os\" == \"nyxos\"; 0",
-         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, nb, ss, sl, st);
+         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, sy, st, sd);
     // INTERPOLATION — the real lexer's hardest trick, in the toy: a
     // string splits at its braces (HEAD/MID/TAIL segment tokens, the
     // lexer switching to expression mode inside each hole) and the
@@ -1702,20 +1927,27 @@ fn main() -> i64 {
     // ITOS folds the digits, the CONCATs collapse, and the entire
     // string becomes ONE literal at compile time.
     show("n := 6 * 7; w := \"toy\";\nprint \"the \{w\} says \{n\}\";\nprint \"\{1 + 2\} and \{40 + 2\}\"; 0",
-         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, nb, ss, sl, st);
+         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, sy, st, sd);
     // Number spellings and block comments, N's own: 0x2a is 42 in hex
     // (lowercase at toy scale), underscores group digits and vanish,
     // and /* block comments nest */ by depth — with newlines inside
     // them still ticking the line counter, so diagnostics stay honest.
     show("h := 0x2a; /* hex /* nests */ properly */ big := 1_000;\nprint \"\{h\} and \{big\}\"; 0",
-         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, nb, ss, sl, st);
+         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, sy, st, sd);
+    // STRUCTS, rung 1: declared, made, read. A record lives in a side
+    // table — the value on the stack IS its base index, like a string —
+    // and the type column (type ids: 2+k for struct k) is what keeps
+    // it from adding like the number it secretly is. The check pass
+    // resolves each field name to its slot; emit stays type-blind.
+    show("struct P \{ x, y \}\np := P\{3, 4\};\nprint p.x * 10 + p.y; 0",
+         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, sy, st, sd);
     // The rest of the comparison set, each its own opcode.
     show("n := 7; print n != 7; print n <= 7; print n >= 9; print !(n >= 9); 0",
-         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, nb, ss, sl, st);
+         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, sy, st, sd);
     // else-if chains: free structure — the else slot held a statement
     // all along, and a nested if is a statement.
     show("g := 72;\nif g >= 90 \{ print \"gold\"; \} else if g >= 60 \{ print \"silver\"; \} else \{ print \"bronze\"; \}\ng",
-         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, nb, ss, sl, st);
+         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, sy, st, sd);
     // And a program this binary does not carry: read off the disk,
     // compiled by the same pipeline, run by the same VM. Its source is
     // examples/n_toy_demo.toy — and it uses the WHOLE surface: a fn, a
@@ -1723,7 +1955,7 @@ fn main() -> i64 {
     // hold a variable, and a call — nothing about the pipeline knows
     // or cares that the bytes came from a file.
     run_file("/tmp/n_toy_demo.n",
-             k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, nb, ss, sl, st);
+             k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, sy, st, sd);
     // The broken program runs LAST (fail() ends the process — one failing
     // demo per run). It PARSES cleanly; what is wrong is a TYPE: a string
     // fed to +. The check pass refuses it AT the operator — line and
@@ -1734,6 +1966,6 @@ fn main() -> i64 {
     // all ending through the same fail().
     put("and a deliberately broken program:\n");
     show("x := 1;\nprint x + \"oops\";\nx",
-         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, nb, ss, sl, st);
+         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, sy, st, sd);
     0
 }
