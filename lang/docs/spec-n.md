@@ -83,7 +83,7 @@ msg := "pid={getpid()} answer={40 + 2}\n";
 ```
 
 Semantics: each interpolated expression is evaluated once, in order of
-appearance, and formatted **by its inferred type** (§6.4): a `str` value is
+appearance, and formatted **by its inferred type** (§6.3): a `str` value is
 inserted verbatim as text; every other type is converted as a signed 64-bit
 integer and formatted in decimal. The result is a `str` built in a 256-byte
 function-scope buffer (§7.3); text beyond the buffer capacity is truncated,
@@ -134,7 +134,7 @@ put("[{h:z12x}]\n");                   // [0000deadbeef]
 == != < <= > >=
 ! && ||
 & | ^ << >>
-as ?     (? = error propagation on result enums, §5.9)
+as ?     (? = error propagation on result enums, §5.8)
 ```
 
 ## 3. Types
@@ -173,7 +173,7 @@ while leaving `raw *T` unchecked (see the N++ design). Any type name not in
 `#[user] *T` is a **distinct pointer flavor** in the type system:
 
 - It never converts implicitly to or from a plain `*T` — not even through
-  the `*u8`/`*void` byte-pointer wildcards (§6.5), which are checked
+  the `*u8`/`*void` byte-pointer wildcards (§6.4), which are checked
   *after* the flavor comparison and so cannot smuggle a pointer across.
 - `expr as #[user] *T` (and the reverse cast) is the **one audited
   crossing point** — every user-pointer handoff is explicit and greppable.
@@ -276,7 +276,7 @@ fn put(s: str) {                 // no return type → void
 }
 
 fn add(a: i64, b: i64) -> i64 {
-    a + b                        // block tail value (§5.6)
+    a + b                        // block tail value (§5.9)
 }
 ```
 
@@ -317,68 +317,7 @@ structures). Rules:
   v0.9) or bind it on its own line first if you need one there (the same
   disambiguation rule and escape hatch Rust uses).
 - The struct name space is checked: using an undeclared struct, an unknown
-  field, or an incomplete literal is a compile error (§6.5).
-
-## 5. Statements
-
-Statements are separated by `;`. Blocks are `{ ... }` and may end with a tail
-expression (§5.6).
-
-### 5.1 Variable binding — `:=`
-
-```n
-x := 42;              // immutable binding, type inferred
-mut counter := 0;     // mutable binding
-```
-
-`:=` declares a new variable in the current scope, typed by its initializer
-(§6.4). Bindings without `mut` must not be reassigned — the compiler rejects
-the assignment with an error (enforced since v0.2). Function parameters are
-immutable bindings. Binding an expression with no value (a `void` or `never`
-call) is an error.
-
-### 5.2 Assignment
-
-```n
-counter = counter + 1;
-counter += 1;
-counter -= 1;
-```
-
-Targets must be assignable places (a variable or field). Valid on `mut`
-bindings.
-
-### 5.3 `while`
-
-```n
-while n > 0 {
-    n = n - 1;
-}
-```
-
-### 5.4 `if` / `else`
-
-```n
-if x > 10 {
-    put("big\n");
-} else if x > 0 {
-    put("small\n");
-} else {
-    put("non-positive\n");
-}
-```
-
-`if` at statement position; braces are mandatory, parentheses around the
-condition are not.
-
-### 5.5 `return`, `break`, `continue`
-
-```n
-return;          // from a void function
-return x + 1;    // with a value
-break;           // exit innermost while
-continue;        // next iteration
-```
+  field, or an incomplete literal is a compile error (§6.4).
 
 ### 4.4 `enum` declarations (since v0.7)
 
@@ -604,6 +543,67 @@ Capabilities make *who may cross into the kernel* a checked property:
 This closes N++ P4's bootstrap staging (design doc §2.3): `#[user]`
 pointers (v0.12) + `pageflags` W^X (v0.13) + capabilities (v0.14).
 
+## 5. Statements
+
+Statements are separated by `;`. Blocks are `{ ... }` and may end with a tail
+expression (§5.9).
+
+### 5.1 Variable binding — `:=`
+
+```n
+x := 42;              // immutable binding, type inferred
+mut counter := 0;     // mutable binding
+```
+
+`:=` declares a new variable in the current scope, typed by its initializer
+(§6.3). Bindings without `mut` must not be reassigned — the compiler rejects
+the assignment with an error (enforced since v0.2). Function parameters are
+immutable bindings. Binding an expression with no value (a `void` or `never`
+call) is an error.
+
+### 5.2 Assignment
+
+```n
+counter = counter + 1;
+counter += 1;
+counter -= 1;
+```
+
+Targets must be assignable places (a variable or field). Valid on `mut`
+bindings.
+
+### 5.3 `while`
+
+```n
+while n > 0 {
+    n = n - 1;
+}
+```
+
+### 5.4 `if` / `else`
+
+```n
+if x > 10 {
+    put("big\n");
+} else if x > 0 {
+    put("small\n");
+} else {
+    put("non-positive\n");
+}
+```
+
+`if` at statement position; braces are mandatory, parentheses around the
+condition are not.
+
+### 5.5 `return`, `break`, `continue`
+
+```n
+return;          // from a void function
+return x + 1;    // with a value
+break;           // exit innermost while
+continue;        // next iteration
+```
+
 ### 5.6 `match` (since v0.7)
 
 ```n
@@ -708,7 +708,7 @@ block (not inside `if`/`while` bodies). This keeps the static lowering exact
 — defers cannot be conditionally registered, so no runtime defer stack is
 needed. Registering conditionally is a compile error, not a silent surprise.
 
-### 5.9 Error propagation — `?` (since v0.10)
+### 5.8 Error propagation — `?` (since v0.10)
 
 ```n
 enum DivResult { Ok(q: i64), Err(code: i64) }
@@ -745,7 +745,7 @@ immediately**, propagating the error. Three statement positions carry it
   is returned unchanged.
 - If they **differ**, the `Err` payload is rewrapped into the return
   type's `Err` variant: both `Err`s must agree on carrying a payload, and
-  the payload types must be compatible (§6.5) — checked at compile time.
+  the payload types must be compatible (§6.4) — checked at compile time.
 - `defer`s run **before** the propagating return, exactly as for any
   other `return` (§5.7).
 
@@ -754,7 +754,7 @@ Err)` returns (rewrapping into an `__e` temp when needed); the `Ok`
 payload is then consumed from `__t.u.Ok`. No hidden control flow beyond
 the visible early return.
 
-### 5.10 Block tail value
+### 5.9 Block tail value
 
 The final expression of a function body, written **without** a trailing `;`,
 is the function's return value:
@@ -768,7 +768,7 @@ fn main() -> i64 {
 
 This is exactly equivalent to `return 0;`.
 
-### 5.11 `for` — counted loops (since v0.11)
+### 5.10 `for` — counted loops (since v0.11)
 
 ```n
 for i in 1..6 {          // i = 1, 2, 3, 4, 5  (half-open, like Rust)
@@ -832,7 +832,7 @@ count as isize       // integer width/signedness conversion
 `as` performs a C-style explicit conversion to the named type. Narrowing casts
 truncate exactly as in C. Chaining is allowed: `x as u32 as u64`.
 
-### 6.4 Type inference
+### 6.3 Type inference
 
 Every expression has an inferred N type, computed by these rules (top match
 wins):
@@ -850,12 +850,12 @@ wins):
 | `e as T` | `T` — casts are authoritative |
 
 Inference is *minimal by design*: it types `:=` bindings, drives interpolation
-formatting (§2.5), and enforces `mut` (§5.1). It does **not** yet verify
-argument or operand compatibility — that is the N++ type checker (P1). Where
-inference must guess (an unknown name), it assumes `i64`; use `as` to
-override at the use site.
+formatting (§2.5), and enforces `mut` (§5.1). What it computes, the static
+checks of §6.4 hold every program to — argument and operand compatibility
+included, since v0.3–v0.4 — the N++ P1 checker living in the bootstrap.
+Use `as` to override an inferred type at the use site.
 
-### 6.5 Static checks (v0.3–v0.4 — the N++ P1 checker)
+### 6.4 Static checks (v0.3 onward — the N++ P1 checker in the bootstrap)
 
 The compiler rejects the following, each with a `file:line` diagnostic:
 
@@ -900,7 +900,7 @@ The compiler rejects the following, each with a `file:line` diagnostic:
   the generated file — and the in-OS TinyCC does not even warn, so a
   missed path was silent garbage on target.
 
-### 6.6 Indexing — `e[i]` (since v0.15)
+### 6.5 Indexing — `e[i]` (since v0.15)
 
 ```n
 b := s[i];              // byte i of a str, as u8
@@ -937,7 +937,7 @@ Note on `str.ptr`: the language types it `*u8`, and since v0.15 the
 generated C agrees (the read site casts the backing `const char*`), so
 binding it without a cast — `p := s.ptr;` — is well-formed.
 
-### 6.7 Calls and fields
+### 6.6 Calls and fields
 
 Function calls take positional arguments. Field access uses `.` and applies to
 `str` values today (`.ptr`, `.len`); it generalizes to user types in N++.
@@ -955,14 +955,14 @@ This section specifies what C the compiler is *required* to emit, because N's
 |---|---|
 | `extern syscall fn f(...) -> T = N` | `static inline T' f(...) { return (T')__nyx_syscall6(N, args…, 0…); }` |
 | `fn f(a: A) -> R { … }` | `R' f(A' a) { … }` + forward prototype |
-| `x := e;` | `T' x = e';` where `T` is the inferred type (§6.4) |
+| `x := e;` | `T' x = e';` where `T` is the inferred type (§6.3) |
 | `str` literal `"abc"` | `((nyx_str){"abc", 3})` |
 | block tail `e` | `return e';` (in a value-returning function) |
 | `never` return | `void` fn + `for (;;) {}` after the syscall |
 | `x := match s { … }` (§5.6.1) | `T x = 0;` + `{ E __m = s'; T __mres = 0; switch (__m.tag) { … __mres = arm'; … } x = __mres; }` — the zero init is a dead store (the switch is exhaustive) kept so the C is warning-free |
 | `return match s { … }` | same switch shape; defers run after `__mres` is computed, then `return __mres;` |
-| `x := e?;` (§5.9) | `T x = 0;` + `{ R __t = e'; if (__t.tag == Err) { defers; return __t-or-rewrap; } x = __t.u.Ok.f; }` |
-| `for i in a..b { … }` (§5.11) | `{ nyx_i64 __fs = a'; nyx_i64 __fe = b'; for (nyx_i64 i = __fs; i < __fe; i++) { … } }` |
+| `x := e?;` (§5.8) | `T x = 0;` + `{ R __t = e'; if (__t.tag == Err) { defers; return __t-or-rewrap; } x = __t.u.Ok.f; }` |
+| `for i in a..b { … }` (§5.10) | `{ nyx_i64 __fs = a'; nyx_i64 __fe = b'; for (nyx_i64 i = __fs; i < __fe; i++) { … } }` |
 
 ### 7.2 The runtime
 
@@ -1077,16 +1077,17 @@ N++/type-checker phase:
    methods in v0.8 — completing the N++ P2 stage — match-as-expression
    in v0.9, `?` over structural result enums in v0.10, and counted `for`
    loops in v0.11.)
-2. **Match-expression and `?` positions are limited** (§5.6.1, §5.9):
+2. **Match-expression and `?` positions are limited** (§5.6.1, §5.8):
    statement value positions only — no general expression nesting
    until the lowering needs it.
-3. **No allocator-backed slice type yet** (§6.6): buffers are raw
+3. **No allocator-backed slice type yet** (§6.5): buffers are raw
    `sbrk`/`mmap` pointers with programmer-contract bounds; a
    length-carrying checked slice is n++ territory. (Raw index *writes*
    landed in v0.16.)
-4. Fixed implementation caps (per file: 64 functions, 64 syscalls; per call:
-   16 arguments; per function: 256 live locals) — generous for the bootstrap,
-   diagnosed clearly when exceeded.
+4. Fixed implementation caps (per file: 64 functions, 64 syscalls; per
+   function: 16 parameters and 256 live locals; per call: 16 arguments;
+   per struct literal: 16 fields; per block: 256 statements) — generous
+   for the bootstrap, diagnosed clearly when exceeded.
 
 Resolved since v0.1: `:=` bindings now get concrete types with `i64` as the
 integer default; interpolation dispatches by type; `mut` is enforced; the
