@@ -6156,14 +6156,15 @@ int spawn_user_path_args(const char* path, char* const* argv, int argc) {
     uint32_t size = vfs_fsize(fd);
     uint8_t* data = vfs_fdata(fd);
     if (!data || size == 0) { vfs_close(fd); return -2; }
-    uint8_t* copy = (uint8_t*)kmalloc(size);
-    if (!copy) { vfs_close(fd); return -3; }
-    memcpy_asm(copy, data, size);
-    vfs_close(fd);
-    if (!elf_validate(copy, size)) { kfree(copy); return -4; }
+    // Load DIRECTLY from the VFS file buffer — no full-file kmalloc copy. The old copy
+    // existed only because we closed before loading; it capped an ELF at the ~16MB kernel
+    // heap (a 14MB binary OOM'd here at kmalloc). elf_load_args maps every PT_LOAD segment
+    // into the fresh address space DURING the call, so `data` is needed only until it
+    // returns — close afterwards (which may free a mount node's data). Big ELFs now load.
+    if (!elf_validate(data, size)) { vfs_close(fd); return -4; }
     process_t* proc = NULL;
-    int r = elf_load_args(copy, size, argv, argc, &proc);   // seeds argv on the stack
-    kfree(copy);
+    int r = elf_load_args(data, size, argv, argc, &proc);   // seeds argv on the stack
+    vfs_close(fd);
     if (r != 0 || !proc) return -5;
     proc_set_comm(proc, path); // name it after the file (elf_load hardcodes "elf")
     // cmdline = space-joined argv (what ps / /proc show); fall back to the path.

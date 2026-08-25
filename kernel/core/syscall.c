@@ -980,12 +980,15 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
             uint32_t sz = vfs_fsize(fd);
             uint8_t* fdata = vfs_fdata(fd);
             if (!fdata || sz == 0) { vfs_close(fd); return -1; }
-            uint8_t* copy = (uint8_t*)kmalloc(sz);
-            if (!copy) { vfs_close(fd); return -1; }
-            memcpy_asm(copy, fdata, sz);
+            // Load directly from the VFS buffer — no full-file kmalloc copy (it capped
+            // exec at the ~16MB kernel heap, OOM'ing on large binaries). do_execve consumes
+            // `fdata` only via elf_load_image, then rewrites the saved return frame and
+            // RETURNS here (on success and failure) before the syscall exit iretq's into the
+            // new image — so closing after it is safe and frees a mount node's data even on
+            // the success path.
+            if (!elf_validate(fdata, sz)) { vfs_close(fd); return -1; }
+            int r = do_execve(fdata, sz, kargv, argc, kenvp, envc, path);
             vfs_close(fd);
-            int r = do_execve(copy, sz, kargv, argc, kenvp, envc, path);   // success -> returns into new image
-            kfree(copy);
             return (uint64_t)(int64_t)r;
         }
         case SYS_DUP2: {
