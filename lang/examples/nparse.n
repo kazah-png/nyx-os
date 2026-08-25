@@ -126,9 +126,14 @@
 //   3 = '==', 4 = ':=', 5 = 'if', 6 = 'while', 7 = 'fn', 8 = 'else',
 //   9 = end, 10 = string literal (val = STRING-TABLE index),
 //   11 = 'print', 12 = '!=', 13 = '<=', 14 = '>=', 15 = 'len' (a
-//   reserved word now, like print). Line comments (//
-//   to end of line) vanish in the lexer like whitespace — the line
-//   counter still ticks, so diagnostics stay honest around them.
+//   reserved word now, like print), 16/18/17 = interpolation
+//   HEAD/MID/TAIL segments (val = STRING-TABLE index). Line comments
+//   (// to end of line) vanish in the lexer like whitespace, and so
+//   do /* block comments */, which NEST by a depth counter — N's own
+//   rule; the line counter ticks through both, so diagnostics stay
+//   honest around them. Numbers read N's spellings too: 0x hex
+//   (lowercase a-f at toy scale) and '_' digit separators, both
+//   folding and interpolating like any other constant.
 //
 //   FILE-DRIVEN, the selfhost optic: the toy also compiles a program
 //   its binary does NOT embed — an audited #[caps] wrapper reads a
@@ -303,6 +308,23 @@ fn lex(p: *u8, n: i64, k: *i64, v: *i64, ln: *i64, nb: *u8, ss: *i64, sl: *i64,
             }                              // the newline arm keeps the count
             continue;
         }
+        if b == 47 && i + 1 < n && p[i + 1] as i64 == 42 {
+            mut depth := 1;                // '/*': a block comment, NESTING
+            mut j := i + 2;                // like N's own — a depth counter,
+            while depth > 0 && j < n {     // newlines still ticking the line
+                c := p[j] as i64;
+                if c == 10 { line += 1; j += 1; }
+                else if c == 47 && j + 1 < n && p[j + 1] as i64 == 42 {
+                    depth += 1; j += 2;
+                }
+                else if c == 42 && j + 1 < n && p[j + 1] as i64 == 47 {
+                    depth -= 1; j += 2;
+                }
+                else { j += 1; }
+            }
+            i = j;
+            continue;
+        }
         ln[t] = line;                      // every token records its line
         if b == 34 {                       // string start: scan the segment
             if interp == 1 {               // (no escapes; a brace ALWAYS
@@ -346,10 +368,32 @@ fn lex(p: *u8, n: i64, k: *i64, v: *i64, ln: *i64, nb: *u8, ss: *i64, sl: *i64,
             continue;
         }
         if is_digit(b) {
+            if b == 48 && i + 1 < n && p[i + 1] as i64 == 120 {
+                mut j := i + 2;            // '0x': hexadecimal, lowercase
+                mut hval := 0;             // a-f at toy scale, with '_'
+                mut hgo := true;           // separators skipped like N's
+                while hgo {
+                    hgo = false;
+                    if j < n {
+                        c := p[j] as i64;
+                        if is_digit(c) { hval = hval * 16 + (c - 48); j += 1; hgo = true; }
+                        if c >= 97 && c <= 102 { hval = hval * 16 + (c - 87); j += 1; hgo = true; }
+                        if c == 95 { j += 1; hgo = true; }
+                    }
+                }
+                k[t] = 0; v[t] = hval; t += 1;
+                i = j;
+                continue;
+            }
             mut val := 0;
-            while i < n && is_digit(p[i] as i64) {
-                val = val * 10 + (p[i] as i64 - 48);
-                i += 1;
+            mut dgo := true;
+            while dgo {                    // decimal, '_' separators skipped
+                dgo = false;
+                if i < n {
+                    c := p[i] as i64;
+                    if is_digit(c) { val = val * 10 + (c - 48); i += 1; dgo = true; }
+                    if c == 95 { i += 1; dgo = true; }
+                }
             }
             k[t] = 0; v[t] = val; t += 1;
             continue;
@@ -1642,6 +1686,12 @@ fn main() -> i64 {
     // ITOS folds the digits, the CONCATs collapse, and the entire
     // string becomes ONE literal at compile time.
     show("n := 6 * 7; w := \"toy\";\nprint \"the \{w\} says \{n\}\";\nprint \"\{1 + 2\} and \{40 + 2\}\"; 0",
+         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, nb, ss, sl, st);
+    // Number spellings and block comments, N's own: 0x2a is 42 in hex
+    // (lowercase at toy scale), underscores group digits and vanish,
+    // and /* block comments nest */ by depth — with newlines inside
+    // them still ticking the line counter, so diagnostics stay honest.
+    show("h := 0x2a; /* hex /* nests */ properly */ big := 1_000;\nprint \"\{h\} and \{big\}\"; 0",
          k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, nb, ss, sl, st);
     // The rest of the comparison set, each its own opcode.
     show("n := 7; print n != 7; print n <= 7; print n >= 9; print !(n >= 9); 0",

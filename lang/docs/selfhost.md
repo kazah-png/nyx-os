@@ -36,8 +36,8 @@ pipeline is proven on target, end to end.
 |---|---|---|
 | Line comments, string literals w/ escapes, two-char operators | ✓ | ✓ |
 | Keywords + multi-letter interned identifiers | ✓ | ✓ |
-| Decimal integers | ✓ | + hex `0x`, `_` separators |
-| Nested block comments | ✗ | ✓ |
+| Decimal integers, hex `0x`, `_` separators | ✓ (lowercase hex at toy scale) | ✓ |
+| Nested block comments | ✓ — depth-counted, the line counter ticking through | ✓ |
 | Attributes `#[...]` | ✗ | ✓ |
 | **Interpolation mode stack** (`T_STR_HEAD/MID/TAIL`) | ✓ at toy scale — segment tokens + one mode flag (single level) | ✓ — the hardest lexer feature |
 | Line/column tracking for diagnostics | ✓ lines (rung 2); columns ✗ | ✓ |
@@ -267,6 +267,14 @@ string, and an interpolated print whose holes hold a variable and a
 call — and it composed with **zero new machinery**: nothing in the
 pipeline knows the bytes came from a file, which was the point of the
 one-lexer design all along.
+
+The number spellings and comment forms then caught up with N's own:
+`0x` hexadecimal literals (lowercase at toy scale) and `_` digit
+separators lex in the digit arm and fold and interpolate like any
+constant, and `/* block comments nest */` by a depth counter — with
+newlines inside them still ticking the line counter, so a diagnostic
+three lines below a two-line comment still names the right line. The
+lexer parity gaps are down to two: attributes and column tracking.
 
 ## Definition of done for M5
 
