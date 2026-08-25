@@ -5005,7 +5005,37 @@ static void cmd_wav(int argc, char** argv) {
     uint32_t dur = rate ? (uint32_t)((uint64_t)frames * 1000 / rate) : 0;
     printf("wav: %s -- %u Hz, %u-bit %s, %u frames (%u.%03u s)\n",
            argv[1], rate, bits, ch == 2 ? "stereo" : "mono", frames, dur / 1000, dur % 1000);
-    if (!sb16_is_initialized()) { printf("wav: SB16 not available (boot QEMU with an sb16 device) -- parsed only, not played\n"); kfree(file); return; }
+    // Prefer the AC97 controller when present: convert the PCM to 16-bit stereo (what
+    // the codec wants) and DMA it through the bus-master engine. Falls back to SB16.
+    if (ac97_detect()) {
+        uint32_t pf = frames < AC97_MAX_FRAMES ? frames : AC97_MAX_FRAMES;
+        int16_t* st = (int16_t*)kmalloc((size_t)pf * 2 * sizeof(int16_t));
+        if (st) {
+            const uint8_t* pcm = file + doff;
+            for (uint32_t f = 0; f < pf; f++) {
+                int16_t l, rr;
+                if (bits == 16) {
+                    const int16_t* s16 = (const int16_t*)pcm;
+                    if (ch == 2) { l = s16[f*2]; rr = s16[f*2+1]; }
+                    else         { l = rr = s16[f]; }
+                } else {                                   // 8-bit unsigned -> signed 16
+                    if (ch == 2) { l  = (int16_t)(((int)pcm[f*2]   - 128) << 8);
+                                   rr = (int16_t)(((int)pcm[f*2+1] - 128) << 8); }
+                    else         { l = rr = (int16_t)(((int)pcm[f] - 128) << 8); }
+                }
+                st[f*2] = l; st[f*2+1] = rr;
+            }
+            if (pf < frames) printf("wav: playing the first %u frames via AC97 (clip exceeds the DMA buffer)\n", pf);
+            else             printf("wav: playing via AC97\n");
+            ac97_play_pcm(st, pf, rate);
+            kfree(st);
+            printf("wav: done.\n");
+            kfree(file);
+            return;
+        }
+        // conversion buffer alloc failed -> fall through to the SB16 path
+    }
+    if (!sb16_is_initialized()) { printf("wav: no audio device (need an AC97 or sb16 device) -- parsed only, not played\n"); kfree(file); return; }
     uint8_t* dma = sb16_get_buffer(); uint32_t cap = sb16_get_buffer_size();
     if (!dma) { kfree(file); printf("wav: no DMA buffer\n"); return; }
     const uint8_t* pcm = file + doff;

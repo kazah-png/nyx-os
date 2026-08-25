@@ -20,6 +20,8 @@
  * BDL/DMA playback (rung 3) still to come; bring-up only runs when ac97_init is
  * called, so the boot and SB16 are untouched.
  */
+#define AC97_MAX_FRAMES 65536   /* DMA-buffer cap in stereo frames (~1.5 s @ 44.1 kHz) */
+
 typedef struct {
     int      found;
     uint8_t  bus, slot, func;
@@ -57,6 +59,11 @@ int ac97_init(void);
  * polls the position registers). Fills *out with what the engine did. Returns 1
  * if DMA was observed to advance. */
 int ac97_play_tone(ac97_play_t* out);
+/* Play `frames` interleaved 16-bit stereo samples at `rate` Hz through the PCM-out
+ * DMA engine (blocks, bounded, until the buffer completes). Copies into the driver's
+ * static DMA buffer, capped at AC97_MAX_FRAMES. Returns 1 if DMA ran. The backend
+ * behind `wav` when an AC'97 controller is present. */
+int ac97_play_pcm(const int16_t* samples, uint32_t frames, uint32_t rate);
 /* The detected device (found == 0 until a successful ac97_detect). */
 const ac97_dev_t* ac97_get(void);
 
