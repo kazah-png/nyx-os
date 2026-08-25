@@ -39,8 +39,8 @@ pipeline is proven on target, end to end.
 | Decimal integers | ✓ | + hex `0x`, `_` separators |
 | Nested block comments | ✗ | ✓ |
 | Attributes `#[...]` | ✗ | ✓ |
-| **Interpolation mode stack** (`T_STR_HEAD/MID/TAIL`) | ✗ | ✓ — the hardest lexer feature |
-| Line/column tracking for diagnostics | ✗ | ✓ |
+| **Interpolation mode stack** (`T_STR_HEAD/MID/TAIL`) | ✓ at toy scale — segment tokens + one mode flag (single level) | ✓ — the hardest lexer feature |
+| Line/column tracking for diagnostics | ✓ lines (rung 2); columns ✗ | ✓ |
 | **Input from a file** | ✓ — rung 1 landed | ✓ |
 
 The last row is the cheapest and the most symbolic: the toy has never
@@ -240,6 +240,25 @@ factor (int-only, folding over constants), unambiguous because the
 `!=` two-char arm eats its pair before a lone `!` can ever be seen. The subset
 grows until the toy parses the examples directory — at which point it
 stops being a toy.
+
+And the hardest lexer feature landed: **interpolation**. A toy string
+containing a brace lexes as segments — HEAD before the first hole,
+MID between holes, TAIL after the last (ncc's own
+`T_STR_HEAD/MID/TAIL` shape) — with the lexer switching to expression
+mode inside each hole; one mode flag stands in for ncc's mode stack
+(single level: a string literal inside a hole is refused with a
+located error). The parser desugars as it parses: segments and holes
+join into a plain `+` chain, each hole wrapped in an ITOS node, and
+the *existing* type machinery compiles it — the checker resolves
+`str + str` to CONCAT, an int hole keeps its ITOS (opcode 28: pop the
+integer, append its decimal image through the shared cursor, push the
+entry), and a str hole's ITOS rewrites to its child in place — a
+string inserts as itself, N's format-by-inferred-type rule decided by
+the same pass that picks PRINT vs PRINTS. The fold pass closes the
+story: ITOS of a constant writes its digits at compile time, the
+CONCATs above collapse, and `print "{1 + 2} and {40 + 2}";` compiles
+to a single PUSH of one ready-made literal — 6 code words, no
+CONCAT, no ITOS. The sugar compiles through the sugar-free tree.
 
 ## Definition of done for M5
 

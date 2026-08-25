@@ -41,6 +41,8 @@
 //                   opcode)                10 = string literal (nv)
 //               11 = len (nl = a str operand; the measuring builtin)
 //               12 = logical not (nl = an int operand; bare '!')
+//               13 = itos (nl = an interpolation hole's expression;
+//                    int in, its decimal text out)
 //   A separate walker, emit_node, then emits by postorder recursion —
 //   children first, the node's own operation last. Postfix is no
 //   longer a lucky consequence of parse order; it is a property of the
@@ -155,7 +157,34 @@
 //   over constants; the `!=` two-char arm eats its pair first, so a
 //   lone '!' can only ever mean this. · 27 STRNEQ (STREQ's
 //   byte-compare, pushing the flip) — string equality is symmetric
-//   now: == and != both resolve over two strings.
+//   now: == and != both resolve over two strings. · 28 ITOS (pop an
+//   integer, append its decimal image as a fresh table entry through
+//   the shared cursor, push the entry's index) — how an interpolation
+//   hole turns a number into text at run time; over a constant it
+//   folds instead, writing the digits at compile time.
+//
+//   INTERPOLATION — the real lexer's hardest feature, at toy scale. A
+//   double-quoted string containing a brace lexes as SEGMENTS: kind 16
+//   HEAD (the text before the first hole), then the hole's expression
+//   as ordinary tokens (the lexer switches to EXPRESSION mode until
+//   the matching '}'), then kind 18 MID for each between-holes segment
+//   or kind 17 TAIL for the text after the last — ncc's own
+//   T_STR_HEAD/MID/TAIL shape, one mode flag standing in for its mode
+//   stack (one level: a string literal INSIDE a hole is refused with a
+//   located error, and braces in toy strings now always open a hole —
+//   N's own rule, though the toy has no \{ escape). The parser then
+//   DESUGARS as it parses: segments and holes join into a plain +
+//   chain, each hole wrapped in an ITOS node, and the existing type
+//   machinery compiles it — the checker resolves str + str to CONCAT,
+//   an int hole keeps its ITOS (number to text), and a str hole's
+//   ITOS REWRITES to its child in place (a string inserts as itself —
+//   N's format-by-inferred-type rule, decided by the same pass that
+//   decides PRINT vs PRINTS). No new machinery below the checker: the
+//   sugar compiles through the sugar-free tree. And the fold pass
+//   closes the story: ITOS of a constant writes its digits through
+//   the shared cursor at COMPILE time, the CONCATs above collapse,
+//   and a fully-constant interpolated string becomes ONE literal —
+//   PUSH + PRINTS, nothing else.
 //
 //   THE TYPE COLUMN. Strings are real VALUES now, and the check pass
 //   is what makes that safe. A double-quoted literal lexes into a
@@ -254,6 +283,9 @@ fn lex(p: *u8, n: i64, k: *i64, v: *i64, ln: *i64, nb: *u8, ss: *i64, sl: *i64,
     mut sc := 0;                           // string-table entry count
     mut sbl := 0;                          // string bytes-buffer length
     mut line := 1;                         // 1-based, for diagnostics (rung 2)
+    mut interp := 0;                       // 1 = inside a \{...\} hole: the
+                                           // lexer is in EXPRESSION mode and
+                                           // '}' resumes the string
     while i < n {
         b := p[i] as i64;
         if b == 32 || b == 9 || b == 13 {  // space / tab / CR
@@ -272,16 +304,43 @@ fn lex(p: *u8, n: i64, k: *i64, v: *i64, ln: *i64, nb: *u8, ss: *i64, sl: *i64,
             continue;
         }
         ln[t] = line;                      // every token records its line
-        if b == 34 {                       // string literal: bytes into the
-            mut j := i + 1;                // side table (no escapes yet —
-            while j < n && p[j] as i64 != 34 {   // scan to the next quote)
+        if b == 34 {                       // string start: scan the segment
+            if interp == 1 {               // (no escapes; a brace ALWAYS
+                fail(line, "no string literals inside an interpolation");
+            }                              // opens a hole now, N's rule)
+            mut j := i + 1;
+            while j < n && p[j] as i64 != 34 && p[j] as i64 != 123 {
                 st.sb[sbl + (j - i - 1)] = p[j];
                 j += 1;
             }
             st.sts[sc] = sbl;
             st.stl[sc] = j - i - 1;
             sbl += j - i - 1;
-            k[t] = 10; v[t] = sc; t += 1;
+            mut kk := 10;                  // a plain literal at the quote ...
+            if j < n && p[j] as i64 == 123 {
+                kk = 16;                   // ... or the HEAD of an
+                interp = 1;                // interpolated one at the brace:
+            }                              // expression mode until '}'
+            k[t] = kk; v[t] = sc; t += 1;
+            sc += 1;
+            i = j + 1;
+            continue;
+        }
+        if b == 125 && interp == 1 {       // '}' closes the hole: back to
+            mut j := i + 1;                // string mode for the next segment
+            while j < n && p[j] as i64 != 34 && p[j] as i64 != 123 {
+                st.sb[sbl + (j - i - 1)] = p[j];
+                j += 1;
+            }
+            st.sts[sc] = sbl;
+            st.stl[sc] = j - i - 1;
+            sbl += j - i - 1;
+            mut kk := 17;                  // the TAIL at the quote ...
+            if j < n && p[j] as i64 == 123 {
+                kk = 18;                   // ... or a MID: another hole opens
+            }
+            if kk == 17 { interp = 0; }
+            k[t] = kk; v[t] = sc; t += 1;
             sc += 1;
             i = j + 1;
             continue;
@@ -470,6 +529,38 @@ fn ast_factor(k: *i64, v: *i64, ln: *i64, fpc: *i64, a: Ast, pos: i64, nn: i64) 
         a.nr[nn] = -1; a.nv[nn] = v[pos];  // any number; the type column
         a.nline[nn] = ln[pos];             // keeps the kinds apart
         return NP{ pos: pos + 1, nn: nn + 1, root: nn };
+    }
+    if k[pos] == 16 {                      // interpolated string: HEAD, then
+        a.nk[nn] = 10; a.nl[nn] = -1;      // hole + segment pairs until the
+        a.nr[nn] = -1; a.nv[nn] = v[pos];  // TAIL. Desugared AS PARSED into
+        a.nline[nn] = ln[pos];             // plain ADD nodes over the pieces
+        mut cur := nn;                     // — each hole wrapped in an ITOS
+        mut n2 := nn + 1;                  // node — and the CHECKER later
+        mut p := pos + 1;                  // resolves str + str to CONCAT:
+        mut going := true;                 // the sugar compiles through the
+        while going {                      // sugar-free tree.
+            r := ast_cmp(k, v, ln, fpc, a, p, n2);
+            w := r.nn;                     // the hole's expression, wrapped
+            a.nk[w] = 13; a.nl[w] = r.root; a.nr[w] = -1; a.nv[w] = 0;
+            a.nline[w] = ln[p];
+            j1 := w + 1;                   // joined onto the chain so far
+            a.nk[j1] = 2; a.nl[j1] = cur; a.nr[j1] = w; a.nv[j1] = 2;
+            a.nline[j1] = ln[p];
+            if !(k[r.pos] == 17 || k[r.pos] == 18) {
+                fail(ln[r.pos], "unterminated interpolation");
+            }
+            s2 := j1 + 1;                  // the segment after the hole
+            a.nk[s2] = 10; a.nl[s2] = -1; a.nr[s2] = -1; a.nv[s2] = v[r.pos];
+            a.nline[s2] = ln[r.pos];
+            j2 := s2 + 1;                  // joined on; a MID keeps going
+            a.nk[j2] = 2; a.nl[j2] = j1; a.nr[j2] = s2; a.nv[j2] = 2;
+            a.nline[j2] = ln[r.pos];
+            cur = j2;
+            going = k[r.pos] == 18;
+            p = r.pos + 1;
+            n2 = j2 + 1;
+        }
+        return NP{ pos: p, nn: n2, root: cur };
     }
     if k[pos] == 1 && k[pos + 1] == 2 && v[pos + 1] == 40 {
         f := v[pos];                       // name '(' — a call
@@ -689,6 +780,21 @@ fn check_node(a: Ast, env: Scope, bc: i64, idx: i64) {
         }
         a.nt[idx] = 0;
     }
+    if a.nk[idx] == 13 {                   // interpolation hole: an integer
+        c := a.nl[idx];                    // becomes text (ITOS stays); a
+        check_node(a, env, bc, c);         // string inserts as ITSELF — the
+        if a.nt[c] == 1 {                  // node REWRITES to its child (the
+            a.nk[idx] = a.nk[c];           // checker's in-place move again),
+            a.nl[idx] = a.nl[c];           // and the surrounding ADD chain
+            a.nr[idx] = a.nr[c];           // then resolves to CONCAT on its
+            a.nv[idx] = a.nv[c];           // own — N's by-inferred-type
+            a.na[idx * 4] = a.na[c * 4];   // interpolation rule, at toy
+            a.na[idx * 4 + 1] = a.na[c * 4 + 1];   // scale
+            a.na[idx * 4 + 2] = a.na[c * 4 + 2];
+            a.na[idx * 4 + 3] = a.na[c * 4 + 3];
+        }
+        a.nt[idx] = 1;                     // either way the hole yields str
+    }
     if a.nk[idx] == 4 {                    // call: int arguments, int result
         mut q := 0;
         while q < a.nl[idx] {
@@ -802,6 +908,34 @@ fn fold_node(a: Ast, st: Strs, idx: i64) {
             a.nv[idx] = nv;
         }
     }
+    if a.nk[idx] == 13 {                   // itos of a folded number: the
+        fold_node(a, st, a.nl[idx]);       // digits are known right now —
+        c := a.nl[idx];                    // append the entry at compile
+        if a.nk[c] == 0 {                  // time through the shared cursor
+            mut x := a.nv[c];
+            base := st.cur[1];
+            mut len := 0;
+            if x < 0 {
+                st.sb[base] = 45 as u8;
+                len = 1;
+                x = -x;
+            }
+            mut m := 1;                    // digits forward by place value
+            while x / m >= 10 { m = m * 10; }
+            while m > 0 {
+                st.sb[base + len] = (48 + (x / m) % 10) as u8;
+                len += 1;
+                m = m / 10;
+            }
+            ni := st.cur[0];
+            st.sts[ni] = base;
+            st.stl[ni] = len;
+            st.cur[0] = ni + 1;
+            st.cur[1] = base + len;
+            a.nk[idx] = 10;                // the node becomes that literal —
+            a.nv[idx] = ni;                // and the CONCAT folds above can
+        }                                  // then collapse the whole string
+    }
     if a.nk[idx] == 4 {                    // call: arguments fold, calls never
         mut q := 0;
         while q < a.nl[idx] {
@@ -845,6 +979,10 @@ fn emit_node(a: Ast, fe: *i64, fp: *i64, code: *i64, cp: i64, idx: i64) -> i64 {
     if a.nk[idx] == 12 {                   // logical not: operand, then NOT
         c := emit_node(a, fe, fp, code, cp, a.nl[idx]);
         return emit1(code, c, 26);
+    }
+    if a.nk[idx] == 13 {                   // itos: operand, then ITOS
+        c := emit_node(a, fe, fp, code, cp, a.nl[idx]);
+        return emit1(code, c, 28);
     }
     f := a.nv[idx];                        // call
     cnt := a.nl[idx];
@@ -1365,6 +1503,30 @@ fn run(prog: *i64, stk: *i64, vars: *i64, st: Strs) -> i64 {
             sp -= 1;
             pc += 1;
         }
+        if op == 28 {                      // ITOS: pop an integer, append
+            mut x := stk[sp - 1];          // its decimal image as a fresh
+            base := st.cur[1];             // entry, push the entry's index
+            mut len := 0;
+            if x < 0 {
+                st.sb[base] = 45 as u8;
+                len = 1;
+                x = -x;
+            }
+            mut m := 1;
+            while x / m >= 10 { m = m * 10; }
+            while m > 0 {
+                st.sb[base + len] = (48 + (x / m) % 10) as u8;
+                len += 1;
+                m = m / 10;
+            }
+            ni := st.cur[0];
+            st.sts[ni] = base;
+            st.stl[ni] = len;
+            st.cur[0] = ni + 1;
+            st.cur[1] = base + len;
+            stk[sp - 1] = ni;
+            pc += 1;
+        }
     }
     stk[0]
 }
@@ -1470,6 +1632,16 @@ fn main() -> i64 {
     // through the same cursor and PRINTS a ready-made entry), and the
     // result chains into == like any string.
     show("who := \"nyx\"; print who + \" rules\"; print \"nyx\" + \"os\"; print who + \"os\" == \"nyxos\"; 0",
+         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, nb, ss, sl, st);
+    // INTERPOLATION — the real lexer's hardest trick, in the toy: a
+    // string splits at its braces (HEAD/MID/TAIL segment tokens, the
+    // lexer switching to expression mode inside each hole) and the
+    // parser desugars the pieces into the plain + chain the type
+    // column already compiles — an int hole becomes text through ITOS,
+    // a str hole inserts as itself. The second print is all-constant:
+    // ITOS folds the digits, the CONCATs collapse, and the entire
+    // string becomes ONE literal at compile time.
+    show("n := 6 * 7; w := \"toy\";\nprint \"the \{w\} says \{n\}\";\nprint \"\{1 + 2\} and \{40 + 2\}\"; 0",
          k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, nb, ss, sl, st);
     // The rest of the comparison set, each its own opcode.
     show("n := 7; print n != 7; print n <= 7; print n >= 9; print !(n >= 9); 0",
