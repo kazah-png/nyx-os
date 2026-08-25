@@ -161,6 +161,11 @@ lang/
                            60 frames presented and closed clean on target
 ```
 
+And here is `nwin` running — an N program's window, launched from the Erebus
+terminal, composited by Hemera on the NyxOS desktop:
+
+![nwin: an N program's window on the NyxOS desktop](../media/nwin.png)
+
 The runtime N programs link against lives with the rest of user space:
 [`user/nyxrt.h`](../user/nyxrt.h) / [`user/nyxrt.c`](../user/nyxrt.c)
 (freestanding string/format helpers + the syscall primitive).
