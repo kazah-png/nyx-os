@@ -107,10 +107,12 @@ strict-C99 output — and is verified three ways:
    **runs the whole toy compiler loop inside NyxOS**. (This
    workload also uncovered — and, run after run, profiled to a pin — a
    kernel VFS node-pool exhaustion,
-   [#66](https://github.com/kazah-png/nyx-os/issues/66): the per-kind
-   census the suite's data motivated shows the leak is entirely
-   unreclaimed `/proc` process entries, ~4 nodes per exec — the language
-   toolchain doubles as a real stress test for the OS.)
+   [#66](https://github.com/kazah-png/nyx-os/issues/66): twenty batch
+   censuses narrowed the leak to unreclaimed `/proc` process entries,
+   ~4 nodes per exec; the kernel fix (v6.4.364) is **census-verified** —
+   the same 67-exec suite that used to end at 478/512 pool nodes now
+   ends at 214 with entries recycling — the language toolchain doubles
+   as a real regression test for the OS.)
 2. **Generated C is clean.** Output compiles warning-free with the OS
    freestanding flags and links with the standard NyxOS `crt0` + `nyxrt`.
 3. **Behavioral tests run on the dev machine.** A host shim maps NyxOS syscall
