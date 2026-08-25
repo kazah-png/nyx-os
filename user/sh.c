@@ -140,11 +140,13 @@ static void preprocess_quotes(const char* in, char* out, int outsz) {
     out[o] = '\0';
 }
 
-/* Pull I/O redirections out of an argv (in place): the tokens `<`, `>`, `>>`
- * (each followed by a filename) and their attached forms `<f` / `>f` / `>>f`.
- * Sets *infile / *outfile / *append and compacts argv to the command words only. */
-static void parse_redir(char** av, int* pac, char** infile, char** outfile, int* append) {
-    *infile = 0; *outfile = 0; *append = 0;
+/* Pull I/O redirections out of an argv (in place): the tokens `<`, `>`, `>>`, `2>`,
+ * `2>>` (each followed by a filename) and their attached forms `<f` / `>f` / `>>f` /
+ * `2>f` / `2>>f`. Sets *infile / *outfile / *append (stdout) and *errfile / *errappend
+ * (stderr, fd 2) and compacts argv to the command words only. */
+static void parse_redir(char** av, int* pac, char** infile, char** outfile, int* append,
+                        char** errfile, int* errappend) {
+    *infile = 0; *outfile = 0; *append = 0; *errfile = 0; *errappend = 0;
     int n = *pac, w = 0;
     for (int i = 0; i < n; i++) {
         char* t = av[i];
@@ -156,6 +158,12 @@ static void parse_redir(char** av, int* pac, char** infile, char** outfile, int*
         } else if (t[0] == '>') {
             *append = 0;
             *outfile = t[1] ? t + 1 : (i + 1 < n ? av[++i] : 0);
+        } else if (t[0] == '2' && t[1] == '>' && t[2] == '>') {
+            *errappend = 1;                                        /* 2>>file: append stderr */
+            *errfile = t[3] ? t + 3 : (i + 1 < n ? av[++i] : 0);
+        } else if (t[0] == '2' && t[1] == '>') {
+            *errappend = 0;                                        /* 2>file: truncate stderr */
+            *errfile = t[2] ? t + 2 : (i + 1 < n ? av[++i] : 0);
         } else {
             av[w++] = t;
         }
@@ -594,8 +602,8 @@ static void run_line(char* line) {
             if (has_next)     { close(pfd[0]); dup2(pfd[1], 1); close(pfd[1]); }
             char* av[MAX_ARGS];
             int ac = split_args(trim(stages[s]), av, MAX_ARGS);
-            char *infile, *outfile; int append;
-            parse_redir(av, &ac, &infile, &outfile, &append);
+            char *infile, *outfile, *errfile; int append, errappend;
+            parse_redir(av, &ac, &infile, &outfile, &append, &errfile, &errappend);
             if (ac == 0) exit(0);
             char** rav = expand_globs(av, &ac);   /* wildcard (* ?) expansion */
             /* Restore any quote-protected bytes now that all splitting/globbing is
@@ -603,6 +611,7 @@ static void run_line(char* line) {
             for (int qi = 0; qi < ac; qi++) q_unprotect(rav[qi]);
             if (infile)  q_unprotect(infile);
             if (outfile) q_unprotect(outfile);
+            if (errfile) q_unprotect(errfile);
             /* File redirections override the pipe wiring for the affected fd. */
             if (infile) {
                 long fd = open(infile, O_RDONLY, 0);
@@ -613,6 +622,11 @@ static void run_line(char* line) {
                 long fd = open(outfile, O_CREAT | (append ? O_APPEND : O_TRUNC), 0644);
                 if (fd < 0) { printf("sh: %s: cannot create\n", outfile); exit(1); }
                 dup2((int)fd, 1); close((int)fd);
+            }
+            if (errfile) {                          /* 2> / 2>>: route stderr (fd 2) to a file */
+                long fd = open(errfile, O_CREAT | (errappend ? O_APPEND : O_TRUNC), 0644);
+                if (fd < 0) { printf("sh: %s: cannot create\n", errfile); exit(1); }
+                dup2((int)fd, 2); close((int)fd);
             }
             char path[160];
             resolve(rav[0], path);
