@@ -146,15 +146,16 @@
 //   indexes, byte-compare the spans, push 0/1) · 21 CONCAT (pop two
 //   table indexes, append a fresh entry = both spans joined, push its
 //   index) · 22 NEQ · 23 LE · 24 GE (the full comparison set, each a
-//   dedicated pop-two-push-0/1 like LT/GT/EQ — on integers; == stays
-//   the only STRING comparison, != over strings is a future rung) ·
+//   dedicated pop-two-push-0/1 like LT/GT/EQ — on integers) ·
 //   25 STRLEN (pop a table index, push its span's length). `len(s)`
 //   completes the string toolkit — make (+), compare (==), measure —
 //   typed str-in/int-out, and len of a literal folds to a number at
 //   compile time. · 26 NOT (pop, push the logical flip: zero to one,
 //   anything else to zero) — bare `!` as a factor, int-only, folding
 //   over constants; the `!=` two-char arm eats its pair first, so a
-//   lone '!' can only ever mean this.
+//   lone '!' can only ever mean this. · 27 STRNEQ (STREQ's
+//   byte-compare, pushing the flip) — string equality is symmetric
+//   now: == and != both resolve over two strings.
 //
 //   THE TYPE COLUMN. Strings are real VALUES now, and the check pass
 //   is what makes that safe. A double-quoted literal lexes into a
@@ -185,8 +186,11 @@
 //   walker stays type-blind for operators and just emits nv. Since ==
 //   yields an int, `if name == "nyx" { ... }` composes with plain
 //   conditions for free. Two literal strings even fold at compile
-//   time (the fold pass carries the table now). Mixed == and </> on
-//   strings stay refused.
+//   time (the fold pass carries the table now). `!=` resolves the
+//   same way — NEQ over two strings becomes STRNEQ, the identical
+//   byte-compare pushing the flipped answer, folding likewise — so
+//   the equality pair is symmetric. Mixed comparisons and the
+//   ordering operators on strings stay refused.
 //   `+` over two strings is CONCAT — the first operator that MAKES a
 //   string. The checker resolves it the same way (nv becomes opcode
 //   21, and the node's type is str, so concatenations bind, print,
@@ -650,6 +654,10 @@ fn check_node(a: Ast, env: Scope, bc: i64, idx: i64) {
             a.nv[idx] = 20;                // == over two strings IS STREQ:
             resolved = true;               // the checker rewrites the opcode,
         }                                  // emit stays type-blind
+        if a.nv[idx] == 22 && lt == 1 && rt == 1 {
+            a.nv[idx] = 27;                // != over two strings IS STRNEQ —
+            resolved = true;               // the same rewrite, the answer
+        }                                  // flipped; equality symmetric now
         if a.nv[idx] == 2 && lt == 1 && rt == 1 {
             a.nv[idx] = 21;                // + over two strings IS CONCAT —
             resolved = true;               // the first operator that MAKES a
@@ -729,7 +737,7 @@ fn fold_node(a: Ast, st: Strs, idx: i64) {
                 a.nv[idx] = val;
             }
         }
-        if a.nv[idx] == 20 && a.nk[l] == 10 && a.nk[r] == 10 {
+        if (a.nv[idx] == 20 || a.nv[idx] == 27) && a.nk[l] == 10 && a.nk[r] == 10 {
             mut eq := 0;                   // two literals: compare them NOW
             if st.stl[a.nv[l]] == st.stl[a.nv[r]] {
                 eq = 1;
@@ -740,6 +748,9 @@ fn fold_node(a: Ast, st: Strs, idx: i64) {
                     }
                     q += 1;
                 }
+            }
+            if a.nv[idx] == 27 {           // != is the same compare with
+                eq = 1 - eq;               // the answer flipped
             }
             a.nk[idx] = 0;                 // the comparison happened at
             a.nv[idx] = eq;                // compile time
@@ -1336,6 +1347,24 @@ fn run(prog: *i64, stk: *i64, vars: *i64, st: Strs) -> i64 {
             stk[sp - 1] = t;
             pc += 1;
         }
+        if op == 27 {                      // STRNEQ: STREQ's byte-compare,
+            y := stk[sp - 1];              // pushing the flip
+            x := stk[sp - 2];
+            mut eq := 0;
+            if st.stl[x] == st.stl[y] {
+                eq = 1;
+                mut q := 0;
+                while q < st.stl[x] {
+                    if st.sb[st.sts[x] + q] as i64 != st.sb[st.sts[y] + q] as i64 {
+                        eq = 0;
+                    }
+                    q += 1;
+                }
+            }
+            stk[sp - 2] = 1 - eq;
+            sp -= 1;
+            pc += 1;
+        }
     }
     stk[0]
 }
@@ -1430,9 +1459,10 @@ fn main() -> i64 {
     show("greet := \"hello from the toy\"; print greet; print len(greet); print 6 * 7; 0",
          k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, nb, ss, sl, st);
     // The type column's second dividend: == over two strings resolves
-    // to STREQ — and since == yields an int, string equality composes
-    // with plain conditions for free.
-    show("name := \"nyx\"; if name == \"nyx\" \{ print \"the goddess\"; \} print name == \"day\"; 0",
+    // to STREQ (and != to STRNEQ — the equality pair is symmetric) —
+    // and since both yield an int, string equality composes with
+    // plain conditions for free.
+    show("name := \"nyx\"; if name == \"nyx\" \{ print \"the goddess\"; \} print name == \"day\"; print name != \"day\"; 0",
          k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, nb, ss, sl, st);
     // And + MAKES strings: the first print concatenates at RUN time (a
     // load meets a literal — the VM appends a fresh table entry), the

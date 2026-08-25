@@ -189,8 +189,11 @@ spans, push 0/1) — overload resolution at toy scale, with the tree
 recording the resolved operation so the emit walker stays type-blind
 for operators. Since `==` yields an int, `if name == "nyx" { ... }`
 composes with plain conditions for free; two literal strings fold at
-compile time (the fold pass carries the string table now); mixed `==`
-and `<`/`>` on strings stay refused.
+compile time (the fold pass carries the string table now). And the
+pair is symmetric: `!=` over two strings resolves the same way to
+STRNEQ — the identical byte-compare pushing the flipped answer, one
+generalized fold arm covering both. Mixed comparisons and the
+ordering operators on strings stay refused.
 
 Concatenation answered its design question cleanly: `+` over two
 strings resolves (same checker rewrite) to a CONCAT opcode whose
@@ -220,8 +223,9 @@ like whitespace, with the line counter still ticking so diagnostics
 stay honest around them) and carries the **full comparison set** —
 `!=`, `<=`, `>=` joined `<`, `>`, `==` as two-char tokens with
 dedicated opcodes, each folding over constants like every other
-operator (`print 3 <= 3;` emits `PUSH 1`). `==` remains the only
-*string* comparison; `!=` over strings is a later rung. **`else if`
+operator (`print 3 <= 3;` emits `PUSH 1`) — and `!=` resolves over
+strings too (STRNEQ, above), so equality is the string-legal pair
+and ordering stays int-only. **`else if`
 chains** came free: the else slot always held a statement index and a
 nested `if` is a statement, so the parser just recurses instead of
 demanding braces — no walker changed, and dead-arm elimination
