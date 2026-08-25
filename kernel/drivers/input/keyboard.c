@@ -95,6 +95,19 @@ static char us_shift[0x80] = {
     '|','Z','X','C','V','B','N','M','<','>','?', 0, '*', 0, ' '
 };
 
+// Pure scancode->character lookup for the active layout tables: given the settled
+// modifier flags, index the right table. This is the half of scancode_to_ascii that
+// turns a keypress into a character, with none of the modifier state machine or ring
+// buffers — kept pure so the login-critical mapping (US + ES incl. AltGr) can be
+// regression-tested headless. On the ES layout AltGr takes precedence over Shift.
+static char kbd_translate(int layout, uint8_t sc, int shift, int altgr, int caps) {
+    sc &= 0x7F;
+    if (layout == 0)                         // US
+        return (shift || caps) ? us_shift[sc] : us_normal[sc];
+    if (altgr) return es_altgr[sc];          // Español
+    return (shift || caps) ? es_shift[sc] : es_normal[sc];
+}
+
 // ============================================================
 // Inicialización
 // ============================================================
@@ -213,22 +226,8 @@ char scancode_to_ascii(uint8_t sc) {
     // Si es una tecla liberada, no generar carácter
     if (!pressed) return 0;
 
-    // --- Seleccionar tabla según layout ---
-    char c = 0;
-    if (keyboard_layout == 0) { // US
-        if (shift_pressed || caps_lock)
-            c = us_shift[sc];
-        else
-            c = us_normal[sc];
-    } else { // Español
-        if (altgr_pressed)
-            c = es_altgr[sc];
-        else if (shift_pressed || caps_lock)
-            c = es_shift[sc];
-        else
-            c = es_normal[sc];
-    }
-    return c;
+    // --- Seleccionar tabla según layout (lookup puro, ver kbd_translate) ---
+    return kbd_translate(keyboard_layout, sc, shift_pressed, altgr_pressed, caps_lock);
 }
 
 // ============================================================
@@ -378,4 +377,33 @@ int is_ctrl_pressed(void) {
 
 int is_alt_pressed(void) {
     return alt_pressed;
+}
+
+// KAT for the pure scancode->character mapping (kbd_translate) — the login-critical
+// path, exercised the moment anyone types nyx/nyx on real hardware. Pins the US and
+// Spanish layouts across letters (plain/Shift/CapsLock), digit-row symbols, the ES
+// dead-key/ñ region, AltGr (and its precedence over Shift), and the zero-fill for an
+// unmapped scancode. Set-1 scancodes; letters share Set-1/Set-2 codes. Convention:
+// 0 = PASS, else the failing case number. #define TR keeps each check to one line.
+int kbd_translate_selftest(void) {
+    #define TR(lay,sc,sh,ag,cp) ((unsigned char)kbd_translate((lay),(sc),(sh),(ag),(cp)))
+    // US layout (0): 'a' key = 0x1E, '1' key = 0x02, quote = 0x28, space = 0x39.
+    if (TR(0,0x1E,0,0,0) != 'a') return 1;
+    if (TR(0,0x1E,1,0,0) != 'A') return 2;      // Shift
+    if (TR(0,0x1E,0,0,1) != 'A') return 3;      // CapsLock
+    if (TR(0,0x02,0,0,0) != '1') return 4;
+    if (TR(0,0x02,1,0,0) != '!') return 5;      // Shift+1
+    if (TR(0,0x28,1,0,0) != '"') return 6;      // Shift+' -> "
+    if (TR(0,0x39,0,0,0) != ' ') return 7;
+    // Spanish layout (1): ñ key = 0x27, '2' key = 0x03.
+    if (TR(1,0x1E,0,0,0) != 'a') return 8;
+    if (TR(1,0x1E,1,0,0) != 'A') return 9;
+    if (TR(1,0x27,0,0,0) != 0xF1) return 10;    // ñ
+    if (TR(1,0x27,1,0,0) != 0xD1) return 11;    // Ñ (Shift)
+    if (TR(1,0x03,0,1,0) != '@') return 12;     // AltGr+2 -> @
+    if (TR(1,0x03,1,1,0) != '@') return 13;     // AltGr wins over Shift
+    // Unmapped scancode (past the filled range) -> 0 on both layouts.
+    if (TR(0,0x59,0,0,0) != 0 || TR(1,0x59,0,0,0) != 0) return 14;
+    return 0;
+    #undef TR
 }

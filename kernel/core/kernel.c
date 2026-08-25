@@ -8624,6 +8624,7 @@ extern int image_reject_selftest(void);
 extern int tcp_checksum_selftest(void);
 extern int tcp_wnd_selftest(void);          // net/tcp.c — receive-window flow-control KAT
 extern int ipv4_rx_selftest(void);          // net/ip.c — IPv4 RX header gate (hostile packets) KAT
+extern int kbd_translate_selftest(void);    // drivers/input/keyboard.c — scancode->char mapping (US+ES/AltGr) KAT
 extern int dns_response_selftest(void);
 extern int vfs_pathnorm_selftest(void);
 extern int vfs_poolkind_selftest(void);
@@ -8934,6 +8935,7 @@ static void run_selftests(void) {
         {"du",           du_selftest},
         {"pci",          pci_selftest},
         {"nvme",         nvme_selftest},
+        {"kbdmap",       kbd_translate_selftest},
         {"nyxgrub",      nyxgrub_selftest},
         {"gpt",          gpt_selftest},
         {"fat",          fat_selftest},
