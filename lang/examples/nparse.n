@@ -47,6 +47,8 @@
 //                    na = the field-value roots — the call-node shape)
 //               15 = field read (nl = base; nv holds the field SYMBOL
 //                    until the check pass resolves it to a slot)
+//               16 = field write (a STATEMENT: nl = value, na slot 0 =
+//                    the base name's symbol, nv = field, resolved)
 //   A separate walker, emit_node, then emits by postorder recursion —
 //   children first, the node's own operation last. Postfix is no
 //   longer a lucky consequence of parse order; it is a property of the
@@ -178,7 +180,9 @@
 //   hole turns a number into text at run time; over a constant it
 //   folds instead, writing the digits at compile time. · 29 RNEW k
 //   (pop k field values into a fresh record, push its base index) ·
-//   30 RGET off (replace a record index with one field's word).
+//   30 RGET off (replace a record index with one field's word) ·
+//   31 RSET off (pop the record index, then the value; store the
+//   field's word in place - how `p.x = e;` mutates).
 //
 //   STRUCTS (rung 1 of the struct arc — see docs/selfhost.md). A
 //   declaration `struct P \{ x, y \}` is tables, not code: the name and
@@ -198,7 +202,15 @@
 //   it meant (ncc refuses cond-position literals syntactically; the
 //   toy disambiguates by declaration — documented divergence). No
 //   struct folding: records exist at run time only, the VM being the
-//   one allocator. Field writes and structs-through-calls are rung 2.
+//   one allocator. Rung 2 added FIELD WRITES: `p.x = e;` is a
+//   statement (name '.' name '=' - all four tokens checked, so a
+//   tail that merely READS a field is never taken for one); the
+//   base must be a bound name holding a struct, the value an
+//   integer, and the check pass resolves the field to its slot
+//   exactly as reads do. Structs still do not cross calls:
+//   parameters seed as integers, and lifting that honestly means
+//   declared parameter types - a later rung, refused loudly until
+//   then.
 //
 //   INTERPOLATION — the real lexer's hardest feature, at toy scale. A
 //   double-quoted string containing a brace lexes as SEGMENTS: kind 16
@@ -1235,9 +1247,14 @@ fn emit_node(a: Ast, fe: *i64, fp: *i64, code: *i64, cp: i64, idx: i64) -> i64 {
     c
 }
 
-// A statement begins with `if`, `while`, `print`, or a name + ':='.
-fn is_stmt_start(k: *i64, pos: i64) -> bool {
+// A statement begins with `if`, `while`, `print`, a name + ':=', or a
+// FIELD WRITE — name '.' name '=' exactly, all four tokens checked, so
+// a tail expression that merely READS a field (`p.x`) is never taken
+// for one. The test carries v now: only it can tell '.' from '='.
+fn is_stmt_start(k: *i64, v: *i64, pos: i64) -> bool {
     k[pos] == 5 || k[pos] == 6 || k[pos] == 11 || (k[pos] == 1 && k[pos + 1] == 4)
+        || (k[pos] == 1 && k[pos + 1] == 2 && v[pos + 1] == 46
+            && k[pos + 2] == 1 && k[pos + 3] == 2 && v[pos + 3] == 61)
 }
 
 // stmt := name ':=' cmp ';' | 'if' cmp block [ 'else' block ]
@@ -1284,6 +1301,18 @@ fn ast_stmt(k: *i64, v: *i64, ln: *i64, fpc: *i64, sd: Sdefs, a: Ast, pos: i64, 
         a.nk[idx] = 9; a.nl[idx] = r.root; a.nr[idx] = -1; a.nv[idx] = 0;
         return NP{ pos: r.pos + 1, nn: r.nn, root: idx };
     }
+    if k[pos + 1] == 2 && v[pos + 1] == 46 {
+        idx := nn;                         // name '.' name '=' cmp ';' — a
+        a.nline[idx] = ln[pos + 1];        // FIELD WRITE. The base is a
+        a.na[idx * 4] = v[pos];            // bound NAME (its symbol in the
+        a.nv[idx] = v[pos + 2];            // arg slice), the field symbol
+        r := ast_cmp(k, v, ln, fpc, sd, a, pos + 4, nn + 1);   // sits in nv
+        if !(k[r.pos] == 2 && v[r.pos] == 59) {   // until check resolves it
+            fail(ln[r.pos], "expected ';' after the field write");
+        }
+        a.nk[idx] = 16; a.nl[idx] = r.root; a.nr[idx] = -1;
+        return NP{ pos: r.pos + 1, nn: r.nn, root: idx };
+    }
     idx := nn;                             // name ':=' cmp ';'
     a.nline[idx] = ln[pos];
     slot := v[pos];
@@ -1311,7 +1340,7 @@ fn ast_block(k: *i64, v: *i64, ln: *i64, fpc: *i64, sd: Sdefs, a: Ast, pos: i64,
     mut more := true;
     while more {
         more = false;
-        if is_stmt_start(k, p) {
+        if is_stmt_start(k, v, p) {
             s := ast_stmt(k, v, ln, fpc, sd, a, p, n2);
             seq := s.nn;                   // the chain link
             a.nk[seq] = 8; a.nl[seq] = s.root; a.nr[seq] = -1; a.nv[seq] = 0;
@@ -1358,6 +1387,36 @@ fn check_stmt(a: Ast, sd: Sdefs, env: Scope, bc: i64, idx: i64) -> i64 {
         env.bv[bc] = slot;
         return bc + 1;
     }
+    if a.nk[idx] == 16 {                   // field write: the base must be a
+        base := a.na[idx * 4];             // BOUND name holding a struct,
+        mut ok := false;                   // the field one of ITS fields,
+        mut i := 0;                        // the value an integer — and the
+        while i < bc {                     // tree keeps the resolved slot
+            if env.bv[i] == base { ok = true; }
+            i += 1;
+        }
+        if !ok {
+            fail(a.nline[idx], "unknown variable");
+        }
+        bt := env.vt[base];
+        if bt < 2 {
+            fail(a.nline[idx], "only a struct value has fields");
+        }
+        sid := bt - 2;
+        mut off := -1;
+        mut q := 0;
+        while q < sd.sfc[sid] {
+            if sd.sf[sid * 4 + q] == a.nv[idx] { off = q; }
+            q += 1;
+        }
+        if off < 0 { fail(a.nline[idx], "unknown field"); }
+        a.nv[idx] = off;
+        check_node(a, sd, env, bc, a.nl[idx]);
+        if a.nt[a.nl[idx]] != 0 {
+            fail(a.nline[idx], "a field holds an integer");
+        }
+        return bc;
+    }
     if a.nk[idx] == 6 {                    // if: an int condition; both arms
         check_node(a, sd, env, bc, a.nl[idx]);
         if a.nt[a.nl[idx]] != 0 {
@@ -1399,6 +1458,7 @@ fn fold_stmt(a: Ast, st: Strs, idx: i64) {
     if a.nk[idx] == 8 { fold_stmt(a, st, a.nl[idx]); fold_stmt(a, st, a.nr[idx]); }
     if a.nk[idx] == 5 { fold_node(a, st, a.nl[idx]); }
     if a.nk[idx] == 9 { fold_node(a, st, a.nl[idx]); }
+    if a.nk[idx] == 16 { fold_node(a, st, a.nl[idx]); }   // the written value folds
     if a.nk[idx] == 6 {
         fold_node(a, st, a.nl[idx]);
         if a.nk[a.nl[idx]] == 0 {          // constant condition: dead-arm
@@ -1451,6 +1511,11 @@ fn emit_stmt(a: Ast, fe: *i64, fp: *i64, code: *i64, cp: i64, idx: i64) -> i64 {
         }
         return emit1(code, c, 18);
     }
+    if a.nk[idx] == 16 {                   // field write: value, then the
+        c := emit_node(a, fe, fp, code, cp, a.nl[idx]);   // record index,
+        c2 := emit2(code, c, 11, a.na[idx * 4]);   // then RSET at the slot
+        return emit2(code, c2, 31, a.nv[idx]);     // the check pass resolved
+    }
     if a.nk[idx] == 6 {                    // if / else
         c := emit_node(a, fe, fp, code, cp, a.nl[idx]);
         hole := c + 1;                     // the JZ's target word
@@ -1489,7 +1554,7 @@ fn gen_body(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, sd: Sdefs
     mut more := true;
     while more {                           // the statement chain, if any
         more = false;
-        if is_stmt_start(k, p) {
+        if is_stmt_start(k, v, p) {
             s := ast_stmt(k, v, ln, fpc, sd, a, p, n2);
             seq := s.nn;
             a.nk[seq] = 8; a.nl[seq] = s.root; a.nr[seq] = -1; a.nv[seq] = 0;
@@ -1807,6 +1872,13 @@ fn run(prog: *i64, stk: *i64, vars: *i64, st: Strs, sd: Sdefs) -> i64 {
             stk[sp - 1] = sd.rw[stk[sp - 1] + prog[pc + 1]];   // index with
             pc += 2;                       // the field's word
         }
+        if op == 31 {                      // RSET off: pop the record index
+            idx2 := stk[sp - 1];           // then the value, store the
+            val2 := stk[sp - 2];           // field's word in place
+            sd.rw[idx2 + prog[pc + 1]] = val2;
+            sp -= 2;
+            pc += 2;
+        }
     }
     stk[0]
 }
@@ -1934,12 +2006,14 @@ fn main() -> i64 {
     // them still ticking the line counter, so diagnostics stay honest.
     show("h := 0x2a; /* hex /* nests */ properly */ big := 1_000;\nprint \"\{h\} and \{big\}\"; 0",
          k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, sy, st, sd);
-    // STRUCTS, rung 1: declared, made, read. A record lives in a side
+    // STRUCTS: declared, made, MUTATED, read. A record lives in a side
     // table — the value on the stack IS its base index, like a string —
     // and the type column (type ids: 2+k for struct k) is what keeps
     // it from adding like the number it secretly is. The check pass
     // resolves each field name to its slot; emit stays type-blind.
-    show("struct P \{ x, y \}\np := P\{3, 4\};\nprint p.x * 10 + p.y; 0",
+    // `p.x = e;` writes through the record (RSET), so the read after
+    // it sees 8 where the literal put 3.
+    show("struct P \{ x, y \}\np := P\{3, 4\};\np.x = p.x + 5;\nprint p.x * 10 + p.y; 0",
          k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, sy, st, sd);
     // The rest of the comparison set, each its own opcode.
     show("n := 7; print n != 7; print n <= 7; print n >= 9; print !(n >= 9); 0",

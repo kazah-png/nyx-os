@@ -57,7 +57,7 @@ kernel `open`/`read` from N — wiring the two together makes the first
 | `else` | ✓ — rung 2 landed | ✓ |
 | **An AST** | ✓ expressions AND statements — whole bodies parse to a tree, then check → fold → emit run as passes (only fn headers + the fndef hop-over emit direct) | ✓ — parse → check → gen |
 | Types (everything is `i64` in the toy) | ✓ a real TYPE COLUMN — int/str inferred bottom-up on the tree, per-name types fixed for life, int-only ops refuse strings with located errors | full checker |
-| structs / enums / match / defer / own / caps | structs ✓ rung 1 (decl + literal + field read, type ids); enums/match/defer/own/caps ✗ | ✓ |
+| structs / enums / match / defer / own / caps | structs ✓ (decl + literal + field read/WRITE, type ids; not across calls); enums/match/defer/own/caps ✗ | ✓ |
 | `str` values and string literals as data | ✓ at toy scale — strings bind, load, and print (a string IS its table index at run time; the type column keeps the kinds apart) | ✓ |
 | Error diagnostics (`line N: message`) | ✓ expect points (rung 2) + a semantic pass: unknown variable, call arity | ✓ everywhere |
 
@@ -311,9 +311,17 @@ alphabet honest: `is_letter` now reads `A-Z` and `_` like N's own
 (struct names are capitalized by convention, and the toy could not
 even lex one). The remaining ladder:
 
-2. **Field writes + structs through calls** — `p.x = e` stores through
-   the record; a struct index passes to a fn like any stack value, the
-   per-name type column keeping it honest across the call.
+2. **Field writes** — ✅ **landed**: `p.x = e;` is a statement (name
+   `.` name `=` — all four tokens checked at the statement gate, so a
+   tail that merely *reads* a field is never taken for a write); the
+   base must be a bound name holding a struct, the value an integer,
+   the check pass resolves the field to its slot exactly as reads do,
+   and one RSET opcode stores the word in place — the demo mutates
+   `p.x` from 3 to 8 and the read after it sees the new value. The
+   honest cut that stayed: **structs do not cross calls** — callee
+   parameters seed as integers, and lifting that properly means
+   *declared parameter types*, a later rung, refused loudly until
+   then ("cannot pass a struct to a function").
 3. **Enums + `match` — later.** Tags + payloads are a struct with a
    discriminant; `match` lowers to the JZ chains the toy already
    patches. Genuinely bigger: exhaustiveness lives in the checker.
