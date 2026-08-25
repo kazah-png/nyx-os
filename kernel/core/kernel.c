@@ -9484,6 +9484,7 @@ void nyxfetch(void) {
     nyxfetch_field(info[n++], KEY_C, RST_C, "Desktop:", COMPOSITOR_NAME " " COMPOSITOR_VERSION);
     nyxfetch_field(info[n++], KEY_C, RST_C, "Terminal:", TERMINAL_NAME " " TERMINAL_VERSION);
     nyxfetch_field(info[n++], KEY_C, RST_C, "Browser:", SELENE_NAME " " SELENE_VERSION);
+    nyxfetch_field(info[n++], KEY_C, RST_C, "Editor:", EDITOR_NAME " " EDITOR_VERSION);
     snprintf(val, sizeof(val), "%s (%d)", cpu_brand, cpu_count);
     nyxfetch_field(info[n++], KEY_C, RST_C, "CPU:", val);
     snprintf(val, sizeof(val), "%llu / %llu MiB (%u%%)",

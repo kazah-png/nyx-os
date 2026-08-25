@@ -1825,7 +1825,7 @@ static window_t* find_window(int id) {
 // the file manager, which passes the path of a file the user opened. Returns the
 // new window, or NULL if the window pool is full / allocation failed.
 window_t* compositor_open_editor(const char* path) {
-    window_t* ewin = window_create(150, 120, 600, 400, "Text Editor", editor_win_draw);
+    window_t* ewin = window_create(150, 120, 600, 400, EDITOR_NAME, editor_win_draw);
     if (!ewin) return NULL;
     ewin->reserved = editor_create_ctx();
     if (!ewin->reserved) { window_destroy(ewin->id); return NULL; }
