@@ -57,7 +57,7 @@ kernel `open`/`read` from N — wiring the two together makes the first
 | `else` | ✓ — rung 2 landed | ✓ |
 | **An AST** | ✓ expressions AND statements — whole bodies parse to a tree, then check → fold → emit run as passes (only fn headers + the fndef hop-over emit direct) | ✓ — parse → check → gen |
 | Types (everything is `i64` in the toy) | ✓ a real TYPE COLUMN — int/str inferred bottom-up on the tree, per-name types fixed for life, int-only ops refuse strings with located errors | full checker |
-| structs / enums / match / defer / own / caps | structs ✓ COMPLETE at toy scale (decl + literal + read/write + typed parameters across calls); enums/match/defer/own/caps ✗ | ✓ |
+| structs / enums / match / defer / own / caps | structs ✓ COMPLETE at toy scale; enums+match ✓ tag-only with checker-proved exhaustiveness; defer/own/caps ✗ | ✓ |
 | `str` values and string literals as data | ✓ at toy scale — strings bind, load, and print (a string IS its table index at run time; the type column keeps the kinds apart) | ✓ |
 | Error diagnostics (`line N: message`) | ✓ expect points (rung 2) + a semantic pass: unknown variable, call arity | ✓ everywhere |
 
@@ -330,9 +330,18 @@ even lex one). The remaining ladder:
    mutation is visible in the caller (the demo prints 4 twice: the
    returned `q.y`, then the caller's own `p.x` after `bump` bumped
    it). Returns stay integer-only for now.
-4. **Enums + `match` — later.** Tags + payloads are a struct with a
-   discriminant; `match` lowers to the JZ chains the toy already
-   patches. Genuinely bigger: exhaustiveness lives in the checker.
+4. **Enums + `match`** — ✅ **landed, tag-only**: an enum declares
+   like a struct (a variant IS its index), `Shape.square` resolves at
+   parse to one PUSH — typed `100+e`, so a tag never adds, prints,
+   interpolates, or slips into a plain parameter: `match` is the only
+   eliminator. Arms compile to DUP/EQ/JZ chains over the scrutinee and
+   the **last arm runs untested — the checker proved exhaustiveness
+   first** (every variant exactly once; unknown variants, duplicates,
+   and gaps are located errors). Tags cross calls via `fn pick(s:
+   Shape)` annotations, and a callee can match on its parameter.
+   **Payload variants are the remaining rung** — a tag plus payload
+   words is a record with a discriminant, the struct store standing
+   ready.
 
 What does NOT carry over from ncc: field offsets in bytes (toy records
 are flat i64 words), methods, and ownership — those stay ncc-side.

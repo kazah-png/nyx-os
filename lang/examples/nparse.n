@@ -49,6 +49,10 @@
 //                    until the check pass resolves it to a slot)
 //               16 = field write (a STATEMENT: nl = value, na slot 0 =
 //                    the base name's symbol, nv = field, resolved)
+//               17 = match (a STATEMENT: nl = scrutinee, nr = first
+//                    arm) with 18 = arm (nv = variant symbol until
+//                    check resolves the TAG; nl = chain, nr = next)
+//               19 = enum tag (nv = tag, nr = enum id; typed 100+e)
 //   A separate walker, emit_node, then emits by postorder recursion —
 //   children first, the node's own operation last. Postfix is no
 //   longer a lucky consequence of parse order; it is a property of the
@@ -182,7 +186,22 @@
 //   (pop k field values into a fresh record, push its base index) ·
 //   30 RGET off (replace a record index with one field's word) ·
 //   31 RSET off (pop the record index, then the value; store the
-//   field's word in place - how `p.x = e;` mutates).
+//   field's word in place - how `p.x = e;` mutates). · 32 DUP ·
+//   33 POP (the match machinery: the scrutinee stays put while arms
+//   DUP/EQ/JZ against it; the taken arm POPs it).
+//
+//   ENUMS + MATCH. A tag-only enum declares like a struct (tables:
+//   the name and up to four variant symbols; a variant IS its
+//   index). `Shape.square` resolves AT PARSE (the enum is known) to
+//   one PUSH of the tag - but its TYPE is 100+e, far from int and
+//   the struct ids, so a tag never adds, prints, interpolates, or
+//   crosses into a plain parameter: `match` is the ONLY eliminator.
+//   match compiles to DUP/PUSH/EQ/JZ chains over the scrutinee, and
+//   the LAST arm runs with no test at all - the checker PROVED
+//   exhaustiveness first (every variant covered exactly once: unknown
+//   variants, duplicate arms, and missing arms are located errors).
+//   Tags cross calls with `fn pick(s: Shape)` annotations like
+//   structs do. Payload variants are a later rung.
 //
 //   STRUCTS (rung 1 of the struct arc — see docs/selfhost.md). A
 //   declaration `struct P \{ x, y \}` is tables, not code: the name and
@@ -486,6 +505,15 @@ fn lex(p: *u8, n: i64, k: *i64, v: *i64, ln: *i64, sy: Syms, st: Strs) -> i64 {
                 && p[st + 4] as i64 == 99 && p[st + 5] as i64 == 116 {
                 kind = 19;                 // struct (a reserved word)
             }
+            if len == 4 && p[st] as i64 == 101 && p[st + 1] as i64 == 110
+                && p[st + 2] as i64 == 117 && p[st + 3] as i64 == 109 {
+                kind = 20;                 // enum
+            }
+            if len == 5 && p[st] as i64 == 109 && p[st + 1] as i64 == 97
+                && p[st + 2] as i64 == 116 && p[st + 3] as i64 == 99
+                && p[st + 4] as i64 == 104 {
+                kind = 21;                 // match
+            }
             if len == 5 && p[st] as i64 == 112 && p[st + 1] as i64 == 114
                 && p[st + 2] as i64 == 105 && p[st + 3] as i64 == 110
                 && p[st + 4] as i64 == 116 {
@@ -604,8 +632,11 @@ struct Syms { nb: *u8, ss: *i64, sl: *i64 }
 // fpt = per-function declared PARAMETER types (fpt[f*4+j], the fp
 // move): 0 int (the unannotated default), 2+k struct k - it lives
 // here because Sdefs already reaches the parser and the checker.
+// en/ev/evc mirror sn/sf/sfc for ENUMS (tag-only: a variant is its
+// index), with cur[2] the declared enum count; an enum's TYPE ID is
+// 100+e, far from the struct ids (2+k, k<16) on purpose.
 struct Sdefs { sn: *i64, sf: *i64, sfc: *i64, rw: *i64, cur: *i64,
-               fpt: *i64 }
+               fpt: *i64, en: *i64, ev: *i64, evc: *i64 }
 
 struct Strs { sb: *u8, sts: *i64, stl: *i64, cur: *i64 }
 
@@ -710,6 +741,29 @@ fn ast_prim(k: *i64, v: *i64, ln: *i64, fpc: *i64, sd: Sdefs, a: Ast, pos: i64, 
             n2 = j2 + 1;
         }
         return NP{ pos: p, nn: n2, root: cur };
+    }
+    if k[pos] == 1 && k[pos + 1] == 2 && v[pos + 1] == 46 {
+        mut eid := -1;                     // name '.' name is an ENUM TAG
+        mut ei := 0;                       // when the name is a declared
+        while ei < sd.cur[2] {             // enum — resolved AT PARSE, the
+            if sd.en[ei] == v[pos] { eid = ei; }   // enum being known; a
+            ei += 1;                       // plain variable's field read
+        }                                  // is untouched (not an enum)
+        if eid >= 0 {
+            if k[pos + 2] != 1 {
+                fail(ln[pos + 2], "expected a variant name");
+            }
+            mut tag := -1;
+            mut vi := 0;
+            while vi < sd.evc[eid] {
+                if sd.ev[eid * 4 + vi] == v[pos + 2] { tag = vi; }
+                vi += 1;
+            }
+            if tag < 0 { fail(ln[pos + 2], "unknown variant"); }
+            a.nk[nn] = 19; a.nl[nn] = -1; a.nr[nn] = eid; a.nv[nn] = tag;
+            a.nline[nn] = ln[pos + 1];
+            return NP{ pos: pos + 3, nn: nn + 1, root: nn };
+        }
     }
     if k[pos] == 1 && k[pos + 1] == 2 && v[pos + 1] == 123 {
         mut sid := -1;                     // name '{' opens a struct literal
@@ -905,6 +959,9 @@ fn check_node(a: Ast, sd: Sdefs, env: Scope, bc: i64, idx: i64) {
     if a.nk[idx] == 10 {                   // string literal: str
         a.nt[idx] = 1;
     }
+    if a.nk[idx] == 19 {                   // enum tag: typed by its enum
+        a.nt[idx] = 100 + a.nr[idx];
+    }
     if a.nk[idx] == 1 {                    // load: bound, and typed as bound
         mut ok := false;
         mut i := 0;
@@ -940,6 +997,9 @@ fn check_node(a: Ast, sd: Sdefs, env: Scope, bc: i64, idx: i64) {
         if !resolved && (lt == 1 || rt == 1) {
             fail(a.nline[idx], "cannot use a string in arithmetic or comparison");
         }
+        if !resolved && (lt >= 100 || rt >= 100) {
+            fail(a.nline[idx], "cannot use an enum tag in arithmetic or comparison");
+        }
         if !resolved && (lt >= 2 || rt >= 2) {
             fail(a.nline[idx], "cannot use a struct in arithmetic or comparison");
         }
@@ -959,7 +1019,7 @@ fn check_node(a: Ast, sd: Sdefs, env: Scope, bc: i64, idx: i64) {
     if a.nk[idx] == 15 {                   // field read: the base must be a
         check_node(a, sd, env, bc, a.nl[idx]);   // struct and the name one of
         bt := a.nt[a.nl[idx]];             // ITS fields — then the tree
-        if bt < 2 {                        // records the RESOLVED slot and
+        if bt < 2 || bt >= 100 {           // records the RESOLVED slot and
             fail(a.nline[idx], "only a struct value has fields");
         }                                  // emit stays type-blind
         sid := bt - 2;
@@ -1000,6 +1060,9 @@ fn check_node(a: Ast, sd: Sdefs, env: Scope, bc: i64, idx: i64) {
     if a.nk[idx] == 13 {                   // interpolation hole: an integer
         c := a.nl[idx];                    // becomes text (ITOS stays); a
         check_node(a, sd, env, bc, c);         // string inserts as ITSELF — the
+        if a.nt[c] >= 100 {
+            fail(a.nline[idx], "cannot interpolate an enum tag");
+        }
         if a.nt[c] >= 2 {
             fail(a.nline[idx], "cannot interpolate a struct");
         }
@@ -1024,7 +1087,10 @@ fn check_node(a: Ast, sd: Sdefs, env: Scope, bc: i64, idx: i64) {
             if at == 1 {
                 fail(a.nline[idx], "cannot pass a string to a function");
             }
-            if at >= 2 && want == 0 {      // struct into a plain parameter:
+            if at >= 100 && want == 0 {    // a tag or a struct into a
+                fail(a.nline[idx], "cannot pass an enum tag to a plain parameter");
+            }
+            if at >= 2 && want == 0 {      // plain parameter: refused
                 fail(a.nline[idx], "cannot pass a struct to a function");
             }
             if at != want {                // int into a struct parameter,
@@ -1201,6 +1267,9 @@ fn emit_node(a: Ast, fe: *i64, fp: *i64, code: *i64, cp: i64, idx: i64) -> i64 {
     if a.nk[idx] == 10 {                   // string literal: at run time a
         return emit2(code, cp, 1, a.nv[idx]);   // string IS its table index
     }
+    if a.nk[idx] == 19 {                   // enum tag: at run time a tag IS
+        return emit2(code, cp, 1, a.nv[idx]);   // its index, PUSHed plain
+    }
     if a.nk[idx] == 2 {                    // binop: lhs, rhs, then the opcode
         c := emit_node(a, fe, fp, code, cp, a.nl[idx]);
         c2 := emit_node(a, fe, fp, code, c, a.nr[idx]);
@@ -1268,7 +1337,8 @@ fn emit_node(a: Ast, fe: *i64, fp: *i64, code: *i64, cp: i64, idx: i64) -> i64 {
 // a tail expression that merely READS a field (`p.x`) is never taken
 // for one. The test carries v now: only it can tell '.' from '='.
 fn is_stmt_start(k: *i64, v: *i64, pos: i64) -> bool {
-    k[pos] == 5 || k[pos] == 6 || k[pos] == 11 || (k[pos] == 1 && k[pos + 1] == 4)
+    k[pos] == 5 || k[pos] == 6 || k[pos] == 11 || k[pos] == 21
+        || (k[pos] == 1 && k[pos + 1] == 4)
         || (k[pos] == 1 && k[pos + 1] == 2 && v[pos + 1] == 46
             && k[pos + 2] == 1 && k[pos + 3] == 2 && v[pos + 3] == 61)
 }
@@ -1316,6 +1386,37 @@ fn ast_stmt(k: *i64, v: *i64, ln: *i64, fpc: *i64, sd: Sdefs, a: Ast, pos: i64, 
         }
         a.nk[idx] = 9; a.nl[idx] = r.root; a.nr[idx] = -1; a.nv[idx] = 0;
         return NP{ pos: r.pos + 1, nn: r.nn, root: idx };
+    }
+    if k[pos] == 21 {                      // match cmp { arm... } — the
+        idx := nn;                         // arms are a cons list of kind-18
+        a.nline[idx] = ln[pos];            // nodes (nv = variant symbol, nl
+        c := ast_cmp(k, v, ln, fpc, sd, a, pos + 1, nn + 1);   // = chain)
+        if !(k[c.pos] == 2 && v[c.pos] == 123) {
+            fail(ln[c.pos], "expected '\{' after the match value");
+        }
+        mut p2 := c.pos + 1;
+        mut n2 := c.nn;
+        mut first := -1;
+        mut prev := -1;
+        mut more := k[p2] == 1;
+        while more {
+            more = false;
+            arm := n2;                     // variant name, then its block
+            a.nk[arm] = 18; a.nv[arm] = v[p2]; a.nr[arm] = -1;
+            a.nline[arm] = ln[p2];
+            b := ast_block(k, v, ln, fpc, sd, a, p2 + 1, n2 + 1);
+            a.nl[arm] = b.root;
+            if prev > -1 { a.nr[prev] = arm; } else { first = arm; }
+            prev = arm;
+            p2 = b.pos;
+            n2 = b.nn;
+            if k[p2] == 1 { more = true; }
+        }
+        if !(k[p2] == 2 && v[p2] == 125) {
+            fail(ln[p2], "expected '\}' after the match arms");
+        }
+        a.nk[idx] = 17; a.nl[idx] = c.root; a.nr[idx] = first; a.nv[idx] = 0;
+        return NP{ pos: p2 + 1, nn: n2, root: idx };
     }
     if k[pos + 1] == 2 && v[pos + 1] == 46 {
         idx := nn;                         // name '.' name '=' cmp ';' — a
@@ -1403,6 +1504,42 @@ fn check_stmt(a: Ast, sd: Sdefs, env: Scope, bc: i64, idx: i64) -> i64 {
         env.bv[bc] = slot;
         return bc + 1;
     }
+    if a.nk[idx] == 17 {                   // match: the value must be an
+        check_node(a, sd, env, bc, a.nl[idx]);   // enum tag, every arm must
+        mt := a.nt[a.nl[idx]];             // name one of ITS variants, no
+        if mt < 100 {                      // arm twice, and EVERY variant
+            fail(a.nline[idx], "match takes an enum tag");
+        }                                  // must be covered — the checker
+        eid := mt - 100;                   // owns exhaustiveness
+        mut covered := 0;
+        mut arm := a.nr[idx];
+        while arm > -1 {
+            mut tag := -1;
+            mut vi := 0;
+            while vi < sd.evc[eid] {
+                if sd.ev[eid * 4 + vi] == a.nv[arm] { tag = vi; }
+                vi += 1;
+            }
+            if tag < 0 { fail(a.nline[arm], "unknown variant"); }
+            mut bit := 1;
+            mut q := 0;
+            while q < tag { bit = bit * 2; q += 1; }
+            if covered / bit % 2 == 1 {
+                fail(a.nline[arm], "duplicate match arm");
+            }
+            covered += bit;
+            a.nv[arm] = tag;               // the arm records its TAG now
+            check_stmt(a, sd, env, bc, a.nl[arm]);
+            arm = a.nr[arm];
+        }
+        mut want := 1;
+        mut w := 0;
+        while w < sd.evc[eid] { want = want * 2; w += 1; }
+        if covered != want - 1 {
+            fail(a.nline[idx], "match must cover every variant");
+        }
+        return bc;
+    }
     if a.nk[idx] == 16 {                   // field write: the base must be a
         base := a.na[idx * 4];             // BOUND name holding a struct,
         mut ok := false;                   // the field one of ITS fields,
@@ -1415,7 +1552,7 @@ fn check_stmt(a: Ast, sd: Sdefs, env: Scope, bc: i64, idx: i64) -> i64 {
             fail(a.nline[idx], "unknown variable");
         }
         bt := env.vt[base];
-        if bt < 2 {
+        if bt < 2 || bt >= 100 {
             fail(a.nline[idx], "only a struct value has fields");
         }
         sid := bt - 2;
@@ -1444,9 +1581,12 @@ fn check_stmt(a: Ast, sd: Sdefs, env: Scope, bc: i64, idx: i64) -> i64 {
     }
     if a.nk[idx] == 9 {                    // print: an int or a str — the
         check_node(a, sd, env, bc, a.nl[idx]); // operand's nt picks the
-        if a.nt[a.nl[idx]] >= 2 {          // opcode at emit; a struct has
+        if a.nt[a.nl[idx]] >= 100 {        // opcode at emit; tags and
+            fail(a.nline[idx], "cannot print an enum tag - match on it");
+        }
+        if a.nt[a.nl[idx]] >= 2 {          // structs have no printed form
             fail(a.nline[idx], "cannot print a struct - read a field");
-        }                                  // no printed form, read a field
+        }
         return bc;
     }
     check_node(a, sd, env, bc, a.nl[idx]);     // while: int cond + body, restored
@@ -1475,6 +1615,14 @@ fn fold_stmt(a: Ast, st: Strs, idx: i64) {
     if a.nk[idx] == 5 { fold_node(a, st, a.nl[idx]); }
     if a.nk[idx] == 9 { fold_node(a, st, a.nl[idx]); }
     if a.nk[idx] == 16 { fold_node(a, st, a.nl[idx]); }   // the written value folds
+    if a.nk[idx] == 17 {                   // match: the value and every arm
+        fold_node(a, st, a.nl[idx]);       // fold; the statement itself does
+        mut arm := a.nr[idx];              // not (a constant scrutinee is a
+        while arm > -1 {                   // later rung, like dead arms was)
+            fold_stmt(a, st, a.nl[arm]);
+            arm = a.nr[arm];
+        }
+    }
     if a.nk[idx] == 6 {
         fold_node(a, st, a.nl[idx]);
         if a.nk[a.nl[idx]] == 0 {          // constant condition: dead-arm
@@ -1526,6 +1674,41 @@ fn emit_stmt(a: Ast, fe: *i64, fp: *i64, code: *i64, cp: i64, idx: i64) -> i64 {
             return emit1(code, c, 19);     // doing real work
         }
         return emit1(code, c, 18);
+    }
+    if a.nk[idx] == 17 {                   // match: the tag on the stack,
+        mut c := emit_node(a, fe, fp, code, cp, a.nl[idx]);
+        mut ends0 := 0;                    // then per arm DUP/PUSH/EQ/JZ —
+        mut ends1 := 0;                    // the last arm needs NO test,
+        mut ends2 := 0;                    // exhaustiveness proved it (up
+        mut ne := 0;                       // to three earlier arms hold
+        mut arm := a.nr[idx];              // JMP-to-end holes)
+        while arm > -1 {
+            if a.nr[arm] > -1 {            // a tested arm
+                c = emit1(code, c, 32);    // DUP the tag
+                c = emit2(code, c, 1, a.nv[arm]);
+                c = emit1(code, c, 10);    // EQ
+                hole := c + 1;
+                c = emit2(code, c, 13, 0); // JZ to the next arm
+                c = emit1(code, c, 33);    // POP the tag, run the arm
+                c = emit_stmt(a, fe, fp, code, c, a.nl[arm]);
+                eh := c + 1;
+                c = emit2(code, c, 14, 0); // JMP past the rest
+                if ne == 0 { ends0 = eh; }
+                if ne == 1 { ends1 = eh; }
+                if ne == 2 { ends2 = eh; }
+                ne += 1;
+                code[hole] = c;
+            }
+            if a.nr[arm] == -1 {           // the last arm: just take it
+                c = emit1(code, c, 33);
+                c = emit_stmt(a, fe, fp, code, c, a.nl[arm]);
+            }
+            arm = a.nr[arm];
+        }
+        if ne > 0 { code[ends0] = c; }
+        if ne > 1 { code[ends1] = c; }
+        if ne > 2 { code[ends2] = c; }
+        return c;
     }
     if a.nk[idx] == 16 {                   // field write: value, then the
         c := emit_node(a, fe, fp, code, cp, a.nl[idx]);   // record index,
@@ -1624,12 +1807,21 @@ fn parse_fndef(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, sd: Sd
                 }                          // toy scale: structs only)
                 mut tsid := -1;
                 mut si := 0;
-                while si < sd.cur[0] {
+                while si < sd.cur[0] {     // a struct name ...
                     if sd.sn[si] == v[p + 1] { tsid = si; }
                     si += 1;
                 }
-                if tsid < 0 { fail(ln[p + 1], "unknown struct"); }
-                pt = 2 + tsid;
+                if tsid >= 0 { pt = 2 + tsid; }
+                mut tei := -1;
+                mut ei := 0;
+                while ei < sd.cur[2] {     // ... or an enum name
+                    if sd.en[ei] == v[p + 1] { tei = ei; }
+                    ei += 1;
+                }
+                if tei >= 0 { pt = 100 + tei; }
+                if tsid < 0 && tei < 0 {
+                    fail(ln[p + 1], "unknown type name");
+                }
                 p += 2;
             }
             fp[f * 4 + j] = pn;
@@ -1655,8 +1847,9 @@ fn parse_fndef(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, sd: Sd
 fn parse_program(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, sd: Sdefs, a: Ast, env: Scope, st: Strs, pos: i64, code: *i64, cp: i64) -> EP {
     mut p := pos;
     mut c := cp;
-    sd.cur[0] = 0;                         // struct defs and records are
-    sd.cur[1] = 0;                         // per-program, like the strings
+    sd.cur[0] = 0;                         // struct defs, records, and
+    sd.cur[1] = 0;                         // enum defs are per-program,
+    sd.cur[2] = 0;                         // like the strings
     mut sds := true;
     while sds {                            // struct declarations lead the
         sds = false;                       // program: name, then up to four
@@ -1687,6 +1880,36 @@ fn parse_program(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, sd: 
             }
             sd.sfc[sid] = fc;
             sd.cur[0] = sid + 1;
+            p = q + 1;
+            sds = true;
+        }
+        if k[p] == 20 {                    // enum Name { v1, v2, ... } —
+            if k[p + 1] != 1 {             // the same shape as a struct
+                fail(ln[p + 1], "expected an enum name");
+            }                              // decl: tables, no code; a
+            eid := sd.cur[2];              // variant IS its index
+            sd.en[eid] = v[p + 1];
+            mut q := p + 2;
+            if !(k[q] == 2 && v[q] == 123) {
+                fail(ln[q], "expected '\{' after the enum name");
+            }
+            q += 1;
+            mut vc := 0;
+            mut more := !(k[q] == 2 && v[q] == 125);
+            while more {
+                more = false;
+                if k[q] != 1 { fail(ln[q], "expected a variant name"); }
+                if vc == 4 { fail(ln[q], "too many variants"); }
+                sd.ev[eid * 4 + vc] = v[q];
+                vc += 1;
+                q += 1;
+                if k[q] == 2 && v[q] == 44 { q += 1; more = true; }
+            }
+            if !(k[q] == 2 && v[q] == 125) {
+                fail(ln[q], "expected '\}' after the variants");
+            }
+            sd.evc[eid] = vc;
+            sd.cur[2] = eid + 1;
             p = q + 1;
             sds = true;
         }
@@ -1906,6 +2129,15 @@ fn run(prog: *i64, stk: *i64, vars: *i64, st: Strs, sd: Sdefs) -> i64 {
             stk[sp - 1] = sd.rw[stk[sp - 1] + prog[pc + 1]];   // index with
             pc += 2;                       // the field's word
         }
+        if op == 32 {                      // DUP: the match scrutinee
+            stk[sp] = stk[sp - 1];         // stays put while arms test it
+            sp += 1;
+            pc += 1;
+        }
+        if op == 33 {                      // POP: an arm matched, the tag
+            sp -= 1;                       // has served
+            pc += 1;
+        }
         if op == 31 {                      // RSET off: pop the record index
             idx2 := stk[sp - 1];           // then the value, store the
             val2 := stk[sp - 2];           // field's word in place
@@ -1984,8 +2216,10 @@ fn main() -> i64 {
     sd := Sdefs{ sn: alloc_words(16), sf: alloc_words(64),
                  sfc: alloc_words(16),     // struct defs: 16 x 4 fields
                  rw: alloc_words(128),     // + the runtime record words
-                 cur: alloc_words(2),      // + count / words-used cursors
-                 fpt: alloc_words(256) };  // + declared parameter types
+                 cur: alloc_words(3),      // + counts / words-used cursors
+                 fpt: alloc_words(256),    // + declared parameter types
+                 en: alloc_words(16), ev: alloc_words(64),
+                 evc: alloc_words(16) };   // + enum defs: 16 x 4 variants
     put("a type column over the toy - lex -> parse -> check -> fold -> emit -> run:\n");
     // Braces are escaped so they read as text, not interpolation (§2.5).
     show("fn max(a, b) \{ m := 0; if a > b \{ m := a; \} else \{ m := b; \} m \} max(3, 9) + max(7, 2)",
@@ -2057,6 +2291,14 @@ fn main() -> i64 {
     // caller afterward: reference semantics, stated plainly (a string
     // crosses the same way; only the index is copied).
     show("struct P \{ x, y \}\nfn bump(q: P) \{ q.x = q.x + 1; q.y \}\np := P\{3, 4\};\nprint bump(p);\nprint p.x; 0",
+         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, sy, st, sd);
+    // ENUMS + MATCH: a tag-only enum (a variant IS its index, typed
+    // 100+e so it cannot leak into arithmetic), and match — the ONLY
+    // eliminator: arms are DUP/EQ/JZ chains, the last arm runs with no
+    // test because the checker PROVED exhaustiveness (every variant
+    // covered exactly once, or a located refusal). The tag never
+    // prints, never adds, never interpolates: you match on it.
+    show("enum Shape \{ circle, square, dot \}\ns := Shape.square;\nmatch s \{ circle \{ print 1; \} square \{ print 22; \} dot \{ print 3; \} \}\n0",
          k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, sy, st, sd);
     // The rest of the comparison set, each its own opcode.
     show("n := 7; print n != 7; print n <= 7; print n >= 9; print !(n >= 9); 0",
