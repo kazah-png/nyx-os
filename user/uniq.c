@@ -38,7 +38,7 @@ static int read_line(int fd, char* line, int cap) {
 static void emit(const char* line, int count, int cflag, int dflag, int uflag) {
     if (dflag && count < 2) return;   /* -d: only repeated runs */
     if (uflag && count > 1) return;   /* -u: only single occurrences */
-    if (cflag) printf("%d %s\n", count, line);
+    if (cflag) printf("%7d %s\n", count, line);   /* GNU-compatible: count right-justified in a 7-wide field */
     else       printf("%s\n", line);
 }
 
