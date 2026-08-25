@@ -38,7 +38,7 @@ pipeline is proven on target, end to end.
 | Keywords + multi-letter interned identifiers | ✓ | ✓ |
 | Decimal integers, hex `0x`, `_` separators | ✓ (lowercase hex at toy scale) | ✓ |
 | Nested block comments | ✓ — depth-counted, the line counter ticking through | ✓ |
-| Attributes `#[...]` | ✗ | ✓ |
+| Attributes `#[...]` | ✓* — lexed and deliberately ignored (surface parity; the semantics are ncc’s) | ✓ |
 | **Interpolation mode stack** (`T_STR_HEAD/MID/TAIL`) | ✓ at toy scale — segment tokens + one mode flag (single level) | ✓ — the hardest lexer feature |
 | Line/column tracking for diagnostics | ✓ — line*1000+col packed in one array, `fail()` decodes | ✓ |
 | **Input from a file** | ✓ — rung 1 landed | ✓ |
@@ -282,7 +282,16 @@ machinery and every AST node's line slot carry both for free, and
 (toy lines stay under 1000 columns; ncc carries two fields, same
 idea). `line 2:9: error: cannot use a string...` points at the `+`
 itself, and the column survives interpolation holes and multi-line
-nested comments. The lexer parity gap is down to one row: attributes.
+nested comments.
+
+And with attributes — `#[...]` lexed and *deliberately ignored*
+(surface parity: the toy reads N's syntax; the meanings of `#[user]`,
+`#[caps]`, `#[drop]` belong to ncc's semantic world, and pretending
+otherwise would be dishonest) — **the lexer parity table is complete**:
+every row is covered, each at its stated scale. One deliberate
+refusal stands documented on the checker side too: `==` over two enum
+tags stays an error, because ncc's own enums have no `==` either —
+`match` is the eliminator in both worlds.
 
 ## The struct arc — rung 1 landed
 

@@ -201,7 +201,10 @@
 //   exhaustiveness first (every variant covered exactly once: unknown
 //   variants, duplicate arms, and missing arms are located errors).
 //   Tags cross calls with `fn pick(s: Shape)` annotations like
-//   structs do. Payload variants are a later rung.
+//   structs do. Payload variants are a later rung. And == over two
+//   tags stays REFUSED on purpose: ncc's own enums have no ==
+//   either — match is the eliminator there too, so the toy mirrors
+//   the real rule, not a convenience it never had.
 //
 //   STRUCTS (rung 1 of the struct arc — see docs/selfhost.md). A
 //   declaration `struct P \{ x, y \}` is tables, not code: the name and
@@ -398,6 +401,18 @@ fn lex(p: *u8, n: i64, k: *i64, v: *i64, ln: *i64, sy: Syms, st: Strs) -> i64 {
                 else { j += 1; }
             }
             i = j;
+            continue;
+        }
+        if b == 35 && i + 1 < n && p[i + 1] as i64 == 91 {
+            mut j := i + 2;                // '#[': an attribute. The toy
+            while j < n && p[j] as i64 != 93 {   // reads N's syntax and
+                if p[j] as i64 == 10 {     // deliberately IGNORES the
+                    line += 1;             // meaning — surface parity only:
+                    ls = j + 1;            // the semantics (#[user], #[caps],
+                }                          // #[drop]) belong to ncc's world,
+                j += 1;                    // and pretending otherwise would
+            }                              // be dishonest. Skipped like a
+            i = j + 1;                     // comment, line counter ticking.
             continue;
         }
         ln[t] = line * 1000 + (i - ls + 1);   // every token records line AND
@@ -2269,11 +2284,12 @@ fn main() -> i64 {
     // string becomes ONE literal at compile time.
     show("n := 6 * 7; w := \"toy\";\nprint \"the \{w\} says \{n\}\";\nprint \"\{1 + 2\} and \{40 + 2\}\"; 0",
          k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, sy, st, sd);
-    // Number spellings and block comments, N's own: 0x2a is 42 in hex
-    // (lowercase at toy scale), underscores group digits and vanish,
-    // and /* block comments nest */ by depth — with newlines inside
-    // them still ticking the line counter, so diagnostics stay honest.
-    show("h := 0x2a; /* hex /* nests */ properly */ big := 1_000;\nprint \"\{h\} and \{big\}\"; 0",
+    // Number spellings, block comments, and attributes, N's own: 0x2a
+    // is 42 in hex (lowercase at toy scale), underscores group digits
+    // and vanish, /* block comments nest */ by depth — newlines inside
+    // still ticking the line counter — and an #[attribute] lexes and
+    // is deliberately ignored (surface parity; the meanings are ncc's).
+    show("h := 0x2a; /* hex /* nests */ properly */ #[toy] big := 1_000;\nprint \"\{h\} and \{big\}\"; 0",
          k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, sy, st, sd);
     // STRUCTS: declared, made, MUTATED, read. A record lives in a side
     // table — the value on the stack IS its base index, like a string —
