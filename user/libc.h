@@ -42,6 +42,12 @@ int strncmp(const char* s1, const char* s2, size_t n);
 char* strcat(char* dest, const char* src);
 char* strchr(const char* s, int c);
 char* strstr(const char* haystack, const char* needle);
+/* String scanning / tokenization (a parser's staples; strtok is what most ports reach for). */
+size_t strspn(const char* s, const char* accept);
+size_t strcspn(const char* s, const char* reject);
+char* strpbrk(const char* s, const char* accept);
+char* strtok(char* str, const char* delim);
+char* strtok_r(char* str, const char* delim, char** saveptr);
 
 void putchar(int c);
 int puts(const char* s);
@@ -78,6 +84,8 @@ char* strrchr(const char* s, int c);
 char* strncat(char* dest, const char* src, size_t n);
 char* strdup(const char* s);
 void  qsort(void* base, size_t nmemb, size_t size, int (*cmp)(const void*, const void*));
+void* bsearch(const void* key, const void* base, size_t nmemb, size_t size,
+              int (*cmp)(const void*, const void*));
 
 /* ===== stdio (FILE*) — buffered file I/O over the fd syscalls =====
  * Core layer (v6.1.3): fopen/fclose/fread/fwrite/fgetc/fputc/fflush/feof/ferror;

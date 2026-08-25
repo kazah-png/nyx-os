@@ -276,6 +276,59 @@ char* strstr(const char* haystack, const char* needle) {
     return 0;
 }
 
+/* Length of the initial run of `s` made up entirely of bytes in `accept`. */
+size_t strspn(const char* s, const char* accept) {
+    const char* p = s;
+    for (; *p; p++) {
+        const char* a = accept;
+        while (*a && *a != *p) a++;
+        if (!*a) break;                    /* *p not in accept — run ends */
+    }
+    return (size_t)(p - s);
+}
+
+/* Length of the initial run of `s` made up of bytes NOT in `reject`. */
+size_t strcspn(const char* s, const char* reject) {
+    const char* p = s;
+    for (; *p; p++) {
+        const char* r = reject;
+        while (*r && *r != *p) r++;
+        if (*r) break;                     /* *p is in reject — run ends */
+    }
+    return (size_t)(p - s);
+}
+
+/* First byte of `s` that appears in `accept`, or NULL. */
+char* strpbrk(const char* s, const char* accept) {
+    for (; *s; s++)
+        for (const char* a = accept; *a; a++)
+            if (*a == *s) return (char*)s;
+    return 0;
+}
+
+/* Reentrant tokenizer: split `str` on any byte in `delim`, carrying state in
+ * *saveptr so the caller owns it (no static). Pass str once, then NULL to
+ * continue. Empty tokens between adjacent delimiters are skipped, matching the
+ * standard/glibc contract exactly. */
+char* strtok_r(char* str, const char* delim, char** saveptr) {
+    char* s = str ? str : *saveptr;
+    if (!s) return 0;
+    if (*s == '\0') { *saveptr = s; return 0; }
+    s += strspn(s, delim);                 /* skip leading delimiters */
+    if (*s == '\0') { *saveptr = s; return 0; }
+    char* end = s + strcspn(s, delim);     /* scan to the next delimiter/end */
+    if (*end == '\0') { *saveptr = end; return s; }   /* last token */
+    *end = '\0';
+    *saveptr = end + 1;
+    return s;
+}
+
+/* Non-reentrant strtok over a single hidden cursor (first call must pass str). */
+char* strtok(char* str, const char* delim) {
+    static char* save;
+    return strtok_r(str, delim, &save);
+}
+
 /* =========== Stdlib =========== */
 
 int atoi(const char* s) {
@@ -578,6 +631,23 @@ void qsort(void* base, size_t nmemb, size_t size, int (*cmp)(const void*, const 
         }
         if (gap == 1) break;   /* size_t: avoid 1/3 == 0 looping forever */
     }
+}
+
+/* Binary search over a sorted array (the natural companion to qsort). Returns a
+ * pointer to a matching element, or NULL. `cmp(key, elem)` orders like qsort's. */
+void* bsearch(const void* key, const void* base, size_t nmemb, size_t size,
+              int (*cmp)(const void*, const void*)) {
+    const char* b = (const char*)base;
+    size_t lo = 0, hi = nmemb;
+    while (lo < hi) {
+        size_t mid = lo + (hi - lo) / 2;
+        const char* p = b + mid * size;
+        int r = cmp(key, p);
+        if (r < 0)      hi = mid;
+        else if (r > 0) lo = mid + 1;
+        else            return (void*)p;
+    }
+    return 0;
 }
 
 /* =========== stdio (FILE*) — buffered file I/O over the fd syscalls ===========
