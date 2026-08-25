@@ -270,6 +270,7 @@ static void cmd_notify(int argc, char** argv);
 static void cmd_stackcheck(int argc, char** argv);
 extern int stack_canary_sweep(void);      // process.c — scan task-stack canaries
 extern int stack_canary_selftest(void);   // process.c — canary KAT
+extern int signal_selftest(void);          // proc/signal.c — signal post/mask/SIGCONT-resume KAT
 extern int term_paste_selftest(void);      // gui/apps/terminal_win.c — Ctrl+V paste KAT
 extern int term_hist_selftest(void);        // gui/apps/terminal_win.c — Up/Down history-ring KAT
 extern int term_rsearch_selftest(void);     // gui/apps/terminal_win.c — Ctrl+R reverse-i-search KAT
@@ -8941,6 +8942,7 @@ static void run_selftests(void) {
         {"cptree",       cptree_walk_selftest},
         {"notify",       notify_selftest},
         {"stack-canary", stack_canary_selftest},
+        {"signal",       signal_selftest},
         {"kfree",        kfree_selftest},
         {"slab",         slab_selftest},
         {"pagealloc",    page_alloc_selftest},

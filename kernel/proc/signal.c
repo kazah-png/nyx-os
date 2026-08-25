@@ -316,3 +316,34 @@ void signal_send_foreground(int sig) {
     process_t* p = find_process(g_foreground_pid);
     if (p) signal_raise(p, sig);
 }
+
+/* KAT for the signal-posting core (this subsystem had no self-test). Uses a LOCAL
+ * process_t, so it never touches the scheduler or the process table: signal_raise
+ * and signal_pending only read/write the struct's own fields. Pins raise validation
+ * (range reject + the SIGCONT-resumes-a-stopped-process rule), the highest-signal
+ * shift boundary (NSIG-1 = 31, which must not overflow the uint32 masks), and the
+ * pending-vs-mask deliverability test. */
+int signal_selftest(void) {
+    process_t sp = {0};
+    sp.state = PROC_RUN;
+
+    signal_raise(&sp, SIGINT);                       /* valid: sets exactly that bit */
+    if (sp.sig_pending != (1u << SIGINT)) return 1;
+    signal_raise(&sp, 0);                            /* invalid (<= 0): ignored */
+    signal_raise(&sp, NSIG);                         /* out of range (>= NSIG): ignored */
+    if (sp.sig_pending != (1u << SIGINT)) return 2;
+    signal_raise(&sp, NSIG - 1);                     /* highest valid (31): bit 31, no UB */
+    if (!(sp.sig_pending & (1u << (NSIG - 1)))) return 3;
+
+    sp.sig_pending = (1u << SIGINT); sp.sig_mask = 0;
+    if (!signal_pending(&sp)) return 4;              /* unblocked -> deliverable */
+    sp.sig_mask = (1u << SIGINT);
+    if (signal_pending(&sp)) return 5;               /* blocked -> not deliverable */
+
+    sp.state = PROC_STOPPED; sp.sig_pending = 0; sp.sig_mask = 0;
+    signal_raise(&sp, SIGCONT);                      /* resumes a job-control-stopped process */
+    if (sp.state != PROC_RUN) return 6;
+    if (!(sp.sig_pending & (1u << SIGCONT))) return 7;
+
+    return 0;
+}
