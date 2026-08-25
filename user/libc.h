@@ -143,4 +143,18 @@ void __sigsetjmp_save(sigjmp_buf buf, int savesigs);   /* helper; use sigsetjmp(
 #define sigsetjmp(buf, savesigs) (__sigsetjmp_save((buf), (savesigs)), setjmp((unsigned long*)(buf)))
 void siglongjmp(sigjmp_buf buf, int val) __attribute__((noreturn));
 
+/* float math (v6.4.369): SSE-backed, ~1e-4 accuracy. Userland only (the kernel is
+ * -mno-sse). NyxOS's first math library — sinf/cosf/tanf/sqrtf/atan2f/… */
+float fabsf(float x);
+float sqrtf(float x);
+float floorf(float x);
+float ceilf(float x);
+float fmodf(float x, float y);
+float sinf(float x);
+float cosf(float x);
+void  sincosf(float x, float* s, float* c);
+float tanf(float x);
+float atanf(float x);
+float atan2f(float y, float x);
+
 #endif

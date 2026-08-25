@@ -736,3 +736,55 @@ void abort(void) {
     exit(1);
     for (;;) { }   /* exit() never returns; keep abort provably non-returning */
 }
+
+/* ===== float math (v6.4.369) — NyxOS's first userland math library.
+ * Userland is SSE-OK (the kernel is -mno-sse, but #40/FPU ctx-save is fixed so a
+ * preempted user task keeps its XMM state). sqrtf/fabsf lower to single SSE ops;
+ * sin/cos/atan are range-reduced then minimax/Taylor. Accuracy is ~1e-4 — plenty for
+ * graphics/games (the motivating consumer is the SM64 port; any float app benefits). */
+float fabsf(float x) { return __builtin_fabsf(x); }
+float sqrtf(float x) { return x <= 0.0f ? 0.0f : __builtin_sqrtf(x); }
+
+float floorf(float x) { float t = (float)(long)x; return (t > x) ? t - 1.0f : t; }
+float ceilf(float x)  { float t = (float)(long)x; return (t < x) ? t + 1.0f : t; }
+float fmodf(float x, float y) { return (y == 0.0f) ? 0.0f : x - (float)(long)(x / y) * y; }
+
+/* reduce x into [-pi, pi] */
+static float nyx_reduce_pi(float x) {
+    const float TWO_PI = 6.28318530718f, PI = 3.14159265359f;
+    float k = x * (1.0f / TWO_PI);
+    k = (k >= 0.0f) ? (float)(long)(k + 0.5f) : -(float)(long)(-k + 0.5f);
+    x -= k * TWO_PI;
+    if (x > PI) x -= TWO_PI; else if (x < -PI) x += TWO_PI;
+    return x;
+}
+float sinf(float x) {
+    const float PI = 3.14159265359f, HALF_PI = 1.57079632679f;
+    x = nyx_reduce_pi(x);
+    if (x > HALF_PI) x = PI - x; else if (x < -HALF_PI) x = -PI - x;   /* fold to [-pi/2, pi/2] */
+    float x2 = x * x;   /* Taylor to x^9: < 2e-6 on [-pi/2, pi/2] */
+    return x * (1.0f + x2 * (-1.0f/6.0f + x2 * (1.0f/120.0f + x2 * (-1.0f/5040.0f + x2 * (1.0f/362880.0f)))));
+}
+float cosf(float x) { return sinf(x + 1.57079632679f); }
+void  sincosf(float x, float* s, float* c) { if (s) *s = sinf(x); if (c) *c = cosf(x); }
+float tanf(float x) { float c = cosf(x); return (c == 0.0f) ? 0.0f : sinf(x) / c; }
+
+/* atanf: minimax on |x|<=1; fold |x|>1 via atan(x) = ±pi/2 - atan(1/x). ~1e-5. */
+static float nyx_atan_unit(float x) {
+    float x2 = x * x;
+    return x * (0.99997726f + x2 * (-0.33262347f + x2 * (0.19354346f + x2 * (-0.11643287f + x2 * (0.05265332f + x2 * (-0.01172120f))))));
+}
+float atanf(float x) {
+    const float HALF_PI = 1.57079632679f;
+    if (x >  1.0f) return  HALF_PI - nyx_atan_unit(1.0f / x);
+    if (x < -1.0f) return -HALF_PI - nyx_atan_unit(1.0f / x);
+    return nyx_atan_unit(x);
+}
+float atan2f(float y, float x) {
+    const float PI = 3.14159265359f, HALF_PI = 1.57079632679f;
+    if (x > 0.0f) return atanf(y / x);
+    if (x < 0.0f) return (y >= 0.0f) ? atanf(y / x) + PI : atanf(y / x) - PI;
+    if (y > 0.0f) return  HALF_PI;
+    if (y < 0.0f) return -HALF_PI;
+    return 0.0f;
+}
