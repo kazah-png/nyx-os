@@ -13,6 +13,30 @@
  * cap (SYS_SBRK) and far below the 128 TiB user stack, so they never collide. This
  * is anonymous MAP_PRIVATE only — file-backed mmap and addr hints are future work. */
 
+/* W^X policy: no page may be simultaneously writable and executable. A writable-and-
+ * executable page is the classic exploit primitive (write shellcode, then jump to it),
+ * so do_mmap()/do_mprotect() reject any prot that sets BOTH PROT_WRITE and PROT_EXEC.
+ * No shipped NyxOS program needs W+X: the in-OS `cc` compiles to a file and exec()s it
+ * (the ELF loader maps .text R+X and .data R+W|NX — never both) and nothing JITs.
+ * (tcc's `-run` JIT would want W+X, but the `cc` builtin does not wire `-run`.) Pure,
+ * so wx_selftest can pin the rule. */
+static inline int prot_wx_conflict(int prot) {
+    return (prot & PROT_WRITE) && (prot & PROT_EXEC);
+}
+
+// W^X KAT: the reject rule the mmap/mprotect syscalls enforce. R, R|W, R|X and the
+// individual bits are allowed; only W together with X conflicts.
+int wx_selftest(void) {
+    if (prot_wx_conflict(PROT_READ))                           return 1;
+    if (prot_wx_conflict(PROT_READ | PROT_WRITE))              return 2;
+    if (prot_wx_conflict(PROT_READ | PROT_EXEC))               return 3;
+    if (prot_wx_conflict(PROT_WRITE))                          return 4;
+    if (prot_wx_conflict(PROT_EXEC))                           return 5;
+    if (!prot_wx_conflict(PROT_WRITE | PROT_EXEC))             return 6;
+    if (!prot_wx_conflict(PROT_READ | PROT_WRITE | PROT_EXEC)) return 7;
+    return 0;
+}
+
 /* Release a process's file-backed VMA snapshot buffers. Called when an address
  * space is torn down (reap), since those buffers are kernel-heap allocations that
  * live outside the page directory free_page_directory() releases. */
@@ -48,6 +72,7 @@ uint64_t do_mmap(uint64_t addr, uint64_t length, int prot, int flags,
      * be handed the same region and either can munmap what the other mapped. */
     process_t* p = tg_leader(get_current_process());
     if (!p || length == 0) return (uint64_t)-1;
+    if (prot_wx_conflict(prot)) return (uint64_t)-1;    // W^X: no writable+executable mapping
     uint64_t req_length = length;
     length = (length + 0xFFF) & ~0xFFFULL;              /* round up to whole pages */
     // A length within 0xFFF of UINT64_MAX overflows the round-up above and wraps to a
@@ -111,6 +136,7 @@ int do_mprotect(uint64_t addr, uint64_t length, int prot) {
     /* VMA table is the thread group's (page_directory is shared either way) */
     process_t* p = tg_leader(get_current_process());
     if (!p || !p->page_directory || length == 0) return -1;
+    if (prot_wx_conflict(prot)) return -1;    // W^X: refuse to make a page writable+executable
     addr &= ~0xFFFULL;
     length = (length + 0xFFF) & ~0xFFFULL;
     uint64_t end = addr + length;

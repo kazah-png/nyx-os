@@ -8944,6 +8944,7 @@ static void run_selftests(void) {
         {"kfree",        kfree_selftest},
         {"slab",         slab_selftest},
         {"pagealloc",    page_alloc_selftest},
+        {"wx",           wx_selftest},
         {"elf",          elf_selftest},
         {"numparse",     numparse_selftest},        {"hkdf",          hkdf_selftest},
         {"snprintf",     snprintf_selftest},
