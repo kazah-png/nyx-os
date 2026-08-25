@@ -207,10 +207,17 @@
 //   tail that merely READS a field is never taken for one); the
 //   base must be a bound name holding a struct, the value an
 //   integer, and the check pass resolves the field to its slot
-//   exactly as reads do. Structs still do not cross calls:
-//   parameters seed as integers, and lifting that honestly means
-//   declared parameter types - a later rung, refused loudly until
-//   then.
+//   exactly as reads do. And rung 3 let structs CROSS CALLS:
+//   `fn bump(q: P)` DECLARES its parameter's type (': Name' after
+//   a parameter, N's own syntax; unannotated = integer; the type
+//   table fpt rides in Sdefs, which already reached parser and
+//   checker - zero new plumbing), the call site is held to it
+//   (wrong struct, int-into-struct, struct-into-plain all refused
+//   with located errors), and the body sees the parameter AS its
+//   struct, so field reads and writes on it just work. What
+//   crosses is the record's INDEX - reference semantics, stated
+//   plainly: the callee's write is visible in the caller, exactly
+//   as a string crosses by its table index. Returns stay integer.
 //
 //   INTERPOLATION — the real lexer's hardest feature, at toy scale. A
 //   double-quoted string containing a brace lexes as SEGMENTS: kind 16
@@ -594,7 +601,11 @@ struct Syms { nb: *u8, ss: *i64, sl: *i64 }
 // VM allocates from, and cur behind a pointer so copies share it —
 // cur[0] = declared struct count, cur[1] = record words used. Both
 // reset per program (parse_program seeds them, like lex seeds Strs).
-struct Sdefs { sn: *i64, sf: *i64, sfc: *i64, rw: *i64, cur: *i64 }
+// fpt = per-function declared PARAMETER types (fpt[f*4+j], the fp
+// move): 0 int (the unannotated default), 2+k struct k - it lives
+// here because Sdefs already reaches the parser and the checker.
+struct Sdefs { sn: *i64, sf: *i64, sfc: *i64, rw: *i64, cur: *i64,
+               fpt: *i64 }
 
 struct Strs { sb: *u8, sts: *i64, stl: *i64, cur: *i64 }
 
@@ -1008,12 +1019,17 @@ fn check_node(a: Ast, sd: Sdefs, env: Scope, bc: i64, idx: i64) {
         mut q := 0;
         while q < a.nl[idx] {
             check_node(a, sd, env, bc, a.na[idx * 4 + q]);
-            if a.nt[a.na[idx * 4 + q]] == 1 {
+            at := a.nt[a.na[idx * 4 + q]];
+            want := sd.fpt[a.nv[idx] * 4 + q];
+            if at == 1 {
                 fail(a.nline[idx], "cannot pass a string to a function");
             }
-            if a.nt[a.na[idx * 4 + q]] >= 2 {
+            if at >= 2 && want == 0 {      // struct into a plain parameter:
                 fail(a.nline[idx], "cannot pass a struct to a function");
             }
+            if at != want {                // int into a struct parameter,
+                fail(a.nline[idx], "argument type does not match the parameter");
+            }                              // or the WRONG struct
             q += 1;
         }
         a.nt[idx] = 0;
@@ -1578,7 +1594,8 @@ fn gen_body(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, sd: Sdefs
     EP{ pos: t.pos, cp: emit_node(a, fe, fp, code, c, t.root) }
 }
 
-// fndef := 'fn' name '(' name { ',' name } ')' '{' { stmt } cmp '}'
+// fndef := 'fn' name '(' param { ',' param } ')' '{' { stmt } cmp '}'
+// param := name [ ':' struct-name ]
 //   The entry address is recorded BEFORE the body compiles, so a
 //   function may call itself; up to four comma-separated parameters
 //   record their slots in fp[f*4 + j] with the count in fpc[f]; the
@@ -1598,12 +1615,29 @@ fn parse_fndef(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, sd: Sd
     while going {
         going = false;
         if k[p] == 1 {
-            fp[f * 4 + j] = v[p];
-            env.bv[j] = v[p];              // a parameter is born bound,
-            env.vt[v[p]] = 0;              // and it is an integer
-            j += 1;
+            pn := v[p];
             p += 1;
-            if k[p] == 2 && v[p] == 44 {   // ',' — another parameter follows
+            mut pt := 0;                   // unannotated = integer;
+            if k[p] == 2 && v[p] == 58 {   // ': Name' declares a STRUCT
+                if k[p + 1] != 1 {         // parameter (N's fn f(p: P), at
+                    fail(ln[p + 1], "expected a type name");
+                }                          // toy scale: structs only)
+                mut tsid := -1;
+                mut si := 0;
+                while si < sd.cur[0] {
+                    if sd.sn[si] == v[p + 1] { tsid = si; }
+                    si += 1;
+                }
+                if tsid < 0 { fail(ln[p + 1], "unknown struct"); }
+                pt = 2 + tsid;
+                p += 2;
+            }
+            fp[f * 4 + j] = pn;
+            sd.fpt[f * 4 + j] = pt;        // the declared type, for call
+            env.bv[j] = pn;                // sites to be held to — and the
+            env.vt[pn] = pt;               // body sees the param AS its
+            j += 1;                        // type: field reads and writes
+            if k[p] == 2 && v[p] == 44 {   // on a struct param just work
                 p += 1;
                 going = true;
             }
@@ -1950,7 +1984,8 @@ fn main() -> i64 {
     sd := Sdefs{ sn: alloc_words(16), sf: alloc_words(64),
                  sfc: alloc_words(16),     // struct defs: 16 x 4 fields
                  rw: alloc_words(128),     // + the runtime record words
-                 cur: alloc_words(2) };    // + count / words-used cursors
+                 cur: alloc_words(2),      // + count / words-used cursors
+                 fpt: alloc_words(256) };  // + declared parameter types
     put("a type column over the toy - lex -> parse -> check -> fold -> emit -> run:\n");
     // Braces are escaped so they read as text, not interpolation (§2.5).
     show("fn max(a, b) \{ m := 0; if a > b \{ m := a; \} else \{ m := b; \} m \} max(3, 9) + max(7, 2)",
@@ -2014,6 +2049,14 @@ fn main() -> i64 {
     // `p.x = e;` writes through the record (RSET), so the read after
     // it sees 8 where the literal put 3.
     show("struct P \{ x, y \}\np := P\{3, 4\};\np.x = p.x + 5;\nprint p.x * 10 + p.y; 0",
+         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, sy, st, sd);
+    // Structs CROSS CALLS now: `fn bump(q: P)` declares its parameter's
+    // type, the call site is held to it, and the body sees q AS a P —
+    // field reads and writes on a parameter just work. What crosses is
+    // the record's INDEX, so the callee's write is visible in the
+    // caller afterward: reference semantics, stated plainly (a string
+    // crosses the same way; only the index is copied).
+    show("struct P \{ x, y \}\nfn bump(q: P) \{ q.x = q.x + 1; q.y \}\np := P\{3, 4\};\nprint bump(p);\nprint p.x; 0",
          k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, sy, st, sd);
     // The rest of the comparison set, each its own opcode.
     show("n := 7; print n != 7; print n <= 7; print n >= 9; print !(n >= 9); 0",

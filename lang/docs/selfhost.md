@@ -57,7 +57,7 @@ kernel `open`/`read` from N — wiring the two together makes the first
 | `else` | ✓ — rung 2 landed | ✓ |
 | **An AST** | ✓ expressions AND statements — whole bodies parse to a tree, then check → fold → emit run as passes (only fn headers + the fndef hop-over emit direct) | ✓ — parse → check → gen |
 | Types (everything is `i64` in the toy) | ✓ a real TYPE COLUMN — int/str inferred bottom-up on the tree, per-name types fixed for life, int-only ops refuse strings with located errors | full checker |
-| structs / enums / match / defer / own / caps | structs ✓ (decl + literal + field read/WRITE, type ids; not across calls); enums/match/defer/own/caps ✗ | ✓ |
+| structs / enums / match / defer / own / caps | structs ✓ COMPLETE at toy scale (decl + literal + read/write + typed parameters across calls); enums/match/defer/own/caps ✗ | ✓ |
 | `str` values and string literals as data | ✓ at toy scale — strings bind, load, and print (a string IS its table index at run time; the type column keeps the kinds apart) | ✓ |
 | Error diagnostics (`line N: message`) | ✓ expect points (rung 2) + a semantic pass: unknown variable, call arity | ✓ everywhere |
 
@@ -317,12 +317,20 @@ even lex one). The remaining ladder:
    base must be a bound name holding a struct, the value an integer,
    the check pass resolves the field to its slot exactly as reads do,
    and one RSET opcode stores the word in place — the demo mutates
-   `p.x` from 3 to 8 and the read after it sees the new value. The
-   honest cut that stayed: **structs do not cross calls** — callee
-   parameters seed as integers, and lifting that properly means
-   *declared parameter types*, a later rung, refused loudly until
-   then ("cannot pass a struct to a function").
-3. **Enums + `match` — later.** Tags + payloads are a struct with a
+   `p.x` from 3 to 8 and the read after it sees the new value.
+3. **Declared parameter types** — ✅ **landed**: `fn bump(q: P)` is
+   N's own annotation syntax at toy scale (unannotated = integer; the
+   per-function type table rides in the struct bundle, which already
+   reached parser and checker — zero new plumbing). Call sites are
+   held to the declaration — wrong struct, int-into-struct, and
+   struct-into-plain each refused with located errors — and the body
+   sees its parameter AS the struct, so field reads and writes on
+   parameters just work. What crosses the call is the record's
+   *index*: reference semantics, stated plainly — the callee's
+   mutation is visible in the caller (the demo prints 4 twice: the
+   returned `q.y`, then the caller's own `p.x` after `bump` bumped
+   it). Returns stay integer-only for now.
+4. **Enums + `match` — later.** Tags + payloads are a struct with a
    discriminant; `match` lowers to the JZ chains the toy already
    patches. Genuinely bigger: exhaustiveness lives in the checker.
 
