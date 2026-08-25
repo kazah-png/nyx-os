@@ -554,6 +554,17 @@ static int proc_generate(vfs_node_t* ino, char* buf, int bufsz) {
 // no caller holds node_pool_lock when entering here, so the order never inverts.
 static spinlock_t proc_lock = SPINLOCK_INIT;
 
+// Whether a process should be represented by a /proc/<pid> dir. Excludes the idle
+// task (pid 0) and -- the #66 fix -- a process that has exited but is still parked
+// in the table as a zombie awaiting reap: proc_sync() runs on every vfs_open, so a
+// lingering zombie otherwise keeps its 4-node /proc subtree pinned, and across a
+// sustained exec/compile session those drain the fixed node pool until every path
+// lookup fails. A zombie's /proc content is dead state anyway. Pure (reads only p's
+// own fields) so proc_expose_selftest can pin the rule.
+static inline int proc_should_expose(const process_t* p) {
+    return p && p->pid != 0 && p->state != PROC_ZOMBIE;
+}
+
 // Reconcile /proc/<pid> dirs with the live process table: drop dead ones, add
 // new ones (each with status + cmdline children). Idempotent and cheap; called
 // at vfs_open / vfs_isdir so an open/getdents/chdir sees the current pids. The
@@ -574,7 +585,10 @@ static void proc_sync(void) {
     // here (so they stop resolving) and freed by their last close instead.
     for (uint32_t i = 0; i < proc_node->child_count; ) {
         vfs_node_t* c = proc_node->children[i];
-        if (c->proc_type == PROC_PID_DIR && !find_process(c->proc_pid)) {
+        // Drop the dir when its process is gone from the table OR still there but a
+        // zombie (exited) -- proc_should_expose captures both (#66). The predicate
+        // is only evaluated for pid dirs, so the static /proc files are untouched.
+        if (c->proc_type == PROC_PID_DIR && !proc_should_expose(find_process(c->proc_pid))) {
             for (uint32_t j = 0; j < c->child_count; j++) release_node(c->children[j]);
             c->child_count = 0;
             release_node(c);
@@ -584,7 +598,7 @@ static void proc_sync(void) {
     // 2. Add a dir for each live process that lacks one.
     for (int i = 0; i < process_count; i++) {
         process_t* p = process_table[i];
-        if (!p || p->pid == 0) continue;
+        if (!proc_should_expose(p)) continue;   // skip idle (pid 0) and exited zombies (#66)
         int have = 0;
         for (uint32_t k = 0; k < proc_node->child_count; k++) {
             vfs_node_t* c = proc_node->children[k];
@@ -600,6 +614,19 @@ static void proc_sync(void) {
         proc_make(d, "maps",    0, PROC_PID_MAPS,    p->pid);
     }
     spin_unlock_irqrestore(&proc_lock, fl);
+}
+
+// #66 KAT: the /proc exposure rule. proc_sync() must not create or keep a
+// /proc/<pid> dir for the idle task or for an exited process still parked as a
+// zombie -- those lingering dirs are exactly what drained the fixed node pool
+// under sustained exec/compile activity. Pure: reads only each probe's own fields.
+int proc_expose_selftest(void) {
+    process_t t;
+    t.pid = 4242; t.state = PROC_RUN;     if (!proc_should_expose(&t)) return 1;
+    t.pid = 4242; t.state = PROC_ZOMBIE;  if ( proc_should_expose(&t)) return 2;  // the fix
+    t.pid = 0;    t.state = PROC_RUN;      if ( proc_should_expose(&t)) return 3;
+    if (proc_should_expose(NULL)) return 4;
+    return 0;
 }
 
 void init_vfs(void) {

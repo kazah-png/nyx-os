@@ -8624,6 +8624,7 @@ extern int tcp_wnd_selftest(void);          // net/tcp.c — receive-window flow
 extern int dns_response_selftest(void);
 extern int vfs_pathnorm_selftest(void);
 extern int vfs_poolkind_selftest(void);
+extern int proc_expose_selftest(void);   // fs/vfs.c: /proc excludes zombies (#66 node-pool leak)
 extern int user_ptr_ok_selftest(void);   // syscall.c: validates the ring-3 pointer/length boundary
 extern int pipe_selftest(void);          // proc/pipe.c: the pipe ring-buffer read/write path
 extern int dhcp_options_selftest(void);
@@ -8903,6 +8904,7 @@ static void run_selftests(void) {
         {"httpparse",    http_parse_selftest},    {"ext2dir",       ext2_dir_selftest},
         {"pathnorm",     vfs_pathnorm_selftest},
         {"poolkind",     vfs_poolkind_selftest},
+        {"proc-expose",  proc_expose_selftest},
         {"userptr",      user_ptr_ok_selftest},
         {"pipe",         pipe_selftest},
         {"tcpcksum",     tcp_checksum_selftest},  {"dns",           dns_response_selftest},
