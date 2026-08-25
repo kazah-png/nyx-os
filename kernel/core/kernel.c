@@ -1194,21 +1194,27 @@ static void cmd_nproc(int argc, char** argv) {
     printf("%u\n", cpu_count ? cpu_count : 1);
 }
 
-// ac97 — probe + report the AC'97 audio controller (driver rung 1: detection only).
+// ac97 — probe the AC'97 controller, bring the codec up, and report its state
+// (driver rungs 1-2: PCI detection + codec bring-up; DMA playback still to come).
 static void cmd_ac97(int argc, char** argv) {
     (void)argc; (void)argv;
-    ac97_detect();
-    const ac97_dev_t* d = ac97_get();
-    if (!d->found) {
+    if (!ac97_detect()) {
         printf("AC97 audio: not found (no PCI class 04:01 device)\n");
         return;
     }
+    ac97_init();
+    const ac97_dev_t* d = ac97_get();
     printf("AC97 audio: found %04x:%04x at %02u:%02u.%u\n",
            d->vendor, d->device, d->bus, d->slot, d->func);
     printf("  NAMBAR  (mixer/codec) = 0x%04x\n", d->nam_base);
     printf("  NABMBAR (bus master)  = 0x%04x\n", d->nabm_base);
     printf("  IRQ line              = %u\n", d->irq);
-    printf("  codec bring-up + DMA playback: later rungs\n");
+    printf("  codec ready           = %s\n", d->ready ? "yes" : "no");
+    printf("  codec vendor id       = 0x%08x\n", d->codec_id);
+    printf("  capabilities (reg 00) = 0x%04x\n", d->caps);
+    printf("  master vol readback   = 0x%04x\n", d->master_vol);
+    printf("  PCM sample rate       = %u Hz\n", d->rate);
+    printf("  DMA playback: next rung\n");
 }
 
 static void cmd_echo(int argc, char** argv) {
