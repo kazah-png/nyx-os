@@ -36,11 +36,27 @@ typedef struct {
     uint16_t master_vol;  /* NAM 0x02 master-volume readback            */
 } ac97_dev_t;
 
+/* Result of a bus-master playback run — what the PCM-out DMA engine did, so the
+ * `ac97` command can prove (headless, where audio is inaudible) that DMA advanced. */
+typedef struct {
+    int      started;      /* the engine was armed + run                       */
+    uint16_t picb_start;   /* position-in-current-buffer right after start      */
+    uint16_t picb_end;     /* ... after the bounded poll (should have dropped)  */
+    uint8_t  civ_end;      /* current buffer index reached                      */
+    uint16_t sr;           /* PCM-out status register at the end (bit0 = halted)*/
+    int      moved;        /* PICB decremented or the engine halted = DMA ran   */
+} ac97_play_t;
+
 /* Probe PCI once (result cached). Returns 1 if an AC'97 controller is present. */
 int ac97_detect(void);
 /* Bring the codec up (idempotent): enable the controller, reset + ready-wait,
  * read the vendor id, unmute + set volumes/rate. Returns 1 if the codec is ready. */
 int ac97_init(void);
+/* Play a built-in ~0.25 s 440 Hz square tone through the PCM-out bus-master DMA
+ * engine (builds a 1-entry BDL over a static stereo buffer, arms + runs it, then
+ * polls the position registers). Fills *out with what the engine did. Returns 1
+ * if DMA was observed to advance. */
+int ac97_play_tone(ac97_play_t* out);
 /* The detected device (found == 0 until a successful ac97_detect). */
 const ac97_dev_t* ac97_get(void);
 

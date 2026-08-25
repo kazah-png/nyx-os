@@ -22,6 +22,27 @@
 #define NABM_GLOB_CNT   0x2C   /* global control: bit1 = AC'97 cold reset# */
 #define NABM_GLOB_STA   0x30   /* global status:  bit8 = primary codec ready */
 
+/* NABM PCM-OUT box (16 bytes at nabm_base + 0x10). */
+#define PO_BDBAR  0x10   /* u32: physical base of the buffer-descriptor list  */
+#define PO_CIV    0x14   /* u8:  current index value (ro)                     */
+#define PO_LVI    0x15   /* u8:  last valid index                             */
+#define PO_SR     0x16   /* u16: status (bit0 DCH halted, bit3 LVBCI, bit2 CELV) */
+#define PO_PICB   0x18   /* u16: position in current buffer, samples left (ro)*/
+#define PO_CR     0x1B   /* u8:  control (bit0 run, bit1 reset, bit4 IOCE)    */
+
+/* A buffer-descriptor: a 32-bit sample-buffer physical address, a 16-bit length in
+ * SAMPLES (16-bit units), and control bits (bit15 IOC = interrupt on completion,
+ * bit14 BUP = buffer-underrun-policy). Matches the AC'97 hardware layout exactly. */
+typedef struct { uint32_t addr; uint16_t len; uint16_t ctrl; } __attribute__((packed)) ac97_bd_t;
+
+#define AC97_TONE_FRAMES 11025               /* ~0.25 s at 44.1 kHz               */
+#define AC97_TONE_HZ     440
+/* Static, identity-mapped DMA memory: the kernel maps low RAM 1:1, so a .bss
+ * buffer's virtual address IS its physical address (the same trick sb16.c uses).
+ * The BDL is 8-byte aligned as the engine requires. */
+static ac97_bd_t ac97_bdl[32] __attribute__((aligned(8)));
+static int16_t   ac97_tone_buf[AC97_TONE_FRAMES * 2];   /* interleaved stereo L,R */
+
 static ac97_dev_t g_ac97;
 
 /* Mask an I/O BAR down to its port base: bit 0 is the I/O-space indicator and
@@ -92,6 +113,72 @@ int ac97_init(void) {
     d->rate       = inw(d->nam_base + NAM_PCM_RATE);
     d->master_vol = inw(d->nam_base + NAM_MASTER_VOL);
     return d->ready;
+}
+
+int ac97_play_tone(ac97_play_t* out) {
+    if (out) { out->started = 0; out->picb_start = 0; out->picb_end = 0;
+               out->civ_end = 0; out->sr = 0; out->moved = 0; }
+    if (!ac97_init()) return 0;                          /* need a ready codec (R2) */
+    ac97_dev_t* d = &g_ac97;
+
+    /* DMA addresses must fit the 32-bit descriptor fields (kernel lives in low RAM). */
+    if (((uintptr_t)ac97_tone_buf >> 32) || ((uintptr_t)ac97_bdl >> 32)) return 0;
+
+    /* A 440 Hz square wave: toggle +/- amplitude every half period, both channels. */
+    int half = (44100 / AC97_TONE_HZ) / 2;
+    if (half < 1) half = 1;
+    for (int f = 0; f < AC97_TONE_FRAMES; f++) {
+        int16_t s = ((f / half) & 1) ? (int16_t)-8000 : (int16_t)8000;
+        ac97_tone_buf[f * 2]     = s;                    /* L */
+        ac97_tone_buf[f * 2 + 1] = s;                    /* R */
+    }
+
+    /* One descriptor over the whole tone; IOC flags completion. */
+    ac97_bdl[0].addr = (uint32_t)(uintptr_t)ac97_tone_buf;
+    ac97_bdl[0].len  = (uint16_t)(AC97_TONE_FRAMES * 2); /* in 16-bit samples */
+    ac97_bdl[0].ctrl = 0x8000;                           /* IOC */
+
+    uint16_t po = d->nabm_base;
+
+    /* Reset the PCM-out engine; wait (bounded) for the reset bit to self-clear. */
+    outb(po + PO_CR, 0x02);                              /* RR */
+    for (int i = 0; i < 100000 && (inb(po + PO_CR) & 0x02); i++) io_wait();
+
+    /* Program the descriptor list + last-valid-index (single entry -> 0), then run. */
+    outl(po + PO_BDBAR, (uint32_t)(uintptr_t)ac97_bdl);
+    outb(po + PO_LVI, 0);
+    outb(po + PO_CR, 0x01);                              /* RPBM run */
+
+    /* Let the engine load PICB from the descriptor (position = samples remaining). */
+    uint16_t picb_start = 0;
+    for (int i = 0; i < 20000 && picb_start == 0; i++) { picb_start = inw(po + PO_PICB); io_wait(); }
+
+    /* Poll the position downward until the buffer completes (DCH) — bounded so a
+     * stuck engine can never hang. Audio is inaudible headless, so a decrementing
+     * PICB / a set DCH is the proof the DMA actually ran. */
+    uint16_t picb_min = picb_start ? picb_start : 0xFFFF;
+    int halted = 0;
+    for (int i = 0; i < 4000000; i++) {
+        uint16_t p = inw(po + PO_PICB);
+        if (p < picb_min) picb_min = p;
+        if (inw(po + PO_SR) & 0x01) { halted = 1; break; }   /* DCH */
+        io_wait();
+    }
+    uint16_t sr  = inw(po + PO_SR);
+    uint8_t  civ = inb(po + PO_CIV);
+
+    outb(po + PO_CR, 0x00);                              /* stop; leave codec up */
+
+    int moved = (picb_min < picb_start) || halted;
+    if (out) {
+        out->started    = 1;
+        out->picb_start = picb_start;
+        out->picb_end   = picb_min;
+        out->civ_end    = civ;
+        out->sr         = sr;
+        out->moved      = moved;
+    }
+    return moved;
 }
 
 const ac97_dev_t* ac97_get(void) { return &g_ac97; }

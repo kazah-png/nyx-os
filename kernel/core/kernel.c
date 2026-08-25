@@ -352,7 +352,7 @@ static const command_t commands[] = {
     {"pstree",    cmd_pstree,    "Show processes as a parent->child tree", false},
     {"uptime",    cmd_uptime,    "Show uptime, process count, load, and CPUs", false},
     {"nproc",     cmd_nproc,     "Print the number of online CPUs (for -j$(nproc) scripts)", false},
-    {"ac97",      cmd_ac97,      "Probe for an AC97 audio controller and show its PCI BARs/IRQ", false},
+    {"ac97",      cmd_ac97,      "AC97 audio: probe/bring up the codec; 'ac97 tone' plays a DMA tone", false},
     {"time",      cmd_time,      "Time a command's wall-clock run: time <command> [args...]", false},
     {"timeout",   cmd_timeout,   "Run a command, killing it after N seconds: timeout <secs> <cmd> [args]", false},
     {"mtdemo",    cmd_mtdemo,    "Preemptive multitasking self-test", false},
@@ -1008,7 +1008,7 @@ static const man_page_t man_pages[] = {
     {"pstree",   "Show the processes as a tree, each child indented under its parent (grouped by PPID) — the hierarchical companion to the flat `ps` list. Every line is `name(pid)`; a process whose parent is no longer running is shown as its own root. Handy for seeing which process spawned which (e.g. the compositor and the jobs launched from a terminal). Read-only; recursion is depth-capped so a broken parent chain can't loop."},
     {"uptime",   "Print a one-line system summary in the classic Unix format: the wall-clock time, how long the kernel has been up (days + HH:MM:SS, from the 1000 Hz tick counter), the number of live processes, an instantaneous load figure (how many processes are runnable right now), and the count of online CPUs. A focused, scriptable subset of what `nyxfetch` shows."},
     {"nproc",    "Print the number of online CPUs as a single integer, the count the SMP bring-up counted (the same number `uptime` reports inside its prose line). Unlike `uptime` it prints just the number, so it drops into a command substitution — e.g. a parallel build `cc -j$(nproc)`."},
-    {"ac97",     "Probe the PCI bus for an AC'97 audio controller (class 04:01, e.g. QEMU `-device AC97`) and print what the driver found: the controller's PCI vendor:device id and bus address, its two I/O register windows — NAMBAR (the codec/mixer) and NABMBAR (the bus-master DMA engine) — and its interrupt line. Detection only for now; codec bring-up and DMA playback are the next driver rungs. `soundinfo` for the SB16 side."},
+    {"ac97",     "Drive the AC'97 audio controller (class 04:01, e.g. QEMU `-device AC97`). With no argument it probes the PCI bus, brings the codec up (cold reset, read the codec vendor id, unmute + set master/PCM volume + 44.1 kHz) and prints the controller's BARs (NAMBAR mixer / NABMBAR bus-master), IRQ, codec-ready state and vendor id. `ac97 tone` builds a buffer-descriptor list over a 440 Hz square tone and runs it through the PCM-out bus-master DMA engine, reporting the position registers (PICB/CIV/SR) so you can see the DMA advance even though audio is inaudible in a headless VM. `soundinfo` covers the SB16 side."},
     {"time",     "Run a command and report how long it took: `time <command> [args...]` runs the rest of the line as a command and, when it finishes, prints the elapsed wall-clock time as `real   S.mmm s` (from the 1000 Hz tick counter). Useful for benchmarking a builtin — e.g. `time cc hello.c -o hello`, `time sha256sum bigfile`, or `time sort words.txt`. Times whole-command execution, not per-call CPU."},
     {"timeout",  "Run an external command with a time limit: `timeout <seconds> <command> [args...]` starts <command> (a userspace program, e.g. `timeout 3 sleep 10`) and, if it is still running after <seconds>, kills it with SIGKILL and reports status 124 — otherwise it reports the child's own exit code. The wall clock comes from the 1000 Hz tick counter. Only external programs can be timed out (builtins run to completion synchronously and cannot be interrupted). Handy for bounding a network fetch or any command that might hang."},
     {"kill",     "Terminate the process with the given <pid>. Run ps first to find the pid you want."},
@@ -1194,15 +1194,21 @@ static void cmd_nproc(int argc, char** argv) {
     printf("%u\n", cpu_count ? cpu_count : 1);
 }
 
-// ac97 — probe the AC'97 controller, bring the codec up, and report its state
-// (driver rungs 1-2: PCI detection + codec bring-up; DMA playback still to come).
+// ac97 — probe the AC'97 controller, bring the codec up, report its state, and
+// (with "tone") drive a bus-master DMA tone. Rungs 1-3: detect + bring-up + playback.
 static void cmd_ac97(int argc, char** argv) {
-    (void)argc; (void)argv;
     if (!ac97_detect()) {
         printf("AC97 audio: not found (no PCI class 04:01 device)\n");
         return;
     }
     ac97_init();
+    if (argc >= 2 && strcmp(argv[1], "tone") == 0) {
+        ac97_play_t r;
+        ac97_play_tone(&r);
+        printf("AC97 tone: started=%d  PICB %u -> %u  CIV=%u  SR=0x%04x  DMA moved=%s\n",
+               r.started, r.picb_start, r.picb_end, r.civ_end, r.sr, r.moved ? "yes" : "no");
+        return;
+    }
     const ac97_dev_t* d = ac97_get();
     printf("AC97 audio: found %04x:%04x at %02u:%02u.%u\n",
            d->vendor, d->device, d->bus, d->slot, d->func);
@@ -1214,7 +1220,7 @@ static void cmd_ac97(int argc, char** argv) {
     printf("  capabilities (reg 00) = 0x%04x\n", d->caps);
     printf("  master vol readback   = 0x%04x\n", d->master_vol);
     printf("  PCM sample rate       = %u Hz\n", d->rate);
-    printf("  DMA playback: next rung\n");
+    printf("  run 'ac97 tone' to play a 440 Hz DMA tone\n");
 }
 
 static void cmd_echo(int argc, char** argv) {
