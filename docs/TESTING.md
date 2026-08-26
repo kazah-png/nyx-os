@@ -39,7 +39,7 @@ struct { const char* name; int (*fn)(void); } t[] = {
     {"sha512",  sha512_selftest},   {"aes_gcm", aes_gcm_selftest},
     {"inflate", inflate_selftest},  {"png",     png_selftest},
     {"cut",     cut_selftest},      {"comm",    comm_selftest},
-    /* ... 127 entries and counting ... */
+    /* ... 154 entries and counting ... */
 };
 ```
 
@@ -53,7 +53,7 @@ SELFTEST-BEGIN
 [SELFTEST] aes_gcm      PASS
 ...
 [SELFTEST] join         PASS
-SELFTEST-SUMMARY passed=127 failed=0 total=127
+SELFTEST-SUMMARY passed=154 failed=0 total=154
 SELFTEST-END
 ```
 
@@ -62,14 +62,16 @@ battery covers:
 
 | Area | Examples |
 |------|----------|
-| **Crypto** | SHA-1/256/512, MD5, HMAC, PBKDF2, AES-GCM, Curve25519, Ed25519, P-256/384, RSA, the CSPRNG |
-| **TLS / PKI** | TLS 1.2 PRF, key schedule, record layer, DER, X.509 chain verification |
-| **Encodings** | Base16/32/58/64/85, bech32, URL, UTF-8 |
-| **Checksums** | CRC-16, CRC-32C, Fletcher, FNV, MurmurHash, Adler-32 (in the inflate path) |
+| **Crypto** | SHA-1/256/512, SHA-3, MD5, BLAKE2s, HMAC, PBKDF2, HKDF, AES-GCM/CBC/CTR/KW, ChaCha20-Poly1305, SipHash, CMAC, Curve25519, Ed25519, P-256/384, RSA, the CSPRNG, constant-time compare |
+| **TLS / PKI** | TLS 1.2 PRF, key schedule, record layer, ServerKeyExchange, DER, X.509 chain verification |
+| **Encodings** | Base16/32/58/64/85, bech32, URL, UTF-8, UUID, ANSI CSI |
+| **Checksums** | CRC-16, CRC-32, CRC-32C, Fletcher, FNV, MurmurHash, Adler-32 (in the inflate path) |
 | **Compression** | raw DEFLATE, zlib, gzip (round-tripped through the encoder) |
-| **Images** | PNG, BMP, GIF (incl. LZW), JPEG decoders |
-| **Text / data** | `cut`, `comm`, `join`, `xargs`, CSV, INI, `strings`, semver, date formatting, shell `$VAR` expansion |
-| **Kernel** | page-allocator refcount / COW, stack canaries, the pipe ring buffer, mkfs.ext2 layout, MBR/GPT, PCI/NVMe enumeration |
+| **Images** | PNG (decode + encode), BMP, GIF (incl. LZW), JPEG, PPM, format sniffing + malformed-input rejection |
+| **Networking** | TCP checksum + window math, IPv4/IPv6, `ipcalc`, DNS (build + parse), ARP input parsing, DHCP options, HTTP response parsing |
+| **Text / data** | `cut`, `comm`, `join`, `xargs`, `sed`, `patch`, `fmt`, `pr`, `shuf`, `tsort`, `calc`, JSON (+ query), glob, CSV, INI, `strings`, semver, date formatting, path normalization, shell `$VAR` expansion |
+| **Disk / boot** | mkfs.ext2 layout, FAT formatter, MBR/GPT partition tables, PCI/NVMe enumeration, the GRUB boot image |
+| **Kernel** | page-allocator refcount / COW, W^X mappings, slab/`kfree`, stack canaries, signal delivery, the pipe ring buffer, the ELF loader + dynamic linker, the CPU-utilization accountant, wall-clock uptime (civil→epoch), the software 3D rasterizer + `mat4`, TOTP / account-lockout |
 
 ---
 
@@ -130,8 +132,10 @@ still `failed=0`. That is the whole loop.
 
 [`.github/workflows/build.yml`](../.github/workflows/build.yml) runs on every push:
 
-- **build** — compiles the kernel warning-free, builds both the normal and the self-test
-  ISO, and smoke-boots the normal ISO in QEMU until the login screen is reached.
+- **build** — compiles the kernel warning-free and builds both the normal and the self-test
+  ISO.
+- **smoke-boot** — boots the normal ISO in QEMU until the login screen is reached, catching a
+  boot that faults or hangs before the desktop.
 - **selftests** — boots the self-test ISO (cmdline `selftest`) against a blank ext2 disk,
   captures the serial log, and **fails the job** unless it sees `SELFTEST-END` with a
   `SELFTEST-SUMMARY … failed=0` and no kernel fault.
