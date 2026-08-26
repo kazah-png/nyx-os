@@ -98,3 +98,35 @@ int tsort_run(const char* text, uint32_t len, tsort_emit_fn emit, void* ctx) {
     }
     return (out == nnodes) ? out : -2;
 }
+
+// KAT: pins tsort_run against GNU tsort's exact output — including the tie-break order
+// (ready nodes emitted so that GNU's ordering is reproduced) and the return-code contract
+// (node count on success, -1 for an odd token count, -2 for a cycle). Every expected value
+// below was cross-checked against GNU `tsort` byte-for-byte (scratchpad/hd_tsort.sh).
+// Convention: 0 = PASS, else the failing case number.
+typedef struct { char buf[128]; int pos; } ts_kat_t;
+static void ts_kat_emit(const char* name, uint32_t len, void* ctx) {
+    ts_kat_t* k = (ts_kat_t*)ctx;
+    for (uint32_t i = 0; i < len && k->pos < (int)sizeof(k->buf) - 2; i++) k->buf[k->pos++] = name[i];
+    if (k->pos < (int)sizeof(k->buf) - 1) k->buf[k->pos++] = ' ';
+    k->buf[k->pos] = '\0';
+}
+
+int tsort_selftest(void) {
+    ts_kat_t k;
+    #define TS_RUN(txt) (k.pos = 0, k.buf[0] = '\0', tsort_run((txt), (uint32_t)strlen(txt), ts_kat_emit, &k))
+    // 1. simple chain a -> b -> c
+    if (TS_RUN("a b b c") != 3 || ts_strcmp(k.buf, "a b c "))          return 1;
+    // 2. tie-break: GNU emits 3, then 2, then 1 (not 1 then 2)
+    if (TS_RUN("3 1 3 2") != 3 || ts_strcmp(k.buf, "3 2 1 "))          return 2;
+    // 3. two independent edges, interleaved emission
+    if (TS_RUN("a b  c d  b d") != 4 || ts_strcmp(k.buf, "a c b d "))  return 3;
+    // 4. named nodes: qux is a root, foo->bar->baz
+    if (TS_RUN("foo bar bar baz qux foo") != 4 || ts_strcmp(k.buf, "qux foo bar baz ")) return 4;
+    // 5. odd token count -> malformed input (like GNU)
+    if (TS_RUN("a b c") != -1)                                        return 5;
+    // 6. a cycle is detected and reported, not looped on
+    if (TS_RUN("a b b a") != -2)                                      return 6;
+    #undef TS_RUN
+    return 0;
+}
