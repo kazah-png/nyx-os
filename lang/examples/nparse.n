@@ -440,13 +440,29 @@ fn lex(p: *u8, n: i64, k: *i64, v: *i64, ln: *i64, sy: Syms, st: Strs) -> i64 {
                      "no string literals inside an interpolation");
             }                              // opens a hole now, N's rule)
             mut j := i + 1;
+            mut ol := 0;
             while j < n && p[j] as i64 != 34 && p[j] as i64 != 123 {
-                st.sb[sbl + (j - i - 1)] = p[j];
+                mut c2 := p[j] as i64;
+                if c2 == 92 && j + 1 < n { // a '\\' escape: N's own set;
+                    e := p[j + 1] as i64;  // an unknown escape keeps both
+                    mut m2 := 0;           // bytes as written
+                    if e == 110 { c2 = 10; m2 = 1; }
+                    if e == 116 { c2 = 9; m2 = 1; }
+                    if e == 114 { c2 = 13; m2 = 1; }
+                    if e == 48 { c2 = 0; m2 = 1; }
+                    if e == 92 { c2 = 92; m2 = 1; }
+                    if e == 34 { c2 = 34; m2 = 1; }
+                    if e == 123 { c2 = 123; m2 = 1; }
+                    if e == 125 { c2 = 125; m2 = 1; }
+                    if m2 == 1 { j += 1; } // an escaped brace lands as a
+                }                          // byte and never reaches the
+                st.sb[sbl + ol] = c2 as u8;   // hole test above
+                ol += 1;
                 j += 1;
             }
             st.sts[sc] = sbl;
-            st.stl[sc] = j - i - 1;
-            sbl += j - i - 1;
+            st.stl[sc] = ol;
+            sbl += ol;
             mut kk := 10;                  // a plain literal at the quote ...
             if j < n && p[j] as i64 == 123 {
                 kk = 16;                   // ... or the HEAD of an
@@ -458,14 +474,30 @@ fn lex(p: *u8, n: i64, k: *i64, v: *i64, ln: *i64, sy: Syms, st: Strs) -> i64 {
             continue;
         }
         if b == 125 && interp == 1 {       // '}' closes the hole: back to
-            mut j := i + 1;                // string mode for the next segment
+            mut j := i + 1;
+            mut ol := 0;
             while j < n && p[j] as i64 != 34 && p[j] as i64 != 123 {
-                st.sb[sbl + (j - i - 1)] = p[j];
+                mut c2 := p[j] as i64;
+                if c2 == 92 && j + 1 < n { // a '\\' escape: N's own set;
+                    e := p[j + 1] as i64;  // an unknown escape keeps both
+                    mut m2 := 0;           // bytes as written
+                    if e == 110 { c2 = 10; m2 = 1; }
+                    if e == 116 { c2 = 9; m2 = 1; }
+                    if e == 114 { c2 = 13; m2 = 1; }
+                    if e == 48 { c2 = 0; m2 = 1; }
+                    if e == 92 { c2 = 92; m2 = 1; }
+                    if e == 34 { c2 = 34; m2 = 1; }
+                    if e == 123 { c2 = 123; m2 = 1; }
+                    if e == 125 { c2 = 125; m2 = 1; }
+                    if m2 == 1 { j += 1; } // an escaped brace lands as a
+                }                          // byte and never reaches the
+                st.sb[sbl + ol] = c2 as u8;   // hole test above
+                ol += 1;
                 j += 1;
             }
             st.sts[sc] = sbl;
-            st.stl[sc] = j - i - 1;
-            sbl += j - i - 1;
+            st.stl[sc] = ol;
+            sbl += ol;
             mut kk := 17;                  // the TAIL at the quote ...
             if j < n && p[j] as i64 == 123 {
                 kk = 18;                   // ... or a MID: another hole opens
@@ -2450,6 +2482,15 @@ fn main() -> i64 {
     // dies at the brace like every arm name. Tag-only enums keep
     // their bare-integer representation untouched.
     show("enum Msg \{ num(x), quit \}\nm := Msg.num(41);\nmatch m \{ num(x) \{ print x + 1; \} quit \{ print 0; \} \}\n0",
+         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, sy, st, sd);
+    // STRING ESCAPES — rung 1 of the road to parsing N itself (see
+    // docs/selfhost.md, "The next mountain"): \n breaks the line
+    // inside one literal, and an ESCAPED brace is a literal brace —
+    // it never reaches the lexer's hole test, so interpolation and
+    // braces-as-text finally coexist, exactly N's own rule.
+    // (The demo source below escapes twice: once for N, once for the
+    // toy — the toy sees a backslash-brace and keeps the byte.)
+    show("print \"one\\ntwo\"; print \"kept: \\\{ \\\} done\"; 0",
          k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, sy, st, sd);
     // The rest of the comparison set, each its own opcode.
     show("n := 7; print n != 7; print n <= 7; print n >= 9; print !(n >= 9); 0",

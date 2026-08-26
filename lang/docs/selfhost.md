@@ -241,6 +241,55 @@ factor (int-only, folding over constants), unambiguous because the
 grows until the toy parses the examples directory — at which point it
 stops being a toy.
 
+## The next mountain: parsing N itself
+
+An honest accounting. The toy now covers its parity tables — but it
+parses its OWN language, not N. "Parses the examples directory" means
+the toy reading real `.n` files, and the first target is the canonical
+one: **hello.n**. Read token by token against the toy's current
+surface, the gap is smaller than expected — the years of rungs were
+quietly converging on N's shape all along:
+
+**Already 1:1**: `//` and `/* */` comments · `fn name(args)` · `:=`
+bindings · calls (zero-arg included) · string literals **with
+interpolation holes** (the toy lexes `{pid}` today) · `: Name`
+parameter annotations · statement `;` rules · the `0` tail.
+
+**The six rungs that remain**, ranked and scoped:
+
+1. **String escapes** — ✅ **landed the same hour it was scouted**:
+   `\n \t \r \0 \\ \" \{ \}` in both segment scanners (an unknown
+   escape keeps its bytes as written). The escaped brace never
+   reaches the lexer's hole test, so braces-as-text and
+   interpolation finally coexist — N's own rule — and hello.n's
+   `msg` string now lexes.
+2. **Return annotations + builtin type names** — `-> i64` parsed on
+   fns (int-only, which the tail check already enforces) and
+   `i32`/`i64`/`u8`/`isize`/... accepted in parameter annotations,
+   all mapping to the toy's int (documented: one numeric kind at toy
+   scale).
+3. **`as` casts, parsed and discarded** — `msg.ptr as *u8` reads the
+   cast and keeps the value (every toy value is an i64 word; the
+   asterisk is stated, like attributes).
+4. **`str` fields** — `.len` on a string IS the existing STRLEN
+   opcode; `.ptr` is the identity at toy scale (a string is its table
+   index). Makes `write(1, msg.ptr, msg.len)` typeable.
+5. **`extern syscall` blocks** — parse the block, record externs with
+   their numbers; a call to one emits a toy SYSCALL opcode the VM
+   services BY NAME: `write` through the same audited output boundary
+   PRINTS uses, `getpid` as a constant. The shape is real; the kernel
+   is the VM — stated plainly.
+6. **`fn main` as the program** — an N file has no top-level
+   statements; when a parsed file defines `main` and nothing else
+   top-level, the program is one CALL to it.
+
+After rung 6 the graduation demo writes itself: `run_file` pointed at
+**hello.n itself** — the toy compiles the canonical N program off the
+disk and it PRINTS. That is the moment the toy stops being a toy and
+becomes what M5 always meant it to become: the seed of `ncc` in N.
+Out of scope, stated once: raw pointers, `#[caps]` semantics, `own`,
+generics — those stay ncc's, and the toy keeps saying so.
+
 And the hardest lexer feature landed: **interpolation**. A toy string
 containing a brace lexes as segments — HEAD before the first hole,
 MID between holes, TAIL after the last (ncc's own
