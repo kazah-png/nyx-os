@@ -7,12 +7,14 @@
 //   The lexer fills a token buffer (sbrk'd i64 arrays, v0.16 index
 //   stores); the parser consumes TOKENS, never characters; the VM runs
 //   the emitted stack code. The grammar covers the whole toy language:
-//     program := { fndef } { stmt } cmp
+//     program := { fndef } { stmt } cmp  |  { fndef }   (rung 6: a
+//                fn named main and no tail — the program IS main)
 //     fndef   := 'fn' name '(' name { ',' name } ')' '{' { stmt } cmp '}'
 //     stmt    := name ':=' cmp ';'
 //              | 'if' cmp block [ 'else' ( block | if-stmt ) ]
 //              | 'while' cmp block
 //              | 'print' cmp ';'      (strings are factors now)
+//              | name '(' args ')' ';'   (a call statement)
 //   `else if` CHAINS are free structure, not new machinery: the else
 //   slot always held a statement index, and a nested if IS a
 //   statement — the parser just recurses into ast_stmt instead of
@@ -61,6 +63,10 @@
 //   untouched.
 //               20 = variant construction (nl = payload root or -1,
 //                    nv = tag, nr = enum id; lowers to RNEW)
+//               21 = extern call (nv = binding index, nl = arg
+//                    count, args in na; lowers to one SYSCALL)
+//               22 = call statement (nl = the call, made and then
+//                    dropped — a bare write(...) is a statement)
 //   A separate walker, emit_node, then emits by postorder recursion —
 //   children first, the node's own operation last. Postfix is no
 //   longer a lucky consequence of parse order; it is a property of the
@@ -1593,19 +1599,41 @@ fn emit_node(a: Ast, fe: *i64, fp: *i64, code: *i64, cp: i64, idx: i64) -> i64 {
     c
 }
 
-// A statement begins with `if`, `while`, `print`, a name + ':=', or a
+// A statement begins with `if`, `while`, `print`, a name + ':=', a
 // FIELD WRITE — name '.' name '=' exactly, all four tokens checked, so
 // a tail expression that merely READS a field (`p.x`) is never taken
-// for one. The test carries v now: only it can tell '.' from '='.
+// for one — or a CALL STATEMENT: name '(' ... ')' ';'. That last one
+// takes real lookahead, the toy's first: the scan walks to the
+// matching ')' (nesting counted) and asks for the ';' that makes the
+// call a statement — a call without one is the tail. N's own rule,
+// token for token: statements end in ';', the tail does not.
 fn is_stmt_start(k: *i64, v: *i64, pos: i64) -> bool {
-    k[pos] == 5 || k[pos] == 6 || k[pos] == 11 || k[pos] == 21
-        || (k[pos] == 1 && k[pos + 1] == 4)
-        || (k[pos] == 1 && k[pos + 1] == 2 && v[pos + 1] == 46
-            && k[pos + 2] == 1 && k[pos + 3] == 2 && v[pos + 3] == 61)
+    if k[pos] == 5 || k[pos] == 6 || k[pos] == 11 || k[pos] == 21 {
+        return true;
+    }
+    if k[pos] == 1 && k[pos + 1] == 4 {
+        return true;
+    }
+    if k[pos] == 1 && k[pos + 1] == 2 && v[pos + 1] == 46
+        && k[pos + 2] == 1 && k[pos + 3] == 2 && v[pos + 3] == 61 {
+        return true;
+    }
+    if k[pos] == 1 && k[pos + 1] == 2 && v[pos + 1] == 40 {
+        mut p2 := pos + 2;
+        mut depth := 1;
+        while depth > 0 {
+            if k[p2] == 9 { return false; }
+            if k[p2] == 2 && v[p2] == 40 { depth += 1; }
+            if k[p2] == 2 && v[p2] == 41 { depth -= 1; }
+            p2 += 1;
+        }
+        return k[p2] == 2 && v[p2] == 59;
+    }
+    false
 }
 
 // stmt := name ':=' cmp ';' | 'if' cmp block [ 'else' block ]
-//       | 'while' cmp block
+//       | 'while' cmp block | name '(' args ')' ';'
 //   Statements BUILD nodes now, like every expression rule above: the
 //   statement node is allocated first (the call-node trick), its
 //   pieces land in nl/nr/na, and not one opcode is emitted here. The
@@ -1690,6 +1718,16 @@ fn ast_stmt(k: *i64, v: *i64, ln: *i64, fpc: *i64, sd: Sdefs, a: Ast, pos: i64, 
         }
         a.nk[idx] = 17; a.nl[idx] = c.root; a.nr[idx] = first; a.nv[idx] = 0;
         return NP{ pos: p2 + 1, nn: n2, root: idx };
+    }
+    if k[pos + 1] == 2 && v[pos + 1] == 40 {
+        idx := nn;                         // name '(' args ')' ';' — a CALL
+        a.nline[idx] = ln[pos];            // STATEMENT: the value is made,
+        r := ast_cmp(k, v, ln, fpc, sd, a, pos, nn + 1);   // then dropped
+        if !(k[r.pos] == 2 && v[r.pos] == 59) {
+            fail(ln[r.pos], "expected ';' after the call");
+        }
+        a.nk[idx] = 22; a.nl[idx] = r.root; a.nr[idx] = -1; a.nv[idx] = 0;
+        return NP{ pos: r.pos + 1, nn: r.nn, root: idx };
     }
     if k[pos + 1] == 2 && v[pos + 1] == 46 {
         idx := nn;                         // name '.' name '=' cmp ';' — a
@@ -1859,6 +1897,10 @@ fn check_stmt(a: Ast, sd: Sdefs, env: Scope, bc: i64, idx: i64) -> i64 {
         }
         return bc;
     }
+    if a.nk[idx] == 22 {                   // call statement: the value is
+        check_node(a, sd, env, bc, a.nl[idx]);   // checked like any — and
+        return bc;                         // dropped; nothing binds
+    }
     if a.nk[idx] == 6 {                    // if: an int condition; both arms
         check_node(a, sd, env, bc, a.nl[idx]);
         if a.nt[a.nl[idx]] != 0 {
@@ -1904,6 +1946,7 @@ fn fold_stmt(a: Ast, st: Strs, idx: i64) {
     if a.nk[idx] == 5 { fold_node(a, st, a.nl[idx]); }
     if a.nk[idx] == 9 { fold_node(a, st, a.nl[idx]); }
     if a.nk[idx] == 16 { fold_node(a, st, a.nl[idx]); }   // the written value folds
+    if a.nk[idx] == 22 { fold_node(a, st, a.nl[idx]); }   // the dropped value folds
     if a.nk[idx] == 17 {                   // match: the value and every arm
         fold_node(a, st, a.nl[idx]);       // fold; the statement itself does
         mut arm := a.nr[idx];              // not (a constant scrutinee is a
@@ -2017,6 +2060,10 @@ fn emit_stmt(a: Ast, fe: *i64, fp: *i64, code: *i64, cp: i64, idx: i64) -> i64 {
         c := emit_node(a, fe, fp, code, cp, a.nl[idx]);   // record index,
         c2 := emit2(code, c, 11, a.na[idx * 4]);   // then RSET at the slot
         return emit2(code, c2, 31, a.nv[idx]);     // the check pass resolved
+    }
+    if a.nk[idx] == 22 {                   // call statement: the value,
+        c := emit_node(a, fe, fp, code, cp, a.nl[idx]);   // then POP —
+        return emit1(code, c, 33);         // made and dropped
     }
     if a.nk[idx] == 6 {                    // if / else
         c := emit_node(a, fe, fp, code, cp, a.nl[idx]);
@@ -2153,11 +2200,25 @@ fn parse_fndef(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, sd: Sd
     EP{ pos: t.pos + 1, cp: emit1(code, t.cp, 16) }   // skip '}', RET
 }
 
-// program := { fndef } { stmt } cmp
+// Does symbol s spell "main"? The byte-compare rung 6 stands on: no
+// keyword, no lexer special case — just the interned name's bytes.
+fn spells_main(sy: Syms, s: i64) -> bool {
+    sy.sl[s] == 4
+        && sy.nb[sy.ss[s]] as i64 == 109
+        && sy.nb[sy.ss[s] + 1] as i64 == 97
+        && sy.nb[sy.ss[s] + 2] as i64 == 105
+        && sy.nb[sy.ss[s] + 3] as i64 == 110
+}
+
+// program := { fndef } { stmt } cmp  |  { fndef }
 //   If any functions exist, a JMP with a placeholder target is emitted
 //   first and patched to hop over their bodies — execution starts at
-//   the main statements, functions are entered only by CALL.
-fn parse_program(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, sd: Sdefs, a: Ast, env: Scope, st: Strs, pos: i64, code: *i64, cp: i64) -> EP {
+//   the main statements, functions are entered only by CALL. The
+//   second form is rung 6, hello.n's own: when the tokens END right
+//   after the fndefs and one of them is named main, there is no tail
+//   to demand — the program IS one call to main, and the two words
+//   emitted are exactly what a 0-argument call site would emit.
+fn parse_program(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, sd: Sdefs, a: Ast, env: Scope, sy: Syms, st: Strs, pos: i64, code: *i64, cp: i64) -> EP {
     mut p := pos;
     mut c := cp;
     sd.cur[0] = 0;                         // struct defs, records, enum
@@ -2304,6 +2365,7 @@ fn parse_program(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, sd: 
             sds = true;
         }
     }
+    mut msym := -1;                        // rung 6: remember main
     if k[p] == 7 {
         c = emit2(code, c, 14, 0);
         hole := c - 1;                     // the hop-over JMP's target
@@ -2311,6 +2373,7 @@ fn parse_program(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, sd: 
         while fns {
             fns = false;
             if k[p] == 7 {
+                if spells_main(sy, v[p + 1]) { msym = v[p + 1]; }
                 r := parse_fndef(k, v, ln, fe, fp, fpc, sd, a, env, st, p, code, c);
                 p = r.pos;
                 c = r.cp;
@@ -2318,6 +2381,15 @@ fn parse_program(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, sd: 
             }
         }
         code[hole] = c;                    // main statements start here
+    }
+    if k[p] == 9 {                         // no top-level statements at
+        if msym > -1 {                     // all: the program IS one call
+            if fpc[msym] != 0 {            // to main (rung 6, N's form) —
+                fail(ln[p], "main takes no parameters");
+            }                              // the two words a real 0-arg
+            return EP{ pos: p, cp: emit2(code, c, 15, fe[msym]) };
+        }                                  // call site would emit
+        fail(ln[p], "a program needs statements or a main");
     }
     t := gen_body(k, v, ln, fe, fp, fpc, sd, a, env, st, 0, p, code, c);
     if k[t.pos] != 9 {                     // main's scope starts empty
@@ -2560,7 +2632,7 @@ fn show(src: str, k: *i64, v: *i64, ln: *i64, code: *i64, stk: *i64, vars: *i64,
         fe: *i64, fp: *i64, fpc: *i64, a: Ast, env: Scope, sy: Syms, st: Strs,
         sd: Sdefs) {
     lex(src.ptr as *u8, src.len as i64, k, v, ln, sy, st);
-    r := parse_program(k, v, ln, fe, fp, fpc, sd, a, env, st, 0, code, 0);
+    r := parse_program(k, v, ln, fe, fp, fpc, sd, a, env, sy, st, 0, code, 0);
     words := emit1(code, r.cp, 0);         // HALT closes the program
     put("{src}\n");                        // echo first: a program's prints
     val := run(code, stk, vars, st, sd);       // land under its source
@@ -2589,9 +2661,9 @@ fn run_file(path: str, k: *i64, v: *i64, ln: *i64, code: *i64, stk: *i64, vars: 
         put("(no toy demo file - file demo skipped)\n");
         return;
     }
-    put("compiling n_toy_demo.n from disk:\n");
+    put("compiling {path} from disk:\n");
     lex(buf, len, k, v, ln, sy, st);
-    r := parse_program(k, v, ln, fe, fp, fpc, sd, a, env, st, 0, code, 0);
+    r := parse_program(k, v, ln, fe, fp, fpc, sd, a, env, sy, st, 0, code, 0);
     words := emit1(code, r.cp, 0);         // HALT closes the program
     val := run(code, stk, vars, st, sd);
     put("  ->  {val}   [{words} code words]\n");
@@ -2760,6 +2832,24 @@ fn main() -> i64 {
     // hold a variable, and a call — nothing about the pipeline knows
     // or cares that the bytes came from a file.
     run_file("/tmp/n_toy_demo.n",
+             k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, sy, st, sd);
+    // RUNG 6, THE LADDER'S LAST: fn main as the program. The tokens
+    // end right after the fndefs — no tail to demand — so the program
+    // is one CALL to main, N's own top-level form. And inside the
+    // body, a bare CALL is a statement now: made, then dropped (POP).
+    // The scan that decides tells a call statement from a call TAIL
+    // by N's own rule — the ';'.
+    show("fn shout(x) \{ print x; 0 \}\nfn main() \{ shout(41 + 1); shout(43); 0 \}",
+         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, sy, st, sd);
+    // THE GRADUATION: hello.n ITSELF — the canonical N program, off
+    // the disk, verbatim: its extern syscall block, its fn main ->
+    // i64, its interpolated string, its casts, its bare write(...);
+    // statement. Six rungs were named on the road here (escapes,
+    // signatures, casts, str fields, extern syscalls, main) and this
+    // is the moment they were for: the toy compiles the program every
+    // N milestone began with, and the program prints — through its
+    // own write, pid and all.
+    run_file("/tmp/n_hello.n",
              k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, sy, st, sd);
     // The broken program runs LAST (fail() ends the process — one failing
     // demo per run). It PARSES cleanly; what is wrong is a TYPE: a string

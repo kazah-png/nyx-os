@@ -294,14 +294,27 @@ parameter annotations · statement `;` rules · the `0` tail.
    `getpid` (6) answers a constant, anything unmapped answers -1, the
    host shim's own rule. The shape is real; the kernel is the VM —
    stated plainly.
-6. **`fn main` as the program** — an N file has no top-level
-   statements; when a parsed file defines `main` and nothing else
-   top-level, the program is one CALL to it.
+6. **`fn main` as the program** — ✅ **landed**: when the tokens end
+   right after the fndefs there is no tail to demand — the program is
+   one CALL to main (the two words a real 0-argument call site would
+   emit), main's name found by byte-comparing each fndef's interned
+   symbol against `m a i n` — no keyword, no lexer special case (so
+   `MAIN` is just a function). A tail-less program without a main
+   refuses ("a program needs statements or a main"); a main with
+   parameters refuses too. And the rung hello.n hid between the named
+   six: a bare `write(...);` is a CALL STATEMENT now — the toy's
+   first real lookahead (scan to the matching `)`, nesting counted,
+   then ask for the `;`) tells a call statement from a call tail by
+   N's own rule — statements end in `;`, the tail does not — and the
+   dropped value POPs.
 
-After rung 6 the graduation demo writes itself: `run_file` pointed at
-**hello.n itself** — the toy compiles the canonical N program off the
-disk and it PRINTS. That is the moment the toy stops being a toy and
-becomes what M5 always meant it to become: the seed of `ncc` in N.
+**THE GRADUATION HAPPENED**: `run_file` pointed at **hello.n itself**
+compiles the canonical N program off the disk — its `extern syscall`
+block, its `fn main() -> i64`, its interpolated `{pid}`, its casts,
+its bare `write(...);` — and the program PRINTS: `hello from N!
+pid=7`, through its own write, 33 code words. That is the moment the
+toy stopped being a toy and became what M5 always meant it to become:
+the seed of `ncc` in N.
 Out of scope, stated once: raw pointers, `#[caps]` semantics, `own`,
 generics — those stay ncc's, and the toy keeps saying so.
 
