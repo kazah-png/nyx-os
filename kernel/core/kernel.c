@@ -429,7 +429,7 @@ static const command_t commands[] = {
     {"find",      cmd_find,      "Find files by name: find <name> [path]", false},
     {"grep",      cmd_grep,      "Search file contents: grep [-inv] <pattern> <file>", false},
     {"tail",      cmd_tail,      "Show last lines of a file: tail <file> [lines]", false},
-    {"sort",      cmd_sort,      "Sort lines of a file: sort [-rn] <file>", false},
+    {"sort",      cmd_sort,      "Sort lines of a file: sort [-rnfu] <file>", false},
     {"rev",       cmd_rev,       "Reverse the characters of each line: rev <file>", false},
     {"tr",        cmd_tr,        "Translate/delete/squeeze chars: tr [-ds] SET1 [SET2] <file>", false},
     {"sed",       cmd_sed,       "Substitute text: sed s/old/new/[g] <file>", false},
@@ -919,7 +919,7 @@ static const man_page_t man_pages[] = {
     {"chmod",    "Change a file's permission bits: `chmod <octal> <file>` (e.g. `chmod 644 f`, `chmod 444 f`). Clearing the owner-write bit (e.g. `444`) makes the file read-only — `vfs_write_file`/overwrites are refused until you `chmod` it writable again. Applies to the ramdisk tree; new files default to 644, directories to 755."},
     {"echo",     "Write the arguments to standard output separated by spaces and followed by a newline. `echo text > file` writes to a file instead of the screen."},
     {"grep",     "Print the lines of <file> that match <pattern>. -i ignores letter case, -n prefixes each match with its line number, and -v inverts the search to print the lines that do NOT match."},
-    {"sort",     "Sort the lines of <file>. -r reverses the result; -n sorts numerically by the integer at the start of each line instead of alphabetically."},
+    {"sort",     "Sort the lines of <file>. -r reverses the result; -n sorts numerically by the integer at the start of each line instead of alphabetically; -f folds case (compare case-insensitively); -u drops duplicate lines (keep one per equal key, like GNU sort -u). Flags combine, e.g. sort -fu."},
     {"rev",      "Print each line of <file> with the order of its characters reversed."},
     {"sed",      "Substitute text with the s command: sed s/old/new/[g] <file> replaces the literal string <old> with <new> on each line (the first match per line, or every match with the g flag) and prints the result — the file itself is not changed. Any character right after the s works as the delimiter, so s|a|b|g is the same as s/a/b/g. Matching is literal (NyxOS has no regex engine); unlike tr, which works one character at a time, sed replaces whole strings."},
     {"patch",    "Apply a unified diff to a file IN PLACE: `patch <file> <diff>` reads the unified diff in <diff> (the format `diff -u` and git produce) and edits <file> accordingly — added (`+`) lines inserted, removed (`-`) lines dropped, context (` `) lines kept. It is fail-safe: every hunk's context and removed lines must match <file> exactly at the hunk's position, or the whole patch is rejected with a reason and the file is left completely unchanged (no partial application). `---`/`+++` headers and `\\ No newline` markers are ignored. The read side of the existing `diff` — together they let you produce a diff, ship it, and apply it in-OS. Pinned by the `patch` self-test (insert/delete/change hunks + context-mismatch rejection)."},
@@ -4801,15 +4801,33 @@ static long sort_numkey(const char* s) {
     return neg ? -v : v;
 }
 
+// ASCII case-insensitive strcmp for `sort -f` (the kernel has no general strcasecmp).
+static int sort_casecmp(const char* a, const char* b) {
+    for (;; a++, b++) {
+        int ca = (*a >= 'A' && *a <= 'Z') ? *a + 32 : (unsigned char)*a;
+        int cb = (*b >= 'A' && *b <= 'Z') ? *b + 32 : (unsigned char)*b;
+        if (ca != cb) return ca - cb;
+        if (!ca) return 0;
+    }
+}
+
+// Three-way key comparison, ignoring -r (also defines equality for -u). Matches user/sort.elf.
+static int sort_cmp(const char* a, const char* b, int numeric, int fold) {
+    if (numeric) { long ka = sort_numkey(a), kb = sort_numkey(b); return (ka > kb) - (ka < kb); }
+    return fold ? sort_casecmp(a, b) : strcmp(a, b);
+}
+
 static void cmd_sort(int argc, char** argv) {
-    int reverse = 0, numeric = 0, ai = 1;
+    int reverse = 0, numeric = 0, fold = 0, uniq = 0, ai = 1;
     for (; ai < argc && argv[ai][0] == '-' && argv[ai][1]; ai++)
         for (char* f = argv[ai] + 1; *f; f++) {
             if (*f == 'r') reverse = 1;
             else if (*f == 'n') numeric = 1;
+            else if (*f == 'f') fold = 1;
+            else if (*f == 'u') uniq = 1;
             else { printf("sort: invalid option -%c\n", *f); return; }
         }
-    if (ai >= argc) { printf("Usage: sort [-r] [-n] <file>\n"); return; }
+    if (ai >= argc) { printf("Usage: sort [-rnfu] <file>\n"); return; }
     int fd = vfs_open(argv[ai], 0, 0);
     if (fd < 0) { printf("sort: cannot open '%s'\n", argv[ai]); return; }
     static char buf[8192];
@@ -4825,18 +4843,15 @@ static void cmd_sort(int argc, char** argv) {
     }
     for (int i = 0; i < lc - 1; i++) {
         for (int j = 0; j < lc - i - 1; j++) {
-            int cmp;
-            if (numeric) {
-                long a = sort_numkey(lines[j]), b = sort_numkey(lines[j+1]);
-                cmp = (a > b) - (a < b);
-            } else {
-                cmp = strcmp(lines[j], lines[j+1]);
-            }
+            int cmp = sort_cmp(lines[j], lines[j+1], numeric, fold);
             if (reverse) cmp = -cmp;
             if (cmp > 0) { char* tmp = lines[j]; lines[j] = lines[j+1]; lines[j+1] = tmp; }
         }
     }
-    for (int i = 0; i < lc; i++) printf("%s\n", lines[i]);
+    for (int i = 0; i < lc; i++) {
+        if (uniq && i > 0 && sort_cmp(lines[i], lines[i-1], numeric, fold) == 0) continue;  // -u: drop equal-key runs
+        printf("%s\n", lines[i]);
+    }
 }
 
 static void cmd_wc(int argc, char** argv) {

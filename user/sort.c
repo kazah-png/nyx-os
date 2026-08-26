@@ -2,17 +2,18 @@
 
 /* sort — read stdin (or each file argument) fully, sort the lines, write them out.
  * Flags (combinable, e.g. -rn): -r reverse the order, -n numeric (compare by the
- * leading integer of each line, so "10" comes after "9"). Buffers are static
- * (.bss, eagerly mapped by the ELF loader): read() copies through the kernel and
- * cannot fault untouched lazy-heap pages in, so a fresh malloc'd buffer would
- * truncate the read. */
+ * leading integer of each line, so "10" comes after "9"), -f fold case (compare
+ * case-insensitively), -u unique (after sorting, drop lines whose key equals the
+ * previous line's — GNU sort -u semantics). Buffers are static (.bss, eagerly mapped
+ * by the ELF loader): read() copies through the kernel and cannot fault untouched
+ * lazy-heap pages in, so a fresh malloc'd buffer would truncate the read. */
 
 #define SORT_BUF   16384
 #define SORT_LINES 512
 
 static char  buf[SORT_BUF];
 static char* lines[SORT_LINES];
-static int   opt_r, opt_n;
+static int   opt_r, opt_n, opt_f, opt_u;
 
 static long read_all(int fd, char* dst, long max) {
     long total = 0, n;
@@ -32,15 +33,18 @@ static long numkey(const char* s) {
     return neg ? -v : v;
 }
 
-/* Ordering predicate: should line a come strictly before line b? Honours -n/-r. */
-static int less(const char* a, const char* b) {
-    int c;
+/* Three-way key comparison, ignoring -r (so it also defines equality for -u). */
+static int cmp(const char* a, const char* b) {
     if (opt_n) {
         long ka = numkey(a), kb = numkey(b);
-        c = (ka > kb) - (ka < kb);
-    } else {
-        c = strcmp(a, b);
+        return (ka > kb) - (ka < kb);
     }
+    return opt_f ? strcasecmp(a, b) : strcmp(a, b);
+}
+
+/* Ordering predicate: should line a come strictly before line b? Honours -r. */
+static int less(const char* a, const char* b) {
+    int c = cmp(a, b);
     if (opt_r) c = -c;
     return c < 0;
 }
@@ -51,6 +55,8 @@ int main(int argc, char** argv) {
         for (char* f = argv[ai] + 1; *f; f++) {
             if (*f == 'r') opt_r = 1;
             else if (*f == 'n') opt_n = 1;
+            else if (*f == 'f') opt_f = 1;
+            else if (*f == 'u') opt_u = 1;
             else { printf("sort: invalid option -%c\n", *f); return 2; }
         }
 
@@ -83,6 +89,7 @@ int main(int argc, char** argv) {
     }
 
     for (int i = 0; i < nl; i++) {
+        if (opt_u && i > 0 && cmp(lines[i], lines[i - 1]) == 0) continue;  // drop equal-key runs
         write(1, lines[i], strlen(lines[i]));
         write(1, "\n", 1);
     }
