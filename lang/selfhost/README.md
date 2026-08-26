@@ -28,7 +28,12 @@ diff <(ncc <source>.n --tokens) <(./nlex)     # empty = proven
 ```
 
 23 sources, all byte-identical — the suite's stage `[8]` runs exactly
-this loop and fails the build on any mismatch.
+this loop and fails the build on any mismatch. **And the same
+differential holds inside NyxOS**: the in-OS `ncc` (compiled by the
+in-OS TinyCC) built `lex.n` on target, and both dumps — the C lexer's
+and the N lexer's, over hello.n (73 tokens) and countdown.n (124) —
+came back identical over serial. The lexer is proven on the machine
+it exists for.
 
 **Honest scope**: this rung is the *stream* lexer — kinds and lines.
 It advances through every construct exactly as ncc does, but captures

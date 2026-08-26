@@ -437,7 +437,11 @@ one source — nparse.n, at 80% of the file — because the read buffer
 was 128K and the file is 150K; the differential caught a *harness*
 bug before it could ever have become a lexer lie. See
 [selfhost/README.md](../selfhost/README.md) for the contract and the
-commands.
+commands. **And the rung closed where every rung of this project
+closes — inside NyxOS**: the in-OS ncc compiled lex.n on target
+(through the in-OS TinyCC, like everything else), and the two dumps
+matched line for line over serial, hello.n and countdown.n both. The
+first self-host module runs on the OS it is for.
 
 And the hardest lexer feature landed: **interpolation**. A toy string
 containing a brace lexes as segments — HEAD before the first hole,
