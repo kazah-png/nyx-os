@@ -988,7 +988,45 @@ void sched_target(process_t* p) {
     fpu_switch(p);   // #40: bank the outgoing task's XMM/x87, restore p's (userspace only)
 }
 
+// ---- CPU-utilization accounting ---------------------------------------------------------
+// Sampled once per BSP scheduler tick (the 1000 Hz PIT, 1:1 with tick_count): if the task we
+// interrupted is the idle process the core was idle this tick, otherwise it was doing work.
+// Over a fixed window the busy fraction IS the CPU utilization; we latch it at each window
+// boundary so readers get a stable recent value without racing the accumulator. The window is
+// 250 ticks (~250 ms), fast enough to feed a live graph yet long enough to be steady. The
+// accumulator is a PURE state machine so a KAT can pin the arithmetic without real timing.
+#define PERF_CPU_WINDOW 250u
+
+typedef struct { uint32_t busy, count, latched; } perf_cpu_t;
+
+// Advance one tick. was_idle != 0 when the interrupted context was the idle task. Returns 1 on
+// the tick that closes a window (latched refreshed), else 0.
+static int perf_cpu_tick(perf_cpu_t* s, int was_idle) {
+    if (!was_idle) s->busy++;
+    if (++s->count >= PERF_CPU_WINDOW) {
+        s->latched = (s->busy * 100u) / s->count;   // count == WINDOW, so 0..100
+        s->busy = 0;
+        s->count = 0;
+        return 1;
+    }
+    return 0;
+}
+
+static perf_cpu_t g_perf_cpu;
+
+// Most recent completed window's BSP utilization, 0..100 (0 until the first window closes).
+uint32_t perf_cpu_percent(void) { return g_perf_cpu.latched; }
+
 void irq_scheduler_tick(void) {
+    // Performance accounting first, before any early return below, so utilization covers every
+    // 1000 Hz tick. The interrupted task is process_table[current_idx]; if it is the idle
+    // process (or nothing was running yet) the core was idle this tick.
+    {
+        process_t* interrupted = (current_idx >= 0 && current_idx < process_count)
+                                     ? process_table[current_idx] : NULL;
+        perf_cpu_tick(&g_perf_cpu, interrupted == idle_proc);
+    }
+
     // Timer wait queue: wake any sleeper whose deadline has arrived. Sleepers are
     // PROC_BLOCKED with a non-zero wake_tick (kwait() blockers use wake_tick==0 and
     // are woken by wake_waiters instead, so the two don't collide).
@@ -1417,5 +1455,39 @@ int mtdemo_start(void) {
     mtdemo_b_proc->sched_weight = 3;   // B gets 3x the CPU of A — shows weighted RR
     mtdemo_started = 1;
     sched_enable();
+    return 0;
+}
+
+// KAT: pins the CPU-utilization accumulator (perf_cpu_tick / perf_cpu_percent). Drives a fresh
+// state machine with known idle/busy tick patterns over exact windows and checks the latched
+// percent, plus the mid-window contract (nothing latches until a window closes). The busy
+// fraction of a window must equal the utilization, floored to an integer. 0 = PASS, else the
+// failing case number.
+int perf_cpu_selftest(void) {
+    perf_cpu_t s = {0, 0, 0};
+    // 1. a full window entirely busy -> 100%, and the boundary tick reports the close
+    for (uint32_t i = 0; i < PERF_CPU_WINDOW - 1; i++)
+        if (perf_cpu_tick(&s, 0) != 0) return 1;          // no early latch mid-window
+    if (perf_cpu_tick(&s, 0) != 1) return 2;              // closing tick signals
+    if (s.latched != 100) return 3;
+    if (s.count != 0 || s.busy != 0) return 4;            // window reset for the next round
+
+    // 2. a full window entirely idle -> 0%
+    for (uint32_t i = 0; i < PERF_CPU_WINDOW; i++) perf_cpu_tick(&s, 1);
+    if (s.latched != 0) return 5;
+
+    // 3. exactly half busy -> 50% (WINDOW is even)
+    for (uint32_t i = 0; i < PERF_CPU_WINDOW; i++) perf_cpu_tick(&s, (i & 1) ? 1 : 0);
+    if (s.latched != 50) return 6;
+
+    // 4. one quarter busy -> 25%
+    for (uint32_t i = 0; i < PERF_CPU_WINDOW; i++) perf_cpu_tick(&s, (i % 4 == 0) ? 0 : 1);
+    if (s.latched != 25) return 7;
+
+    // 5. mid-window, the latched value still reflects the LAST closed window, not the partial
+    uint32_t prev = s.latched;
+    for (uint32_t i = 0; i < PERF_CPU_WINDOW / 2; i++) perf_cpu_tick(&s, 0);
+    if (s.latched != prev) return 8;                      // half a window in -> unchanged
+
     return 0;
 }

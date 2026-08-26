@@ -18,7 +18,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.4.385"
+#define KERNEL_VERSION "6.4.386"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -580,6 +580,8 @@ extern uint64_t memory_used;
 extern volatile uint32_t tick_count;
 extern int process_count;
 extern int current_idx;
+uint32_t perf_cpu_percent(void);   // most recent completed-window BSP CPU utilization, 0..100
+int perf_cpu_selftest(void);       // KAT for the utilization accumulator
 extern net_iface_t net_interfaces[8];
 extern uint64_t saved_rsp;
 extern uint64_t next_rsp;
@@ -882,6 +884,7 @@ void init_memory(uint64_t mem_size, const mb_mmap_entry_t* mmap, int mmap_count)
 #define USER_SPACE_END 0x0000800000000000ULL
 
 uint32_t get_free_pages(void); // free physical frames (SMP stress invariant)
+uint32_t get_total_pages(void); // total physical frames the allocator manages (capped at MAX_PAGES)
 process_t* create_kernel_thread_on_cpu(const char* name, void* entry, int cpu);
 void enable_smep_smap(void);   // CR4.SMEP/SMAP if the CPU supports them (kernel.c)
 int  cpu_apply_smep_smap(void); // same, silent + returns bit0=SMEP bit1=SMAP (APs use this)

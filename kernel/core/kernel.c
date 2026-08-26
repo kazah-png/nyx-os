@@ -110,6 +110,7 @@ static void cmd_poweroff(int argc, char** argv);
 static void cmd_ps(int argc, char** argv);
 static void cmd_pstree(int argc, char** argv);
 static void cmd_uptime(int argc, char** argv);
+static void cmd_top(int argc, char** argv);
 static void cmd_nproc(int argc, char** argv);
 static void cmd_ac97(int argc, char** argv);
 static void cmd_time(int argc, char** argv);
@@ -353,6 +354,7 @@ static const command_t commands[] = {
     {"ps",        cmd_ps,        "List processes", false},
     {"pstree",    cmd_pstree,    "Show processes as a parent->child tree", false},
     {"uptime",    cmd_uptime,    "Show uptime, process count, load, and CPUs", false},
+    {"top",       cmd_top,       "Live CPU/memory/process snapshot", false},
     {"nproc",     cmd_nproc,     "Print the number of online CPUs (for -j$(nproc) scripts)", false},
     {"ac97",      cmd_ac97,      "AC97 audio: probe/bring up the codec; 'ac97 tone' plays a DMA tone", false},
     {"time",      cmd_time,      "Time a command's wall-clock run: time <command> [args...]", false},
@@ -830,7 +832,7 @@ typedef struct { const char* title; const char* const* names; } help_cat_t;
 static const char* const HC_shell[] = {"help","man","version","clear","history","alias","unalias","exec","spawn","jobs","wait","nice","renice","taskset",0};
 static const char* const HC_files[] = {"ls","cd","pwd","cat","file","identify","tar","iniget","open","touch","mkdir","rm","shred","cp","mv","tree","find","which","basename","dirname","realpath","files","df","du","disks","lsblk","lspci","nvme","nyxpart","mkfs","nyxinstall","nyxgrub","mount","ext2ls","ext2cat",0};
 static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","sed","patch","fold","fmt","nl","expand","unexpand","factor","isprime","strings","sha256sum","seq","paste","clip","cut","uniq","join","comm","printf","wc","write","hexdump",0};
-static const char* const HC_sys[]   = {"ps","time","kill","pgrep","pkill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat","screenshot","stackcheck",0};
+static const char* const HC_sys[]   = {"ps","top","time","kill","pgrep","pkill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat","screenshot","stackcheck",0};
 static const char* const HC_user[]  = {"useradd","users",0};
 static const char* const HC_net[]   = {"ifconfig","route","arp","netstat","dhcp","dns","ping","setip","httpget","httpd","tls","ipcalc",0};
 static const char* const HC_dev[]   = {"cc","xbm","semver","fnv","urlcode","crc32c","fletcher","murmur","base58","bech32","deflate","gzip","gunzip","zcat","calc","expr","json","hmac","totp","uuid",0};
@@ -1010,6 +1012,7 @@ static const man_page_t man_pages[] = {
     {"ps",       "List the running processes with their PID, scheduler state and name. Use kill to stop one."},
     {"pstree",   "Show the processes as a tree, each child indented under its parent (grouped by PPID) — the hierarchical companion to the flat `ps` list. Every line is `name(pid)`; a process whose parent is no longer running is shown as its own root. Handy for seeing which process spawned which (e.g. the compositor and the jobs launched from a terminal). Read-only; recursion is depth-capped so a broken parent chain can't loop."},
     {"uptime",   "Print a one-line system summary in the classic Unix format: the wall-clock time, how long the kernel has been up (days + HH:MM:SS, from the 1000 Hz tick counter), the number of live processes, an instantaneous load figure (how many processes are runnable right now), and the count of online CPUs. A focused, scriptable subset of what `nyxfetch` shows."},
+    {"top",      "Print a one-shot task-manager snapshot: a header (uptime, process and runnable counts, CPU cores), a live CPU-utilization percentage with an ASCII bar, memory use with a bar (used/total MB), then the process table (PID, PPID, a 3-letter state, and name). The CPU figure is the fraction of recent scheduler ticks the machine spent doing work rather than idling, latched over a ~250 ms window; the desktop's Nyx Monitor plots the same numbers as live graphs. Unlike Unix `top` it prints once and returns (scriptable) rather than refreshing in place."},
     {"nproc",    "Print the number of online CPUs as a single integer, the count the SMP bring-up counted (the same number `uptime` reports inside its prose line). Unlike `uptime` it prints just the number, so it drops into a command substitution — e.g. a parallel build `cc -j$(nproc)`."},
     {"ac97",     "Drive the AC'97 audio controller (class 04:01, e.g. QEMU `-device AC97`). With no argument it probes the PCI bus, brings the codec up (cold reset, read the codec vendor id, unmute + set master/PCM volume + 44.1 kHz) and prints the controller's BARs (NAMBAR mixer / NABMBAR bus-master), IRQ, codec-ready state and vendor id. `ac97 tone` builds a buffer-descriptor list over a 440 Hz square tone and runs it through the PCM-out bus-master DMA engine, reporting the position registers (PICB/CIV/SR) so you can see the DMA advance even though audio is inaudible in a headless VM. `soundinfo` covers the SB16 side."},
     {"time",     "Run a command and report how long it took: `time <command> [args...]` runs the rest of the line as a command and, when it finishes, prints the elapsed wall-clock time as `real   S.mmm s` (from the 1000 Hz tick counter). Useful for benchmarking a builtin — e.g. `time cc hello.c -o hello`, `time sha256sum bigfile`, or `time sort words.txt`. Times whole-command execution, not per-call CPU."},
@@ -1183,6 +1186,71 @@ static void cmd_uptime(int argc, char** argv) {
     printf("%02u:%02u:%02u,  %d process%s,  %u CPU%s,  load: %d runnable\n",
            hours, mins, secs, nproc, nproc == 1 ? "" : "es",
            cpu_count, cpu_count == 1 ? "" : "s", runnable);
+}
+
+// Short state tag for the `top` table (numeric state -> a 3-letter mnemonic).
+static const char* proc_state_name(uint32_t st) {
+    switch (st) {
+        case PROC_RUN:     return "run";
+        case PROC_ZOMBIE:  return "zmb";
+        case PROC_BLOCKED: return "blk";
+        case PROC_STOPPED: return "stp";
+        default:           return "new";   // 0 == parked/never-scheduled
+    }
+}
+
+// Render "[####------]" — `cells` inner cells, filled proportionally to pct (0..100).
+static void perf_bar(char* out, int cells, uint32_t pct) {
+    if (pct > 100) pct = 100;
+    int filled = (int)((pct * (uint32_t)cells) / 100u);
+    int o = 0;
+    out[o++] = '[';
+    for (int i = 0; i < cells; i++) out[o++] = (i < filled) ? '#' : '-';
+    out[o++] = ']';
+    out[o]   = '\0';
+}
+
+// `top` — a one-shot task-manager snapshot: CPU utilization and memory as labelled bars, then
+// the live process table. The CPU figure comes from the scheduler's utilization accountant
+// (perf_cpu_percent, a busy-tick fraction over a ~250 ms window); memory from the physical
+// allocator's own totals. Sibling to `uptime` (one summary line) and `ps` (the bare table).
+static void cmd_top(int argc, char** argv) {
+    (void)argc; (void)argv;
+    uint32_t total_sec = get_ticks() / 1000;
+    uint32_t hours = (total_sec % 86400) / 3600, mins = (total_sec % 3600) / 60, secs = total_sec % 60;
+
+    int nproc = 0, runnable = 0;
+    for (int i = 0; i < MAX_PROCESSES; i++) {
+        process_t* p = process_table[i];
+        if (!p || p->state == PROC_ZOMBIE) continue;
+        nproc++;
+        if (p->state == PROC_RUN) runnable++;
+    }
+
+    uint32_t cpu  = perf_cpu_percent();
+    // Memory from the allocator's own frame counts: used = managed - free. This counts the
+    // reserved kernel and low memory (not just dynamic allocations), so it is a meaningful
+    // gauge of the pool the OS actually manages (capped at MAX_PAGES). 256 pages == 1 MB.
+    uint32_t total_pg = get_total_pages();
+    uint32_t free_pg  = get_free_pages();
+    uint32_t used_pg  = (total_pg > free_pg) ? (total_pg - free_pg) : 0;
+    uint32_t mtot = total_pg / 256;
+    uint32_t mused = used_pg / 256;
+    uint32_t mpct = total_pg ? (uint32_t)(((uint64_t)used_pg * 100) / total_pg) : 0;
+
+    char bar[40];
+    printf("top - up %02u:%02u:%02u,  %d proc,  %d runnable,  %u CPU%s\n",
+           hours, mins, secs, nproc, runnable, cpu_count, cpu_count == 1 ? "" : "s");
+    perf_bar(bar, 20, cpu);
+    printf("CPU  %3u%%  %s\n", cpu, bar);
+    perf_bar(bar, 20, mpct);
+    printf("Mem  %3u%%  %s  %u/%u MB\n", mpct, bar, mused, mtot);
+    printf("PID  PPID ST  NAME\n");
+    for (int i = 0; i < MAX_PROCESSES; i++) {
+        process_t* p = process_table[i];
+        if (!p) continue;
+        printf("%-4d %-4d %-3s %s\n", p->pid, p->ppid, proc_state_name(p->state), p->comm);
+    }
 }
 
 static void cmd_nyxfetch(int argc, char** argv) {
@@ -8658,6 +8726,7 @@ extern int tcp_wnd_selftest(void);          // net/tcp.c — receive-window flow
 extern int ipv4_rx_selftest(void);          // net/ip.c — IPv4 RX header gate (hostile packets) KAT
 extern int arp_parse_selftest(void);        // net/arp.c — ARP input parser cache-poisoning gate KAT
 extern int tsort_selftest(void);            // core/tsort.c — topological sort, GNU-byte-exact tie-break KAT
+extern int perf_cpu_selftest(void);         // proc/process.c — CPU-utilization accumulator KAT
 extern int kbd_translate_selftest(void);    // drivers/input/keyboard.c — scancode->char mapping (US+ES/AltGr) KAT
 extern int dynlink_load_selftest(void);     // proc/shared_libc.c — dlopen ELF segment loader bounds (hostile .so) KAT
 extern int dns_response_selftest(void);
@@ -8949,6 +9018,7 @@ static void run_selftests(void) {
         {"tcpcksum",     tcp_checksum_selftest},  {"dns",           dns_response_selftest},
         {"tcpwnd",       tcp_wnd_selftest},       {"ipv4-rx",       ipv4_rx_selftest},
         {"arp-parse",    arp_parse_selftest},     {"tsort-kat",     tsort_selftest},
+        {"perf-cpu",     perf_cpu_selftest},
         {"dhcpopt",      dhcp_options_selftest},
         {"mathx",        mathx_selftest},         {"crc32",         crc32_selftest},
         {"crc32c",       crc32c_selftest},

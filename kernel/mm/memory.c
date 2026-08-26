@@ -168,6 +168,12 @@ void page_incref(void* addr) {
 // when no individual operation looked wrong.
 uint32_t get_free_pages(void) { return free_pages; }
 
+// Total frames under the allocator's control (RAM top rounded to pages, capped at MAX_PAGES).
+// With get_free_pages() this gives the true "used = total - free" for the managed pool — which,
+// unlike memory_used (dynamic alloc_page bytes only), also counts the reserved kernel and low
+// memory, so it is the honest figure for a system memory gauge.
+uint32_t get_total_pages(void) { return total_pages; }
+
 uint32_t page_get_refcount(void* addr) {
     uint32_t page_idx = (uint32_t)(uintptr_t)addr / PAGE_SIZE;
     if (page_idx >= total_pages) return 0;
