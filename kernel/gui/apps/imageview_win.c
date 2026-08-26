@@ -142,6 +142,65 @@ void imageview_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch)
     font_draw_string(cx + 4, (uint32_t)status_y + 2, st, fb_rgb(180,200,220), THEME_WINDOW_BG);
 }
 
+// Case-insensitive check that `ext` (no dot) equals `want` (lowercase).
+static int iv_ext_is(const char* ext, const char* want) {
+    for (;; ext++, want++) {
+        char a = *ext; if (a >= 'A' && a <= 'Z') a += 32;
+        if (a != *want) return 0;
+        if (!a) return 1;
+    }
+}
+
+// True if `n` ends in a supported image extension (png/bmp/gif/jpg/jpeg).
+static int imageview_is_image_name(const char* n) {
+    const char* dot = 0;
+    for (const char* p = n; *p; p++) if (*p == '.') dot = p;
+    if (!dot || !dot[1]) return 0;
+    const char* e = dot + 1;
+    return iv_ext_is(e, "png") || iv_ext_is(e, "bmp") || iv_ext_is(e, "gif") ||
+           iv_ext_is(e, "jpg") || iv_ext_is(e, "jpeg");
+}
+
+// Find the image file adjacent to `cur` in directory `dir`, stepping `step` (+1 = next,
+// -1 = prev) in filename order, wrapping around at the ends. Two O(n) passes over the
+// directory (no buffering): pick the nearest name strictly on the step side of `cur`,
+// else wrap to the extreme name. Returns 1 and fills `out` with the basename, else 0.
+static int imageview_sibling(const char* dir, const char* cur, int step, char* out, int outsz) {
+    int fd = vfs_open(dir, 0, 0);
+    if (fd < 0) return 0;
+    char best[64]; char edge[64];
+    int found = 0, have_edge = 0;
+    for (dirent_t* de = vfs_readdir(fd); de; de = vfs_readdir(fd)) {
+        const char* nm = de->name;
+        if (de->type == 1 || !imageview_is_image_name(nm) || strcmp(nm, cur) == 0) continue;
+        if (!have_edge || (step > 0 ? strcmp(nm, edge) < 0 : strcmp(nm, edge) > 0)) {
+            strncpy(edge, nm, sizeof(edge) - 1); edge[sizeof(edge) - 1] = 0; have_edge = 1;
+        }
+        int cmp = strcmp(nm, cur);
+        if (step > 0 ? cmp > 0 : cmp < 0) {
+            if (!found || (step > 0 ? strcmp(nm, best) < 0 : strcmp(nm, best) > 0)) {
+                strncpy(best, nm, sizeof(best) - 1); best[sizeof(best) - 1] = 0; found = 1;
+            }
+        }
+    }
+    vfs_close(fd);
+    const char* pick = found ? best : (have_edge ? edge : 0);
+    if (!pick) return 0;
+    strncpy(out, pick, outsz - 1); out[outsz - 1] = 0;
+    return 1;
+}
+
+// Load the sibling image `step` away from the current one (used by the n/p keys).
+static void imageview_step(imageview_win_t* iv, int step) {
+    if (!iv->dir[0]) return;                         // test pattern / no directory
+    char sib[64];
+    if (!imageview_sibling(iv->dir, iv->filename, step, sib, sizeof(sib))) return;
+    char full[256];
+    if (strcmp(iv->dir, "/") == 0) snprintf(full, sizeof(full), "/%s", sib);
+    else                            snprintf(full, sizeof(full), "%s/%s", iv->dir, sib);
+    imageview_open_file(iv, full);
+}
+
 void imageview_win_key(window_t* win, int key) {
     imageview_win_t* iv = (imageview_win_t*)win->reserved;
     if (!iv) return;
@@ -171,6 +230,10 @@ void imageview_win_key(window_t* win, int key) {
         iv->fit_pending = 0;      // 'r' is an explicit 1:1 view, so cancel any pending fit
     } else if (key == 'f' || key == 'F') {
         iv->fit_pending = 1;      // re-fit to the current window size
+    } else if (key == 'n' || key == 'N' || key == ' ') {
+        imageview_step(iv, +1);   // next image in the folder
+    } else if (key == 'p' || key == 'P') {
+        imageview_step(iv, -1);   // previous image in the folder
     }
 }
 
@@ -250,6 +313,13 @@ int imageview_open_file(imageview_win_t* iv, const char* path) {
     imageview_free_image(iv);
     strncpy(iv->filename, imageview_basename(path), sizeof(iv->filename) - 1);
     iv->filename[sizeof(iv->filename) - 1] = 0;
+    // Remember the directory (up to the last '/') so n/p can walk the folder.
+    { int slash = -1;
+      for (int i = 0; path[i]; i++) if (path[i] == '/') slash = i;
+      if (slash < 0)      iv->dir[0] = 0;                       // bare name: no directory
+      else if (slash == 0) { iv->dir[0] = '/'; iv->dir[1] = 0; } // file in root
+      else { int n = slash < (int)sizeof(iv->dir) - 1 ? slash : (int)sizeof(iv->dir) - 1;
+             memcpy(iv->dir, path, n); iv->dir[n] = 0; } }
     iv->offset_x = 0;
     iv->offset_y = 0;
     iv->zoom = 1.0f;

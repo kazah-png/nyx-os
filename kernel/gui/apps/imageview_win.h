@@ -12,6 +12,7 @@ typedef struct {
     int offset_x, offset_y;
     float zoom;
     char filename[64];
+    char dir[192];                // directory of the loaded file, for n/p folder navigation
     char status[64];
 
     // Animated-GIF playback. anim.frames != NULL && anim.nframes > 1 => animated; the ctx OWNS
