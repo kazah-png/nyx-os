@@ -248,10 +248,19 @@ void editor_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
             fb_fill_rect((uint32_t)cur_x, (uint32_t)cur_y, 2, FONT_HEIGHT, fb_rgb(255,255,255));
     }
 
-    // Status bar
+    // Status bar: the message on the left, and the cursor position (with a `*` when the buffer
+    // has unsaved edits) right-aligned — the Ln/Col readout every real editor shows.
     int status_y = cy + (int)ch - STATUS_H;
     fb_fill_rect(cx, status_y, cw, STATUS_H, THEME_WINDOW_BG);
     font_draw_string(cx + 4, (uint32_t)status_y + 2, ed->status, fb_rgb(180,200,220), THEME_WINDOW_BG);
+
+    char pos[40];
+    snprintf(pos, sizeof(pos), "%s Ln %d, Col %d", ed->modified ? "*" : " ",
+             ed->cursor_y + 1, ed->cursor_x + 1);
+    int pw = (int)strlen(pos) * FONT_WIDTH;
+    int px = cx + (int)cw - 6 - pw;
+    if (px < cx + 4) px = cx + 4;
+    font_draw_string((uint32_t)px, (uint32_t)status_y + 2, pos, fb_rgb(150,185,215), THEME_WINDOW_BG);
 }
 
 void editor_win_click(window_t* win, int mx, int my, int btn) {
@@ -427,7 +436,7 @@ void editor_win_key(window_t* win, int key) {
     if (ed->find_active) {
         if (key == 0x1B) {                          // Esc — leave find mode
             ed->find_active = 0;
-            snprintf(ed->status, sizeof(ed->status), "Ln %d, Col %d", ed->cursor_y + 1, ed->cursor_x + 1);
+            ed->status[0] = 0;                       // clear the "Find:" prompt (Ln/Col shows in the bar)
             return;
         }
         if (key == '\r' || key == '\n') {           // Enter — jump to the next match
@@ -468,7 +477,7 @@ void editor_win_key(window_t* win, int key) {
     if (ed->repl_active) {
         if (key == 0x1B) {                          // Esc — cancel
             ed->repl_active = 0;
-            snprintf(ed->status, sizeof(ed->status), "Ln %d, Col %d", ed->cursor_y + 1, ed->cursor_x + 1);
+            ed->status[0] = 0;                       // clear the "Replace:" prompt
             return;
         }
         if (key == '\r' || key == '\n') {
@@ -560,6 +569,6 @@ void editor_win_key(window_t* win, int key) {
     }
 
     editor_adjust_scroll(ed, win);
-    snprintf(ed->status, sizeof(ed->status), "Ln %d, Col %d",
-             ed->cursor_y + 1, ed->cursor_x + 1);
+    // (The live Ln/Col is drawn in the status bar every frame, so we no longer overwrite the
+    // status MESSAGE on each keystroke — "Saved: ..." / "Opened: ..." now persists.)
 }
