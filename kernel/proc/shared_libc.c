@@ -235,3 +235,56 @@ uint64_t do_dlsym(long handle, const char* name) {
     }
     return 0;
 }
+
+// KAT for libseg_load, the shared-library / dlopen ELF segment loader. It parses
+// UNTRUSTED ELF images (dlopen loads a .so the calling process may have written
+// itself), so a crafted program header must never make it copy out-of-image bytes
+// into a frame that is then mapped into the process — the arbitrary kernel-memory
+// disclosure the subtraction-first bounds here were added to stop. This pins those
+// bounds: every malformed PT_LOAD is REJECTED (-1) BEFORE any frame is allocated, so
+// the test allocates nothing. A valid but non-loadable program header is the
+// discriminating control (returns 0 with zero segments, proving the loader does not
+// simply reject everything); the accept path is exercised on every boot when
+// /libc.so loads. Convention: 0 = PASS, else the failing case number.
+int dynlink_load_selftest(void) {
+    uint8_t base[256];
+    for (int i = 0; i < 256; i++) base[i] = 0;
+    elf64_hdr_t* h = (elf64_hdr_t*)base;
+    h->e_ident[0] = 0x7F; h->e_ident[1] = 'E'; h->e_ident[2] = 'L'; h->e_ident[3] = 'F';
+    h->e_ident[4] = ELF_64BIT; h->e_ident[5] = ELF_LITTLE_ENDIAN;
+    h->e_type = ELF_EXEC; h->e_machine = EM_X86_64; h->e_version = 1;
+    h->e_phoff = 64; h->e_phentsize = sizeof(elf64_phdr_t); h->e_phnum = 1;
+    elf64_phdr_t* bp = (elf64_phdr_t*)(base + 64);
+    bp->p_type = PT_LOAD; bp->p_flags = 4 /* R */;
+    bp->p_offset = 128; bp->p_vaddr = 0x400000; bp->p_filesz = 16; bp->p_memsz = 16; bp->p_align = 0x1000;
+
+    libseg_t segs[MAX_SEGS]; int ns;
+    uint8_t img[256];
+    elf64_phdr_t* p = (elf64_phdr_t*)(img + 64);
+
+    // Control: a valid ELF whose only phdr is non-loadable -> success, 0 segments, no alloc.
+    memcpy_asm(img, base, 256); p->p_type = 0 /* PT_NULL */;
+    if (libseg_load(img, 256, segs, &ns) != 0 || ns != 0) return 1;
+    // p_filesz > p_memsz -> reject
+    memcpy_asm(img, base, 256); p->p_memsz = 8;
+    if (libseg_load(img, 256, segs, &ns) != -1) return 2;
+    // p_offset past the image -> reject
+    memcpy_asm(img, base, 256); p->p_offset = 300;
+    if (libseg_load(img, 256, segs, &ns) != -1) return 3;
+    // the segment's file bytes run past the image end -> reject (the disclosure bound)
+    memcpy_asm(img, base, 256); p->p_offset = 128; p->p_filesz = 200;
+    if (libseg_load(img, 256, segs, &ns) != -1) return 4;
+    // p_vaddr in kernel space -> reject
+    memcpy_asm(img, base, 256); p->p_vaddr = USER_SPACE_END;
+    if (libseg_load(img, 256, segs, &ns) != -1) return 5;
+    // p_vaddr below the user minimum -> reject
+    memcpy_asm(img, base, 256); p->p_vaddr = 0;
+    if (libseg_load(img, 256, segs, &ns) != -1) return 6;
+    // p_memsz larger than the whole user address space -> reject
+    memcpy_asm(img, base, 256); p->p_memsz = USER_SPACE_END + 0x1000ULL;
+    if (libseg_load(img, 256, segs, &ns) != -1) return 7;
+    // not an ELF at all -> reject
+    memcpy_asm(img, base, 256); img[0] = 0;
+    if (libseg_load(img, 256, segs, &ns) != -1) return 8;
+    return 0;
+}
