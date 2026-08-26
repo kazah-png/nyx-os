@@ -106,6 +106,30 @@ int mouse_init(void) {
     return 0;
 }
 
+// Pure PS/2 packet decode: from a 3- or 4-byte packet produce the button bitmap and the
+// movement/wheel deltas the driver applies. Y is negated (screen Y grows downward); dx/dy are
+// int8 sign-extended. If either overflow flag (byte0 bits 6/7) is set the movement counters
+// wrapped and dx/dy are meaningless, so the movement is DROPPED (deltas 0) while the buttons stay
+// valid. The 4-bit wheel field is sign-extended and collapsed to one notch (±1/0). Split out so a
+// KAT can pin the sign + overflow handling with no live hardware. Any out pointer may be NULL.
+void mouse_decode_packet(const uint8_t pkt[4], int has_wheel,
+                         int* out_buttons, int* out_dx, int* out_dy, int* out_dz) {
+    if (out_buttons) *out_buttons = pkt[0] & 0x07;
+    int dx = 0, dy = 0;
+    if (!(pkt[0] & 0xC0)) {                       // no overflow -> movement is valid
+        dx = (int)(int8_t)pkt[1];
+        dy = -(int)(int8_t)pkt[2];
+    }
+    if (out_dx) *out_dx = dx;
+    if (out_dy) *out_dy = dy;
+    int dz = 0;
+    if (has_wheel) {
+        int8_t z = (int8_t)(pkt[3] << 4) >> 4;    // sign-extend the low 4-bit Z field
+        dz = (z > 0) ? 1 : (z < 0 ? -1 : 0);      // one accumulated notch, regardless of magnitude
+    }
+    if (out_dz) *out_dz = dz;
+}
+
 // Parse one byte of the PS/2 packet stream. Called both from the IRQ handler and from
 // mouse_poll() (the polling fallback for machines where IRQ12 is never delivered); the
 // callers serialise access so packet_idx/packet[] are never touched re-entrantly.
@@ -122,29 +146,16 @@ static void mouse_process_byte(uint8_t data) {
         packet[packet_idx] = data;           // final byte -> apply the whole packet
         packet_idx = 0;
 
-        mouse_buttons = packet[0] & 0x07;
-
-        // Bits 6/7 of byte 0 are the X/Y overflow flags: when either is set the
-        // movement counters wrapped and dx/dy are meaningless (QEMU raises them on
-        // a large/fast jump), so keep the button state but DROP the movement this
-        // packet rather than teleport the cursor. Buttons (bits 0-2) stay valid.
-        if (!(packet[0] & 0xC0)) {
-            int dx = (int)(int8_t)packet[1];
-            int dy = -(int)(int8_t)packet[2];
-            mouse_x += dx;
-            mouse_y += dy;
-            if (mouse_x < 0) mouse_x = 0;
-            if (mouse_y < 0) mouse_y = 0;
-            if (mouse_x > 4095) mouse_x = 4095;
-            if (mouse_y > 4095) mouse_y = 4095;
-        }
-
-        if (mouse_has_wheel) {
-            // 4th byte: signed Z in the low nibble (buttons 4/5 in bits 4-5 ignored).
-            int8_t z = (int8_t)(packet[3] << 4) >> 4;   // sign-extend the 4-bit field
-            if (z > 0) mouse_z++;                        // one accumulated notch up
-            else if (z < 0) mouse_z--;                   // one notch down
-        }
+        int buttons, dx, dy, dz;
+        mouse_decode_packet((const uint8_t*)packet, mouse_has_wheel, &buttons, &dx, &dy, &dz);
+        mouse_buttons = buttons;
+        mouse_x += dx;
+        mouse_y += dy;
+        if (mouse_x < 0) mouse_x = 0;
+        if (mouse_y < 0) mouse_y = 0;
+        if (mouse_x > 4095) mouse_x = 4095;
+        if (mouse_y > 4095) mouse_y = 4095;
+        mouse_z += dz;
     }
 }
 
@@ -194,3 +205,37 @@ int mouse_get_buttons(void) {
 }
 int mouse_get_z(void) { mouse_poll(); return mouse_z; }
 void mouse_set_pos(int x, int y) { mouse_x = x; mouse_y = y; }
+
+// KAT (`mouse-decode`): pins the pure PS/2 packet decode (mouse_decode_packet) — the int8 sign
+// extension of dx/dy, the Y negation, the overflow drop-movement-keep-buttons rule, and the 4-bit
+// wheel sign-extend + one-notch collapse. A regression here would teleport or invert the cursor,
+// or scroll the wrong way, with no other test catching it. 0 = PASS, else the failing case number.
+int mouse_decode_selftest(void) {
+    uint8_t pkt[4]; int btn, dx, dy, dz;
+    // 1. small positive move, no buttons — Y is negated
+    pkt[0] = 0x08; pkt[1] = 5; pkt[2] = 3; pkt[3] = 0;
+    mouse_decode_packet(pkt, 0, &btn, &dx, &dy, &dz);
+    if (btn != 0 || dx != 5 || dy != -3 || dz != 0) return 1;
+    // 2. negative deltas sign-extend: X = 0xFF (-1), Y = 0xFE (-2) -> dy = +2
+    pkt[1] = 0xFF; pkt[2] = 0xFE;
+    mouse_decode_packet(pkt, 0, &btn, &dx, &dy, &dz);
+    if (dx != -1 || dy != 2) return 2;
+    // 3. buttons (left+right = bits 0/1) survive alongside a move
+    pkt[0] = 0x08 | 0x03; pkt[1] = 1; pkt[2] = 0;
+    mouse_decode_packet(pkt, 0, &btn, &dx, &dy, &dz);
+    if (btn != 0x03 || dx != 1) return 3;
+    // 4. overflow (bit 6) drops the movement but keeps the (middle) button
+    pkt[0] = 0x08 | 0x40 | 0x04; pkt[1] = 0x7F; pkt[2] = 0x7F;
+    mouse_decode_packet(pkt, 0, &btn, &dx, &dy, &dz);
+    if (btn != 0x04 || dx != 0 || dy != 0) return 4;
+    // 5. wheel down: Z nibble 0xF (-1) -> one notch down
+    pkt[0] = 0x08; pkt[1] = 0; pkt[2] = 0; pkt[3] = 0x0F;
+    mouse_decode_packet(pkt, 1, &btn, &dx, &dy, &dz);
+    if (dz != -1) return 5;
+    // 6. wheel up, and any positive magnitude collapses to +1
+    pkt[3] = 0x01; mouse_decode_packet(pkt, 1, &btn, &dx, &dy, &dz); if (dz != 1) return 6;
+    pkt[3] = 0x07; mouse_decode_packet(pkt, 1, &btn, &dx, &dy, &dz); if (dz != 1) return 7;
+    // 7. with no wheel negotiated, the 4th byte is ignored -> dz always 0
+    pkt[3] = 0x0F; mouse_decode_packet(pkt, 0, &btn, &dx, &dy, &dz); if (dz != 0) return 8;
+    return 0;
+}

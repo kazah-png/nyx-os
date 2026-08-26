@@ -8760,6 +8760,7 @@ extern int tsort_selftest(void);            // core/tsort.c — topological sort
 extern int perf_cpu_selftest(void);         // proc/process.c — CPU-utilization accumulator KAT
 extern int uptime_epoch_selftest(void);     // core/timer.c — civil-date -> Unix-epoch KAT (wall-clock uptime)
 extern int kbd_translate_selftest(void);    // drivers/input/keyboard.c — scancode->char mapping (US+ES/AltGr) KAT
+extern int mouse_decode_selftest(void);     // drivers/input/mouse.c — PS/2 packet decode (sign/overflow/wheel) KAT
 extern int dynlink_load_selftest(void);     // proc/shared_libc.c — dlopen ELF segment loader bounds (hostile .so) KAT
 extern int dns_response_selftest(void);
 extern int vfs_pathnorm_selftest(void);
@@ -9074,7 +9075,7 @@ static void run_selftests(void) {
         {"du",           du_selftest},
         {"pci",          pci_selftest},
         {"nvme",         nvme_selftest},
-        {"kbdmap",       kbd_translate_selftest},
+        {"kbdmap",       kbd_translate_selftest}, {"mouse-decode",  mouse_decode_selftest},
         {"nyxgrub",      nyxgrub_selftest},
         {"gpt",          gpt_selftest},
         {"fat",          fat_selftest},

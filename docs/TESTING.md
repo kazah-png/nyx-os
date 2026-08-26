@@ -39,7 +39,7 @@ struct { const char* name; int (*fn)(void); } t[] = {
     {"sha512",  sha512_selftest},   {"aes_gcm", aes_gcm_selftest},
     {"inflate", inflate_selftest},  {"png",     png_selftest},
     {"cut",     cut_selftest},      {"comm",    comm_selftest},
-    /* ... 155 entries and counting ... */
+    /* ... 156 entries and counting ... */
 };
 ```
 
@@ -53,7 +53,7 @@ SELFTEST-BEGIN
 [SELFTEST] aes_gcm      PASS
 ...
 [SELFTEST] join         PASS
-SELFTEST-SUMMARY passed=155 failed=0 total=155
+SELFTEST-SUMMARY passed=156 failed=0 total=156
 SELFTEST-END
 ```
 
@@ -71,7 +71,7 @@ battery covers:
 | **Networking** | TCP checksum + window math, IPv4/IPv6, `ipcalc`, DNS (build + parse), ARP input parsing, the ICMP echo gate, DHCP options, HTTP response parsing |
 | **Text / data** | `cut`, `comm`, `join`, `xargs`, `sed`, `patch`, `fmt`, `pr`, `shuf`, `tsort`, `calc`, JSON (+ query), glob, CSV, INI, `strings`, semver, date formatting, path normalization, shell `$VAR` expansion |
 | **Disk / boot** | mkfs.ext2 layout, FAT formatter, MBR/GPT partition tables, PCI/NVMe enumeration, the GRUB boot image |
-| **Kernel** | page-allocator refcount / COW, W^X mappings, slab/`kfree`, stack canaries, signal delivery, the pipe ring buffer, the ELF loader + dynamic linker, the CPU-utilization accountant, wall-clock uptime (civil→epoch), the software 3D rasterizer + `mat4`, TOTP / account-lockout |
+| **Kernel** | page-allocator refcount / COW, W^X mappings, slab/`kfree`, stack canaries, signal delivery, the pipe ring buffer, the ELF loader + dynamic linker, the CPU-utilization accountant, wall-clock uptime (civil→epoch), the software 3D rasterizer + `mat4`, the keyboard + PS/2-mouse packet decode, TOTP / account-lockout |
 
 ---
 
