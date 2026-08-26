@@ -22,6 +22,7 @@ gcc -O2 -Wall -Wextra -o ncc ncc.c
 ncc input.n -o output.c    # transpile
 ncc input.n                # ... or write the C to stdout
 ncc input.n --tokens       # dump the token stream: one "kind line" per token
+ncc input.n --ast          # dump the parsed tree, postorder, one node per line
 ```
 
 `--tokens` exists for differential testing: it prints the lexer's exact

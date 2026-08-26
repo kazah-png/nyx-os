@@ -453,6 +453,42 @@ judge: 23/23 sources, still byte-identical. The stream now carries
 everything `parse.n` will need from a lexer, which makes the parser's
 scout the next honest step.
 
+### The parser's anchor
+
+The scout settled two questions. **Architecture first**: N has no
+modules or imports, so `parse.n` cannot `use` the lexer — and the
+honest answer was already established by the toy chain (ntokens →
+ncalc → nemit → nstack → nparse, each link carrying its
+predecessors' machinery forward): **the module chain ACCRETES**.
+`lex.n` stays frozen as the lexer's differential artifact; `parse.n`
+will be a new file that *contains* its lexer — the same functions,
+stated duplication — and dumps the tree. That is ncc's own one-file
+shape, mirrored. (Reading `lex.n`'s dump as input was weighed and
+rejected: it would leave the parser never exercising N-lexing, and N
+programs take no argv to select modes with.)
+
+**The anchor second — `ncc --ast`, landed**: a POSTORDER dump of the
+parsed tree, one line per node, children before parents, so a diff
+pins both the shape and the order. The format, held stable from here:
+
+- `E <k> …` expression nodes in EK order (0 int / 1 bool / 2 str /
+  3 interp / 4 path / 5 call / 6 field / 7 unary / 8 binary / 9 cast
+  / 10 struct-literal / 11 enum-literal / 12 index) — ints and bools
+  by value, strings as `#count` (the --tokens rule), paths and fields
+  by name, operators verbatim, casts and every other type as
+  `ptrs:is_user:name`, interp frag specs as `#tlen` (text) or
+  `@fmt.width.zero` (hole);
+- `S <k> …` statements in SK order (0 let / 1 assign / 2 return /
+  3 expr / 4 while / 5 if / 6 break / 7 continue / 8 defer / 9 match
+  / 10 for), match arms as `A <variant> <binds…> <form>` lines;
+- `B <n> <has-tail>` closes a block, `nil` marks an absent optional
+  slot (walk order stays deterministic), `D`/`V`/`U`/`X`/`F` carry
+  struct, enum-variant, enum, extern-fn and fn headers with full
+  param/return types, `.` ends the program.
+
+All 23 sources dump cleanly. The anchor stands ready; `parse.n` now
+has an exact target to rise to, and its rungs begin next.
+
 And the hardest lexer feature landed: **interpolation**. A toy string
 containing a brace lexes as segments — HEAD before the first hole,
 MID between holes, TAIL after the last (ncc's own

@@ -2967,18 +2967,159 @@ static void gen_program(const char* srcname) {
 /* ------------------------------------------------------------------ */
 /* driver                                                             */
 /* ------------------------------------------------------------------ */
+/* ------------------------------------------------------------------ */
+/* --ast (the parser's differential anchor): a postorder dump of the
+ * finished tree, one line per node, children before parents — the
+ * shape a parser rewritten in N will be held to, the way --tokens
+ * holds the lexer. Absent optional slots print a bare "nil" line so
+ * the walk order stays deterministic; types render as
+ * ptrs:is_user:name; string payloads keep the --tokens rule (byte
+ * counts, not bodies). Format spec: lang/docs/selfhost.md. */
+static void ast_expr(const Expr* e);
+static void ast_block(const Block* b);
+
+static void ast_ty(Ty t) {
+    printf(" %d:%d:%s", t.ptrs, t.is_user, t.name ? t.name : "-");
+}
+
+static void ast_expr(const Expr* e) {
+    if (!e) { printf("nil\n"); return; }
+    switch (e->k) {
+        case E_INT:  printf("E 0 %lld\n", e->ival); return;
+        case E_BOOL: printf("E 1 %lld\n", e->ival); return;
+        case E_STR:  printf("E 2 #%d\n", e->slen); return;
+        case E_INTERP:
+            for (int i = 0; i < e->nfrags; i++)
+                if (e->frags[i].e) ast_expr(e->frags[i].e);
+            printf("E 3 %d", e->nfrags);
+            for (int i = 0; i < e->nfrags; i++) {
+                if (e->frags[i].e)
+                    printf(" @%d.%d.%d", e->frags[i].fmt, e->frags[i].width, e->frags[i].zero);
+                else
+                    printf(" #%d", e->frags[i].tlen);
+            }
+            printf("\n");
+            return;
+        case E_PATH: printf("E 4 %s\n", e->name); return;
+        case E_CALL:
+            ast_expr(e->callee);
+            for (int i = 0; i < e->nargs; i++) ast_expr(e->args[i]);
+            printf("E 5 %d\n", e->nargs);
+            return;
+        case E_FIELD: ast_expr(e->base); printf("E 6 %s\n", e->field); return;
+        case E_UN: ast_expr(e->r); printf("E 7 %s\n", e->op); return;
+        case E_BIN: ast_expr(e->l); ast_expr(e->r); printf("E 8 %s\n", e->op); return;
+        case E_CAST: ast_expr(e->l); printf("E 9"); ast_ty(e->cast_to); printf("\n"); return;
+        case E_SLIT:
+            for (int i = 0; i < e->nargs; i++) ast_expr(e->args[i]);
+            printf("E 10 %d %s", e->nargs, e->name);
+            for (int i = 0; i < e->nargs; i++) printf(" %s", e->snames[i]);
+            printf("\n");
+            return;
+        case E_ELIT:
+            for (int i = 0; i < e->nargs; i++) ast_expr(e->args[i]);
+            printf("E 11 %d %s %s", e->nargs, e->name, e->field);
+            for (int i = 0; i < e->nargs; i++) printf(" %s", e->snames ? e->snames[i] : "-");
+            printf("\n");
+            return;
+        case E_INDEX: ast_expr(e->l); ast_expr(e->r); printf("E 12\n"); return;
+    }
+}
+
+static void ast_stmt(const Stmt* s) {
+    switch (s->k) {
+        case S_LET: ast_expr(s->e); printf("S 0 %d %d %s\n", s->is_mut, s->is_try, s->name); return;
+        case S_ASSIGN: ast_expr(s->lhs); ast_expr(s->e); printf("S 1 %d %s\n", s->is_try, s->aop ? s->aop : "="); return;
+        case S_RET: ast_expr(s->e); printf("S 2 %d\n", s->is_try); return;
+        case S_EXPR: ast_expr(s->e); printf("S 3 %d\n", s->is_try); return;
+        case S_WHILE: ast_expr(s->cond); ast_block(s->body); printf("S 4\n"); return;
+        case S_IF:
+            ast_expr(s->cond); ast_block(s->body);
+            if (s->els) ast_block(s->els);
+            printf("S 5 %d\n", s->els ? 1 : 0);
+            return;
+        case S_BREAK: printf("S 6\n"); return;
+        case S_CONT: printf("S 7\n"); return;
+        case S_DEFER: ast_expr(s->e); printf("S 8\n"); return;
+        case S_MATCH:
+            ast_expr(s->e);
+            for (int i = 0; i < s->narms; i++) {
+                if (s->arms[i].body) ast_block(s->arms[i].body);
+                else ast_expr(s->arms[i].val);
+                printf("A %s %d", s->arms[i].variant, s->arms[i].nbinds);
+                for (int j = 0; j < s->arms[i].nbinds; j++) printf(" %s", s->arms[i].binds[j]);
+                printf(" %d\n", s->arms[i].body ? 0 : 1);
+            }
+            printf("S 9 %d %d %s\n", s->narms, s->mtarget, s->name ? s->name : "-");
+            return;
+        case S_FOR: ast_expr(s->e); ast_expr(s->cond); ast_block(s->body); printf("S 10 %s\n", s->name); return;
+    }
+}
+
+static void ast_block(const Block* b) {
+    if (!b) { printf("nil\n"); return; }
+    for (int i = 0; i < b->n; i++) ast_stmt(b->st[i]);
+    if (b->tail) ast_expr(b->tail);
+    printf("B %d %d\n", b->n, b->tail ? 1 : 0);
+}
+
+static void ast_program(void) {
+    for (int i = 0; i < NSTRUCTS; i++) {
+        printf("D %s %d %s %d", STRUCTS[i].name, STRUCTS[i].is_own,
+               STRUCTS[i].drop_fn ? STRUCTS[i].drop_fn : "-", STRUCTS[i].nf);
+        for (int j = 0; j < STRUCTS[i].nf; j++) {
+            printf(" %s", STRUCTS[i].fs[j].name);
+            ast_ty(STRUCTS[i].fs[j].ty);
+        }
+        printf("\n");
+    }
+    for (int i = 0; i < NENUMS; i++) {
+        for (int j = 0; j < ENUMS[i].nv; j++) {
+            printf("V %s %d", ENUMS[i].vs[j].name, ENUMS[i].vs[j].nf);
+            for (int q = 0; q < ENUMS[i].vs[j].nf; q++) {
+                printf(" %s", ENUMS[i].vs[j].fs[q].name);
+                ast_ty(ENUMS[i].vs[j].fs[q].ty);
+            }
+            printf("\n");
+        }
+        printf("U %s %d\n", ENUMS[i].name, ENUMS[i].nv);
+    }
+    for (int i = 0; i < NXFN; i++) {
+        printf("X %s %lld %d %d", XFNS[i].name, XFNS[i].num, XFNS[i].caps, XFNS[i].np);
+        for (int j = 0; j < XFNS[i].np; j++) {
+            printf(" %s", XFNS[i].ps[j].name);
+            ast_ty(XFNS[i].ps[j].ty);
+        }
+        ast_ty(XFNS[i].ret);
+        printf("\n");
+    }
+    for (int i = 0; i < NFN; i++) {
+        ast_block(FNS[i].body);
+        printf("F %s %d %d", FNS[i].name, FNS[i].caps, FNS[i].np);
+        for (int j = 0; j < FNS[i].np; j++) {
+            printf(" %s", FNS[i].ps[j].name);
+            ast_ty(FNS[i].ps[j].ty);
+        }
+        ast_ty(FNS[i].ret);
+        printf("\n");
+    }
+    printf(".\n");
+}
+
 int main(int argc, char** argv) {
     const char* in = NULL;
     const char* out = NULL;
     int tokens_mode = 0;                  /* --tokens: dump the token stream */
+    int ast_mode = 0;                     /* --ast: dump the parsed tree */
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-o") && i + 1 < argc) out = argv[++i];
         else if (!strcmp(argv[i], "--tokens")) tokens_mode = 1;
+        else if (!strcmp(argv[i], "--ast")) ast_mode = 1;
         else if (argv[i][0] == '-') die("ncc: unknown option '%s'", argv[i]);
         else if (!in) in = argv[i];
         else die("ncc: multiple input files");
     }
-    if (!in) die("usage: ncc <input.n> [-o output.c | --tokens]");
+    if (!in) die("usage: ncc <input.n> [-o output.c | --tokens | --ast]");
 
     FILE* f = fopen(in, "rb");
     if (!f) die("ncc: cannot open '%s'", in);
@@ -3018,6 +3159,7 @@ int main(int argc, char** argv) {
         return 0;
     }
     parse_program();
+    if (ast_mode) { ast_program(); return 0; }
     validate_drops();                     /* v0.19: destructor wiring */
 
     OUT = out ? fopen(out, "w") : stdout;
