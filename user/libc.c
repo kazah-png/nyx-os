@@ -329,6 +329,37 @@ char* strtok(char* str, const char* delim) {
     return strtok_r(str, delim, &save);
 }
 
+/* Case-insensitive string ops (ASCII fold). strcasecmp/strncasecmp order like their
+ * case-sensitive twins; strcasestr is a case-folding strstr (what `grep -i` wants). */
+static char ci_lower(char c) { return (c >= 'A' && c <= 'Z') ? (char)(c + 32) : c; }
+
+int strcasecmp(const char* a, const char* b) {
+    for (;; a++, b++) {
+        char ca = ci_lower(*a), cb = ci_lower(*b);
+        if (ca != cb) return (unsigned char)ca - (unsigned char)cb;
+        if (!ca) return 0;
+    }
+}
+
+int strncasecmp(const char* a, const char* b, size_t n) {
+    for (; n > 0; n--, a++, b++) {
+        char ca = ci_lower(*a), cb = ci_lower(*b);
+        if (ca != cb) return (unsigned char)ca - (unsigned char)cb;
+        if (!ca) return 0;
+    }
+    return 0;
+}
+
+char* strcasestr(const char* haystack, const char* needle) {
+    if (!needle[0]) return (char*)haystack;
+    for (const char* h = haystack; *h; h++) {
+        const char* a = h; const char* b = needle;
+        while (*a && *b && ci_lower(*a) == ci_lower(*b)) { a++; b++; }
+        if (!*b) return (char*)h;
+    }
+    return 0;
+}
+
 /* =========== Stdlib =========== */
 
 int atoi(const char* s) {

@@ -48,6 +48,10 @@ size_t strcspn(const char* s, const char* reject);
 char* strpbrk(const char* s, const char* accept);
 char* strtok(char* str, const char* delim);
 char* strtok_r(char* str, const char* delim, char** saveptr);
+/* Case-insensitive (ASCII) compares + substring search (grep -i, header matching, ports). */
+int strcasecmp(const char* a, const char* b);
+int strncasecmp(const char* a, const char* b, size_t n);
+char* strcasestr(const char* haystack, const char* needle);
 
 void putchar(int c);
 int puts(const char* s);

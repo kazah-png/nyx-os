@@ -19,22 +19,9 @@ static void put_uint(int v) {
     while (n) write(1, &t[--n], 1);
 }
 
-/* Substring test: plain strstr, or a case-folding scan when -i is set. ASCII. */
+/* Substring test: plain strstr, or a case-folding strcasestr when -i is set. ASCII. */
 static int ci_match(const char* hay, const char* needle) {
-    if (!opt_i) return strstr(hay, needle) != 0;
-    if (!needle[0]) return 1;
-    for (const char* h = hay; *h; h++) {
-        const char* a = h; const char* b = needle;
-        while (*a && *b) {
-            char ca = *a, cb = *b;
-            if (ca >= 'A' && ca <= 'Z') ca += 32;
-            if (cb >= 'A' && cb <= 'Z') cb += 32;
-            if (ca != cb) break;
-            a++; b++;
-        }
-        if (!*b) return 1;
-    }
-    return 0;
+    return (opt_i ? strcasestr(hay, needle) : strstr(hay, needle)) != 0;
 }
 
 static void emit(const char* name, int show_name, int lineno, const char* line) {
