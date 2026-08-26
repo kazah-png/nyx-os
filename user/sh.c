@@ -259,6 +259,10 @@ static int is_name_char(char c) {
     return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
            (c >= '0' && c <= '9') || c == '_';
 }
+/* A variable name's FIRST char: a letter or '_', never a digit (so `1x=…` is not a name). */
+static int is_name_start(char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || c == '_';
+}
 
 /* Substitute `$NAME` (from the env) and `$?` (last exit status) in `in` -> `out`.
  * An unknown variable expands to nothing, like a real shell. */
@@ -308,6 +312,21 @@ static void builtin_export(char* rest) {
     env_set(trim(rest), trim(eq + 1));
 }
 
+/* A bare `NAME=value` assignment (bash-style, no `export` keyword). Recognised only when
+ * the segment starts with a name char and every char up to the first `=` is a name char,
+ * so `x=5` assigns but `echo a=b`, `a b=1`, `=5` and `1x=…` do not. This shell keeps ONE
+ * name table shared with the environment (no separate unexported-variable scope), so the
+ * value is stored just like `export` minus the keyword — usable in later `$NAME` expansion
+ * and inherited by children. Returns 1 if it was an assignment (and stored it). */
+static int try_assignment(char* line) {
+    if (!is_name_start(line[0])) return 0;
+    int i = 1;
+    while (is_name_char(line[i])) i++;
+    if (line[i] != '=') return 0;                /* no `=` right after the name -> a command */
+    builtin_export(line);                        /* same store path (unprotect + trim both sides) */
+    return 1;
+}
+
 /* Job-control builtins (defined with the jobs table below). */
 static void builtin_jobs(void);
 static void builtin_fg(char* arg);
@@ -317,6 +336,7 @@ static void builtin_bg(char* arg);
  * handled. `true`/`false` exist purely to set `$?` for && / || testing (bash has them
  * as builtins too); they can't be exec'd but are always available at the prompt. */
 static int try_builtin(char* line) {
+    if (try_assignment(line)) return 1;          /* NAME=value (before command lookup, like bash) */
     if (strcmp(line, "pwd") == 0) { builtin_pwd(); return 1; }
     if (strcmp(line, "true") == 0) { last_status = 0; return 1; }
     if (strcmp(line, "false") == 0) { last_status = 1; return 1; }
@@ -815,6 +835,8 @@ static void run_demo(void) {
         "cat welcome.txt",                 /* relative path -> resolves against cwd */
         "export NAME=NyxOS",
         "echo hello $NAME",                /* $VAR expansion */
+        "greeting=hi",                     /* bare NAME=value assignment (no export) */
+        "echo $greeting $NAME",            /* both expand */
         "ls / | grep elf",
         "echo redirected > /tmp/sh.txt",
         "cat /tmp/sh.txt | wc",
@@ -1093,7 +1115,7 @@ int main(int argc, char** argv) {
      * discipline (echo + backspace handled there), so this is a live shell. */
     signal(SIGINT, on_sigint);           /* Ctrl-C -> fresh prompt instead of dying */
     signal(SIGTSTP, SIG_IGN);            /* Ctrl-Z at the prompt is a no-op (only jobs stop) */
-    printf("NyxOS sh v0.12 — history/edit, Tab, globs (*?), ~, $(cmd), quotes, jobs/fg/bg, '|', '&', '&&', '||', ';', 'exit'\n");
+    printf("NyxOS sh v0.13 — history/edit, Tab, globs (*?), ~, $(cmd), $VAR, NAME=val, quotes, jobs/fg/bg, '|', '&', '&&', '||', ';', 'exit'\n");
     for (;;) {
         reap_jobs();                     /* report finished background jobs */
         char line[128];
