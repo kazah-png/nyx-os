@@ -402,7 +402,7 @@ static const command_t commands[] = {
     {"basename",  cmd_basename,  "Strip directory (and suffix) from a path: basename <path> [suffix]", false},
     {"dirname",   cmd_dirname,   "Strip the last component from a path: dirname <path>", false},
     {"realpath",  cmd_realpath,  "Canonicalise a path: realpath [-e] <path>...", false},
-    {"head",      cmd_head,      "Show first lines of a file: head <file> [lines]", false},
+    {"head",      cmd_head,      "Show the first lines/bytes of a file: head [-n N | -c N] <file>", false},
     {"file",      cmd_file,      "Identify a file's type: file <file>...", false},
     {"identify",  cmd_identify,  "Show an image's format + dimensions: identify <image>...", false},
     {"convert",   cmd_convert,   "Convert an image: convert <in> <out.png|out.ppm>", false},
@@ -988,7 +988,7 @@ static const man_page_t man_pages[] = {
     {"voxel",    "Open Nyx Voxels, an isometric voxel sandbox used as a 3D-render performance testbed (press B for a benchmark HUD)."},
     {"selene",   "Open Selene, the NyxOS web browser (HTTP and TLS, HTML and images)."},
     {"man",      "Display the manual page for a command: its name, a synopsis, and a description of what it does."},
-    {"head",     "Write the first lines of <file> to standard output (10 by default, or a count given as the second argument). Useful for peeking at the top of a file without reading the whole thing."},
+    {"head",     "Write the first part of <file> to standard output: the first 10 lines by default, `-n N` for N lines, or `-c N` for the first N bytes. (A bare count as the second argument still works, e.g. `head file 3`.) Useful for peeking at the top of a file without reading the whole thing."},
     {"tail",     "Write the last lines of <file> to standard output (10 by default, or a count given as the second argument)."},
     {"tree",     "Print the directory rooted at [path] (the current directory by default) as an indented tree, showing each subdirectory's immediate children."},
     {"disks",    "List the physical disks attached to the machine and their partitions (aliased as `lsblk`). For each ATA disk it reads the drive's IDENTIFY data (model name + capacity) and then sector 0, parsing the MBR partition table: for every non-empty entry it prints the partition number, type byte + a human label (Linux/EFI System/FAT32/NTFS/...), the starting LBA, the size, and a [boot] flag for an active partition. Read-only — the first rung of the `nyxinstall` disk-management work; partitioning, formatting and installing come later. A raw or GPT-only disk reports that it has no MBR table."},
@@ -1549,20 +1549,33 @@ static void cmd_which(int argc, char** argv) {
 }
 
 static void cmd_head(int argc, char** argv) {
-    if (argc < 2) { printf("Usage: head <file> [lines]\n"); return; }
-    int n = 10;
-    if (argc >= 3) n = atoi(argv[2]);
-    int fd = vfs_open(argv[1], 0, 0);
-    if (fd < 0) { printf("head: cannot open '%s'\n", argv[1]); return; }
+    // GNU-style -n N / -c N (bytes), plus the legacy positional `head <file> [lines]`.
+    int n = 10, bmode = 0, ai = 1;
+    if (ai < argc && argv[ai][0] == '-' && (argv[ai][1] == 'n' || argv[ai][1] == 'c')) {
+        bmode = (argv[ai][1] == 'c');
+        if (argv[ai][2]) n = atoi(argv[ai] + 2);                    // -nN / -cN
+        else if (ai + 1 < argc) { n = atoi(argv[ai + 1]); ai++; }   // -n N / -c N
+        ai++;
+    }
+    if (ai >= argc) { printf("Usage: head [-n N | -c N] <file> [lines]\n"); return; }
+    const char* path = argv[ai];
+    if (!bmode && ai + 1 < argc) n = atoi(argv[ai + 1]);            // legacy positional count
+    if (n < 0) n = 0;
+    int fd = vfs_open(path, 0, 0);
+    if (fd < 0) { printf("head: cannot open '%s'\n", path); return; }
     char buf[1024];
-    int bytes = vfs_read(fd, buf, sizeof(buf) - 1);
+    int b = vfs_read(fd, buf, sizeof(buf));
     vfs_close(fd);
-    if (bytes <= 0) return;
-    buf[bytes] = '\0';
-    int lines = 0;
-    for (int i = 0; buf[i] && lines < n; i++) {
-        putchar(buf[i]);
-        if (buf[i] == '\n') lines++;
+    if (b <= 0) return;
+    if (bmode) {
+        int lim = n < b ? n : b;
+        for (int i = 0; i < lim; i++) putchar(buf[i]);
+    } else {
+        int lines = 0;
+        for (int i = 0; i < b && lines < n; i++) {
+            putchar(buf[i]);
+            if (buf[i] == '\n') lines++;
+        }
     }
 }
 
