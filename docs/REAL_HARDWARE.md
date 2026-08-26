@@ -31,10 +31,20 @@ it byte-for-byte so UEFI firmware finds `/EFI/BOOT/BOOTX64.EFI` and boots it.
 
 ## What works on real hardware today
 
+NyxOS boots to its **full desktop on real metal** — proven on the reference i5-1035G7
+laptop, not just under emulation (see [`docs/real-hardware.jpg`](real-hardware.jpg)):
+
 - **Graphics.** GRUB sets a GOP framebuffer (typically 1024×768×32) and hands it to the
-  kernel in the multiboot2 framebuffer tag; NyxOS maps it and renders the desktop. This is
-  the make-or-break path, and it is validated under QEMU+OVMF (a real UEFI firmware).
-- **Boot to login, RAM-only.** The whole system lives in the initramfs — no disk is touched.
+  kernel in the multiboot2 framebuffer tag; NyxOS maps it and renders the desktop on the
+  real Iris Plus iGPU — correct BGRX colors, full-screen. This is the make-or-break path.
+- **Login + desktop, RAM-only.** The whole system lives in the initramfs — no disk needed.
+  You log in at the keyboard (nyx/nyx) and land on the compositor: wallpaper, taskbar,
+  windows, the Terminal + `nyxfetch`.
+- **Input.** The built-in keyboard works, and **MouseKeys** (hold **Alt** + **W/A/S/D** to
+  move the pointer, **Alt+Space**/**Alt+Q** to click) drives the whole GUI from the keyboard
+  alone — needed because the touchpad is USB-HID and NyxOS has no USB stack (see below).
+- **Portrait panels.** A small UMPC panel that scans out sideways is corrected with the
+  `rotate=90` (or `180`/`270`) boot cmdline; the UEFI GRUB menu offers the rotated entries.
 
 The kernel prints, early in boot, the framebuffer geometry and pixel channel layout, e.g.:
 
@@ -48,21 +58,27 @@ NyxOS renders BGRX (`R@16 G@8 B@0`). If a panel reports a different layout the k
 
 ## Known limitations on bare metal
 
-These are driver gaps, not bugs — expected on a first physical boot:
+These are driver gaps, not bugs:
 
-- **Keyboard.** NyxOS speaks PS/2 (i8042) only, with no USB-HID stack. A laptop's built-in
-  keyboard works **only if** the firmware keeps legacy-USB i8042 emulation on. If it doesn't,
-  the machine still boots and draws the login screen — there's just no input yet.
-- **Storage.** ATA-PIO only; NVMe SSDs are not driven. Not a problem — NyxOS is RAM-only.
+- **USB input.** NyxOS speaks PS/2 (i8042) only, with no USB-HID stack. The reference
+  laptop's **built-in** keyboard works because its firmware keeps legacy-USB i8042 emulation
+  on; a separately-plugged **USB** keyboard/mouse is not picked up, and the touchpad (USB-HID)
+  isn't driven. MouseKeys (above) covers pointing from the working keyboard.
+- **Storage.** The **NVMe** driver now brings the SSD up on real hardware — IDENTIFY, reads,
+  and writes all work on the target's Silicon Motion controller, and `nyxinstall --uefi
+  <disk> confirm` writes a GPT + ESP + ext2 install to it. Booting *from* the installed disk
+  is still being brought up, so the USB image remains the reliable path; a RAM-only boot
+  needs no disk at all. ATA-PIO is also supported for older/emulated disks.
 - **Network.** RTL8139 only; there is no 802.11 / Intel AX200 Wi-Fi stack. No networking.
 - **Framebuffer must be 32bpp.** Universal on Intel GOP; other depths fall back to the
   QEMU-only VBE path and won't light up a real panel.
 
 ## Reference test machine
 
-The current physical target is an Ice Lake laptop: **Intel Core i5-1035G7 / Iris Plus
-Graphics (Gen11) / 16 GB LPDDR4 / NVMe SSD / Intel Wi-Fi 6 AX200**. A clean boot there means
-UEFI graphics to the login screen; keyboard depends on that firmware's legacy-USB emulation.
+The physical target is an Ice Lake laptop: **Intel Core i5-1035G7 / Iris Plus Graphics
+(Gen11) / 16 GB LPDDR4 / NVMe SSD / Intel Wi-Fi 6 AX200**. NyxOS has booted there to the full
+desktop with keyboard login (the built-in keyboard rides the firmware's legacy-USB i8042
+emulation), and its NVMe SSD is driven for reads, writes, and installs.
 
 ## Developer test under QEMU + OVMF
 
