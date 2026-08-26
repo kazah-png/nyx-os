@@ -617,6 +617,15 @@ fn lex(p: *u8, n: i64, k: *i64, v: *i64, ln: *i64, sy: Syms, st: Strs) -> i64 {
             if len == 2 && p[st] as i64 == 97 && p[st + 1] as i64 == 115 {
                 kind = 23;                 // as (the cast word)
             }
+            if len == 3 && p[st] as i64 == 112 && p[st + 1] as i64 == 116
+                && p[st + 2] as i64 == 114 {
+                kind = 24;                 // ptr (reserved at toy scale,
+            }                              // like len - a str's field)
+            if len == 6 && p[st] as i64 == 101 && p[st + 1] as i64 == 120
+                && p[st + 2] as i64 == 116 && p[st + 3] as i64 == 101
+                && p[st + 4] as i64 == 114 && p[st + 5] as i64 == 110 {
+                kind = 25;                 // extern
+            }
             if kind == 1 && is_builtin_type(p, st, len) {
                 kind = 22;                 // a builtin type name, reserved
             }
@@ -746,8 +755,13 @@ struct Syms { nb: *u8, ss: *i64, sl: *i64 }
 // word after it; a bare variant is a 1-word record. A tag-only
 // enum keeps its bare-integer tags - the representation is chosen
 // per enum at declaration, ncc's own tag+union layout in miniature.
+// xn/xnum/xpc record EXTERN fns (name symbol, syscall number, param
+// count; count in cur[3]): a call to one becomes a SYSCALL opcode
+// the VM services by number - the shape is real, the kernel is the
+// VM.
 struct Sdefs { sn: *i64, sf: *i64, sfc: *i64, rw: *i64, cur: *i64,
-               fpt: *i64, en: *i64, ev: *i64, evc: *i64, ep: *i64 }
+               fpt: *i64, en: *i64, ev: *i64, evc: *i64, ep: *i64,
+               xn: *i64, xnum: *i64, xpc: *i64 }
 
 struct Strs { sb: *u8, sts: *i64, stl: *i64, cur: *i64 }
 
@@ -795,7 +809,18 @@ fn ast_factor(k: *i64, v: *i64, ln: *i64, fpc: *i64, sd: Sdefs, a: Ast, pos: i64
     mut going := true;
     while going {
         going = false;
-        if k[r.pos] == 2 && v[r.pos] == 46 {
+        if k[r.pos] == 2 && v[r.pos] == 46 && k[r.pos + 1] == 15 {
+            a.nk[r.nn] = 11; a.nl[r.nn] = r.root; a.nr[r.nn] = -1;
+            a.nv[r.nn] = 0;                // .len IS the len builtin - the
+            a.nline[r.nn] = ln[r.pos];     // same node, opcode, and folding
+            r = NP{ pos: r.pos + 2, nn: r.nn + 1, root: r.nn };
+            going = true;
+        }
+        if k[r.pos] == 2 && v[r.pos] == 46 && k[r.pos + 1] == 24 {
+            r = NP{ pos: r.pos + 2, nn: r.nn, root: r.root };
+            going = true;                  // .ptr is the IDENTITY at toy
+        }                                  // scale: a string IS its table
+        if k[r.pos] == 2 && v[r.pos] == 46 {   // index (stated asterisk)
             if k[r.pos + 1] != 1 {
                 fail(ln[r.pos + 1], "expected a field name");
             }
@@ -952,6 +977,38 @@ fn ast_prim(k: *i64, v: *i64, ln: *i64, fpc: *i64, sd: Sdefs, a: Ast, pos: i64, 
         }
     }
     if k[pos] == 1 && k[pos + 1] == 2 && v[pos + 1] == 40 {
+        mut xi := -1;                      // an EXTERN call, if the name
+        mut xs := 0;                       // is a recorded binding
+        while xs < sd.cur[3] {
+            if sd.xn[xs] == v[pos] { xi = xs; }
+            xs += 1;
+        }
+        if xi >= 0 {
+            idx := nn;
+            a.nline[idx] = ln[pos];
+            mut n2 := nn + 1;
+            mut p2 := pos + 2;
+            mut cnt := 0;
+            mut more := !(k[p2] == 2 && v[p2] == 41);
+            while more {
+                more = false;
+                r := ast_cmp(k, v, ln, fpc, sd, a, p2, n2);
+                if cnt == 4 { fail(ln[p2], "wrong number of arguments"); }
+                a.na[idx * 4 + cnt] = r.root;
+                cnt += 1;
+                p2 = r.pos;
+                n2 = r.nn;
+                if k[p2] == 2 && v[p2] == 44 { p2 += 1; more = true; }
+            }
+            if !(k[p2] == 2 && v[p2] == 41) {
+                fail(ln[p2], "expected ')' after the arguments");
+            }
+            if cnt != sd.xpc[xi] {
+                fail(ln[p2], "wrong number of arguments");
+            }
+            a.nk[idx] = 21; a.nl[idx] = cnt; a.nr[idx] = -1; a.nv[idx] = xi;
+            return NP{ pos: p2 + 1, nn: n2, root: idx };
+        }
         f := v[pos];                       // name '(' — a call
         idx := nn;                         // the call node, made first
         a.nline[idx] = ln[pos];
@@ -1114,6 +1171,17 @@ fn check_node(a: Ast, sd: Sdefs, env: Scope, bc: i64, idx: i64) {
     if a.nk[idx] == 19 {                   // enum tag: typed by its enum
         a.nt[idx] = 100 + a.nr[idx];
     }
+    if a.nk[idx] == 21 {                   // extern call: arguments are
+        mut q := 0;                        // integers or strings (a string
+        while q < a.nl[idx] {              // crosses as its table index -
+            check_node(a, sd, env, bc, a.na[idx * 4 + q]);
+            if a.nt[a.na[idx * 4 + q]] >= 2 {
+                fail(a.nline[idx], "cannot pass a struct to a syscall");
+            }
+            q += 1;                        // .ptr made that literal); the
+        }                                  // result is an integer
+        a.nt[idx] = 0;
+    }
     if a.nk[idx] == 20 {                   // variant construction: the
         if a.nl[idx] > -1 {                // payload (if any) is an int,
             check_node(a, sd, env, bc, a.nl[idx]);   // the value is its
@@ -1180,9 +1248,12 @@ fn check_node(a: Ast, sd: Sdefs, env: Scope, bc: i64, idx: i64) {
     if a.nk[idx] == 15 {                   // field read: the base must be a
         check_node(a, sd, env, bc, a.nl[idx]);   // struct and the name one of
         bt := a.nt[a.nl[idx]];             // ITS fields — then the tree
-        if bt < 2 || bt >= 100 {           // records the RESOLVED slot and
-            fail(a.nline[idx], "only a struct value has fields");
+        if bt == 1 {                       // records the RESOLVED slot and
+            fail(a.nline[idx], "a string has ptr and len only");
         }                                  // emit stays type-blind
+        if bt < 2 || bt >= 100 {
+            fail(a.nline[idx], "only a struct value has fields");
+        }
         sid := bt - 2;
         mut off := -1;
         mut q := 0;
@@ -1413,6 +1484,13 @@ fn fold_node(a: Ast, st: Strs, idx: i64) {
             fold_node(a, st, a.nl[idx]);   // runtime-only like every record
         }
     }
+    if a.nk[idx] == 21 {                   // extern call: arguments fold,
+        mut q := 0;                        // the crossing never does
+        while q < a.nl[idx] {
+            fold_node(a, st, a.na[idx * 4 + q]);
+            q += 1;
+        }
+    }
 }
 
 // Phase two: the postorder walk. Children first, the node's own
@@ -1435,6 +1513,15 @@ fn emit_node(a: Ast, fe: *i64, fp: *i64, code: *i64, cp: i64, idx: i64) -> i64 {
     }
     if a.nk[idx] == 19 {                   // enum tag: at run time a tag IS
         return emit2(code, cp, 1, a.nv[idx]);   // its index, PUSHed plain
+    }
+    if a.nk[idx] == 21 {                   // extern call: arguments in
+        mut c := cp;                       // order, then one SYSCALL with
+        mut q := 0;                        // the binding index - the VM
+        while q < a.nl[idx] {              // services it by number
+            c = emit_node(a, fe, fp, code, c, a.na[idx * 4 + q]);
+            q += 1;
+        }
+        return emit2(code, c, 34, a.nv[idx]);
     }
     if a.nk[idx] == 20 {                   // variant construction: the tag
         c := emit2(code, cp, 1, a.nv[idx]);   // at word 0, the payload (if
@@ -2073,9 +2160,10 @@ fn parse_fndef(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, sd: Sd
 fn parse_program(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, sd: Sdefs, a: Ast, env: Scope, st: Strs, pos: i64, code: *i64, cp: i64) -> EP {
     mut p := pos;
     mut c := cp;
-    sd.cur[0] = 0;                         // struct defs, records, and
-    sd.cur[1] = 0;                         // enum defs are per-program,
-    sd.cur[2] = 0;                         // like the strings
+    sd.cur[0] = 0;                         // struct defs, records, enum
+    sd.cur[1] = 0;                         // defs, and extern bindings
+    sd.cur[2] = 0;                         // are per-program, like the
+    sd.cur[3] = 0;                         // strings
     mut sds := true;
     while sds {                            // struct declarations lead the
         sds = false;                       // program: name, then up to four
@@ -2147,6 +2235,71 @@ fn parse_program(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, sd: 
             }
             sd.evc[eid] = vc;
             sd.cur[2] = eid + 1;
+            p = q + 1;
+            sds = true;
+        }
+        if k[p] == 25 {                    // extern syscall { fn name(...)
+            mut q := p + 1;                // -> type = NUMBER ... } - pure
+            if k[q] == 1 { q += 1; }       // tables ('syscall' reads as an
+            if !(k[q] == 2 && v[q] == 123) {   // identifier here)
+                fail(ln[q], "expected '\{' after extern");
+            }
+            q += 1;
+            mut more := k[q] == 7;
+            while more {
+                more = false;
+                if k[q + 1] != 1 { fail(ln[q + 1], "expected a name"); }
+                xi := sd.cur[3];
+                sd.xn[xi] = v[q + 1];
+                q += 2;
+                if !(k[q] == 2 && v[q] == 40) {
+                    fail(ln[q], "expected '(' after the name");
+                }
+                q += 1;
+                mut pc2 := 0;
+                mut inp := !(k[q] == 2 && v[q] == 41);
+                while inp {                // params: name [: type tokens]
+                    inp = false;           // - documentary only, so ANY
+                    if !(k[q] == 1 || k[q] == 15 || k[q] == 24 || k[q] == 22) {
+                        fail(ln[q], "expected a parameter name");
+                    }                      // word serves (hello.n names one
+                    q += 1;                // 'len', the toy's own keyword)
+                    if k[q] == 2 && v[q] == 58 {
+                        q += 1;            // the type: attribute prefixes
+                        while k[q] == 2 && v[q] == 42 { q += 1; }
+                        if !(k[q] == 22 || k[q] == 1) {
+                            fail(ln[q], "expected a type name");
+                        }
+                        q += 1;
+                    }
+                    pc2 += 1;
+                    if k[q] == 2 && v[q] == 44 { q += 1; inp = true; }
+                }
+                if !(k[q] == 2 && v[q] == 41) {
+                    fail(ln[q], "expected ')'");
+                }
+                q += 1;
+                if k[q] == 2 && v[q] == 45 && k[q + 1] == 2 && v[q + 1] == 62 {
+                    q += 2;                // -> type, read and recorded as
+                    while k[q] == 2 && v[q] == 42 { q += 1; }   // the toy's
+                    if !(k[q] == 22 || k[q] == 1) {             // one kind
+                        fail(ln[q], "expected a type name");
+                    }
+                    q += 1;
+                }
+                if !(k[q] == 2 && v[q] == 61) {
+                    fail(ln[q], "expected '=' and the syscall number");
+                }
+                if k[q + 1] != 0 { fail(ln[q + 1], "expected the syscall number"); }
+                sd.xnum[xi] = v[q + 1];
+                sd.xpc[xi] = pc2;
+                sd.cur[3] = xi + 1;
+                q += 2;
+                if k[q] == 7 { more = true; }
+            }
+            if !(k[q] == 2 && v[q] == 125) {
+                fail(ln[q], "expected '\}' after the extern block");
+            }
             p = q + 1;
             sds = true;
         }
@@ -2375,6 +2528,22 @@ fn run(prog: *i64, stk: *i64, vars: *i64, st: Strs, sd: Sdefs) -> i64 {
             sp -= 1;                       // has served
             pc += 1;
         }
+        if op == 34 {                      // SYSCALL xi: serviced by the
+            xi := prog[pc + 1];            // binding's NUMBER. write (1)
+            num := sd.xnum[xi];            // pops len/index/fd and writes
+            mut res := 0 - 1;              // the span through the same
+            if num == 1 {                  // audited boundary PRINTS uses;
+                len2 := stk[sp - 1];       // getpid (6) is a constant; any
+                si2 := stk[sp - 2];        // other number answers -1, the
+                bput(st.sb, st.sts[si2], len2);   // host shim's own rule
+                res = len2;
+            }
+            if num == 6 { res = 7; }
+            sp -= sd.xpc[xi];
+            stk[sp] = res;
+            sp += 1;
+            pc += 2;
+        }
         if op == 31 {                      // RSET off: pop the record index
             idx2 := stk[sp - 1];           // then the value, store the
             val2 := stk[sp - 2];           // field's word in place
@@ -2453,11 +2622,13 @@ fn main() -> i64 {
     sd := Sdefs{ sn: alloc_words(16), sf: alloc_words(64),
                  sfc: alloc_words(16),     // struct defs: 16 x 4 fields
                  rw: alloc_words(128),     // + the runtime record words
-                 cur: alloc_words(3),      // + counts / words-used cursors
+                 cur: alloc_words(4),      // + counts / words-used cursors
                  fpt: alloc_words(256),    // + declared parameter types
                  en: alloc_words(16), ev: alloc_words(64),
                  evc: alloc_words(16),     // + enum defs: 16 x 4 variants
-                 ep: alloc_words(64) };    // + per-variant payload flags
+                 ep: alloc_words(64),      // + per-variant payload flags
+                 xn: alloc_words(16), xnum: alloc_words(16),
+                 xpc: alloc_words(16) };   // + extern syscall bindings
     put("a type column over the toy - lex -> parse -> check -> fold -> emit -> run:\n");
     // Braces are escaped so they read as text, not interpolation (§2.5).
     show("fn max(a, b) \{ m := 0; if a > b \{ m := a; \} else \{ m := b; \} m \} max(3, 9) + max(7, 2)",
@@ -2565,6 +2736,15 @@ fn main() -> i64 {
     // value untouched: types cannot change an i64 word, and the toy
     // says so instead of pretending.
     show("fn dbl(v: i64) -> i64 \{ v * 2 \}\nn := dbl(21) as i64 + 0;\nprint n; 0",
+         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, sy, st, sd);
+    // STR FIELDS + EXTERN SYSCALLS — rungs 4+5 of the hello.n road:
+    // `.len` IS the len builtin (same node, opcode, folding), `.ptr`
+    // is the identity (a string IS its table index — the asterisk is
+    // stated), and an `extern syscall` block binds fns the VM services
+    // BY NUMBER: write pushes its span through the same audited
+    // boundary PRINTS uses, getpid answers 7, anything unmapped -1 —
+    // the host shim's own rule. The shape is hello.n's, verbatim.
+    show("extern syscall \{\nfn write(fd: i64, buf: i64, len: i64) -> i64 = 1\nfn getpid() -> i64 = 6\n\}\nmsg := \"toy syscall!\\n\";\nw := write(1, msg.ptr, msg.len);\nprint getpid(); w",
          k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, sy, st, sd);
     // The rest of the comparison set, each its own opcode.
     show("n := 7; print n != 7; print n <= 7; print n >= 9; print !(n >= 9); 0",

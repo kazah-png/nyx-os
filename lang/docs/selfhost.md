@@ -278,14 +278,22 @@ parameter annotations · statement `;` rules · the `0` tail.
    and keeps the value untouched: every toy value is an i64 word,
    types cannot change it, and the toy says so (the stated asterisk,
    like attributes).
-4. **`str` fields** — `.len` on a string IS the existing STRLEN
-   opcode; `.ptr` is the identity at toy scale (a string is its table
-   index). Makes `write(1, msg.ptr, msg.len)` typeable.
-5. **`extern syscall` blocks** — parse the block, record externs with
-   their numbers; a call to one emits a toy SYSCALL opcode the VM
-   services BY NAME: `write` through the same audited output boundary
-   PRINTS uses, `getpid` as a constant. The shape is real; the kernel
-   is the VM — stated plainly.
+4. **`str` fields** — ✅ **landed**: `ptr` joined `len` as a reserved
+   word, and the postfix `.` resolves both AT PARSE — `.len` builds
+   the existing len node (same opcode, same folding; `t.len` and
+   `len(t)` emit identical words) and `.ptr` is the identity, no node
+   at all (a string IS its table index; the asterisk stated). Other
+   fields on a string refuse with "a string has ptr and len only".
+5. **`extern syscall` blocks** — ✅ **landed, and hello.n's own shape
+   parses verbatim**: the block records name/number/param-count per
+   binding (param names are documentary — any word serves, which
+   matters because hello.n names one `len`, the toy's own keyword); a
+   call to a binding compiles to one SYSCALL opcode the VM services
+   by NUMBER — `write` (1) pushes its span through the same audited
+   boundary PRINTS uses **and the demo actually prints through it**,
+   `getpid` (6) answers a constant, anything unmapped answers -1, the
+   host shim's own rule. The shape is real; the kernel is the VM —
+   stated plainly.
 6. **`fn main` as the program** — an N file has no top-level
    statements; when a parsed file defines `main` and nothing else
    top-level, the program is one CALL to it.
