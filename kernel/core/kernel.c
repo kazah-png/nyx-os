@@ -8656,6 +8656,7 @@ extern int image_reject_selftest(void);
 extern int tcp_checksum_selftest(void);
 extern int tcp_wnd_selftest(void);          // net/tcp.c — receive-window flow-control KAT
 extern int ipv4_rx_selftest(void);          // net/ip.c — IPv4 RX header gate (hostile packets) KAT
+extern int arp_parse_selftest(void);        // net/arp.c — ARP input parser cache-poisoning gate KAT
 extern int kbd_translate_selftest(void);    // drivers/input/keyboard.c — scancode->char mapping (US+ES/AltGr) KAT
 extern int dynlink_load_selftest(void);     // proc/shared_libc.c — dlopen ELF segment loader bounds (hostile .so) KAT
 extern int dns_response_selftest(void);
@@ -8946,6 +8947,7 @@ static void run_selftests(void) {
         {"pipe",         pipe_selftest},
         {"tcpcksum",     tcp_checksum_selftest},  {"dns",           dns_response_selftest},
         {"tcpwnd",       tcp_wnd_selftest},       {"ipv4-rx",       ipv4_rx_selftest},
+        {"arp-parse",    arp_parse_selftest},
         {"dhcpopt",      dhcp_options_selftest},
         {"mathx",        mathx_selftest},         {"crc32",         crc32_selftest},
         {"crc32c",       crc32c_selftest},

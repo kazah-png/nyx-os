@@ -159,3 +159,57 @@ int arp_resolve(uint32_t ip, uint8_t* mac, int iface_idx) {
     printf("[ARP] Failed to resolve\n");
     return 0;
 }
+
+// KAT for the ARP input parser (arp_handle_packet), which consumes UNTRUSTED wire data.
+// Pins the anti-poisoning property: ONLY a well-formed IPv4-over-Ethernet ARP updates the
+// cache — a packet with the wrong hardware/protocol type or address lengths, or a runt, is
+// rejected BEFORE arp_cache_add, so it can never poison the cache with misread bytes. Uses
+// REPLY packets (a reply is generated only for a REQUEST, so nothing hits the wire) and
+// saves/restores the cache it touches. Convention: 0 = PASS, else the failing case number.
+int arp_parse_selftest(void) {
+    arp_cache_t saved[ARP_CACHE_SIZE];
+    memcpy(saved, arp_cache, sizeof(arp_cache));
+    int rc = 0;
+    uint8_t mac[6];
+    static const uint8_t M[6] = { 0xAA,0xBB,0xCC,0xDD,0xEE,0xFF };
+    uint32_t ip1234 = 1u | (2u << 8) | (3u << 16) | (4u << 24);   // 1.2.3.4, net order
+
+    arp_packet_t p;
+    memset_asm(&p, 0, sizeof(p));
+    p.htype = htons(ARP_HTYPE_ETHERNET);
+    p.ptype = htons(ARP_PTYPE_IP);
+    p.hlen = ARP_HLEN; p.plen = ARP_PLEN;
+    p.oper = htons(ARP_OP_REPLY);
+    memcpy(p.sender_mac, M, 6);
+    p.sender_ip[0] = 1; p.sender_ip[1] = 2; p.sender_ip[2] = 3; p.sender_ip[3] = 4;
+
+    // 1. a valid reply caches sender_ip -> sender_mac
+    memset_asm(arp_cache, 0, sizeof(arp_cache));
+    arp_handle_packet((uint8_t*)&p, sizeof(p));
+    if (!arp_cache_lookup(ip1234, mac)) { rc = 1; goto done; }
+    for (int b = 0; b < 6; b++) if (mac[b] != M[b]) { rc = 1; goto done; }
+
+    // 2. wrong hardware type -> rejected, cache NOT poisoned
+    { arp_packet_t q = p; q.htype = htons(99);
+      memset_asm(arp_cache, 0, sizeof(arp_cache));
+      arp_handle_packet((uint8_t*)&q, sizeof(q));
+      if (arp_cache_lookup(ip1234, mac)) { rc = 2; goto done; } }
+    // 3. wrong protocol type (IPv6) -> rejected
+    { arp_packet_t q = p; q.ptype = htons(0x86DD);
+      memset_asm(arp_cache, 0, sizeof(arp_cache));
+      arp_handle_packet((uint8_t*)&q, sizeof(q));
+      if (arp_cache_lookup(ip1234, mac)) { rc = 3; goto done; } }
+    // 4. bad hardware address length -> rejected
+    { arp_packet_t q = p; q.hlen = 8;
+      memset_asm(arp_cache, 0, sizeof(arp_cache));
+      arp_handle_packet((uint8_t*)&q, sizeof(q));
+      if (arp_cache_lookup(ip1234, mac)) { rc = 4; goto done; } }
+    // 5. runt (one byte short of a full ARP packet) -> rejected, no OOB read
+    { memset_asm(arp_cache, 0, sizeof(arp_cache));
+      arp_handle_packet((uint8_t*)&p, sizeof(p) - 1);
+      if (arp_cache_lookup(ip1234, mac)) { rc = 5; goto done; } }
+
+done:
+    memcpy(arp_cache, saved, sizeof(arp_cache));
+    return rc;
+}
