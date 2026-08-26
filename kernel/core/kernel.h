@@ -18,7 +18,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.4.387"
+#define KERNEL_VERSION "6.4.388"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -582,6 +582,7 @@ extern int process_count;
 extern int current_idx;
 uint32_t perf_cpu_percent(void);   // most recent completed-window BSP CPU utilization, 0..100
 int perf_cpu_selftest(void);       // KAT for the utilization accumulator
+extern volatile int g_cpu_idle;    // 1 while the CPU is halted in an idle wait (sleep())
 extern net_iface_t net_interfaces[8];
 extern uint64_t saved_rsp;
 extern uint64_t next_rsp;

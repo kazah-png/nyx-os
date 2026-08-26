@@ -1018,13 +1018,22 @@ static perf_cpu_t g_perf_cpu;
 uint32_t perf_cpu_percent(void) { return g_perf_cpu.latched; }
 
 void irq_scheduler_tick(void) {
-    // Performance accounting first, before any early return below, so utilization covers every
-    // 1000 Hz tick. The interrupted task is process_table[current_idx]; if it is the idle
-    // process (or nothing was running yet) the core was idle this tick.
+    // Performance accounting first, before the wake loop below flips any sleeper's state, so
+    // utilization covers every 1000 Hz tick. The interrupted task is process_table[current_idx].
+    // The core did real WORK this tick only if that task was actually runnable (PROC_RUN) and
+    // not the idle process. Everything else counts as idle: the idle task, and — crucially — a
+    // task halted inside a blocking call. NyxOS parks a sleeper/waiter with PROC_BLOCKED and
+    // `sti;hlt` in ITS OWN context (see sleep(), kwait, futex), so current_idx still points at
+    // it while the CPU is physically halted; counting only `== idle_proc` as idle therefore
+    // over-reported ~100% whenever anything (e.g. the compositor's sleep(5) idle-yield) was
+    // parked rather than the idle task being scheduled.
     {
         process_t* interrupted = (current_idx >= 0 && current_idx < process_count)
                                      ? process_table[current_idx] : NULL;
-        perf_cpu_tick(&g_perf_cpu, interrupted == idle_proc);
+        // Busy = a real runnable task was executing AND the CPU wasn't parked in an idle hlt.
+        int was_busy = !g_cpu_idle && interrupted && interrupted != idle_proc &&
+                       interrupted->state == PROC_RUN;
+        perf_cpu_tick(&g_perf_cpu, !was_busy);
     }
 
     // Timer wait queue: wake any sleeper whose deadline has arrived. Sleepers are
