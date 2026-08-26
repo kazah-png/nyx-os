@@ -2994,14 +2994,27 @@ int main(int argc, char** argv) {
     LEN = (int)sz;
     CUR = next_token();
     if (tokens_mode) {                    /* the differential-test anchor: one
-                                           * "kind line" pair per token, EOF
-                                           * included — a lexer rewritten in N
-                                           * is held to exactly this stream */
-        while (CUR.k != T_EOF) {
-            printf("%d %d\n", (int)CUR.k, CUR.line);
+                                           * line per token — kind + source
+                                           * line, plus the lexeme where one
+                                           * exists: idents and #[drop] names
+                                           * verbatim, ints as their PARSED
+                                           * value (hex and '_' normalized),
+                                           * string segments as their
+                                           * processed byte COUNT. A lexer
+                                           * rewritten in N is held to
+                                           * exactly this stream. */
+        for (;;) {
+            if (CUR.k == T_IDENT || CUR.k == T_ATTR_DROP)
+                printf("%d %d %s\n", (int)CUR.k, CUR.line, CUR.s);
+            else if (CUR.k == T_INT)
+                printf("%d %d %lld\n", (int)CUR.k, CUR.line, CUR.ival);
+            else if (CUR.k >= T_STR && CUR.k <= T_STR_TAIL)
+                printf("%d %d #%d\n", (int)CUR.k, CUR.line, CUR.slen);
+            else
+                printf("%d %d\n", (int)CUR.k, CUR.line);
+            if (CUR.k == T_EOF) break;
             CUR = next_token();
         }
-        printf("%d %d\n", (int)CUR.k, CUR.line);
         return 0;
     }
     parse_program();

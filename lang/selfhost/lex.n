@@ -7,11 +7,12 @@
 // output must be byte-identical to `ncc --tokens` over the same file.
 // The diff is the test; an empty diff is the proof.
 //
-// Scope, stated plainly: this is the STREAM lexer — kinds and lines.
-// It advances through every construct exactly as ncc's next_token
-// does (comments, escapes, the interpolation brace stack, attributes)
-// but captures no lexemes: identifier bytes, string bodies and integer
-// values are a later rung, needed when parse.n exists to want them.
+// The stream carries LEXEMES now (rung 2): identifiers and #[drop]
+// names echo their source spans verbatim, integers their PARSED value
+// (hex and '_' normalized — ncc's own accumulation), string segments
+// their processed byte COUNT (bodies hold control bytes, so they are
+// counted, not printed — and the count still pins the escape rules,
+// since a miscounted escape shifts every line after it).
 // Errors return kind -1 and stop the stream; differential targets are
 // valid sources, so -1 in a diff means the lexer itself is wrong.
 //
@@ -21,6 +22,7 @@
 // State lives in one sbrk'd word block, threaded as a single pointer:
 //   st[0] pos     st[1] line    st[2] itop (-1 = none)
 //   st[3] brace_depth   st[4] resume_str   st[5] token line (out)
+//   st[6] lexeme: value / span start (out)   st[7] span len (out)
 //   st[8..23] the interpolation brace stack (16 deep, ncc's cap)
 
 #[caps(syscall)]
@@ -47,6 +49,12 @@ fn is_dg(b: i64) -> bool {
 
 fn is_hx(b: i64) -> bool {
     return is_dg(b) || (b >= 97 && b <= 102) || (b >= 65 && b <= 70);
+}
+
+fn hxv(d: i64) -> i64 {
+    if is_dg(d) { return d - 48; }
+    if d >= 97 { return d - 87; }          // a-f
+    return d - 55;                         // A-F
 }
 
 // Byte-compare helpers, one per span length — N has no char literals,
@@ -129,12 +137,14 @@ fn kwlook(p: *u8, s: i64, n: i64) -> i64 {
 // escapes positionally. cont = 1 when resuming after a hole.
 fn scan_string(p: *u8, n: i64, st: *i64, cont: i64) -> i64 {
     st[5] = st[1];
+    mut cnt := 0;                          // processed-body byte count
     mut going := true;
     while going {
         if st[0] >= n { return -1; }       // unterminated string
         b := p[st[0]] as i64;
         if b == 34 {                       // the closing quote
             st[0] = st[0] + 1;
+            st[6] = cnt;
             if cont == 1 { return 5; }
             return 2;
         }
@@ -143,20 +153,23 @@ fn scan_string(p: *u8, n: i64, st: *i64, cont: i64) -> i64 {
             if st[2] + 1 >= 16 { return -1; }   // interpolation too deep
             st[2] = st[2] + 1;
             st[8 + st[2]] = st[3];
+            st[6] = cnt;
             if cont == 1 { return 4; }
             return 3;
         }
-        if b == 92 {                       // an escape: validate + skip
-            st[0] = st[0] + 1;
+        if b == 92 {                       // an escape: validate + skip,
+            st[0] = st[0] + 1;             // one processed byte
             if st[0] >= n { return -1; }
             e := p[st[0]] as i64;
             st[0] = st[0] + 1;
             ok := e == 110 || e == 116 || e == 114 || e == 48 || e == 92
                || e == 34 || e == 39 || e == 123 || e == 125;
             if !ok { return -1; }          // bad escape
+            cnt = cnt + 1;
             continue;
         }
         if b == 10 { st[1] = st[1] + 1; }
+        cnt = cnt + 1;
         st[0] = st[0] + 1;
     }
     0
@@ -211,19 +224,28 @@ fn next_kind(p: *u8, n: i64, st: *i64) -> i64 {
         while st[0] < n && (is_idc(p[st[0]] as i64) || is_dg(p[st[0]] as i64)) {
             st[0] = st[0] + 1;
         }
+        st[6] = s;                         // the span, for T_IDENT's
+        st[7] = st[0] - s;                 // lexeme echo
         return kwlook(p, s, st[0] - s);
     }
     if is_dg(b) {
+        mut v := 0;
         if b == 48 && st[0] + 1 < n && p[st[0] + 1] as i64 == 120 {
             st[0] = st[0] + 2;             // 0x hex, '_' separators
             while st[0] < n && (is_hx(p[st[0]] as i64) || p[st[0]] as i64 == 95) {
+                d := p[st[0]] as i64;
+                if d != 95 { v = v * 16 + hxv(d); }
                 st[0] = st[0] + 1;
             }
+            st[6] = v;
             return 1;
         }
         while st[0] < n && (is_dg(p[st[0]] as i64) || p[st[0]] as i64 == 95) {
+            d := p[st[0]] as i64;
+            if d != 95 { v = v * 10 + (d - 48); }
             st[0] = st[0] + 1;
         }
+        st[6] = v;
         return 1;                          // T_INT
     }
     if b == 34 {                           // a string opens
@@ -313,6 +335,7 @@ fn next_kind(p: *u8, n: i64, st: *i64) -> i64 {
         }
         if st[0] + 6 <= n && eq6(p, st[0], 91, 100, 114, 111, 112, 40) {
             st[0] = st[0] + 6;             // #[drop(fn)]
+            s2 := st[0];                   // the fn name's span starts
             mut got := false;
             while st[0] < n && (is_idc(p[st[0]] as i64) || is_dg(p[st[0]] as i64)) {
                 st[0] = st[0] + 1;
@@ -321,12 +344,38 @@ fn next_kind(p: *u8, n: i64, st: *i64) -> i64 {
             if !got { return -1; }
             if st[0] + 2 > n { return -1; }
             if !(p[st[0]] as i64 == 41 && p[st[0] + 1] as i64 == 93) { return -1; }
+            st[6] = s2;                    // echoed like an ident's
+            st[7] = st[0] - s2;
             st[0] = st[0] + 2;
             return 33;
         }
         return -1;                         // unknown attribute
     }
     return -1;                             // unexpected character
+}
+
+// One dump line per token: kind + line, plus the lexeme where one
+// exists. The format is ncc --tokens', character for character.
+#[caps(syscall)]
+fn dump_tok(p: *u8, st: *i64, k: i64) {
+    l := st[5];
+    if k == 7 || k == 33 {                 // ident / #[drop] name: the
+        put("{k} {l} ");                   // source span, verbatim
+        write(1, (p as addr + st[6] as addr) as #[user] *u8, st[7] as isize);
+        put("\n");
+        return;
+    }
+    if k == 1 {                            // int: the parsed value
+        v := st[6];
+        put("{k} {l} {v}\n");
+        return;
+    }
+    if k >= 2 && k <= 5 {                  // string segment: the count
+        c := st[6];
+        put("{k} {l} #{c}\n");
+        return;
+    }
+    put("{k} {l}\n");
 }
 
 #[caps(syscall)]
@@ -356,8 +405,7 @@ fn main() -> i64 {
     mut going := true;
     while going {
         k = next_kind(buf, total, st);
-        l := st[5];
-        put("{k} {l}\n");
+        dump_tok(buf, st, k);
         if k < 1 { going = false; }        // T_EOF (or -1) ends the dump
     }
     0

@@ -443,6 +443,16 @@ closes — inside NyxOS**: the in-OS ncc compiled lex.n on target
 matched line for line over serial, hello.n and countdown.n both. The
 first self-host module runs on the OS it is for.
 
+**Rung 2 — lexemes — landed the same way, both sides in one step**:
+the dump format grew on the C side and the N side together — idents
+and `#[drop]` names verbatim, integers as their parsed value (the N
+side reproduces ncc's exact accumulation, hex and `_` included —
+`0x811C9DC5` must print `2166136261` from both lexers), string
+segments as processed byte counts — and the differential stayed the
+judge: 23/23 sources, still byte-identical. The stream now carries
+everything `parse.n` will need from a lexer, which makes the parser's
+scout the next honest step.
+
 And the hardest lexer feature landed: **interpolation**. A toy string
 containing a brace lexes as segments — HEAD before the first hole,
 MID between holes, TAIL after the last (ncc's own

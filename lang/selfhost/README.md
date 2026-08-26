@@ -35,10 +35,16 @@ and the N lexer's, over hello.n (73 tokens) and countdown.n (124) —
 came back identical over serial. The lexer is proven on the machine
 it exists for.
 
-**Honest scope**: this rung is the *stream* lexer — kinds and lines.
-It advances through every construct exactly as ncc does, but captures
-no lexemes: identifier bytes, string bodies and integer values arrive
-with the rung that needs them (`parse.n`). Errors print kind `-1` and
-stop; a `-1` against a valid source means the lexer is wrong, and the
-differential would already have caught it. Sources are capped at 256K
-(nparse.n, the largest, is 150K).
+**Rung 2 — lexemes (landed)**: the stream carries substance now, on
+both sides of the differential at once. `ncc --tokens` and `lex.n`
+both print, per token: identifiers and `#[drop]` names **verbatim**
+(`7 11 write`), integers as their **parsed value** — hex and `_`
+separators normalized, so `0x811C9DC5` prints `2166136261` and the N
+side's fold must match ncc's exactly — and string segments as their
+**processed byte count** (`3 17 #18`: bodies hold control bytes, so
+they are counted, not printed; the count still pins the escape rules,
+since one miscounted escape shifts every line after it). Still 23/23
+byte-identical. Errors print kind `-1` and stop; a `-1` against a
+valid source means the lexer is wrong, and the differential would
+already have caught it. Sources are capped at 256K (nparse.n, the
+largest, is 150K).
