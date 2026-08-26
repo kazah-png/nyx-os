@@ -420,6 +420,25 @@ diff is the test. (The later modules need their own dump anchors —
 an AST shape for `parse.n` is the next design question, deliberately
 left to its own scout.)
 
+**Rung 1 LANDED — [selfhost/lex.n](../selfhost/lex.n), and it
+overshot its target**: the plan said hello.n byte-exact; the landing
+is the **whole examples directory plus lex.n itself — 23 sources,
+every stream byte-identical to `ncc --tokens`**, wired into the
+verification suite as a permanent differential stage that fails on
+any mismatch. The overshoot has a reason worth recording: a *stream*
+lexer (kinds and lines — the dump needs no lexemes) turns out to be
+almost all of `next_token`'s actual difficulty — the comment
+depth-counting, the keyword table, the escape rules, the
+interpolation brace stack with its `T_INTERP_R` resume — while the
+part it postpones (capturing identifier bytes, string bodies, integer
+values) is bookkeeping that `parse.n` will ask for when it exists.
+One honest lesson from the landing: the first run mismatched exactly
+one source — nparse.n, at 80% of the file — because the read buffer
+was 128K and the file is 150K; the differential caught a *harness*
+bug before it could ever have become a lexer lie. See
+[selfhost/README.md](../selfhost/README.md) for the contract and the
+commands.
+
 And the hardest lexer feature landed: **interpolation**. A toy string
 containing a brace lexes as segments — HEAD before the first hole,
 MID between holes, TAIL after the last (ncc's own
