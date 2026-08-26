@@ -1294,27 +1294,36 @@ static void cmd_ac97(int argc, char** argv) {
 
 static void cmd_echo(int argc, char** argv) {
     if (argc < 2) { putchar('\n'); return; }
-    int redir_idx = -1;
+    // Redirect operator: ">" truncates, ">>" appends. (">>" was previously unrecognized, so
+    // `echo x >> f` printed the literal "x >> f".)
+    int redir_idx = -1, append = 0;
     for (int i = 1; i < argc; i++) {
-        if (strcmp(argv[i], ">") == 0) { redir_idx = i; break; }
+        if (strcmp(argv[i], ">")  == 0) { redir_idx = i; append = 0; break; }
+        if (strcmp(argv[i], ">>") == 0) { redir_idx = i; append = 1; break; }
     }
-    if (redir_idx > 0) {
-        if (redir_idx + 1 >= argc) { printf("echo: no file specified\n"); return; }
-        int fd = vfs_open(argv[redir_idx + 1], 0, 0);
-        if (fd < 0) fd = vfs_open(argv[redir_idx + 1], 1, 0);
-        if (fd < 0) { printf("echo: cannot write '%s'\n", argv[redir_idx + 1]); return; }
-        for (int i = 1; i < redir_idx; i++) {
-            vfs_write(fd, argv[i], strlen(argv[i]));
-            if (i < redir_idx - 1) vfs_write(fd, " ", 1);
-        }
-        vfs_write(fd, "\n", 1);
-        vfs_close(fd);
-    } else {
-        for (int i = 1; i < argc; i++) {
-            printf("%s ", argv[i]);
-        }
+    if (redir_idx < 0) {
+        for (int i = 1; i < argc; i++) printf("%s ", argv[i]);
         printf("\n");
+        return;
     }
+    if (redir_idx + 1 >= argc) { printf("echo: no file specified\n"); return; }
+    const char* path = argv[redir_idx + 1];
+    // Build the whole line, then write it ONCE. vfs_write has no per-fd position and replaces
+    // the entire file, so the old arg-by-arg loop left only its final "\n" — `echo a b c > f`
+    // produced a 1-byte file. One vfs_pwrite fixes that; pwrite at the current EOF appends (>>).
+    static char payload[1024];
+    int n = 0;
+    for (int i = 1; i < redir_idx && n < (int)sizeof(payload) - 2; i++) {
+        if (i > 1) payload[n++] = ' ';
+        for (const char* s = argv[i]; *s && n < (int)sizeof(payload) - 2; s++) payload[n++] = *s;
+    }
+    payload[n++] = '\n';
+    int fd = vfs_open(path, append ? O_CREAT : (O_CREAT | O_TRUNC), 0);
+    if (fd < 0) { printf("echo: cannot write '%s'\n", path); return; }
+    uint32_t off = 0;
+    if (append) { uint32_t sz = 0; if (vfs_fstat(fd, &sz, 0) == 0) off = sz; }
+    vfs_pwrite(fd, payload, (uint32_t)n, off);
+    vfs_close(fd);
 }
 
 // basename PATH [SUFFIX] — POSIX: strip the directory prefix (and an optional
