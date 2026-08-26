@@ -53,6 +53,12 @@
 //                    arm) with 18 = arm (nv = variant symbol until
 //                    check resolves the TAG; nl = chain, nr = next)
 //               19 = enum tag (nv = tag, nr = enum id; typed 100+e)
+//   Token kinds 22 (a builtin type name - i8..u64, isize, usize,
+//   addr, bool - reserved words at toy scale) and 23 ('as') serve
+//   N's signatures and casts: ': i64' and '-> i64' are accepted
+//   (all builtins map to the toy's ONE numeric kind), and a postfix
+//   'as' consumes optional '*'s plus a type name, keeping the value
+//   untouched.
 //               20 = variant construction (nl = payload root or -1,
 //                    nv = tag, nr = enum id; lowers to RNEW)
 //   A separate walker, emit_node, then emits by postorder recursion —
@@ -359,6 +365,38 @@ fn bput(p: *u8, start: i64, len: i64) {
 }
 
 fn is_digit(b: i64) -> bool { b >= 48 && b <= 57 }
+
+// Is the span p[st .. st+len) one of N's builtin type names? The toy
+// reserves them (token kind 22) so annotations and casts can name
+// them - all mapping to its ONE numeric kind. i8/i16/i32/i64 and the
+// u twins are shape-checked; isize/usize/addr/bool spelled out.
+fn is_builtin_type(p: *u8, st: i64, len: i64) -> bool {
+    b0 := p[st] as i64;
+    if len == 2 && (b0 == 105 || b0 == 117) && p[st + 1] as i64 == 56 {
+        return true;                       // i8 u8
+    }
+    if len == 3 && (b0 == 105 || b0 == 117) {
+        b1 := p[st + 1] as i64;
+        b2 := p[st + 2] as i64;
+        if b1 == 49 && b2 == 54 { return true; }   // i16 u16
+        if b1 == 51 && b2 == 50 { return true; }   // i32 u32
+        if b1 == 54 && b2 == 52 { return true; }   // i64 u64
+    }
+    if len == 5 && (b0 == 105 || b0 == 117) && p[st + 1] as i64 == 115
+        && p[st + 2] as i64 == 105 && p[st + 3] as i64 == 122
+        && p[st + 4] as i64 == 101 {
+        return true;                       // isize usize
+    }
+    if len == 4 && b0 == 97 && p[st + 1] as i64 == 100
+        && p[st + 2] as i64 == 100 && p[st + 3] as i64 == 114 {
+        return true;                       // addr
+    }
+    if len == 4 && b0 == 98 && p[st + 1] as i64 == 111
+        && p[st + 2] as i64 == 111 && p[st + 3] as i64 == 108 {
+        return true;                       // bool
+    }
+    false
+}
 fn is_letter(b: i64) -> bool {             // N's identifier alphabet:
     (b >= 97 && b <= 122) || (b >= 65 && b <= 90) || b == 95
 }                                          // a-z A-Z _ (digits can follow
@@ -539,12 +577,12 @@ fn lex(p: *u8, n: i64, k: *i64, v: *i64, ln: *i64, sy: Syms, st: Strs) -> i64 {
             k[t] = 0; v[t] = val; t += 1;
             continue;
         }
-        if is_letter(b) {                  // keyword or identifier
-            st := i;
-            mut j := i;
-            while j < n && is_letter(p[j] as i64) {
-                j += 1;
-            }
+        if is_letter(b) {                  // keyword or identifier — N's
+            st := i;                       // full rule now: a letter or _
+            mut j := i;                    // first, letters, digits, and _
+            while j < n && (is_letter(p[j] as i64) || is_digit(p[j] as i64)) {
+                j += 1;                    // after (i64 is ONE token; a
+            }                              // digit-first token is a number)
             len := j - st;
             mut kind := 1;
             if len == 2 && p[st] as i64 == 105 && p[st + 1] as i64 == 102 {
@@ -575,6 +613,12 @@ fn lex(p: *u8, n: i64, k: *i64, v: *i64, ln: *i64, sy: Syms, st: Strs) -> i64 {
                 && p[st + 2] as i64 == 116 && p[st + 3] as i64 == 99
                 && p[st + 4] as i64 == 104 {
                 kind = 21;                 // match
+            }
+            if len == 2 && p[st] as i64 == 97 && p[st + 1] as i64 == 115 {
+                kind = 23;                 // as (the cast word)
+            }
+            if kind == 1 && is_builtin_type(p, st, len) {
+                kind = 22;                 // a builtin type name, reserved
             }
             if len == 5 && p[st] as i64 == 112 && p[st + 1] as i64 == 114
                 && p[st + 2] as i64 == 105 && p[st + 3] as i64 == 110
@@ -759,6 +803,17 @@ fn ast_factor(k: *i64, v: *i64, ln: *i64, fpc: *i64, sd: Sdefs, a: Ast, pos: i64
             a.nv[r.nn] = v[r.pos + 1];
             a.nline[r.nn] = ln[r.pos];
             r = NP{ pos: r.pos + 2, nn: r.nn + 1, root: r.nn };
+            going = true;
+        }
+        if k[r.pos] == 23 {                // 'as TYPE': read the cast and
+            mut p3 := r.pos + 1;           // KEEP THE VALUE - every toy
+            while k[p3] == 2 && v[p3] == 42 {   // value is an i64 word, so
+                p3 += 1;                   // types cannot change it; the
+            }                              // pointer stars and the name
+            if !(k[p3] == 22 || k[p3] == 1) {   // are consumed, the node
+                fail(ln[p3], "expected a type name");   // untouched (the
+            }                              // stated asterisk, like
+            r = NP{ pos: p3 + 1, nn: r.nn, root: r.root };   // attributes)
             going = true;
         }
     }
@@ -1962,10 +2017,13 @@ fn parse_fndef(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, sd: Sd
             pn := v[p];
             p += 1;
             mut pt := 0;                   // unannotated = integer;
+            if k[p] == 2 && v[p] == 58 && k[p + 1] == 22 {
+                p += 2;                    // ': i64' and its builtin kin:
+            }                              // all map to the toy's int
             if k[p] == 2 && v[p] == 58 {   // ': Name' declares a STRUCT
-                if k[p + 1] != 1 {         // parameter (N's fn f(p: P), at
+                if k[p + 1] != 1 {         // or ENUM parameter (N's own
                     fail(ln[p + 1], "expected a type name");
-                }                          // toy scale: structs only)
+                }                          // fn f(p: P) shape)
                 mut tsid := -1;
                 mut si := 0;
                 while si < sd.cur[0] {     // a struct name ...
@@ -1997,7 +2055,14 @@ fn parse_fndef(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, sd: Sd
         }
     }
     fpc[f] = j;
-    t := gen_body(k, v, ln, fe, fp, fpc, sd, a, env, st, j, p + 2, code, cp);
+    mut p2 := p + 1;                       // past ')'; an optional
+    if k[p2] == 2 && v[p2] == 45 && k[p2 + 1] == 2 && v[p2 + 1] == 62 {
+        if !(k[p2 + 2] == 22 || k[p2 + 2] == 1) {   // '-> Name' return
+            fail(ln[p2 + 2], "expected a type name");   // annotation is
+        }                                  // accepted - and every body
+        p2 += 3;                           // is held to the toy's one
+    }                                      // return kind, int (the tail
+    t := gen_body(k, v, ln, fe, fp, fpc, sd, a, env, st, j, p2 + 1, code, cp);
     EP{ pos: t.pos + 1, cp: emit1(code, t.cp, 16) }   // skip '}', RET
 }
 
@@ -2491,6 +2556,15 @@ fn main() -> i64 {
     // (The demo source below escapes twice: once for N, once for the
     // toy — the toy sees a backslash-brace and keeps the byte.)
     show("print \"one\\ntwo\"; print \"kept: \\\{ \\\} done\"; 0",
+         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, sy, st, sd);
+    // N'S SIGNATURES AND CASTS — rungs 2+3 of the hello.n road: the
+    // builtin type names are reserved words now, `: i64` in a
+    // parameter and `-> i64` on a fn are accepted (every one maps to
+    // the toy's single numeric kind — the tail check was already
+    // holding bodies to it), and `as i64` reads a cast and keeps the
+    // value untouched: types cannot change an i64 word, and the toy
+    // says so instead of pretending.
+    show("fn dbl(v: i64) -> i64 \{ v * 2 \}\nn := dbl(21) as i64 + 0;\nprint n; 0",
          k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, sy, st, sd);
     // The rest of the comparison set, each its own opcode.
     show("n := 7; print n != 7; print n <= 7; print n >= 9; print !(n >= 9); 0",

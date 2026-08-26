@@ -263,14 +263,21 @@ parameter annotations · statement `;` rules · the `0` tail.
    reaches the lexer's hole test, so braces-as-text and
    interpolation finally coexist — N's own rule — and hello.n's
    `msg` string now lexes.
-2. **Return annotations + builtin type names** — `-> i64` parsed on
-   fns (int-only, which the tail check already enforces) and
-   `i32`/`i64`/`u8`/`isize`/... accepted in parameter annotations,
-   all mapping to the toy's int (documented: one numeric kind at toy
-   scale).
-3. **`as` casts, parsed and discarded** — `msg.ptr as *u8` reads the
-   cast and keeps the value (every toy value is an i64 word; the
-   asterisk is stated, like attributes).
+2. **Return annotations + builtin type names** — ✅ **landed**:
+   `-> i64` parses on fns (every body held to the toy's one return
+   kind, int — the tail check was already enforcing it), and the
+   twelve builtin type names are reserved words now (token kind of
+   their own), accepted in parameter annotations and all mapping to
+   the toy's single numeric kind — stated, not pretended. Landing it
+   forced the identifier rule fully honest: `i64` must be ONE token,
+   so identifiers now read N's true `[A-Za-z_][A-Za-z0-9_]*` (digits
+   after the first letter — the toy could not spell `i64` before).
+3. **`as` casts, parsed and discarded** — ✅ **landed**: in the
+   postfix position — so `5 as u8 * 3` is `(5 as u8) * 3`, N's own
+   precedence for free — `as` consumes optional `*`s and a type name
+   and keeps the value untouched: every toy value is an i64 word,
+   types cannot change it, and the toy says so (the stated asterisk,
+   like attributes).
 4. **`str` fields** — `.len` on a string IS the existing STRLEN
    opcode; `.ptr` is the identity at toy scale (a string is its table
    index). Makes `write(1, msg.ptr, msg.len)` typeable.
