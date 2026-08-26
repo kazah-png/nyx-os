@@ -8750,6 +8750,7 @@ extern int tcp_checksum_selftest(void);
 extern int tcp_wnd_selftest(void);          // net/tcp.c — receive-window flow-control KAT
 extern int ipv4_rx_selftest(void);          // net/ip.c — IPv4 RX header gate (hostile packets) KAT
 extern int arp_parse_selftest(void);        // net/arp.c — ARP input parser cache-poisoning gate KAT
+extern int icmp_selftest(void);             // net/icmp.c — ICMP input gate (runt + checksum reject) KAT
 extern int tsort_selftest(void);            // core/tsort.c — topological sort, GNU-byte-exact tie-break KAT
 extern int perf_cpu_selftest(void);         // proc/process.c — CPU-utilization accumulator KAT
 extern int uptime_epoch_selftest(void);     // core/timer.c — civil-date -> Unix-epoch KAT (wall-clock uptime)
@@ -9044,6 +9045,7 @@ static void run_selftests(void) {
         {"tcpcksum",     tcp_checksum_selftest},  {"dns",           dns_response_selftest},
         {"tcpwnd",       tcp_wnd_selftest},       {"ipv4-rx",       ipv4_rx_selftest},
         {"arp-parse",    arp_parse_selftest},     {"tsort-kat",     tsort_selftest},
+        {"icmp",         icmp_selftest},
         {"perf-cpu",     perf_cpu_selftest},      {"uptime-epoch",  uptime_epoch_selftest},
         {"dhcpopt",      dhcp_options_selftest},
         {"mathx",        mathx_selftest},         {"crc32",         crc32_selftest},

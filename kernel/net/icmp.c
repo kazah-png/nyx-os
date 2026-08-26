@@ -57,14 +57,21 @@ static volatile uint32_t ping_reply_tick  = 0;
 static volatile uint8_t  ping_reply_ttl   = 0;
 static volatile uint32_t ping_reply_len   = 0;
 
+// Pure ICMP input gate: a message is acted on ONLY if it is at least a header long AND its
+// one's-complement checksum folds to zero (icmp_checksum re-includes the checksum field, and pads
+// an odd final byte). Returns 1 + the type when well-formed, 0 for a runt or a corrupt message —
+// a corrupt echo request must not be answered, a corrupt reply must not count as a ping response.
+// The IP header checksum is verified separately (ip.c). Extracted so a KAT can pin this security
+// gate (runt-reject + checksum-reject) with no live network.
+int icmp_msg_check(const uint8_t* packet, uint32_t len, uint8_t* out_type) {
+    if (len < sizeof(icmp_header_t)) return 0;
+    if (icmp_checksum(packet, len) != 0) return 0;
+    if (out_type) *out_type = ((const icmp_header_t*)packet)->type;
+    return 1;
+}
+
 void icmp_handle_packet(uint8_t* packet, uint32_t len, uint32_t src_ip) {
-    if (len < sizeof(icmp_header_t)) return;
-    // Verify the ICMP message checksum before acting: a corrupt echo request must not
-    // be answered, and a corrupt echo reply must not be counted as a valid ping
-    // response. This is the ICMP checksum over [type..data]; the IP header checksum is
-    // verified separately in ip.c. icmp_checksum() folds the received checksum field
-    // back in, so a valid message sums to 0 (and it already pads an odd final byte).
-    if (icmp_checksum(packet, len) != 0) return;
+    if (!icmp_msg_check(packet, len, NULL)) return;
     icmp_header_t* icmp = (icmp_header_t*)packet;
 
     if (icmp->type == ICMP_TYPE_ECHO_REQUEST) {
@@ -150,4 +157,35 @@ int icmp_ping(uint32_t dst_ip, int count, int iface_idx) {
         printf("rtt min/avg/max = %d/%d/%d ms\n",
                rtt_min, rtt_sum / received, rtt_max);
     return received;
+}
+
+// KAT (`icmp`): pins the pure ICMP input gate (icmp_msg_check) — the runt + checksum rejection
+// that stops a corrupt or truncated ICMP message from being answered or counted as a ping reply.
+// Builds a valid echo request (checksum stored network-order, exactly like icmp_send_echo), then
+// checks: it passes with type ECHO_REQUEST; a sub-header runt is rejected; a one-byte corruption
+// is rejected (then restored to valid); and an echo reply is classified as type 0. 0 = PASS.
+int icmp_selftest(void) {
+    uint8_t pkt[16];
+    for (unsigned i = 0; i < sizeof(pkt); i++) pkt[i] = 0;
+    icmp_header_t* h = (icmp_header_t*)pkt;
+    h->type = ICMP_TYPE_ECHO_REQUEST;
+    h->id  = htons(0x1234);
+    h->seq = htons(0x0001);
+    pkt[8] = 0xDE; pkt[9] = 0xAD; pkt[10] = 0xBE; pkt[11] = 0xEF;   // 4 payload bytes -> 12-byte msg
+    uint32_t len = 12;
+    h->checksum = 0;
+    h->checksum = htons(icmp_checksum(pkt, len));
+
+    uint8_t type = 0xFF;
+    if (!icmp_msg_check(pkt, len, &type)) return 1;                       // valid message must pass
+    if (type != ICMP_TYPE_ECHO_REQUEST) return 2;                        // ...with the right type
+    if (icmp_msg_check(pkt, sizeof(icmp_header_t) - 1, NULL)) return 3;   // runt rejected
+    { uint8_t s = pkt[9]; pkt[9] ^= 0x40;                                 // corrupt a payload byte
+      if (icmp_msg_check(pkt, len, NULL)) return 4; pkt[9] = s; }         // bad checksum rejected
+    if (!icmp_msg_check(pkt, len, NULL)) return 5;                        // restored -> valid again
+
+    h->type = ICMP_TYPE_ECHO_REPLY;                                      // reclassify + refresh cksum
+    h->checksum = 0; h->checksum = htons(icmp_checksum(pkt, len));
+    if (!icmp_msg_check(pkt, len, &type) || type != ICMP_TYPE_ECHO_REPLY) return 6;
+    return 0;
 }
