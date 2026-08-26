@@ -215,6 +215,7 @@ static void cmd_json(int argc, char** argv);
 static void cmd_tree(int argc, char** argv);
 static void cmd_du(int argc, char** argv);
 static void cmd_disks(int argc, char** argv);
+static void cmd_sync(int argc, char** argv);
 static void cmd_lspci(int argc, char** argv);
 static void cmd_nvme(int argc, char** argv);
 static void cmd_nyxgrub(int argc, char** argv);
@@ -409,6 +410,7 @@ static const command_t commands[] = {
     {"du",        cmd_du,        "Disk usage: du [path] sums file sizes over a subtree", false},
     {"disks",     cmd_disks,     "List physical disks + their MBR partitions", false},
     {"lsblk",     cmd_disks,     "Alias for disks", false},
+    {"sync",      cmd_sync,      "Flush disk write caches to the medium (durability before power-off)", false},
     {"lspci",     cmd_lspci,     "List PCI devices (finds NVMe/AHCI/network controllers)", false},
     {"nvme",      cmd_nvme,      "Bring up the NVMe controller (probe + admin queue)", false},
     {"nyxpart",   cmd_nyxpart,   "Write an MBR partition table: nyxpart <drive> new [size_MB]", false},
@@ -4080,6 +4082,33 @@ static void cmd_disks(int argc, char** argv) {
         }
     }
     if (!found) printf("disks: no disks detected\n");
+}
+
+// sync: force every present block device's write cache to the medium. This matters on
+// real hardware — the install target's NVMe controller (Silicon Motion SMI2263) destages
+// its volatile cache lazily, so a manual `sync` before power-off guards against losing
+// freshly-written data (see the write-through/FUA work in the real-HW notes). Probes
+// devices the same idempotent way `disks` does, so it is safe with no disk attached.
+static void cmd_sync(int argc, char** argv) {
+    (void)argc; (void)argv;
+    static uint16_t id[256];
+    int flushed = 0;
+    ata_init();
+    for (int d = 0; d < 2; d++) {                     // ATA primary master / slave
+        if (ata_identify((uint8_t)d, id) != 0) continue;   // absent
+        if (blk_flush((uint8_t)d) == 0) { printf("sync: disk %d (ATA) flushed\n", d); flushed++; }
+        else                             printf("sync: disk %d (ATA) flush failed\n", d);
+    }
+    if (nvme_init() == 0) {                           // bring the NVMe controller up (idempotent)
+        nvme_identify();
+        nvme_create_io_queues();
+        if (nvme_io_ready()) {
+            if (blk_flush(BLK_NVME0) == 0) { printf("sync: disk n0 (NVMe) flushed\n"); flushed++; }
+            else                            printf("sync: disk n0 (NVMe) flush failed\n");
+        }
+    }
+    if (flushed) printf("sync: %d device(s) flushed\n", flushed);
+    else         printf("sync: no disks to flush\n");
 }
 
 // lspci — enumerate PCI devices. On a modern UEFI machine the disk is an NVMe
