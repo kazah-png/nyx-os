@@ -9569,7 +9569,11 @@ void nyxfetch(void) {
 
     char ip_str[16] = "Not connected";
     for (int i = 0; i < 8; i++) {
-        if (net_interfaces[i].name[0] && net_interfaces[i].ip) {
+        // Skip loopback (net_interfaces[0] == "lo", 127.0.0.1) so we report the machine's REAL
+        // address — the same non-lo rule every other consumer (ifconfig, routing, DHCP) uses.
+        // Showing 127.0.0.1 here made nyxfetch disagree with `ifconfig` about "my IP".
+        if (net_interfaces[i].name[0] && strcmp(net_interfaces[i].name, "lo") != 0 &&
+            net_interfaces[i].ip) {
             uint32_t ip = net_interfaces[i].ip;
             snprintf(ip_str, sizeof(ip_str), "%d.%d.%d.%d", IP4_OCTETS(ip));
             break;
