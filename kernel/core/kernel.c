@@ -480,7 +480,7 @@ static const command_t commands[] = {
     {"calc",      cmd_calc,      "Evaluate an integer expression: calc <expr>", false},
     {"expr",      cmd_expr,      "Evaluate an expression: expr length|substr|index ... | expr <arithmetic>", false},
     {"json",      cmd_json,      "Validate / query JSON: json <file> | json get <file> <path>", false},
-    {"wc",        cmd_wc,        "Count lines/words/chars: wc <file>", false},
+    {"wc",        cmd_wc,        "Count lines/words/chars/longest-line: wc [-lwcL] <file>", false},
     {"write",     cmd_write,     "Write text to file: write <file> <text>", false},
     {"dhcp",      cmd_dhcp,      "Request IP via DHCP", false},
     {"history",   cmd_history,   "Show command history", false},
@@ -963,7 +963,7 @@ static const man_page_t man_pages[] = {
     {"printf",   "Print ARGs under the control of FORMAT (like the C/coreutil printf). FORMAT is reused as needed to consume all ARGs. It interprets backslash escapes (\\n \\t \\r \\a \\b \\f \\v \\\\) and the conversions %s %d %i %u %x %X %c %% with optional flags and field width (e.g. %-10s, %05d). Numeric ARGs are read as decimal. Unlike echo, printf never appends a trailing newline unless FORMAT contains one."},
     {"expand",   "Convert the tabs in <file> to spaces. Each tab advances to the next tab stop, which are spaced N columns apart (8 by default, or -t N), so columns stay aligned instead of a fixed number of spaces per tab. Non-tab characters and newlines pass through unchanged (a newline resets the column count)."},
     {"unexpand", "The inverse of expand: convert runs of spaces in <file> back into tabs, collapsing each blank run to the fewest tabs+spaces at N-column tab stops (8 by default, or -t N). A single space is never turned into a tab. By default only the LEADING blanks of each line are converted (matching GNU unexpand); -a converts blank runs everywhere on the line, and -t N implies -a."},
-    {"wc",       "Count the lines, words and characters in <file>. -l, -w or -c limit the output to just one of those counts."},
+    {"wc",       "Count the lines, words and characters in <file>. -l, -w, -c (bytes) or -L (length of the longest line, tabs expanded to 8-column stops) limit the output to just those, in that fixed order; combine them, e.g. wc -lL <file>."},
     {"basename", "Strip the directory prefix (and, if given, a trailing suffix) from <path>, printing only the final component."},
     {"dirname",  "Strip the final component from <path>, printing the directory portion that remains."},
     {"realpath", "Print the canonical absolute form of each <path>: relative paths are resolved against the current directory and '.'/'..' segments are collapsed (NyxOS has no symlinks, so this fully normalises the path). With -e, require each path to exist and report the ones that do not."},
@@ -4864,19 +4864,20 @@ static void cmd_sort(int argc, char** argv) {
 }
 
 static void cmd_wc(int argc, char** argv) {
-    // -l/-w/-c (or -m) select which of the line/word/byte counts to print, in
-    // that fixed order; with no flag all three are shown (the classic default).
-    int want_l = 0, want_w = 0, want_c = 0, ai = 1;
+    // -l/-w/-c (or -m) select which of the line/word/byte counts to print, and -L the length of
+    // the longest line, in that fixed order; with no flag l/w/c are shown (the classic default).
+    int want_l = 0, want_w = 0, want_c = 0, want_L = 0, ai = 1;
     for (; ai < argc && argv[ai][0] == '-' && argv[ai][1]; ai++) {
         for (char* f = argv[ai] + 1; *f; f++) {
             if (*f == 'l') want_l = 1;
             else if (*f == 'w') want_w = 1;
             else if (*f == 'c' || *f == 'm') want_c = 1;
+            else if (*f == 'L') want_L = 1;
             else { printf("wc: invalid option -%c\n", *f); return; }
         }
     }
-    if (!want_l && !want_w && !want_c) { want_l = want_w = want_c = 1; }
-    if (ai >= argc) { printf("Usage: wc [-l] [-w] [-c] <file>\n"); return; }
+    if (!want_l && !want_w && !want_c && !want_L) { want_l = want_w = want_c = 1; }
+    if (ai >= argc) { printf("Usage: wc [-l] [-w] [-c] [-L] <file>\n"); return; }
 
     const char* path = argv[ai];
     int fd = vfs_open(path, 0, 0);
@@ -4885,18 +4886,22 @@ static void cmd_wc(int argc, char** argv) {
     int bytes = vfs_read(fd, buf, sizeof(buf) - 1);
     vfs_close(fd);
     if (bytes < 0) bytes = 0;
-    int lines = 0, words = 0, chars = bytes, in_word = 0;
+    int lines = 0, words = 0, chars = bytes, in_word = 0, cur_len = 0, max_len = 0;
     for (int i = 0; i < bytes; i++) {
         char c = buf[i];
-        if (c == '\n') lines++;
+        if (c == '\n') { lines++; if (cur_len > max_len) max_len = cur_len; cur_len = 0; }
+        else if (c == '\t') cur_len += 8 - (cur_len % 8);   // -L: tab advances to the next tab stop (GNU)
+        else cur_len++;
         if (c == ' ' || c == '\n' || c == '\t' || c == '\r') in_word = 0;
         else if (!in_word) { in_word = 1; words++; }
     }
+    if (cur_len > max_len) max_len = cur_len;               // a final line with no trailing newline
 
     int first = 1;
     if (want_l) { printf(first ? "%d" : " %d", lines); first = 0; }
     if (want_w) { printf(first ? "%d" : " %d", words); first = 0; }
     if (want_c) { printf(first ? "%d" : " %d", chars); first = 0; }
+    if (want_L) { printf(first ? "%d" : " %d", max_len); first = 0; }
     printf(" %s\n", path);
 }
 
