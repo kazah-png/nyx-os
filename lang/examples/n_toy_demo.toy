@@ -1,6 +1,6 @@
 fn twice(x) { x * 2 } // toy source, read from disk
-sum := 0; i := 1;
-while i <= 4 { sum := sum + i; i := i + 1; }
+mut sum := 0; mut i := 1;
+while i <= 4 { sum = sum + i; i = i + 1; }
 tag := "disk";
 print "the {tag} program sums {sum} and twice is {twice(sum)}";
 sum

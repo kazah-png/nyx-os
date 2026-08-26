@@ -338,19 +338,33 @@ rungs away, and the first two are already in:
    — the toy has one kind and it rides, stated asterisk (a call
    statement drops it anyway, which is how countdown uses `put`).
    Together these two are exactly countdown's `put(s: str)` shape.
-3. **`mut` and assignment** — the honest big one, and the reason
-   countdown is a LADDER and not a demo: `mut n := 5;` then
-   `n = n - 1;`. The toy has neither — no `mut` at bind, no plain
-   `name = e;` statement — and worse, its demos MUTATE BY REBINDING
-   (`r := gcd(b, a % b);` inside an if arm rewrites `r`), the
-   pre-v0.2 idiom N itself outgrew. Landing rung 3 means: bind
-   records mut-ness, `=` assigns only to a mut name (a located
-   refusal otherwise — ncc's own v0.2 rule), and every rebinding
-   demo in this file converts to the honest form. A wide, mechanical,
-   truth-telling sweep — the next iteration's mountain.
+3. **`mut` and assignment** — ✅ **landed, sweep and all**: `mut` is
+   a keyword, `mut name := e;` records mut-ness on the bind (N's
+   default stays immutable), and `name = e;` is an ASSIGNMENT
+   statement — the checker holds it to bound + mut + same type, each
+   refusal located, the immutability message in ncc's own words
+   ("cannot assign to an immutable name (declare it with mut)").
+   Params and match binders are immutable too. And the rule swap was
+   honest about the divergence it exposed: in N, `:=` always DECLARES
+   and shadowing is legal (innermost wins — ncc.c's own lookup); the
+   toy's flat symbol-keyed table CANNOT shadow, so a re-`:=` of a
+   live name refuses ("already bound: assign to a mut name (the toy
+   cannot shadow)") instead of silently mutating — refuse loudly
+   rather than pretend. The sweep converted every rebinding demo
+   (gcd/fact/max, the disk program's while-sum) to the honest mut +
+   `=` form — same values, same word counts to the byte, because
+   `mut` emits nothing and `=` is the bind's own STORE.
 
-After rung 3 the second graduation writes itself: `run_file` pointed
-at countdown.n — ticks, liftoff, pid and all.
+**THE SECOND GRADUATION HAPPENED**: `run_file` pointed at
+**countdown.n** compiles the second example ever written, whole and
+verbatim — its `put(s: str)` void helper, its mut counter assigned
+down the while loop, an interpolated bind re-executed per iteration,
+a call inside an interpolation hole — and the program counts down:
+five ticks, then `liftoff! from pid 7`, through its own write, 104
+code words. (Landing it forced one honest capacity bump: the token
+arrays grew 96 → 192 words — countdown runs ~125 tokens.) Both
+canonical N examples now compile through the toy, on the host and
+inside NyxOS.
 
 And the hardest lexer feature landed: **interpolation**. A toy string
 containing a brace lexes as segments — HEAD before the first hole,

@@ -15,6 +15,8 @@
 //              | 'while' cmp block
 //              | 'print' cmp ';'      (strings are factors now)
 //              | name '(' args ')' ';'   (a call statement)
+//              | 'mut' name ':=' cmp ';'  (a mutable binding)
+//              | name '=' cmp ';'         (assignment: mut only)
 //   `else if` CHAINS are free structure, not new machinery: the else
 //   slot always held a statement index, and a nested if IS a
 //   statement — the parser just recurses into ast_stmt instead of
@@ -67,6 +69,8 @@
 //                    count, args in na; lowers to one SYSCALL)
 //               22 = call statement (nl = the call, made and then
 //                    dropped — a bare write(...) is a statement)
+//               23 = assignment (nv = slot, nl = rhs; STORE to a
+//                    name bound mut — ncc's own write path)
 //   A separate walker, emit_node, then emits by postorder recursion —
 //   children first, the node's own operation last. Postfix is no
 //   longer a lucky consequence of parse order; it is a property of the
@@ -632,6 +636,10 @@ fn lex(p: *u8, n: i64, k: *i64, v: *i64, ln: *i64, sy: Syms, st: Strs) -> i64 {
                 && p[st + 4] as i64 == 114 && p[st + 5] as i64 == 110 {
                 kind = 25;                 // extern
             }
+            if len == 3 && p[st] as i64 == 109 && p[st + 1] as i64 == 117
+                && p[st + 2] as i64 == 116 {
+                kind = 26;                 // mut (the mutability marker)
+            }
             if kind == 1 && is_builtin_type(p, st, len) {
                 kind = 22;                 // a builtin type name, reserved
             }
@@ -776,7 +784,7 @@ struct Strs { sb: *u8, sts: *i64, stl: *i64, cur: *i64 }
 // what kind of value each name holds, 0 int / 1 str). The flat
 // runtime table cannot tell an integer from a string index; the
 // checker can, and this is where it keeps the knowledge.
-struct Scope { bv: *i64, vt: *i64 }
+struct Scope { bv: *i64, vt: *i64, mv: *i64 }
 
 // The outer skeleton's cursors: pos walks tokens, cp walks code. The
 // bound-name count no longer threads through parsing — scope lives in
@@ -1608,7 +1616,8 @@ fn emit_node(a: Ast, fe: *i64, fp: *i64, code: *i64, cp: i64, idx: i64) -> i64 {
 // call a statement — a call without one is the tail. N's own rule,
 // token for token: statements end in ';', the tail does not.
 fn is_stmt_start(k: *i64, v: *i64, pos: i64) -> bool {
-    if k[pos] == 5 || k[pos] == 6 || k[pos] == 11 || k[pos] == 21 {
+    if k[pos] == 5 || k[pos] == 6 || k[pos] == 11 || k[pos] == 21
+        || k[pos] == 26 {
         return true;
     }
     if k[pos] == 1 && k[pos + 1] == 4 {
@@ -1616,6 +1625,9 @@ fn is_stmt_start(k: *i64, v: *i64, pos: i64) -> bool {
     }
     if k[pos] == 1 && k[pos + 1] == 2 && v[pos + 1] == 46
         && k[pos + 2] == 1 && k[pos + 3] == 2 && v[pos + 3] == 61 {
+        return true;
+    }
+    if k[pos] == 1 && k[pos + 1] == 2 && v[pos + 1] == 61 {
         return true;
     }
     if k[pos] == 1 && k[pos + 1] == 2 && v[pos + 1] == 40 {
@@ -1719,6 +1731,35 @@ fn ast_stmt(k: *i64, v: *i64, ln: *i64, fpc: *i64, sd: Sdefs, a: Ast, pos: i64, 
         a.nk[idx] = 17; a.nl[idx] = c.root; a.nr[idx] = first; a.nv[idx] = 0;
         return NP{ pos: p2 + 1, nn: n2, root: idx };
     }
+    if k[pos] == 26 {                      // 'mut' name ':=' cmp ';' — a
+        if k[pos + 1] != 1 {               // MUTABLE binding: same node as
+            fail(ln[pos + 1], "expected a name after mut");
+        }                                  // a plain bind, na[0] carries
+        if k[pos + 2] != 4 {               // the mut flag for the checker
+            fail(ln[pos + 2], "expected ':=' after the name");
+        }
+        idx := nn;
+        a.nline[idx] = ln[pos + 1];
+        slot := v[pos + 1];
+        r := ast_cmp(k, v, ln, fpc, sd, a, pos + 3, nn + 1);
+        if !(k[r.pos] == 2 && v[r.pos] == 59) {
+            fail(ln[r.pos], "expected ';' after the binding");
+        }
+        a.nk[idx] = 5; a.nl[idx] = r.root; a.nr[idx] = -1; a.nv[idx] = slot;
+        a.na[idx * 4] = 1;
+        return NP{ pos: r.pos + 1, nn: r.nn, root: idx };
+    }
+    if k[pos + 1] == 2 && v[pos + 1] == 61 {
+        idx := nn;                         // name '=' cmp ';' — ASSIGNMENT:
+        a.nline[idx] = ln[pos];            // a STORE to a name that must
+        a.nv[idx] = v[pos];                // be bound mut — the checker
+        r := ast_cmp(k, v, ln, fpc, sd, a, pos + 2, nn + 1);   // holds it
+        if !(k[r.pos] == 2 && v[r.pos] == 59) {
+            fail(ln[r.pos], "expected ';' after the assignment");
+        }
+        a.nk[idx] = 23; a.nl[idx] = r.root; a.nr[idx] = -1;
+        return NP{ pos: r.pos + 1, nn: r.nn, root: idx };
+    }
     if k[pos + 1] == 2 && v[pos + 1] == 40 {
         idx := nn;                         // name '(' args ')' ';' — a CALL
         a.nline[idx] = ln[pos];            // STATEMENT: the value is made,
@@ -1749,6 +1790,7 @@ fn ast_stmt(k: *i64, v: *i64, ln: *i64, fpc: *i64, sd: Sdefs, a: Ast, pos: i64, 
         fail(ln[r.pos], "expected ';' after the binding");
     }
     a.nk[idx] = 5; a.nl[idx] = r.root; a.nr[idx] = -1; a.nv[idx] = slot;
+    a.na[idx * 4] = 0;                     // bound immutable — N's default
     NP{ pos: r.pos + 1, nn: r.nn, root: idx }
 }
 
@@ -1801,19 +1843,40 @@ fn check_stmt(a: Ast, sd: Sdefs, env: Scope, bc: i64, idx: i64) -> i64 {
     }
     if a.nk[idx] == 5 {                    // bind: rhs first, THEN the name.
         check_node(a, sd, env, bc, a.nl[idx]);
-        slot := a.nv[idx];                 // A name's type is FIXED for its
-        mut seen := false;                 // lifetime: rebinding must keep
-        mut i := 0;                        // it, or the flat runtime table
-        while i < bc {                     // could hold either kind at once
+        slot := a.nv[idx];                 // ':=' always DECLARES — and the
+        mut seen := false;                 // toy's flat symbol-keyed table
+        mut i := 0;                        // cannot shadow (ncc can: inner-
+        while i < bc {                     // most wins), so a re-':=' of a
+            if env.bv[i] == slot { seen = true; }   // LIVE name is refused
+            i += 1;                        // instead of silently mutating —
+        }                                  // the stated divergence
+        if seen {
+            fail(a.nline[idx], "already bound: assign to a mut name (the toy cannot shadow)");
+        }
+        env.vt[slot] = a.nt[a.nl[idx]];
+        env.mv[slot] = a.na[idx * 4];      // 1 = bound with mut
+        env.bv[bc] = slot;
+        return bc + 1;
+    }
+    if a.nk[idx] == 23 {                   // assignment: the name must be
+        slot := a.nv[idx];                 // BOUND, MUT, and keep its type
+        mut seen := false;                 // — ncc's v0.2 rule, at toy
+        mut i := 0;                        // scale
+        while i < bc {
             if env.bv[i] == slot { seen = true; }
             i += 1;
         }
-        if seen && env.vt[slot] != a.nt[a.nl[idx]] {
+        if !seen {
+            fail(a.nline[idx], "unknown variable");
+        }
+        if env.mv[slot] != 1 {
+            fail(a.nline[idx], "cannot assign to an immutable name (declare it with mut)");
+        }
+        check_node(a, sd, env, bc, a.nl[idx]);
+        if env.vt[slot] != a.nt[a.nl[idx]] {
             fail(a.nline[idx], "a name cannot change type");
         }
-        env.vt[slot] = a.nt[a.nl[idx]];
-        env.bv[bc] = slot;
-        return bc + 1;
+        return bc;
     }
     if a.nk[idx] == 17 {                   // match: the value must be an
         check_node(a, sd, env, bc, a.nl[idx]);   // enum tag, every arm must
@@ -1854,6 +1917,7 @@ fn check_stmt(a: Ast, sd: Sdefs, env: Scope, bc: i64, idx: i64) -> i64 {
                 }
                 env.bv[abc] = a.na[arm * 4];   // born bound, an integer,
                 env.vt[a.na[arm * 4]] = 0; // for this arm's chain only -
+                env.mv[a.na[arm * 4]] = 0; // and immutable, like a param
                 abc += 1;                  // arm names die at the brace
             }
             check_stmt(a, sd, env, abc, a.nl[arm]);
@@ -1947,6 +2011,7 @@ fn fold_stmt(a: Ast, st: Strs, idx: i64) {
     if a.nk[idx] == 9 { fold_node(a, st, a.nl[idx]); }
     if a.nk[idx] == 16 { fold_node(a, st, a.nl[idx]); }   // the written value folds
     if a.nk[idx] == 22 { fold_node(a, st, a.nl[idx]); }   // the dropped value folds
+    if a.nk[idx] == 23 { fold_node(a, st, a.nl[idx]); }   // the assigned value folds
     if a.nk[idx] == 17 {                   // match: the value and every arm
         fold_node(a, st, a.nl[idx]);       // fold; the statement itself does
         mut arm := a.nr[idx];              // not (a constant scrutinee is a
@@ -2064,6 +2129,10 @@ fn emit_stmt(a: Ast, fe: *i64, fp: *i64, code: *i64, cp: i64, idx: i64) -> i64 {
     if a.nk[idx] == 22 {                   // call statement: the value,
         c := emit_node(a, fe, fp, code, cp, a.nl[idx]);   // then POP —
         return emit1(code, c, 33);         // made and dropped
+    }
+    if a.nk[idx] == 23 {                   // assignment: value, then STORE
+        c := emit_node(a, fe, fp, code, cp, a.nl[idx]);   // — the bind's
+        return emit2(code, c, 12, a.nv[idx]);   // own two words
     }
     if a.nk[idx] == 6 {                    // if / else
         c := emit_node(a, fe, fp, code, cp, a.nl[idx]);
@@ -2191,6 +2260,7 @@ fn parse_fndef(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, sd: Sd
             sd.fpt[f * 4 + j] = pt;        // the declared type, for call
             env.bv[j] = pn;                // sites to be held to — and the
             env.vt[pn] = pt;               // body sees the param AS its
+            env.mv[pn] = 0;                // type — and immutable (N)
             j += 1;                        // type: field reads and writes
             if k[p] == 2 && v[p] == 44 {   // on a struct param just work
                 p += 1;
@@ -2691,8 +2761,8 @@ fn run_file(path: str, k: *i64, v: *i64, ln: *i64, code: *i64, stk: *i64, vars: 
 }
 
 fn main() -> i64 {
-    k := alloc_words(96);
-    v := alloc_words(96);
+    k := alloc_words(192);                 // countdown.n runs ~125 tokens
+    v := alloc_words(192);
     code := alloc_words(256);
     stk := alloc_words(64);
     vars := alloc_words(64);               // slots are symbol indexes
@@ -2703,12 +2773,13 @@ fn main() -> i64 {
     ss := alloc_words(64);
     sl := alloc_words(64);
     sy := Syms{ nb: nb, ss: ss, sl: sl };
-    ln := alloc_words(96);                 // per-token source lines (rung 2)
+    ln := alloc_words(192);                // per-token source lines (rung 2)
     ast := Ast{ nk: alloc_words(96), nl: alloc_words(96), nr: alloc_words(96),
                 nv: alloc_words(96), na: alloc_words(384),
                 nline: alloc_words(96),
                 nt: alloc_words(96) };     // the TYPE COLUMN (0 int, 1 str)
-    env := Scope{ bv: alloc_words(64), vt: alloc_words(64) };
+    env := Scope{ bv: alloc_words(64), vt: alloc_words(64),
+                  mv: alloc_words(64) };   // per-name mut-ness
     st := Strs{ sb: alloc_bytes(256),      // the string table: bytes + spans
                 sts: alloc_words(32), stl: alloc_words(32),
                 cur: alloc_words(2) };     // + the shared write cursors
@@ -2724,11 +2795,11 @@ fn main() -> i64 {
                  xpc: alloc_words(16) };   // + extern syscall bindings
     put("a type column over the toy - lex -> parse -> check -> fold -> emit -> run:\n");
     // Braces are escaped so they read as text, not interpolation (§2.5).
-    show("fn max(a, b) \{ m := 0; if a > b \{ m := a; \} else \{ m := b; \} m \} max(3, 9) + max(7, 2)",
+    show("fn max(a, b) \{ mut m := 0; if a > b \{ m = a; \} else \{ m = b; \} m \} max(3, 9) + max(7, 2)",
          k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, sy, st, sd);
-    show("fn gcd(a, b) \{ r := a; if b > 0 \{ r := gcd(b, a % b); \} r \} gcd(48, 18)",
+    show("fn gcd(a, b) \{ mut r := a; if b > 0 \{ r = gcd(b, a % b); \} r \} gcd(48, 18)",
          k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, sy, st, sd);
-    show("fn fact(n) \{ r := 1; if n > 1 \{ r := n * fact(n - 1); \} r \} fact(5)",
+    show("fn fact(n) \{ mut r := 1; if n > 1 \{ r = n * fact(n - 1); \} r \} fact(5)",
          k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, sy, st, sd);
     // Folding, visible: unfolded this program emits 19 code words; the
     // fold pass collapses 2*3+4 to 10 and 10-8 to 2 at compile time and
@@ -2869,6 +2940,15 @@ fn main() -> i64 {
     // — which is countdown.n's own put(s: str) shape, both at once.
     show("fn greet(who: str) \{ print who; \}\ngreet(\"toy\"); greet(\"graduate\"); 0",
          k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, sy, st, sd);
+    // MUT + ASSIGNMENT — countdown's last rung, and an honest rule
+    // swap: ':=' always DECLARES (immutable by default), 'mut' marks
+    // a name writable, and '=' assigns — refused on an immutable name
+    // with ncc's own words. The toy's flat table cannot shadow (ncc
+    // can), so re-':=' of a live name refuses too — the divergence
+    // stated, not papered over. The demos above already converted:
+    // gcd/fact/max now mutate the way real N does.
+    show("mut acc := 1;\nmut i := 1;\nwhile i <= 5 \{ acc = acc * i; i = i + 1; \}\nprint acc; 0",
+         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, sy, st, sd);
     // THE GRADUATION: hello.n ITSELF — the canonical N program, off
     // the disk, verbatim: its extern syscall block, its fn main ->
     // i64, its interpolated string, its casts, its bare write(...);
@@ -2878,6 +2958,14 @@ fn main() -> i64 {
     // N milestone began with, and the program prints — through its
     // own write, pid and all.
     run_file("/tmp/n_hello.n",
+             k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, sy, st, sd);
+    // THE SECOND GRADUATION: countdown.n — the second example ever
+    // written, compiled whole off the disk: its str-parameter helper
+    // put(s: str) (a void body), its mut counter assigned down the
+    // while loop, an interpolated bind re-executed per iteration, and
+    // a call in an interpolation hole. Five ticks, then liftoff —
+    // through its own write, pid and all.
+    run_file("/tmp/n_countdown.n",
              k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, sy, st, sd);
     // The broken program runs LAST (fail() ends the process — one failing
     // demo per run). It PARSES cleanly; what is wrong is a TYPE: a string
