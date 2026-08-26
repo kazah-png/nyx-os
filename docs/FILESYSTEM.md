@@ -63,7 +63,9 @@ them in small per-process integer fds (see [PROCESS.md](PROCESS.md) §8 and
 The public API ([kernel.h](../kernel/core/kernel.h)):
 
 ```c
-int vfs_open(path, flags, mode);   // flags: O_CREAT (1), O_TRUNC (2), O_APPEND
+int vfs_open(path, flags, mode);   // flags: O_CREAT (1), O_TRUNC (2). O_APPEND (4) is defined
+                                   // but not honored — vfs_write REPLACES the whole file (no
+                                   // per-fd position); use vfs_pwrite to append or stream.
 int vfs_read(fd, buf, count);      int vfs_write(fd, buf, count);
 int vfs_pread(fd, buf, count, off);int vfs_pwrite(fd, buf, count, off);
 int vfs_close(fd);
@@ -127,7 +129,7 @@ I/O that made the ~496 KiB in-OS `tcc` object take minutes. Now it is linear.
 |------|-----------|
 | `/dev/null` | reads return EOF; writes are discarded |
 | `/dev/zero` | reads return endless zero bytes |
-| `/dev/random` | reads return xorshift64 pseudo-random bytes |
+| `/dev/random`, `/dev/urandom` | reads return cryptographically-secure random bytes from the kernel CSPRNG (`csprng_bytes`); `urandom` is an alias. (This replaced an earlier tick-seeded xorshift64, whose output was predictable.) |
 
 **`/proc`** — kernel state generated on read (nothing is stored):
 `meminfo`, `uptime`, `version`, `cpuinfo`, `mounts`, and a per-process
@@ -155,8 +157,9 @@ Plus the userland coreutils in [`user/`](../user) (`ls`, `cp`, `dd`, `od`, `xxd`
 ## 8. Limits and non-goals
 
 - **`MAX_INODES = 512`** ramdisk nodes and **128** children per directory — fixed
-  pools, no dynamic growth. Sustained in-OS compilation can still exhaust the node
-  pool (tracked as issue #66); the 256→512 bump bought headroom, not a cure.
+  pools, no dynamic growth. Sustained in-OS compilation used to exhaust the node
+  pool (issue #66, since resolved); the 256→512 bump gave it headroom. The pools
+  are still bounded, so a pathological workload could in principle refill them.
 - **No `truncate`/resize primitive** — files grow by writing; there is no VFS call
   to shrink or set an exact size yet.
 - **No symlinks and no permission enforcement** — the mode argument is accepted but
