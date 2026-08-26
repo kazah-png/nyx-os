@@ -93,6 +93,9 @@ static void calc_handle_btn(calc_win_t* calc, int btn_id) {
             calc->op = 0;
             calc->new_input = 1;
             break;
+        case 16:   // backspace (keyboard only): drop the last entered digit while typing
+            if (!calc->new_input) calc->current_val /= 10;   // integer divide truncates toward 0
+            break;
         default:
             return;
     }
@@ -197,5 +200,7 @@ void calc_win_key(window_t* win, int key) {
         calc_handle_btn(calc, 10);
     } else if (key == 'c' || key == 'C') {
         calc_handle_btn(calc, 15);
+    } else if (key == '\b' || key == 0x7F) {
+        calc_handle_btn(calc, 16);   // backspace: correct the last digit without clearing
     }
 }
