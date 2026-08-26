@@ -17,6 +17,7 @@
 //              | name '(' args ')' ';'   (a call statement)
 //              | 'mut' name ':=' cmp ';'  (a mutable binding)
 //              | name '=' cmp ';'         (assignment: mut only)
+//              | 'defer' cmp ';'          (runs at the body's exit)
 //   `else if` CHAINS are free structure, not new machinery: the else
 //   slot always held a statement index, and a nested if IS a
 //   statement — the parser just recurses into ast_stmt instead of
@@ -71,6 +72,9 @@
 //                    dropped — a bare write(...) is a statement)
 //               23 = assignment (nv = slot, nl = rhs; STORE to a
 //                    name bound mut — ncc's own write path)
+//               24 = defer (nl = the expression; REGISTERS in the
+//                    chain, emits nothing in place — gen_body runs
+//                    the registered exprs LIFO after the tail)
 //   A separate walker, emit_node, then emits by postorder recursion —
 //   children first, the node's own operation last. Postfix is no
 //   longer a lucky consequence of parse order; it is a property of the
@@ -639,6 +643,11 @@ fn lex(p: *u8, n: i64, k: *i64, v: *i64, ln: *i64, sy: Syms, st: Strs) -> i64 {
             if len == 3 && p[st] as i64 == 109 && p[st + 1] as i64 == 117
                 && p[st + 2] as i64 == 116 {
                 kind = 26;                 // mut (the mutability marker)
+            }
+            if len == 5 && p[st] as i64 == 100 && p[st + 1] as i64 == 101
+                && p[st + 2] as i64 == 102 && p[st + 3] as i64 == 101
+                && p[st + 4] as i64 == 114 {
+                kind = 27;                 // defer
             }
             if kind == 1 && is_builtin_type(p, st, len) {
                 kind = 22;                 // a builtin type name, reserved
@@ -1617,7 +1626,7 @@ fn emit_node(a: Ast, fe: *i64, fp: *i64, code: *i64, cp: i64, idx: i64) -> i64 {
 // token for token: statements end in ';', the tail does not.
 fn is_stmt_start(k: *i64, v: *i64, pos: i64) -> bool {
     if k[pos] == 5 || k[pos] == 6 || k[pos] == 11 || k[pos] == 21
-        || k[pos] == 26 {
+        || k[pos] == 26 || k[pos] == 27 {
         return true;
     }
     if k[pos] == 1 && k[pos + 1] == 4 {
@@ -1731,6 +1740,16 @@ fn ast_stmt(k: *i64, v: *i64, ln: *i64, fpc: *i64, sd: Sdefs, a: Ast, pos: i64, 
         a.nk[idx] = 17; a.nl[idx] = c.root; a.nr[idx] = first; a.nv[idx] = 0;
         return NP{ pos: p2 + 1, nn: n2, root: idx };
     }
+    if k[pos] == 27 {                      // 'defer' cmp ';' — REGISTERS
+        idx := nn;                         // the expression; it runs at
+        a.nline[idx] = ln[pos];            // the body's exit, not here
+        r := ast_cmp(k, v, ln, fpc, sd, a, pos + 1, nn + 1);
+        if !(k[r.pos] == 2 && v[r.pos] == 59) {
+            fail(ln[r.pos], "expected ';' after the defer");
+        }
+        a.nk[idx] = 24; a.nl[idx] = r.root; a.nr[idx] = -1; a.nv[idx] = 0;
+        return NP{ pos: r.pos + 1, nn: r.nn, root: idx };
+    }
     if k[pos] == 26 {                      // 'mut' name ':=' cmp ';' — a
         if k[pos + 1] != 1 {               // MUTABLE binding: same node as
             fail(ln[pos + 1], "expected a name after mut");
@@ -1812,7 +1831,10 @@ fn ast_block(k: *i64, v: *i64, ln: *i64, fpc: *i64, sd: Sdefs, a: Ast, pos: i64,
         more = false;
         if is_stmt_start(k, v, p) {
             s := ast_stmt(k, v, ln, fpc, sd, a, p, n2);
-            seq := s.nn;                   // the chain link
+            if a.nk[s.root] == 24 {        // conditional registration would
+                fail(a.nline[s.root], "defer is only allowed in the function's outermost block");
+            }                              // break the static lowering —
+            seq := s.nn;                   // ncc's own v0.6 restriction
             a.nk[seq] = 8; a.nl[seq] = s.root; a.nr[seq] = -1; a.nv[seq] = 0;
             a.nline[seq] = a.nline[s.root];
             if prev > -1 { a.nr[prev] = seq; } else { head = seq; }
@@ -1965,6 +1987,10 @@ fn check_stmt(a: Ast, sd: Sdefs, env: Scope, bc: i64, idx: i64) -> i64 {
         check_node(a, sd, env, bc, a.nl[idx]);   // checked like any — and
         return bc;                         // dropped; nothing binds
     }
+    if a.nk[idx] == 24 {                   // defer: the expression checks
+        check_node(a, sd, env, bc, a.nl[idx]);   // at REGISTRATION point
+        return bc;                         // (ncc's rule) — it RUNS at exit
+    }
     if a.nk[idx] == 6 {                    // if: an int condition; both arms
         check_node(a, sd, env, bc, a.nl[idx]);
         if a.nt[a.nl[idx]] != 0 {
@@ -2012,6 +2038,7 @@ fn fold_stmt(a: Ast, st: Strs, idx: i64) {
     if a.nk[idx] == 16 { fold_node(a, st, a.nl[idx]); }   // the written value folds
     if a.nk[idx] == 22 { fold_node(a, st, a.nl[idx]); }   // the dropped value folds
     if a.nk[idx] == 23 { fold_node(a, st, a.nl[idx]); }   // the assigned value folds
+    if a.nk[idx] == 24 { fold_node(a, st, a.nl[idx]); }   // the deferred expr folds
     if a.nk[idx] == 17 {                   // match: the value and every arm
         fold_node(a, st, a.nl[idx]);       // fold; the statement itself does
         mut arm := a.nr[idx];              // not (a constant scrutinee is a
@@ -2134,6 +2161,9 @@ fn emit_stmt(a: Ast, fe: *i64, fp: *i64, code: *i64, cp: i64, idx: i64) -> i64 {
         c := emit_node(a, fe, fp, code, cp, a.nl[idx]);   // — the bind's
         return emit2(code, c, 12, a.nv[idx]);   // own two words
     }
+    if a.nk[idx] == 24 {                   // defer: nothing HERE — the
+        return cp;                         // registered expression emits
+    }                                      // at the body's exit (gen_body)
     if a.nk[idx] == 6 {                    // if / else
         c := emit_node(a, fe, fp, code, cp, a.nl[idx]);
         hole := c + 1;                     // the JZ's target word
@@ -2156,6 +2186,24 @@ fn emit_stmt(a: Ast, fe: *i64, fp: *i64, code: *i64, cp: i64, idx: i64) -> i64 {
     e := emit2(code, t, 14, top);          // back to the condition
     code[hole] = e;                        // exit lands past the back-jump
     e
+}
+
+// Run the registered defers: walk the body's top-level chain and emit
+// each defer's expression + POP — by POST-ORDER recursion, so the
+// LAST registered emits FIRST (LIFO, ncc's rule) with no array at
+// all. Deferred values are dropped; the tail value beneath them rides
+// untouched, which is exactly "the return value is computed before
+// the defers run".
+fn emit_defers(a: Ast, fe: *i64, fp: *i64, code: *i64, cp: i64, link: i64) -> i64 {
+    if link < 0 {
+        return cp;
+    }
+    mut c := emit_defers(a, fe, fp, code, cp, a.nr[link]);
+    if a.nk[a.nl[link]] == 24 {
+        c = emit_node(a, fe, fp, code, c, a.nl[a.nl[link]]);
+        c = emit1(code, c, 33);
+    }
+    c
 }
 
 // Build one body — { stmt } cmp — as a single fresh tree (the node
@@ -2188,7 +2236,8 @@ fn gen_body(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, sd: Sdefs
         b := check_stmt(a, sd, env, nseed, head);   // body (countdown's
         fold_stmt(a, st, head);            // put) — statements only, and
         c := emit_stmt(a, fe, fp, code, cp, head);  // its value is 0: the
-        return EP{ pos: p, cp: emit2(code, c, 1, 0) };   // toy's one kind
+        c2 := emit2(code, c, 1, 0);    // the value first, then defers
+        return EP{ pos: p, cp: emit_defers(a, fe, fp, code, c2, head) };
     }                                      // rides, stated asterisk (b
                                            // holds the checked count)
     t := ast_cmp(k, v, ln, fpc, sd, a, p, n2); // the tail is the body's value
@@ -2200,7 +2249,8 @@ fn gen_body(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, sd: Sdefs
     fold_stmt(a, st, head);                    // pass 2: fold
     fold_node(a, st, t.root);
     c := emit_stmt(a, fe, fp, code, cp, head);   // pass 3: emit
-    EP{ pos: t.pos, cp: emit_node(a, fe, fp, code, c, t.root) }
+    c2 := emit_node(a, fe, fp, code, c, t.root);
+    EP{ pos: t.pos, cp: emit_defers(a, fe, fp, code, c2, head) }
 }
 
 // fndef := 'fn' name '(' param { ',' param } ')' '{' { stmt } cmp '}'
@@ -2948,6 +2998,15 @@ fn main() -> i64 {
     // stated, not papered over. The demos above already converted:
     // gcd/fact/max now mutate the way real N does.
     show("mut acc := 1;\nmut i := 1;\nwhile i <= 5 \{ acc = acc * i; i = i + 1; \}\nprint acc; 0",
+         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, sy, st, sd);
+    // DEFER — ncc's v0.6 rule whole, the last parity row that was
+    // ever going to land: 'defer expr;' registers in textual order,
+    // runs LIFO at the body's exit AFTER the tail value computes, and
+    // is legal only in the outermost block (conditional registration
+    // would break the static lowering — refused with ncc's words).
+    // The emitter gets LIFO from post-order recursion over the chain:
+    // no defer stack, no array, exactly ncc's static lowering.
+    show("fn note(x) \{ print x; 0 \}\nfn main() \{ defer note(1); defer note(2); print 3; 0 \}",
          k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, sy, st, sd);
     // THE GRADUATION: hello.n ITSELF — the canonical N program, off
     // the disk, verbatim: its extern syscall block, its fn main ->

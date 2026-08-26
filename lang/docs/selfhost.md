@@ -57,7 +57,7 @@ kernel `open`/`read` from N — wiring the two together makes the first
 | `else` | ✓ — rung 2 landed | ✓ |
 | **An AST** | ✓ expressions AND statements — whole bodies parse to a tree, then check → fold → emit run as passes (only fn headers + the fndef hop-over emit direct) | ✓ — parse → check → gen |
 | Types (everything is `i64` in the toy) | ✓ a real TYPE COLUMN — int/str inferred bottom-up on the tree, per-name types fixed for life, int-only ops refuse strings with located errors | full checker |
-| structs / enums / match / defer / own / caps | structs ✓ and enums+match ✓ COMPLETE at toy scale (payloads, arm binders, checker-proved exhaustiveness); defer/own/caps ✗ | ✓ |
+| structs / enums / match / defer / own / caps | structs ✓, enums+match ✓ COMPLETE at toy scale (payloads, arm binders, checker-proved exhaustiveness), and defer ✓ WHOLE — ncc's v0.6 rule to the letter (fn-scoped, LIFO at exit, value first, outermost-block only); own/caps ✗ — stated out of scope, they stay ncc's | ✓ |
 | `str` values and string literals as data | ✓ at toy scale — strings bind, load, and print (a string IS its table index at run time; the type column keeps the kinds apart) | ✓ |
 | Error diagnostics (`line N: message`) | ✓ expect points (rung 2) + a semantic pass: unknown variable, call arity | ✓ everywhere |
 
@@ -365,6 +365,29 @@ code words. (Landing it forced one honest capacity bump: the token
 arrays grew 96 → 192 words — countdown runs ~125 tokens.) Both
 canonical N examples now compile through the toy, on the host and
 inside NyxOS.
+
+## After the graduations: `defer`, whole
+
+The last parity row that was ever going to land, landed — and it is
+ncc's v0.6 rule to the letter, because the toy's shape happened to be
+exactly the shape the rule was designed for. `defer expr;` registers
+the expression in textual order; the registered expressions run in
+**LIFO** order at the body's exit, **after** the tail value computes
+(deferred values POP off above it — "a defer cannot change what the
+function returns" falls out of the stack discipline); names resolve
+at the **registration point** (the defer node checks in place, in the
+statement chain, with the bound-count of its textual position) while
+values read at **exit time** — both exactly ncc's C lowering. And the
+v0.6 restriction came along whole: `defer` is legal only in the
+body's outermost block, because a conditionally-registered defer
+would need a runtime defer stack — nested ones refuse with ncc's own
+words. The emitter's trick is worth stating: LIFO comes from
+**post-order recursion** over the statement chain — recurse to the
+chain's end, emit on the way back — no defer array, no stack, no cap.
+The toy's bodies are single-exit (tail-only returns), so "every exit
+path" is one exit — the honest asterisk on an otherwise complete row.
+`own` and `caps` remain stated out of scope: they are semantic
+systems, not parseable rungs, and the toy keeps saying so.
 
 And the hardest lexer feature landed: **interpolation**. A toy string
 containing a brace lexes as segments — HEAD before the first hole,
