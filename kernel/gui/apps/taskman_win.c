@@ -37,15 +37,14 @@ static const char* state_str(uint32_t state) {
     }
 }
 
-// Sample the live memory pool: used = managed - free (the honest gauge; counts the reserved
-// kernel + low memory, not just dynamic allocations). 256 pages == 1 MB.
+// Sample the live memory pool via the one honest source shared with top / nyxfetch / mem:
+// used = the managed pool minus free (counts the reserved kernel + low memory, unlike memory_used).
 static void mon_mem(uint32_t* pct, uint32_t* used_mb, uint32_t* total_mb) {
-    uint32_t total_pg = get_total_pages();
-    uint32_t free_pg  = get_free_pages();
-    uint32_t used_pg  = total_pg > free_pg ? total_pg - free_pg : 0;
-    *pct      = total_pg ? (uint32_t)(((uint64_t)used_pg * 100) / total_pg) : 0;
-    *used_mb  = used_pg / 256;
-    *total_mb = total_pg / 256;
+    uint32_t used_kb, total_kb;
+    mem_pool_kb(&used_kb, 0, &total_kb);
+    *pct      = total_kb ? (uint32_t)(((uint64_t)used_kb * 100) / total_kb) : 0;
+    *used_mb  = used_kb / 1024;
+    *total_mb = total_kb / 1024;
 }
 
 // ~30 fps tick from the compositor. Sample the metrics ~4 Hz into the scrolling rings and ask for

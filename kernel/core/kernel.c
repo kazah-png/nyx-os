@@ -1228,15 +1228,13 @@ static void cmd_top(int argc, char** argv) {
     }
 
     uint32_t cpu  = perf_cpu_percent();
-    // Memory from the allocator's own frame counts: used = managed - free. This counts the
-    // reserved kernel and low memory (not just dynamic allocations), so it is a meaningful
-    // gauge of the pool the OS actually manages (capped at MAX_PAGES). 256 pages == 1 MB.
-    uint32_t total_pg = get_total_pages();
-    uint32_t free_pg  = get_free_pages();
-    uint32_t used_pg  = (total_pg > free_pg) ? (total_pg - free_pg) : 0;
-    uint32_t mtot = total_pg / 256;
-    uint32_t mused = used_pg / 256;
-    uint32_t mpct = total_pg ? (uint32_t)(((uint64_t)used_pg * 100) / total_pg) : 0;
+    // Memory from the one honest source shared with nyxfetch / mem / Nyx Monitor: used = the
+    // managed pool minus free (counts the reserved kernel + low memory, unlike memory_used).
+    uint32_t mem_used_kb, mem_total_kb;
+    mem_pool_kb(&mem_used_kb, 0, &mem_total_kb);
+    uint32_t mtot = mem_total_kb / 1024;
+    uint32_t mused = mem_used_kb / 1024;
+    uint32_t mpct = mem_total_kb ? (uint32_t)(((uint64_t)mem_used_kb * 100) / mem_total_kb) : 0;
 
     char bar[40];
     printf("top - up %02u:%02u:%02u,  %d proc,  %d runnable,  %u CPU%s\n",
@@ -7059,10 +7057,13 @@ static int history_expand(const char* line, char hist[][256], int count, char* o
 
 static void cmd_mem(int argc, char** argv) {
     (void)argc; (void)argv;
-    printf("Physical memory: %d MB total, %d MB used, %d MB free\n",
-           memory_total / (1024*1024),
-           memory_used / (1024*1024),
-           (memory_total - memory_used) / (1024*1024));
+    uint32_t used_kb, free_kb, total_kb;
+    mem_pool_kb(&used_kb, &free_kb, &total_kb);          // same source as top / nyxfetch / Nyx Monitor
+    uint32_t pct = total_kb ? (uint32_t)(((uint64_t)used_kb * 100) / total_kb) : 0;
+    printf("Memory: %u MB used / %u MB managed (%u%%), %u MB free\n",
+           used_kb / 1024, total_kb / 1024, pct, free_kb / 1024);
+    printf("Physical RAM: %u MB installed (allocator manages up to %u MB)\n",
+           (uint32_t)(memory_total / (1024*1024)), total_kb / 1024);
     printf("Heap size: %d KB\n", KERNEL_HEAP_SIZE / 1024);
 }
 
@@ -9550,8 +9551,9 @@ void nyxfetch(void) {
     else
         snprintf(uptime, sizeof(uptime), "%02u:%02u:%02u", hours, mins, secs);
 
-    uint64_t free_mem = memory_total > memory_used ? memory_total - memory_used : 0;
-    uint32_t mem_pct = memory_total > 0 ? (uint32_t)((memory_used * 100) / memory_total) : 0;
+    uint32_t mem_used_kb, mem_total_kb;
+    mem_pool_kb(&mem_used_kb, 0, &mem_total_kb);          // one honest source (used = pool - free)
+    uint32_t mem_pct = mem_total_kb ? (uint32_t)(((uint64_t)mem_used_kb * 100) / mem_total_kb) : 0;
 
     rtc_time_t rtc;
     rtc_read_time(&rtc);
@@ -9603,8 +9605,8 @@ void nyxfetch(void) {
     nyxfetch_field(info[n++], KEY_C, RST_C, "Editor:", EDITOR_NAME " " EDITOR_VERSION);
     snprintf(val, sizeof(val), "%s (%d)", cpu_brand, cpu_count);
     nyxfetch_field(info[n++], KEY_C, RST_C, "CPU:", val);
-    snprintf(val, sizeof(val), "%llu / %llu MiB (%u%%)",
-             free_mem / (1024*1024), memory_total / (1024*1024), mem_pct);
+    snprintf(val, sizeof(val), "%u / %u MiB (%u%%)",
+             mem_used_kb / 1024, mem_total_kb / 1024, mem_pct);
     nyxfetch_field(info[n++], KEY_C, RST_C, "Memory:", val);
     snprintf(val, sizeof(val), "%d", process_count);
     nyxfetch_field(info[n++], KEY_C, RST_C, "Processes:", val);

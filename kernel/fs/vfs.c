@@ -465,10 +465,9 @@ static int proc_generate(vfs_node_t* ino, char* buf, int bufsz) {
     buf[0] = '\0';
     switch (ino->proc_type) {
         case PROC_MEMINFO: {
-            uint32_t tot  = (uint32_t)(memory_total / 1024);
-            uint32_t used = (uint32_t)(memory_used  / 1024);
-            uint32_t freeb = (uint32_t)((memory_total > memory_used ?
-                                         memory_total - memory_used : 0) / 1024);
+            extern void mem_pool_kb(uint32_t*, uint32_t*, uint32_t*);
+            uint32_t used, freeb, tot;                 // managed pool — one honest source (see mem_pool_kb)
+            mem_pool_kb(&used, &freeb, &tot);
             snprintf(buf, bufsz,
                      "MemTotal: %u kB\nMemUsed:  %u kB\nMemFree:  %u kB\n",
                      tot, used, freeb);

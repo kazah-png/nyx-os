@@ -2987,8 +2987,11 @@ static void settings_draw_fn(window_t* win, int cx, int cy, uint32_t cw, uint32_
         y += 24;
         snprintf(buf, sizeof(buf), "Kernel: %s %s (%s)", KERNEL_NAME, KERNEL_VERSION, KERNEL_CODENAME);
         font_draw_string(cx + 10, y, buf, fb_rgb(200,200,200), fb_rgb(30,30,35)); y += 18;
-        snprintf(buf, sizeof(buf), "Memory: %d MB total, %d MB free",
-            memory_total / (1024*1024), (memory_total - memory_used) / (1024*1024));
+        uint32_t mi_used_kb, mi_free_kb, mi_total_kb;
+        mem_pool_kb(&mi_used_kb, &mi_free_kb, &mi_total_kb);   // same source as top / nyxfetch / Nyx Monitor
+        snprintf(buf, sizeof(buf), "Memory: %u MB used / %u MB (%u%% used, %u MB free)",
+            mi_used_kb / 1024, mi_total_kb / 1024,
+            mi_total_kb ? (uint32_t)(((uint64_t)mi_used_kb * 100) / mi_total_kb) : 0, mi_free_kb / 1024);
         font_draw_string(cx + 10, y, buf, fb_rgb(200,200,200), fb_rgb(30,30,35)); y += 18;
         snprintf(buf, sizeof(buf), "Uptime: %d sec", tick_count / 1000);
         font_draw_string(cx + 10, y, buf, fb_rgb(200,200,200), fb_rgb(30,30,35)); y += 18;

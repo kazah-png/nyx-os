@@ -174,6 +174,19 @@ uint32_t get_free_pages(void) { return free_pages; }
 // memory, so it is the honest figure for a system memory gauge.
 uint32_t get_total_pages(void) { return total_pages; }
 
+// One honest source for every "memory usage" report (mem, top, nyxfetch, Nyx Monitor,
+// /proc/meminfo, the desktop meminfo), so they all agree. Used = the managed pool minus what is
+// free — this counts the reserved kernel + low memory, unlike the global `memory_used` (which
+// tracks only dynamic alloc_page bytes and reads ~0, making every report say "0 MB used"). Any
+// pointer may be NULL. Values are KiB (4 KiB per frame); callers /1024 for MiB.
+void mem_pool_kb(uint32_t* used_kb, uint32_t* free_kb, uint32_t* total_kb) {
+    uint32_t t = total_pages, f = free_pages;
+    uint32_t u = t > f ? t - f : 0;
+    if (used_kb)  *used_kb  = u * 4;
+    if (free_kb)  *free_kb  = f * 4;
+    if (total_kb) *total_kb = t * 4;
+}
+
 uint32_t page_get_refcount(void* addr) {
     uint32_t page_idx = (uint32_t)(uintptr_t)addr / PAGE_SIZE;
     if (page_idx >= total_pages) return 0;
