@@ -1322,7 +1322,7 @@ fn check_node(a: Ast, sd: Sdefs, env: Scope, bc: i64, idx: i64) {
             check_node(a, sd, env, bc, a.na[idx * 4 + q]);
             at := a.nt[a.na[idx * 4 + q]];
             want := sd.fpt[a.nv[idx] * 4 + q];
-            if at == 1 {
+            if at == 1 && want != 1 {
                 fail(a.nline[idx], "cannot pass a string to a function");
             }
             if at >= 100 && want == 0 {    // a tag or a struct into a
@@ -2115,6 +2115,13 @@ fn gen_body(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, sd: Sdefs
             more = true;
         }
     }
+    if k[p] == 2 && v[p] == 125 {          // no tail before '}': a VOID
+        b := check_stmt(a, sd, env, nseed, head);   // body (countdown's
+        fold_stmt(a, st, head);            // put) — statements only, and
+        c := emit_stmt(a, fe, fp, code, cp, head);  // its value is 0: the
+        return EP{ pos: p, cp: emit2(code, c, 1, 0) };   // toy's one kind
+    }                                      // rides, stated asterisk (b
+                                           // holds the checked count)
     t := ast_cmp(k, v, ln, fpc, sd, a, p, n2); // the tail is the body's value
     b := check_stmt(a, sd, env, nseed, head);  // pass 1: check
     check_node(a, sd, env, b, t.root);
@@ -2139,7 +2146,7 @@ fn gen_body(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, sd: Sdefs
 //   must be bound by its own statements. The flat runtime table would
 //   let a body read main's names, but that is caller-save's private
 //   business — the checker enforces the lexical story.
-fn parse_fndef(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, sd: Sdefs, a: Ast, env: Scope, st: Strs, pos: i64, code: *i64, cp: i64) -> EP {
+fn parse_fndef(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, sd: Sdefs, a: Ast, env: Scope, sy: Syms, st: Strs, pos: i64, code: *i64, cp: i64) -> EP {
     f := v[pos + 1];
     fe[f] = cp;
     mut p := pos + 3;                      // fn +0, name +1, '(' +2, params...
@@ -2173,8 +2180,11 @@ fn parse_fndef(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, sd: Sd
                 }
                 if tei >= 0 { pt = 100 + tei; }
                 if tsid < 0 && tei < 0 {
-                    fail(ln[p + 1], "unknown type name");
-                }
+                    if !spells_str(sy, v[p + 1]) {
+                        fail(ln[p + 1], "unknown type name");
+                    }
+                    pt = 1;            // ': str' — the toy's second
+                }                      // kind joins the annotations
                 p += 2;
             }
             fp[f * 4 + j] = pn;
@@ -2208,6 +2218,17 @@ fn spells_main(sy: Syms, s: i64) -> bool {
         && sy.nb[sy.ss[s] + 1] as i64 == 97
         && sy.nb[sy.ss[s] + 2] as i64 == 105
         && sy.nb[sy.ss[s] + 3] as i64 == 110
+}
+
+// And does it spell "str"? Same move, for parameter annotations: the
+// toy's second kind is not a builtin-type token (kind 22 is the
+// NUMERIC family), so ': str' arrives as a plain name and is resolved
+// here by its bytes.
+fn spells_str(sy: Syms, s: i64) -> bool {
+    sy.sl[s] == 3
+        && sy.nb[sy.ss[s]] as i64 == 115
+        && sy.nb[sy.ss[s] + 1] as i64 == 116
+        && sy.nb[sy.ss[s] + 2] as i64 == 114
 }
 
 // program := { fndef } { stmt } cmp  |  { fndef }
@@ -2374,7 +2395,7 @@ fn parse_program(k: *i64, v: *i64, ln: *i64, fe: *i64, fp: *i64, fpc: *i64, sd: 
             fns = false;
             if k[p] == 7 {
                 if spells_main(sy, v[p + 1]) { msym = v[p + 1]; }
-                r := parse_fndef(k, v, ln, fe, fp, fpc, sd, a, env, st, p, code, c);
+                r := parse_fndef(k, v, ln, fe, fp, fpc, sd, a, env, sy, st, p, code, c);
                 p = r.pos;
                 c = r.cp;
                 fns = true;
@@ -2840,6 +2861,13 @@ fn main() -> i64 {
     // The scan that decides tells a call statement from a call TAIL
     // by N's own rule — the ';'.
     show("fn shout(x) \{ print x; 0 \}\nfn main() \{ shout(41 + 1); shout(43); 0 \}",
+         k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, sy, st, sd);
+    // COUNTDOWN'S FIRST RUNGS: ': str' parameter annotations (the
+    // toy's second kind joins fpt — call sites held to it, the body
+    // sees the param as a str) and VOID bodies (no tail before the
+    // closing brace: statements only, the body's value is 0, stated)
+    // — which is countdown.n's own put(s: str) shape, both at once.
+    show("fn greet(who: str) \{ print who; \}\ngreet(\"toy\"); greet(\"graduate\"); 0",
          k, v, ln, code, stk, vars, fe, fp, fpc, ast, env, sy, st, sd);
     // THE GRADUATION: hello.n ITSELF — the canonical N program, off
     // the disk, verbatim: its extern syscall block, its fn main ->

@@ -318,6 +318,40 @@ the seed of `ncc` in N.
 Out of scope, stated once: raw pointers, `#[caps]` semantics, `own`,
 generics — those stay ncc's, and the toy keeps saying so.
 
+## The second file: countdown.n
+
+The graduation names its own sequel. Read token-by-token against the
+toy, **countdown.n** — the second example ever written — is three
+rungs away, and the first two are already in:
+
+1. **`: str` parameter annotations** — ✅ **landed**: `str` is not a
+   kind-22 token (that family is numeric), so it arrives as a plain
+   name and `spells_str` resolves it by its bytes — the spells_main
+   move again; the toy's second kind joins `fpt`, call sites are held
+   to it ("argument type does not match the parameter" for an int,
+   while a str into a *plain* parameter keeps its old refusal), and
+   the body sees the parameter as a str — `s.len` and `print s` just
+   work.
+2. **Void bodies** — ✅ **landed**: `fn put(s: str) { write(...); }`
+   has statements and no tail; when the closing brace stands at tail
+   position the body compiles as statements only and its value is 0
+   — the toy has one kind and it rides, stated asterisk (a call
+   statement drops it anyway, which is how countdown uses `put`).
+   Together these two are exactly countdown's `put(s: str)` shape.
+3. **`mut` and assignment** — the honest big one, and the reason
+   countdown is a LADDER and not a demo: `mut n := 5;` then
+   `n = n - 1;`. The toy has neither — no `mut` at bind, no plain
+   `name = e;` statement — and worse, its demos MUTATE BY REBINDING
+   (`r := gcd(b, a % b);` inside an if arm rewrites `r`), the
+   pre-v0.2 idiom N itself outgrew. Landing rung 3 means: bind
+   records mut-ness, `=` assigns only to a mut name (a located
+   refusal otherwise — ncc's own v0.2 rule), and every rebinding
+   demo in this file converts to the honest form. A wide, mechanical,
+   truth-telling sweep — the next iteration's mountain.
+
+After rung 3 the second graduation writes itself: `run_file` pointed
+at countdown.n — ticks, liftoff, pid and all.
+
 And the hardest lexer feature landed: **interpolation**. A toy string
 containing a brace lexes as segments — HEAD before the first hole,
 MID between holes, TAIL after the last (ncc's own
