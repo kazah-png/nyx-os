@@ -8780,6 +8780,7 @@ extern int vfs_pathnorm_selftest(void);
 extern int vfs_poolkind_selftest(void);
 extern int proc_expose_selftest(void);   // fs/vfs.c: /proc excludes zombies (#66 node-pool leak)
 extern int user_ptr_ok_selftest(void);   // syscall.c: validates the ring-3 pointer/length boundary
+extern int path_resolve_selftest(void);  // syscall.c: cwd-relative path normalizer (.. can't escape root)
 extern int pipe_selftest(void);          // proc/pipe.c: the pipe ring-buffer read/write path
 extern int dhcp_options_selftest(void);
 // http_parse_selftest / ext2_dir_selftest are declared in ../net/http.h / ../fs/ext2.h (included above).
@@ -9059,7 +9060,7 @@ static void run_selftests(void) {
         {"pathnorm",     vfs_pathnorm_selftest},
         {"poolkind",     vfs_poolkind_selftest},
         {"proc-expose",  proc_expose_selftest},
-        {"userptr",      user_ptr_ok_selftest},
+        {"userptr",      user_ptr_ok_selftest},   {"pathres",       path_resolve_selftest},
         {"pipe",         pipe_selftest},
         {"tcpcksum",     tcp_checksum_selftest},  {"dns",           dns_response_selftest},
         {"tcpwnd",       tcp_wnd_selftest},       {"ipv4-rx",       ipv4_rx_selftest},

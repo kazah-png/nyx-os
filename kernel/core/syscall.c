@@ -501,6 +501,46 @@ static void path_resolve(const char* cwd, const char* path, char* out, int outsz
     out[o] = '\0';
 }
 
+/* KAT for path_resolve — the cwd-relative path normalizer behind every path syscall
+ * (open/stat/getdents/mkdir/chdir/rename/unlink). It is security-relevant: collapsing
+ * `.`, `..`, and `//` is what keeps a ring-3 path from walking out of the tree, and the
+ * pop-guarded-at-root rule is what stops `../../..` from escaping "/". Nothing else
+ * exercised this pure logic, so pin every branch: absolute passthrough, relative-join
+ * onto cwd, `.` drop, `..` pop, the `..`-can't-escape-root property, `//` collapse, the
+ * everything-cancels -> "/" case, empty path -> cwd, empty cwd -> "/", and trailing-slash
+ * trim. path_resolve copies its inputs into a local buffer before tokenizing, so passing
+ * string literals here is safe. Registered in run_selftests() via an extern in kernel.c. */
+int path_resolve_selftest(void) {
+    char out[MAX_PATH];
+    path_resolve("/home", "/etc/motd", out, sizeof(out));            /* absolute passthrough */
+    if (strcmp(out, "/etc/motd") != 0)         return 1;
+    path_resolve("/home/nyx", "file.txt", out, sizeof(out));         /* relative -> joined onto cwd */
+    if (strcmp(out, "/home/nyx/file.txt") != 0) return 2;
+    path_resolve("/", "./a/./b", out, sizeof(out));                  /* "." components dropped */
+    if (strcmp(out, "/a/b") != 0)              return 3;
+    path_resolve("/home/nyx", "../root", out, sizeof(out));          /* ".." pops one component */
+    if (strcmp(out, "/home/root") != 0)        return 4;
+    path_resolve("/", "../../../etc/passwd", out, sizeof(out));      /* ".." can't escape root */
+    if (strcmp(out, "/etc/passwd") != 0)       return 5;
+    path_resolve("/", "a///b////c", out, sizeof(out));              /* redundant slashes collapse */
+    if (strcmp(out, "/a/b/c") != 0)            return 6;
+    path_resolve("/", "a/b/../../", out, sizeof(out));             /* everything cancels -> "/" */
+    if (strcmp(out, "/") != 0)                 return 7;
+    path_resolve("/home", "/", out, sizeof(out));                   /* absolute "/" stays "/" */
+    if (strcmp(out, "/") != 0)                 return 8;
+    path_resolve("/usr/bin", "", out, sizeof(out));                 /* empty path -> cwd */
+    if (strcmp(out, "/usr/bin") != 0)          return 9;
+    path_resolve("", "x", out, sizeof(out));                        /* empty cwd treated as "/" */
+    if (strcmp(out, "/x") != 0)                return 10;
+    path_resolve("/", "/a/b/", out, sizeof(out));                   /* trailing slash trimmed */
+    if (strcmp(out, "/a/b") != 0)              return 11;
+    path_resolve("/", "..", out, sizeof(out));                     /* lone ".." at root stays root */
+    if (strcmp(out, "/") != 0)                 return 12;
+    path_resolve("/a", "b/../c/d", out, sizeof(out));               /* pop then re-descend */
+    if (strcmp(out, "/a/c/d") != 0)            return 13;
+    return 0;
+}
+
 /* Copy the caller's cwd-resolved absolute path for a user path pointer into `out`. */
 static int copy_path_from_user(char* out, int outsz, uint64_t uptr) {
     char rel[128];
