@@ -21,7 +21,14 @@ gcc -O2 -Wall -Wextra -o ncc ncc.c
 ```bash
 ncc input.n -o output.c    # transpile
 ncc input.n                # ... or write the C to stdout
+ncc input.n --tokens       # dump the token stream: one "kind line" per token
 ```
+
+`--tokens` exists for differential testing: it prints the lexer's exact
+output (token-kind number and source line, `T_EOF` included) so an
+independent lexer — the planned `lex.n`, N's lexer written in N — can be
+held to it byte for byte over any source file. See
+[docs/selfhost.md](../docs/selfhost.md), "The mountain after the toy".
 
 On success `ncc` prints a one-line summary to stderr and exits 0. On the first
 error it prints `file:line: message` and exits 1.

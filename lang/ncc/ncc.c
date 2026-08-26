@@ -2970,13 +2970,15 @@ static void gen_program(const char* srcname) {
 int main(int argc, char** argv) {
     const char* in = NULL;
     const char* out = NULL;
+    int tokens_mode = 0;                  /* --tokens: dump the token stream */
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "-o") && i + 1 < argc) out = argv[++i];
+        else if (!strcmp(argv[i], "--tokens")) tokens_mode = 1;
         else if (argv[i][0] == '-') die("ncc: unknown option '%s'", argv[i]);
         else if (!in) in = argv[i];
         else die("ncc: multiple input files");
     }
-    if (!in) die("usage: ncc <input.n> [-o output.c]");
+    if (!in) die("usage: ncc <input.n> [-o output.c | --tokens]");
 
     FILE* f = fopen(in, "rb");
     if (!f) die("ncc: cannot open '%s'", in);
@@ -2991,6 +2993,17 @@ int main(int argc, char** argv) {
     SRC = buf;
     LEN = (int)sz;
     CUR = next_token();
+    if (tokens_mode) {                    /* the differential-test anchor: one
+                                           * "kind line" pair per token, EOF
+                                           * included — a lexer rewritten in N
+                                           * is held to exactly this stream */
+        while (CUR.k != T_EOF) {
+            printf("%d %d\n", (int)CUR.k, CUR.line);
+            CUR = next_token();
+        }
+        printf("%d %d\n", (int)CUR.k, CUR.line);
+        return 0;
+    }
     parse_program();
     validate_drops();                     /* v0.19: destructor wiring */
 

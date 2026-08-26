@@ -389,6 +389,37 @@ path" is one exit — the honest asterisk on an otherwise complete row.
 `own` and `caps` remain stated out of scope: they are semantic
 systems, not parseable rungs, and the toy keeps saying so.
 
+## The mountain after the toy
+
+The parity table is at its honest end — every parseable row ✓, both
+canonical programs compiling through the toy — so the question M5 has
+been building toward can finally be asked plainly: **what now?** The
+toy was the trainer. It proved every architectural pattern the real
+compiler needs — token buffer, interned symbols, a postorder AST,
+check/fold/emit as passes over it, a VM, file-driven compilation —
+at toy scale, in N, on NyxOS. The mountain after the toy is the same
+climb at full scale: **ncc's own passes, rewritten in N as real N
+programs, each held to ncc's actual behavior differentially.** The
+module ladder: `lex.n` → `parse.n` → `check.n` → `gen.n`, living in
+`lang/selfhost/` when the first one lands.
+
+**The first module is scouted and feasible.** ncc's lexer is ~65
+token kinds (the toy speaks 28), 22 keywords, the full operator set
+(compound assigns, logical and bitwise, `..`, `=>`, `?`, brackets),
+attributes as real tokens, and interpolation — and N already has
+everything the rewrite needs: sbrk'd arrays, byte reads, interning
+(all proven in the toy's own `lex()`). **The road does not go through
+the language** — no missing feature blocks it.
+
+And the harness side is DONE: **`ncc --tokens`** dumps the C lexer's
+exact stream — one `kind line` pair per token, `T_EOF` included — so
+the contract is mechanical: `lex.n`, compiled by ncc and run on a
+source file, must print the byte-identical stream over the whole
+examples directory. hello.n is 73 tokens; countdown.n is 124; the
+diff is the test. (The later modules need their own dump anchors —
+an AST shape for `parse.n` is the next design question, deliberately
+left to its own scout.)
+
 And the hardest lexer feature landed: **interpolation**. A toy string
 containing a brace lexes as segments — HEAD before the first hole,
 MID between holes, TAIL after the last (ncc's own
