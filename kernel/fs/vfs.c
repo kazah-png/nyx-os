@@ -648,10 +648,10 @@ void init_vfs(void) {
     vfs_mkdir("/proc", 0755);
     vfs_mkdir("/sys", 0755);
 
-    // Create a welcome file
+    // Create a welcome file. ONE vfs_write: it replaces the whole file (no per-fd position), so
+    // the previous two-write version dropped the first line, leaving only "Type 'help'...".
     int fd = vfs_open("/home/user/welcome.txt", 1, 0644);
-    vfs_write(fd, "Welcome to NyxOS v1.0.0\n", 24);
-    vfs_write(fd, "Type 'help' for commands.\n", 26);
+    vfs_write(fd, "Welcome to NyxOS v1.0.0\nType 'help' for commands.\n", 50);
     vfs_close(fd);
 
     // Special device files under /dev — regular-looking nodes whose read/write are
@@ -784,6 +784,11 @@ static void flush_mount_node(vfs_node_t* ino) {
     ino->dirty = 0;
 }
 
+// WHOLE-FILE write: sets the file to exactly these `count` bytes (offset 0, size = count). There
+// is NO per-fd position, so calling this MORE THAN ONCE on a handle does not stream/append — each
+// call replaces the whole file and only the last survives. For incremental/append writes use
+// vfs_pwrite (offset-aware, grows + preserves). (Two bugs came from ignoring this: cmd_echo's
+// redirect and the welcome.txt setup — both now build one buffer and write once.)
 int vfs_write(int fd, const void* buf, size_t count) {
     vfs_node_t* ino = handle_to_node(fd);
     if (!ino || ino->type != 0) return -1;
