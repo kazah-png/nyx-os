@@ -470,7 +470,7 @@ static int start_menu_hit(int mx, int my) {
 // type-to-search filter share ONE list. The index IS do_start_menu_action()'s arg.
 static const char* const start_items[START_ITEM_N] = {
     "File Manager", "Text Editor", "Image Viewer", "Terminal",
-    "Settings", "Task Manager", "Selene",
+    "Settings", "Nyx Monitor", "Selene",
     "Paint", "Sound Test", "About", "Shutdown", "Calculator",
     "Games",
 };
@@ -2235,14 +2235,15 @@ static void do_start_menu_action(int idx) {
                 }
             }
             break;
-        case 5: // Task Manager
+        case 5: // Nyx Monitor (performance + process monitor)
             {
-                window_t* twin = window_create(100, 80, 480, 340, "Task Manager", taskman_win_draw);
+                window_t* twin = window_create(100, 70, 520, 430, "Nyx Monitor", taskman_win_draw);
                 if (twin) {
                     twin->reserved = taskman_create_ctx();
                     if (twin->reserved) {
                         twin->on_key = taskman_win_key;
                         twin->on_click = taskman_win_click;
+                        twin->on_tick = taskman_win_tick;   // ~4 Hz live CPU/RAM graph sampling
                     }
                 }
             }
