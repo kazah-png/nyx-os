@@ -171,7 +171,7 @@ void taskman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     fb_fill_rect(cx, status_y, cw, HEADER_H, THEME_PANEL_HEADER);
     char status[128];
     snprintf(status, sizeof(status), "Procs: %d   Up: %us   Mem %u/%u MB   (used = pool - free)",
-             process_count, get_ticks() / 1000, mem_used, mem_total);
+             process_count, get_uptime_seconds(), mem_used, mem_total);
     font_draw_string(cx + 4, status_y + 2, status, fb_rgb(180,200,220), THEME_PANEL_HEADER);
 }
 

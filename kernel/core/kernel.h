@@ -18,7 +18,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.4.389"
+#define KERNEL_VERSION "6.4.390"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -1039,6 +1039,8 @@ void wake_waiters(process_t* child);
 
 void init_timer(uint32_t frequency);
 uint32_t get_ticks(void);
+void uptime_mark_boot(void);        // capture the boot wall-clock (call once, early in kernel_main)
+uint32_t get_uptime_seconds(void);  // honest uptime: real wall-clock seconds since boot (RTC, not ticks)
 void sleep(uint32_t milliseconds);
 
 void init_serial(void);

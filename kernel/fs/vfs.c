@@ -474,8 +474,8 @@ static int proc_generate(vfs_node_t* ino, char* buf, int bufsz) {
             break;
         }
         case PROC_UPTIME: {
-            uint32_t ms = tick_count;            // 1000 Hz timer -> ms
-            snprintf(buf, bufsz, "%u.%02u\n", ms / 1000, (ms % 1000) / 10);
+            extern uint32_t get_uptime_seconds(void);   // wall-clock (RTC), not tick_count
+            snprintf(buf, bufsz, "%u.00\n", get_uptime_seconds());
             break;
         }
         case PROC_VERSION:

@@ -12,6 +12,58 @@ static uint32_t pit_divisor = 0;
 // state PROC_RUN, so this flag — not the task state — is the true "CPU is idle" signal.
 volatile int g_cpu_idle = 0;
 
+// ---- Uptime from the wall clock, NOT the tick counter --------------------------------------
+// tick_count is incremented by the PIT IRQ, so it STALLS whenever interrupts are masked (cli) —
+// heavily during boot and the cli-driven login screen (measured: ~68 of every 1000 ms counted
+// there). Deriving uptime from it under-reports real elapsed time by however long the user sat
+// at the login prompt. The RTC keeps real time regardless of cli, so uptime = now - boot in
+// wall-clock seconds is honest. tick_count still drives scheduling/sleep (relative, desktop-time)
+// where the loss doesn't matter.
+static uint64_t boot_epoch_sec = 0;
+static int      boot_epoch_set = 0;
+
+// Seconds since 1970-01-01 for a civil date/time (days-from-civil, Hinnant's algorithm;
+// proleptic Gregorian, UTC). PURE so a KAT can pin it against known Unix-epoch vectors.
+static uint64_t civil_to_epoch(int y, int m, int d, int h, int mi, int s) {
+    if (m < 1) m = 1; if (m > 12) m = 12;
+    int yy = y - (m <= 2);
+    int era = (yy >= 0 ? yy : yy - 399) / 400;
+    unsigned yoe = (unsigned)(yy - era * 400);
+    unsigned doy = (unsigned)((153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1);
+    unsigned doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
+    long days = (long)era * 146097 + (long)doe - 719468;      // days since 1970-01-01
+    return (uint64_t)days * 86400 + (uint64_t)h * 3600 + (uint64_t)mi * 60 + (uint64_t)s;
+}
+
+static uint64_t rtc_epoch_seconds(void) {
+    rtc_time_t t; rtc_read_time(&t);
+    return civil_to_epoch((int)t.year, (int)t.month, (int)t.day,
+                          (int)t.hour, (int)t.minute, (int)t.second);
+}
+
+// KAT: pins civil_to_epoch against well-known Unix timestamps (leap day, Y2038, epoch), so the
+// wall-clock uptime it backs stays correct. 0 = PASS, else the failing case number.
+int uptime_epoch_selftest(void) {
+    if (civil_to_epoch(1970, 1, 1, 0, 0, 0)  != 0ULL)          return 1;
+    if (civil_to_epoch(1970, 1, 2, 0, 0, 0)  != 86400ULL)      return 2;
+    if (civil_to_epoch(2000, 1, 1, 0, 0, 0)  != 946684800ULL)  return 3;
+    if (civil_to_epoch(2020, 2, 29, 0, 0, 0) != 1582934400ULL) return 4;   // leap day
+    if (civil_to_epoch(2021, 1, 1, 0, 0, 0)  != 1609459200ULL) return 5;
+    if (civil_to_epoch(2038, 1, 19, 3, 14, 7) != 2147483647ULL) return 6;  // Y2038 boundary
+    if (civil_to_epoch(2000, 1, 1, 1, 1, 1) - civil_to_epoch(2000, 1, 1, 0, 0, 0) != 3661ULL) return 7;
+    return 0;
+}
+
+// Capture the boot wall-clock once, as early in kernel_main as the RTC is readable.
+void uptime_mark_boot(void) { boot_epoch_sec = rtc_epoch_seconds(); boot_epoch_set = 1; }
+
+// Honest uptime: real wall-clock seconds since boot (the one source every uptime reader uses).
+uint32_t get_uptime_seconds(void) {
+    if (!boot_epoch_set) return 0;
+    uint64_t now = rtc_epoch_seconds();
+    return now > boot_epoch_sec ? (uint32_t)(now - boot_epoch_sec) : 0;
+}
+
 void init_timer(uint32_t frequency) {
     timer_frequency = frequency;
     timer_ticks = 0;

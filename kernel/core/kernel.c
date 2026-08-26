@@ -1166,7 +1166,7 @@ static void cmd_setres(int argc, char** argv) {
 // proxy (how many processes are runnable right now), plus the online CPU count.
 static void cmd_uptime(int argc, char** argv) {
     (void)argc; (void)argv;
-    uint32_t total_sec = get_ticks() / 1000;
+    uint32_t total_sec = get_uptime_seconds();   // honest wall-clock uptime (not tick_count)
     uint32_t days  = total_sec / 86400;
     uint32_t hours = (total_sec % 86400) / 3600;
     uint32_t mins  = (total_sec % 3600) / 60;
@@ -1216,7 +1216,7 @@ static void perf_bar(char* out, int cells, uint32_t pct) {
 // allocator's own totals. Sibling to `uptime` (one summary line) and `ps` (the bare table).
 static void cmd_top(int argc, char** argv) {
     (void)argc; (void)argv;
-    uint32_t total_sec = get_ticks() / 1000;
+    uint32_t total_sec = get_uptime_seconds();   // honest wall-clock uptime (not tick_count)
     uint32_t hours = (total_sec % 86400) / 3600, mins = (total_sec % 3600) / 60, secs = total_sec % 60;
 
     int nproc = 0, runnable = 0;
@@ -8728,6 +8728,7 @@ extern int ipv4_rx_selftest(void);          // net/ip.c — IPv4 RX header gate 
 extern int arp_parse_selftest(void);        // net/arp.c — ARP input parser cache-poisoning gate KAT
 extern int tsort_selftest(void);            // core/tsort.c — topological sort, GNU-byte-exact tie-break KAT
 extern int perf_cpu_selftest(void);         // proc/process.c — CPU-utilization accumulator KAT
+extern int uptime_epoch_selftest(void);     // core/timer.c — civil-date -> Unix-epoch KAT (wall-clock uptime)
 extern int kbd_translate_selftest(void);    // drivers/input/keyboard.c — scancode->char mapping (US+ES/AltGr) KAT
 extern int dynlink_load_selftest(void);     // proc/shared_libc.c — dlopen ELF segment loader bounds (hostile .so) KAT
 extern int dns_response_selftest(void);
@@ -9019,7 +9020,7 @@ static void run_selftests(void) {
         {"tcpcksum",     tcp_checksum_selftest},  {"dns",           dns_response_selftest},
         {"tcpwnd",       tcp_wnd_selftest},       {"ipv4-rx",       ipv4_rx_selftest},
         {"arp-parse",    arp_parse_selftest},     {"tsort-kat",     tsort_selftest},
-        {"perf-cpu",     perf_cpu_selftest},
+        {"perf-cpu",     perf_cpu_selftest},      {"uptime-epoch",  uptime_epoch_selftest},
         {"dhcpopt",      dhcp_options_selftest},
         {"mathx",        mathx_selftest},         {"crc32",         crc32_selftest},
         {"crc32c",       crc32c_selftest},
@@ -9111,6 +9112,7 @@ void kernel_main(uint64_t magic, void* mboot_ptr) {
     int rotate_deg = 0;      // set from a "rotate=90|180|270" cmdline (portrait-mounted panels)
     init_screen();
     clear_screen();
+    uptime_mark_boot();   // capture boot wall-clock now (RTC is readable) — honest uptime source
 
     printf("[INIT] Global Descriptor Table...\n"); init_gdt();
     printf("[INIT] Interrupt Descriptor Table...\n"); init_idt();
@@ -9540,7 +9542,7 @@ void nyxfetch(void) {
         if (cpu_brand[0] == '\0') strcpy(cpu_brand, "Unknown");
     }
 
-    uint32_t total_sec = get_ticks() / 1000;
+    uint32_t total_sec = get_uptime_seconds();   // honest wall-clock uptime (not tick_count)
     uint32_t days = total_sec / 86400;
     uint32_t hours = (total_sec % 86400) / 3600;
     uint32_t mins = (total_sec % 3600) / 60;

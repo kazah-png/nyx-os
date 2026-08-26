@@ -2993,7 +2993,7 @@ static void settings_draw_fn(window_t* win, int cx, int cy, uint32_t cw, uint32_
             mi_used_kb / 1024, mi_total_kb / 1024,
             mi_total_kb ? (uint32_t)(((uint64_t)mi_used_kb * 100) / mi_total_kb) : 0, mi_free_kb / 1024);
         font_draw_string(cx + 10, y, buf, fb_rgb(200,200,200), fb_rgb(30,30,35)); y += 18;
-        snprintf(buf, sizeof(buf), "Uptime: %d sec", tick_count / 1000);
+        snprintf(buf, sizeof(buf), "Uptime: %u sec", get_uptime_seconds());
         font_draw_string(cx + 10, y, buf, fb_rgb(200,200,200), fb_rgb(30,30,35)); y += 18;
         snprintf(buf, sizeof(buf), "Heap: %d KB", KERNEL_HEAP_SIZE / 1024);
         font_draw_string(cx + 10, y, buf, fb_rgb(200,200,200), fb_rgb(30,30,35)); y += 18;
