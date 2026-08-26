@@ -3,6 +3,8 @@
 #include "../core/compositor.h"
 #include "paint_win.h"
 #include "../../drivers/video/font.h"
+#include "../../image/png.h"        // png_encode for saving the canvas
+#include "../../auth/login.h"       // g_login_home: where a saved drawing lands
 
 #define SWATCH_SIZE 20
 #define SWATCH_PAD 4
@@ -213,6 +215,22 @@ void paint_win_click(window_t* win, int mx, int my, int btn) {
     }
 }
 
+// Encode the canvas as a PNG and write it into the logged-in user's home as paint.png.
+// Fills out_path with the destination. Returns bytes written, or <0 on failure. The PNG
+// scratch (~0.6 MB for 512x384) is heap-allocated so it never touches the 4 KB task stack.
+static int paint_save(paint_win_t* pw, char* out_path, int path_cap) {
+    snprintf(out_path, path_cap, "%s/paint.png", g_login_home[0] ? g_login_home : "/home");
+    uint32_t rawcap = PAINT_CANVAS_H * (1 + PAINT_CANVAS_W * 3) + 16;
+    uint32_t dstcap = rawcap + 65536;                 // deflate stored-block overhead + chunks
+    uint8_t* raw = (uint8_t*)kmalloc(rawcap);
+    uint8_t* dst = (uint8_t*)kmalloc(dstcap);
+    if (!raw || !dst) { if (raw) kfree(raw); if (dst) kfree(dst); return -1; }
+    uint32_t n = png_encode(pw->canvas, PAINT_CANVAS_W, PAINT_CANVAS_H, dst, dstcap, raw, rawcap);
+    int wrote = (n > 0 && vfs_write_file(out_path, dst, n) == (int)n) ? (int)n : -1;
+    kfree(raw); kfree(dst);
+    return wrote;
+}
+
 void paint_win_key(window_t* win, int key) {
     paint_win_t* pw = (paint_win_t*)win->reserved;
     if (!pw) return;
@@ -233,6 +251,11 @@ void paint_win_key(window_t* win, int key) {
                 pw->canvas[yy * PAINT_CANVAS_W + xx] = ((xx / 8) + (yy / 8)) & 1
                     ? fb_rgb(200,200,200) : fb_rgb(240,240,240);
         snprintf(pw->status, sizeof(pw->status), "Canvas cleared");
+    } else if (key == 's' || key == 'S') {
+        char path[80];
+        int n = paint_save(pw, path, sizeof(path));
+        if (n > 0) snprintf(pw->status, sizeof(pw->status), "Saved: %s (%d B)", path, n);
+        else       snprintf(pw->status, sizeof(pw->status), "Save failed");
     }
 }
 
