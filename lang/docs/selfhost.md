@@ -489,6 +489,17 @@ pins both the shape and the order. The format, held stable from here:
 All 23 sources dump cleanly. The anchor stands ready; `parse.n` now
 has an exact target to rise to, and its rungs begin next.
 
+**parse.n rung 1 LANDED on the anchor's heels**: ~900 lines of real
+N — the accreted lexer wearing a two-token window, plus the whole
+expression ladder and the statement floor, printing the postorder
+dump AS IT PARSES (recursive descent is a postorder walk; no tree is
+stored — that is check.n's rung). **Nine sources byte-identical to
+`ncc --ast`**, including lex.n itself, wired into the suite beside
+the lexer differential. The gap list is short and structural —
+struct/enum/impl declarations, `match`, `for` — and it includes
+parse.n's own `struct T`, so the next rung closes a neat circle:
+the parser learning to parse itself.
+
 And the hardest lexer feature landed: **interpolation**. A toy string
 containing a brace lexes as segments — HEAD before the first hole,
 MID between holes, TAIL after the last (ncc's own

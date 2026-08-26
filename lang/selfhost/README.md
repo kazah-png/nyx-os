@@ -28,7 +28,33 @@ diff <(ncc <source>.n --tokens) <(./nlex)     # empty = proven
 ```
 
 23 sources, all byte-identical — the suite's stage `[8]` runs exactly
-this loop and fails the build on any mismatch. **And the same
+this loop and fails the build on any mismatch.
+
+## parse.n — the parser (rung 1: the shape)
+
+`parse.n` is the chain's second link, and the chain ACCRETES: the
+file *contains* its lexer — lex.n's functions carried forward, the
+way every link of the toy chain carried its predecessors (N has no
+modules; ncc itself is one file) — wearing a two-token window (CUR +
+NEXT, ncc's own lookahead plus the peek that tells `x := e` from an
+expression statement). Its contract is `ncc --ast`: the POSTORDER
+tree dump, byte for byte. The trick that made rung 1 land in one
+piece: **recursive descent IS a postorder walk**, so the parser
+prints as it parses and stores no tree at all — the tree
+materializes when `check.n` needs one, not before.
+
+**Rung 1 coverage** (the claimed targets, enforced by the suite):
+extern blocks, functions, let/assign/return/expression statements,
+`while`, `if`-`else`(-`if`), `defer`, `break`/`continue`, block
+tails, and the whole expression ladder — interpolation with format
+specs, casts, calls, fields, indexing, struct/enum literals, every
+binary tier at ncc's exact precedence. **Verified byte-identical
+over nine sources**: hello.n, countdown.n, caps.n, defer.n,
+inference.n, nstack.n, pageflags.n, userptr.n — *and lex.n itself*:
+the parser parses the frozen lexer module exactly. Not yet:
+struct/enum/impl *declarations*, `match`, `for`, `?` on let/assign
+— which keeps parse.n's own `struct T` outside its own rung-1
+coverage, an honest circle the next rung closes. **And the same
 differential holds inside NyxOS**: the in-OS `ncc` (compiled by the
 in-OS TinyCC) built `lex.n` on target, and both dumps — the C lexer's
 and the N lexer's, over hello.n (73 tokens) and countdown.n (124) —
