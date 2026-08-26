@@ -2,7 +2,7 @@
 
 The kernel exposes a small POSIX-flavoured system-call ABI to ring-3 programs. This is the
 contract the userland C library (`user/libc`) wraps and that any native NyxOS program — a
-coreutil, a ported game, a compiler — is built on. There are **57 calls, numbered 0–56**;
+coreutil, a ported game, a compiler — is built on. There are **61 calls, numbered 0–60**;
 the numbers are stable and defined in `kernel/core/kernel.h` (`SYS_*`).
 
 ## Calling convention
@@ -128,10 +128,19 @@ while waiting); the TCP receive window advertises real free space and caps the r
 | 54 | `SYS_FBINFO` | `fbinfo(out[3])` | screen width/height/bpp for a fullscreen app |
 | 55 | `SYS_FBPRESENT` | `fbpresent(buf, w, h)` | blit a 32bpp buffer to the screen, scaled |
 | 56 | `SYS_GETKEYEVENT` | `getkeyevent()` | next raw key event `(pressed<<8)|scancode`, or −1 |
+| 57 | `SYS_WIN_CREATE` | `win_create(w, h, title)` | open a `w×h` composited desktop window; returns an id (≥0) or −1 |
+| 58 | `SYS_WIN_DESTROY` | `win_destroy(id)` | close the window (idempotent — 0 even if already gone) |
+| 59 | `SYS_WIN_PRESENT` | `win_present(id, buf, w, h)` | blit a `w×h` XRGB (`0x00RRGGBB`) buffer as the whole client area |
+| 60 | `SYS_WIN_POLL_EVENT` | `win_poll_event(id, ev)` | pop one input event, non-blocking: `1` got / `0` none / −1 |
 
-The framebuffer + raw-key-event trio (54–56) is what lets a fullscreen ring-3 program (the
-DOOM port) own the screen and input; a future windowed-app extension is tracked as a
-proposal (kernel issue #77, syscalls 57–60, not yet implemented).
+The framebuffer + raw-key-event trio (54–56) lets a fullscreen ring-3 program (the DOOM
+port) own the whole screen and input. The windowing quartet (57–60) is the *windowed*
+counterpart: a program calls `win_create` for a composited desktop window, blits its client
+area with `win_present` (a whole-window XRGB buffer, capped at 2048×2048), pumps input with
+the non-blocking `win_poll_event` (each event is four `int64` — a `kind` plus three payload
+words), and closes it with `win_destroy`. `user/wintest.c` is the end-to-end example. The
+kernel copies the title and pixel buffer across the boundary (bounds-checked before use), so
+a handler never dereferences a user pointer.
 
 ---
 
