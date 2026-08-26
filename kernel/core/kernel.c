@@ -7354,6 +7354,8 @@ static void cmd_layout(int argc, char** argv) {
     }
 }
 
+static void mode_to_rwx(int mode, char* buf);   // fwd: rwx renderer (defined with chmod below)
+
 static void cmd_ls(int argc, char** argv) {
     int show_all = 0, long_fmt = 0, ai = 1;
     for (; ai < argc && argv[ai][0] == '-' && argv[ai][1]; ai++)
@@ -7375,14 +7377,15 @@ static void cmd_ls(int argc, char** argv) {
         if (!show_all && nm[0] == '.') continue;
         int isd = (de->type == 1);
         if (long_fmt) {
+            char ep[320];
+            if (strcmp(dpath, "/") == 0) snprintf(ep, sizeof(ep), "/%s", nm);
+            else                          snprintf(ep, sizeof(ep), "%s/%s", dpath, nm);
             uint32_t sz = 0;
-            if (!isd) {
-                char ep[320];
-                if (strcmp(dpath, "/") == 0) snprintf(ep, sizeof(ep), "/%s", nm);
-                else                          snprintf(ep, sizeof(ep), "%s/%s", dpath, nm);
-                int d2; vfs_stat(ep, &sz, &d2);
-            }
-            printf("%c %8u  %s\n", isd ? 'd' : '-', sz, nm);
+            if (!isd) { int d2; vfs_stat(ep, &sz, &d2); }
+            int m = vfs_getmode(ep);                     // chmod-tracked permission bits
+            if (m < 0) m = isd ? 0755 : 0644;            // fall back to the create-time default
+            char rwx[10]; mode_to_rwx(m, rwx);           // e.g. "rwxr-xr-x"
+            printf("%c%s %8u  %s\n", isd ? 'd' : '-', rwx, sz, nm);
         } else if (isd) {
             printf("%s/\n", nm);
         } else {
