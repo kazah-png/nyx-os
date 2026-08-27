@@ -9007,6 +9007,7 @@ extern int proc_expose_selftest(void);   // fs/vfs.c: /proc excludes zombies (#6
 extern int user_ptr_ok_selftest(void);   // syscall.c: validates the ring-3 pointer/length boundary
 extern int path_resolve_selftest(void);  // syscall.c: cwd-relative path normalizer (.. can't escape root)
 extern int rtc_selftest(void);           // drivers/misc/rtc.c: CMOS BCD/binary + 12h/24h decode
+extern int pf_decode_selftest(void);     // core/isr.c: #PF error-code bit decode for the fault dump
 extern int pipe_selftest(void);          // proc/pipe.c: the pipe ring-buffer read/write path
 extern int dhcp_options_selftest(void);
 // http_parse_selftest / ext2_dir_selftest are declared in ../net/http.h / ../fs/ext2.h (included above).
@@ -9329,6 +9330,7 @@ static void run_selftests(void) {
         {"notify",       notify_selftest},
         {"stack-canary", stack_canary_selftest},
         {"signal",       signal_selftest},
+        {"pf-decode",    pf_decode_selftest},
         {"kfree",        kfree_selftest},
         {"slab",         slab_selftest},
         {"pagealloc",    page_alloc_selftest},

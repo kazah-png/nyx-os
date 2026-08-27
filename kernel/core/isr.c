@@ -29,6 +29,50 @@ static const char* exception_names[32] = {
 
 extern int vm_handle_fault(uint64_t cr2, uint64_t err);
 
+// Append s to buf[buflen] at *pos, never past the buffer, keeping it NUL-terminated.
+static void pf_append(char* buf, int buflen, int* pos, const char* s) {
+    while (*s && *pos < buflen - 1) buf[(*pos)++] = *s++;
+    if (buflen > 0) buf[*pos] = 0;
+}
+
+// Decode a #PF (page-fault, vector 14) error code — the value the CPU pushes on the fault
+// frame — into a short human string, e.g. "protection write user" or "not-present read
+// supervisor instr-fetch". The fault/panic dump prints only the raw hex today; on the
+// serial-less real-hardware UMPC that on-screen dump is the ONLY debugging channel
+// ([[nyxos-real-hw-target]]), so a decoded cause is worth real diagnostic value. PURE
+// (writes into the caller's buffer, no allocation) so a KAT can pin it. Intel SDM Vol.3
+// error-code layout: bit0 P (0=not-present / 1=protection), bit1 W/R (1=write / 0=read),
+// bit2 U/S (1=user / 0=supervisor), bit3 RSVD (reserved bit set in a paging structure),
+// bit4 I/D (1=instruction fetch).
+void pf_error_decode(uint64_t err, char* buf, int buflen) {
+    int pos = 0;
+    if (buflen <= 0) return;
+    buf[0] = 0;
+    pf_append(buf, buflen, &pos, (err & 1) ? "protection" : "not-present");
+    pf_append(buf, buflen, &pos, (err & 2) ? " write" : " read");
+    pf_append(buf, buflen, &pos, (err & 4) ? " user" : " supervisor");
+    if (err & 8)  pf_append(buf, buflen, &pos, " rsvd-bit");
+    if (err & 16) pf_append(buf, buflen, &pos, " instr-fetch");
+}
+
+// KAT for pf_error_decode — pins the #PF error-code bit decode (and the buffer-bound safety
+// of the appender) that backs the fault/panic diagnostic. 0 = PASS, else the failing case.
+int pf_decode_selftest(void) {
+    char b[48];
+    pf_error_decode(0x00, b, sizeof b); if (strcmp(b, "not-present read supervisor") != 0)              return 1;
+    pf_error_decode(0x07, b, sizeof b); if (strcmp(b, "protection write user") != 0)                    return 2;
+    pf_error_decode(0x02, b, sizeof b); if (strcmp(b, "not-present write supervisor") != 0)             return 3;
+    pf_error_decode(0x14, b, sizeof b); if (strcmp(b, "not-present read user instr-fetch") != 0)        return 4;
+    pf_error_decode(0x09, b, sizeof b); if (strcmp(b, "protection read supervisor rsvd-bit") != 0)      return 5;
+    pf_error_decode(0x1F, b, sizeof b); if (strcmp(b, "protection write user rsvd-bit instr-fetch") != 0) return 6;
+    // a too-small buffer must stay NUL-terminated and never write past the end
+    char s[8]; s[7] = (char)0xAA;
+    pf_error_decode(0x07, s, 7);
+    if (s[6] != 0) return 7;        // buf[buflen-1] must be the terminator
+    if (s[7] != (char)0xAA) return 8; // the byte past buflen must be untouched
+    return 0;
+}
+
 // Which POSIX signal a real kernel delivers for a given CPU exception vector.
 static int exception_signal(uint64_t int_no) {
     switch (int_no) {
@@ -72,7 +116,10 @@ void isr_handler(uint64_t int_no, uint64_t rip, uint64_t error, uint64_t cs, uin
             printf("\n[fault] pid %u (%s): %s (#%lu) at RIP 0x%lx err 0x%lx",
                    cur ? (unsigned)cur->pid : 0, cur ? cur->comm : "?",
                    exception_names[int_no], int_no, rip, error);
-            if (int_no == 14) printf(" fault-addr 0x%lx", cr2);
+            if (int_no == 14) {
+                char eb[48]; pf_error_decode(error, eb, sizeof eb);
+                printf(" fault-addr 0x%lx [%s]", cr2, eb);
+            }
             // Which address space was the task ACTUALLY in when it died? Kept
             // deliberately (three values, no state, on a path where the process
             // dies anyway): it is what separates a wrong-address-space kernel bug
@@ -108,7 +155,10 @@ void isr_handler(uint64_t int_no, uint64_t rip, uint64_t error, uint64_t cs, uin
         printf("\n[PANIC] Exception: %s (#%lu)\n", exception_names[int_no], int_no);
         printf("[PANIC] RIP=0x%lx  CS=0x%lx (ring %lu)  error=0x%lx\n",
                rip, cs, cs & 3, error);
-        if (int_no == 14) printf("[PANIC] Page fault at 0x%lx\n", cr2);
+        if (int_no == 14) {
+            char eb[48]; pf_error_decode(error, eb, sizeof eb);
+            printf("[PANIC] Page fault at 0x%lx [%s]\n", cr2, eb);
+        }
         kernel_panic("%s (#%lu) at RIP 0x%lx (ring %lu, err 0x%lx)",
                      exception_names[int_no], int_no, rip, cs & 3, error);
     }
