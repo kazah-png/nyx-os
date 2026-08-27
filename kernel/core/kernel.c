@@ -493,7 +493,7 @@ static const command_t commands[] = {
     {"fonttest",  cmd_fonttest,  "Test font rendering on framebuffer", false},
     {"desktop",   cmd_desktop,   "Launch window compositor desktop", false},
     {"beep",      cmd_beep,      "Play a tone: beep [freq] [ms]", false},
-    {"play",      cmd_play,      "Play a demo melody", false},
+    {"play",      cmd_play,      "Play notes (play C4 E4 G4:400) or, with no args, a demo melody", false},
     {"wav",       cmd_wav,       "Play a .wav file through the SB16: wav <file.wav>", false},
     {"sb16play",  cmd_sb16play,  "Test SB16 playback: sb16play [freq] [ms]", false},
     {"exec",      cmd_exec,      "Run ELF in foreground (waits): exec <file>", false},
@@ -1068,7 +1068,7 @@ static const man_page_t man_pages[] = {
     {"lava",     "Open `Nyx Lava`, an animated plasma / lava-lamp window — four phase-shifted integer sine waves cycled through a heat palette (all fixed-point, no floats). Eye-candy that also stresses the framebuffer fill as a small render benchmark."},
     {"nyxflex",  "Show off the whole desktop at a glance: `nyxflex` tiles FOUR windows across the screen quadrants — Nyx Matrix (top-left), Nyx Lava (top-right), an Erebus terminal auto-running `nyxfetch` (bottom-left), and DOOM (bottom-right). The first three open at once as passive animated tiles; DOOM opens last and runs in the foreground, so `nyxflex` stays in DOOM until you quit it with Ctrl-C (the other three keep their place). Needs the DOOM WAD present (as `doom` does)."},
     {"matrix",   "Open `Nyx Matrix`, a cmatrix-style green code-rain window: per-column falling glyph streams with a bright head and a fading tail. Eye-candy and a light framebuffer stress demo."},
-    {"play",     "Play a short built-in demo melody through the sound device, a quick way to confirm audio output is working."},
+    {"play",     "With no arguments, play a short built-in demo melody through the sound device. With arguments, play a tune you name note by note: `play C4 E4 G4 C5` — each note is a letter A-G, an optional sharp `#` or flat `b`, and an octave digit (C4 is middle C, A4 = 440 Hz, equal temperament). Append `:MS` for a per-note duration in milliseconds (default 200, e.g. `G4:400`), and use `R` for a rest. So `play C4 D4 E4 F4 G4:400 R:100 G4 F4 E4 D4 C4:400` plays a scale up and back. A quick way to confirm audio output too."},
     {"wav",      "Play a WAV audio file through the Sound Blaster 16: `wav <file.wav>`. Parses the RIFF/WAVE container (any chunk order), prints the format it found -- sample rate, bit depth (8 or 16), channel count and duration -- and streams the PCM to the SB16 DMA. Only uncompressed PCM is supported; a stereo file is down-mixed to its left channel, and a clip longer than the 64 KB DMA buffer plays its first portion. Rejects a non-WAV, compressed, or odd-bit-depth file with a reason. The file player to `sb16play`'s tone generator; pinned by the `wavparse` self-test."},
     {"sb16play", "Test Sound Blaster 16 playback: `sb16play [freq] [ms]` emits a tone at [freq] Hz for [ms] milliseconds through the SB16 DMA path (defaults if omitted), verifying the audio driver end to end."},
     {"fastfetch","Alias for `nyxfetch`: print the NyxOS logo beside a summary of the running system — kernel version, CPU, memory and uptime — the neofetch-style banner."},
@@ -5096,8 +5096,57 @@ static void cmd_beep(int argc, char** argv) {
     speaker_beep(freq, dur);
 }
 
+// Note name -> frequency in Hz for `play`. "C4", a sharp "A#4" or flat "Bb4", and "R"/"REST"
+// (silence, freq 0). Equal temperament (A4 = 440): a centi-Hz base table for octave 4's twelve
+// semitones, shifted by whole octaves (an octave is an exact 2:1 ratio, so a bit shift is exact)
+// and rounded to the nearest Hz. Pure — no I/O — so the `note` KAT / a host-diff pins it. Returns
+// 0 for a rest or anything unparseable.
+static uint32_t note_to_freq(const char* s) {
+    if (!s || !s[0]) return 0;
+    if (s[0] == 'R' || s[0] == 'r') return 0;                 // R / REST -> silence
+    static const uint32_t base[12] = {                        // C4..B4 in centi-Hz (A4 = 44000)
+        26163, 27718, 29366, 31113, 32963, 34923,
+        36999, 39200, 41530, 44000, 46616, 49388
+    };
+    int semi;
+    switch (s[0]) {                                           // letter -> chromatic index (C=0)
+        case 'C': case 'c': semi = 0;  break;
+        case 'D': case 'd': semi = 2;  break;
+        case 'E': case 'e': semi = 4;  break;
+        case 'F': case 'f': semi = 5;  break;
+        case 'G': case 'g': semi = 7;  break;
+        case 'A': case 'a': semi = 9;  break;
+        case 'B': case 'b': semi = 11; break;
+        default: return 0;
+    }
+    int i = 1;
+    if      (s[i] == '#') { semi++; i++; }                     // sharp
+    else if (s[i] == 'b') { semi--; i++; }                     // flat
+    if (s[i] < '0' || s[i] > '9') return 0;                    // an octave digit is required
+    int oct = s[i] - '0';
+    if (semi < 0)  { semi += 12; oct--; }                      // fold accidental across the octave
+    if (semi > 11) { semi -= 12; oct++; }
+    uint32_t chz = base[semi];
+    if (oct >= 4) chz <<= (oct - 4);                           // up an octave = double
+    else          chz >>= (4 - oct);                           // down an octave = halve
+    return (chz + 50) / 100;                                   // centi-Hz -> Hz, rounded
+}
+
 static void cmd_play(int argc, char** argv) {
-    (void)argc; (void)argv;
+    if (argc >= 2) {                                           // play a tune: NOTE[:MS] NOTE[:MS] ...
+        printf("Playing %d note%s...\n", argc - 1, argc - 1 == 1 ? "" : "s");
+        for (int a = 1; a < argc; a++) {
+            char note[8]; int ni = 0;
+            const char* p = argv[a];
+            while (*p && *p != ':' && ni < 7) note[ni++] = *p++;
+            note[ni] = '\0';
+            uint32_t ms = (*p == ':') ? (uint32_t)atoi(p + 1) : 200;
+            if (ms == 0 || ms > 4000) ms = 200;                // sane default / cap
+            speaker_play_note(note_to_freq(note), ms);
+        }
+        printf("Done.\n");
+        return;
+    }
     struct { uint32_t freq; uint32_t dur; } melody[] = {
         {NOTE_C4, 200}, {NOTE_D4, 200}, {NOTE_E4, 200}, {NOTE_F4, 200},
         {NOTE_G4, 200}, {NOTE_A4, 200}, {NOTE_B4, 200}, {NOTE_C5, 400},
