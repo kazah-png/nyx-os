@@ -3042,6 +3042,7 @@ static void ast_stmt(const Stmt* s) {
         case S_CONT: printf("S 7\n"); return;
         case S_DEFER: ast_expr(s->e); printf("S 8\n"); return;
         case S_MATCH:
+            if (s->mtarget == MT_ASSIGN) ast_expr(s->lhs);
             ast_expr(s->e);
             for (int i = 0; i < s->narms; i++) {
                 if (s->arms[i].body) ast_block(s->arms[i].body);
@@ -3050,7 +3051,8 @@ static void ast_stmt(const Stmt* s) {
                 for (int j = 0; j < s->arms[i].nbinds; j++) printf(" %s", s->arms[i].binds[j]);
                 printf(" %d\n", s->arms[i].body ? 0 : 1);
             }
-            printf("S 9 %d %d %s\n", s->narms, s->mtarget, s->name ? s->name : "-");
+            printf("S 9 %d %d %s %s\n", s->narms, s->mtarget,
+                   s->name ? s->name : "-", s->aop ? s->aop : "-");
             return;
         case S_FOR: ast_expr(s->e); ast_expr(s->cond); ast_block(s->body); printf("S 10 %s\n", s->name); return;
     }

@@ -43,20 +43,28 @@ piece: **recursive descent IS a postorder walk**, so the parser
 prints as it parses and stores no tree at all — the tree
 materializes when `check.n` needs one, not before.
 
-**Rung 1 coverage** (the claimed targets, enforced by the suite):
-extern blocks, functions, let/assign/return/expression statements,
-`while`, `if`-`else`(-`if`), `defer`, `break`/`continue`, block
-tails, and the whole expression ladder — interpolation with format
-specs, casts, calls, fields, indexing, struct/enum literals, every
-binary tier at ncc's exact precedence. **Verified byte-identical
-over nine sources**: hello.n, countdown.n, caps.n, defer.n,
-inference.n, nstack.n, pageflags.n, userptr.n — *and lex.n itself*:
-the parser parses the frozen lexer module exactly. Not yet:
-struct/enum/impl *declarations*, `match`, `for`, `?` on let/assign
-— which keeps parse.n's own `struct T` outside its own rung-1
-coverage, an honest circle the next rung closes.
+**Coverage after rung 2** (the claimed targets, enforced by the
+suite): everything but `impl` — struct and enum DECLARATIONS
+(`#[drop]`/`own` included), extern blocks, functions, every
+statement form (`match` in all four positions — statement, `:=`,
+`=`, `return` — and `for` joined let/assign/return/expr, `while`,
+`if`-`else`(-`if`), `defer`, `break`/`continue`), `?` propagation,
+block tails, and the whole expression ladder at ncc's exact
+precedence. **Verified byte-identical over 23 sources: every example
+except methods.n, plus lex.n — plus parse.n PARSING ITSELF** (the
+rung-1 circle, closed) **— and the whole toy compiler nparse.n, 150K
+of source, 15,082 dump lines, exact.** Two designs made rung 2 fit:
+the S 9 anchor line grew match-assign's lhs child and `aop` field
+(both sides in one step, as always), and the dump's category
+grouping — all D lines, then V/U, then X, then F — comes from
+**four skip-passes over the file** rather than buffered text: each
+pass prints one category and brace-counts past the rest, which is
+safe because a string's braces never tokenize. Still out: `impl` —
+its methods live in a table the anchor does not dump yet; that rung
+has an ncc-side half and comes next.
 
-**And parse.n is proven inside NyxOS too**: the in-OS ncc (compiled
+**And parse.n is proven inside NyxOS too** (rung 1's dump; rung 2
+rides the next batch): the in-OS ncc (compiled
 by the in-OS TinyCC) built it on target and its tree dump for
 hello.n matched the C parser's, all 22 lines over serial. That run
 earned its keep twice over — the first pass MISMATCHED, and the

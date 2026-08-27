@@ -510,6 +510,18 @@ project's own rule since the M2 port. The N modules were right both
 times. A differential test that can catch its own reference lying is
 worth every line it took.
 
+**Rung 2 closed the circle and nearly the ledger**: declarations
+(struct with `#[drop]`/`own`, enums with payload variants), `match`
+in all four positions (the S 9 anchor grew match-assign's lhs and
+`aop`, both sides together), `for`, and `?` propagation — **23 of 24
+sources now parse byte-identical, including parse.n ITSELF and the
+whole 150K toy compiler.** The dump's category grouping is bought by
+FOUR SKIP-PASSES over the file (print one category, brace-count past
+the rest) instead of buffered text — N's hardest constraint, string
+building, simply never comes up. The only source left is methods.n:
+`impl` methods live in a table the `--ast` anchor does not dump yet,
+so that last rung grows the anchor first — the established move.
+
 And the hardest lexer feature landed: **interpolation**. A toy string
 containing a brace lexes as segments — HEAD before the first hole,
 MID between holes, TAIL after the last (ncc's own
