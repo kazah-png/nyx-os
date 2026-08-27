@@ -500,6 +500,16 @@ struct/enum/impl declarations, `match`, `for` — and it includes
 parse.n's own `struct T`, so the next rung closes a neat circle:
 the parser learning to parse itself.
 
+**Both modules are proven inside NyxOS now** — the lexeme-bearing
+token stream and the parser's tree, each dumped by the in-OS ncc and
+by the N module compiled on target, each pair identical over serial.
+The run also delivered the differential's best catch yet: the first
+pass mismatched because the C ANCHOR was wrong on target — the dump
+printers said `%lld`, and NyxOS's printf speaks `%l[dux]` only, the
+project's own rule since the M2 port. The N modules were right both
+times. A differential test that can catch its own reference lying is
+worth every line it took.
+
 And the hardest lexer feature landed: **interpolation**. A toy string
 containing a brace lexes as segments — HEAD before the first hole,
 MID between holes, TAIL after the last (ncc's own

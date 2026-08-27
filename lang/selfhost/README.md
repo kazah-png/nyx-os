@@ -54,7 +54,17 @@ inference.n, nstack.n, pageflags.n, userptr.n — *and lex.n itself*:
 the parser parses the frozen lexer module exactly. Not yet:
 struct/enum/impl *declarations*, `match`, `for`, `?` on let/assign
 — which keeps parse.n's own `struct T` outside its own rung-1
-coverage, an honest circle the next rung closes. **And the same
+coverage, an honest circle the next rung closes.
+
+**And parse.n is proven inside NyxOS too**: the in-OS ncc (compiled
+by the in-OS TinyCC) built it on target and its tree dump for
+hello.n matched the C parser's, all 22 lines over serial. That run
+earned its keep twice over — the first pass MISMATCHED, and the
+culprit was the *C anchor*, not the N module: the dump printers used
+`%lld`, which NyxOS's printf does not speak (`%l[dux]` only — the
+project's own documented portability rule). The N side was right
+both times; the differential caught the reference lying. Fixed to
+`%ld`, both dumps agree on both worlds. **And the same
 differential holds inside NyxOS**: the in-OS `ncc` (compiled by the
 in-OS TinyCC) built `lex.n` on target, and both dumps — the C lexer's
 and the N lexer's, over hello.n (73 tokens) and countdown.n (124) —
@@ -70,7 +80,9 @@ side's fold must match ncc's exactly — and string segments as their
 **processed byte count** (`3 17 #18`: bodies hold control bytes, so
 they are counted, not printed; the count still pins the escape rules,
 since one miscounted escape shifts every line after it). Still 23/23
-byte-identical. Errors print kind `-1` and stop; a `-1` against a
-valid source means the lexer is wrong, and the differential would
-already have caught it. Sources are capped at 256K (nparse.n, the
-largest, is 150K).
+byte-identical — **and proven inside NyxOS with the lexemes on**:
+the in-OS run matched hello.n's 73 enriched lines and countdown.n's
+124, both dumps over serial. Errors print kind `-1` and stop; a `-1`
+against a valid source means the lexer is wrong, and the differential
+would already have caught it. Sources are capped at 256K (nparse.n,
+the largest, is 150K).
