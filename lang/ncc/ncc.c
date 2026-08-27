@@ -2985,8 +2985,8 @@ static void ast_ty(Ty t) {
 static void ast_expr(const Expr* e) {
     if (!e) { printf("nil\n"); return; }
     switch (e->k) {
-        case E_INT:  printf("E 0 %lld\n", e->ival); return;
-        case E_BOOL: printf("E 1 %lld\n", e->ival); return;
+        case E_INT:  printf("E 0 %ld\n", (long)e->ival); return;
+        case E_BOOL: printf("E 1 %ld\n", (long)e->ival); return;
         case E_STR:  printf("E 2 #%d\n", e->slen); return;
         case E_INTERP:
             for (int i = 0; i < e->nfrags; i++)
@@ -3085,7 +3085,7 @@ static void ast_program(void) {
         printf("U %s %d\n", ENUMS[i].name, ENUMS[i].nv);
     }
     for (int i = 0; i < NXFN; i++) {
-        printf("X %s %lld %d %d", XFNS[i].name, XFNS[i].num, XFNS[i].caps, XFNS[i].np);
+        printf("X %s %ld %d %d", XFNS[i].name, (long)XFNS[i].num, XFNS[i].caps, XFNS[i].np);
         for (int j = 0; j < XFNS[i].np; j++) {
             printf(" %s", XFNS[i].ps[j].name);
             ast_ty(XFNS[i].ps[j].ty);
@@ -3148,7 +3148,7 @@ int main(int argc, char** argv) {
             if (CUR.k == T_IDENT || CUR.k == T_ATTR_DROP)
                 printf("%d %d %s\n", (int)CUR.k, CUR.line, CUR.s);
             else if (CUR.k == T_INT)
-                printf("%d %d %lld\n", (int)CUR.k, CUR.line, CUR.ival);
+                printf("%d %d %ld\n", (int)CUR.k, CUR.line, (long)CUR.ival);
             else if (CUR.k >= T_STR && CUR.k <= T_STR_TAIL)
                 printf("%d %d #%d\n", (int)CUR.k, CUR.line, CUR.slen);
             else
