@@ -3105,6 +3105,16 @@ static void ast_program(void) {
         ast_ty(FNS[i].ret);
         printf("\n");
     }
+    for (int i = 0; i < NMETHODS; i++) {
+        ast_block(METHODS[i].body);
+        printf("M %s %s %d", METHODS[i].type, METHODS[i].name, METHODS[i].np);
+        for (int j = 0; j < METHODS[i].np; j++) {
+            printf(" %s", METHODS[i].ps[j].name);
+            ast_ty(METHODS[i].ps[j].ty);
+        }
+        ast_ty(METHODS[i].ret);
+        printf("\n");
+    }
     printf(".\n");
 }
 

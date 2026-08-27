@@ -50,21 +50,27 @@ statement form (`match` in all four positions — statement, `:=`,
 `=`, `return` — and `for` joined let/assign/return/expr, `while`,
 `if`-`else`(-`if`), `defer`, `break`/`continue`), `?` propagation,
 block tails, and the whole expression ladder at ncc's exact
-precedence. **Verified byte-identical over 23 sources: every example
-except methods.n, plus lex.n — plus parse.n PARSING ITSELF** (the
-rung-1 circle, closed) **— and the whole toy compiler nparse.n, 150K
-of source, 15,082 dump lines, exact.** Two designs made rung 2 fit:
+precedence. **Verified byte-identical over the ENTIRE corpus — 24 of 24
+sources: every example, lex.n, and parse.n PARSING ITSELF** (the
+rung-1 circle, closed) **— including the whole toy compiler
+nparse.n, 150K of source, 15,082 dump lines, exact.** `impl` joined
+last: methods dump as `M` lines after the F section (ncc's METHODS
+table, mirrored by a fifth pass; `self` leads, holds no
+capabilities), and with it the parser's coverage ledger is EMPTY. Two designs made rung 2 fit:
 the S 9 anchor line grew match-assign's lhs child and `aop` field
 (both sides in one step, as always), and the dump's category
 grouping — all D lines, then V/U, then X, then F — comes from
 **four skip-passes over the file** rather than buffered text: each
 pass prints one category and brace-counts past the rest, which is
-safe because a string's braces never tokenize. Still out: `impl` —
-its methods live in a table the anchor does not dump yet; that rung
-has an ncc-side half and comes next.
+safe because a string's braces never tokenize. Nothing is out: the
+anchor grew its `M` lines (both sides in one step, as always) and
+the last source fell.
 
-**And parse.n is proven inside NyxOS too** (rung 1's dump; rung 2
-rides the next batch): the in-OS ncc (compiled
+**And parse.n is proven inside NyxOS too** — rung 2 included: the
+in-OS run matched matchexpr.n's 84-line tree (declarations, `match`
+in its expression positions, the extended `S 9` line) as well as
+hello.n's, both dumped by the on-target build over serial. Rung 1's
+first proof: the in-OS ncc (compiled
 by the in-OS TinyCC) built it on target and its tree dump for
 hello.n matched the C parser's, all 22 lines over serial. That run
 earned its keep twice over — the first pass MISMATCHED, and the

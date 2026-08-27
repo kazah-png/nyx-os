@@ -24,9 +24,9 @@
 // statement form (let/assign/return/expr, while, if-else-if, defer,
 // break/continue, `match` in all four positions — statement, `:=`,
 // `=`, `return` — and `for`), `?` propagation, block tails, and the
-// whole expression ladder. `impl` stays out: its methods live in a
-// table the anchor does not dump yet — that is a rung with an
-// ncc-side half, stated in the README. An unsupported construct
+// whole expression ladder — and `impl` blocks: methods (self first,
+// then params) dump as M lines after the F section, ncc's METHODS
+// table mirrored by a fifth pass. An unsupported construct
 // prints a PARSE-ERR line; differential targets are valid sources
 // inside the coverage, so PARSE-ERR in a diff means the parser is
 // wrong.
@@ -1354,9 +1354,74 @@ fn pfn(p: *u8, n: i64, st: *i64, caps: i64, ps: *i64) {
     put("\n");
 }
 
+// impl Name { fn m(self, p: ty...) [-> ty] { body } ... } — one M
+// line per method (body children first): type, name, np, params
+// (self excluded, ncc's own table shape), return type. Methods hold
+// no capabilities, so no caps field.
+fn pimpl(p: *u8, n: i64, st: *i64, ps: *i64) {
+    if !ck(st, 7) { perr(st); return; }
+    ts := st[26];
+    tl := st[27];
+    adv(p, n, st);
+    if !ck(st, 39) { perr(st); return; }
+    adv(p, n, st);
+    mut more := ck(st, 10);
+    while more {
+        more = false;
+        adv(p, n, st);                     // 'fn'
+        if !ck(st, 7) { perr(st); return; }
+        ms := st[26];
+        ml := st[27];
+        adv(p, n, st);
+        if !ck(st, 37) { perr(st); return; }
+        adv(p, n, st);
+        if !ck(st, 7) { perr(st); return; }    // 'self' leads (ncc
+        adv(p, n, st);                     // validates the spelling)
+        mut np := 0;
+        mut inner := acc(p, n, st, 41);
+        while inner {
+            inner = false;
+            if !ck(st, 7) { perr(st); return; }
+            ps[np * 6] = st[26];
+            ps[np * 6 + 1] = st[27];
+            adv(p, n, st);
+            if !ck(st, 43) { perr(st); return; }
+            adv(p, n, st);
+            t := pty(p, n, st);
+            ps[np * 6 + 2] = t.pt;
+            ps[np * 6 + 3] = t.us;
+            ps[np * 6 + 4] = t.s;
+            ps[np * 6 + 5] = t.l;
+            np = np + 1;
+            if acc(p, n, st, 41) { inner = true; }
+        }
+        if !ck(st, 38) { perr(st); return; }
+        adv(p, n, st);
+        mut rt := T{ pt: 0, us: 0, s: 0, l: 0 };
+        mut has_rt := 0;
+        if acc(p, n, st, 45) {
+            rt = pty(p, n, st);
+            has_rt = 1;
+        }
+        pblock(p, n, st);
+        put("M ");
+        put_span(p, ts, tl);
+        put(" ");
+        put_span(p, ms, ml);
+        put(" {np}");
+        put_params(p, ps, np);
+        if has_rt == 1 { put_ty(p, rt); }
+        if has_rt == 0 { put(" 0:0:-"); }
+        put("\n");
+        if ck(st, 10) { more = true; }
+    }
+    if !ck(st, 40) { perr(st); return; }
+    adv(p, n, st);
+}
+
 // One category pass over the whole token stream: print only `which`
-// (1 structs, 2 enums, 3 externs, 4 fns), skip everything else by
-// brace counting. Four passes buy ncc's grouped dump order.
+// (1 structs, 2 enums, 3 externs, 4 fns, 5 impl methods), skip
+// everything else by brace counting — ncc's grouped dump order.
 fn pass_items(p: *u8, n: i64, st: *i64, which: i64, ps: *i64) {
     mut going := true;
     while going {
@@ -1402,7 +1467,13 @@ fn pass_items(p: *u8, n: i64, st: *i64, which: i64, ps: *i64) {
             if which != 4 { skip_item(p, n, st); }
             continue;
         }
-        perr(st);                          // impl — out of coverage
+        if ck(st, 27) {                    // impl
+            adv(p, n, st);
+            if which == 5 { pimpl(p, n, st, ps); }
+            if which != 5 { skip_item(p, n, st); }
+            continue;
+        }
+        perr(st);
         going = false;
     }
 }
@@ -1427,7 +1498,8 @@ fn main() -> i64 {
     st := sys_sbrk(512) as *i64;
     ps := sys_sbrk(1024) as *i64;          // the fields/params arena
     mut pass := 1;
-    while pass <= 4 {                      // structs, enums, externs, fns
+    while pass <= 5 {                      // structs, enums, externs,
+                                           // fns, impl methods
         st[0] = 0;
         st[1] = 1;
         st[2] = -1;

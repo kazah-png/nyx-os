@@ -518,9 +518,16 @@ sources now parse byte-identical, including parse.n ITSELF and the
 whole 150K toy compiler.** The dump's category grouping is bought by
 FOUR SKIP-PASSES over the file (print one category, brace-count past
 the rest) instead of buffered text — N's hardest constraint, string
-building, simply never comes up. The only source left is methods.n:
-`impl` methods live in a table the `--ast` anchor does not dump yet,
-so that last rung grows the anchor first — the established move.
+building, simply never comes up. The last source fell the
+established way: the anchor grew `M` lines for ncc's METHODS table,
+parse.n grew a fifth pass, and methods.n joined the ledger — **24 of
+24, the parser's coverage complete**. And the whole of rung 2 is
+proven inside NyxOS: batch V44 matched matchexpr.n's 84-line tree —
+declarations, match-expressions, the extended anchor — dumped by the
+on-target build, alongside hello.n's and both lexeme streams. The
+parser module stands where the lexer stands: byte-exact against ncc
+on the host and on the OS it is for. `check.n` is the mountain's
+next face.
 
 And the hardest lexer feature landed: **interpolation**. A toy string
 containing a brace lexes as segments — HEAD before the first hole,
