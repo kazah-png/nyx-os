@@ -704,7 +704,16 @@ int ext2_write_file(const char* path, const void* buf, uint32_t len) {
                 if (!pib) return -1;
                 ext2_read_block(inode.block[12], pib);
                 uint32_t* pind = (uint32_t*)pib;
-                for (uint32_t s = 0; s < nind; s++) if (pind[s] == 0) need++;
+                // The single-indirect block holds only block_size/4 pointers. `nind` is the
+                // whole tail past the 12 direct blocks, so for a file that reaches into the
+                // double-indirect region (nind > ptrs-per-block) it OVER-RAN this block-sized
+                // buffer — e.g. overwriting the ~496 KB tcc object (484 tail blocks) read 228
+                // uint32s past a 1 KB indirect buffer, a kernel out-of-bounds read. Clamp the
+                // scan to what this indirect block actually addresses (#83). (The double-
+                // indirect region's own blocks stay outside this heuristic's count, as before.)
+                uint32_t ppb = ext2_fs.block_size / 4;
+                uint32_t scan = nind < ppb ? nind : ppb;
+                for (uint32_t s = 0; s < scan; s++) if (pind[s] == 0) need++;
             }
         }
         if (need > ext2_fs.sb.free_blocks) return -1;
