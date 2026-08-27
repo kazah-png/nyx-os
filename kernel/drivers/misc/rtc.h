@@ -23,5 +23,8 @@
 void rtc_init(void);
 uint8_t rtc_read_register(uint8_t reg);
 void rtc_read_time(rtc_time_t* t);
+void rtc_decode(rtc_time_t* t, uint8_t s, uint8_t mi, uint8_t h,
+                uint8_t d, uint8_t mo, uint8_t y, int binary, int mode24);
+int  rtc_selftest(void);
 
 #endif
