@@ -257,6 +257,12 @@ int nsock_recv(int s, void* buf, int len) {
 
 int nsock_sendto(int s, const void* buf, int len, uint32_t ip, uint16_t port) {
     if (!nsock_valid(s) || nsocks[s].type != SOCK_DGRAM || len < 0) return -1;
+    // A UDP datagram must fit in one packet: there is no IP fragmentation here, so an
+    // over-MTU send is silently dropped by loopback (LO_MAX_PKT) or by a real NIC/switch
+    // (frame > 1500) while ip_send still reports "sent" — a false success. Reject it up
+    // front with an error (POSIX EMSGSIZE) so the app knows to chunk. RX already clamps to
+    // the same bound (nsock_udp_deliver), so this makes TX symmetric with RX.
+    if (len > UDP_DGRAM_MAX) return -1;
     uint64_t fl = spin_lock_irqsave(&net_lock);   // auto-bind counter + non-reentrant udp_send
     if (nsocks[s].local_port == 0) {              // auto-bind an ephemeral source port
         static uint16_t eph = 48000;
