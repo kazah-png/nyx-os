@@ -1,0 +1,1443 @@
+// check.n — ncc's checker, rewritten in N. The third module of the
+// self-host ladder (lex -> parse -> check -> gen; see
+// ../docs/selfhost.md, "check.n's anchor").
+//
+// THE CHAIN ACCRETES, AND THE TREE MATERIALIZES: this file carries
+// parse.n's code forward, but transformed — the parser no longer
+// prints a postorder dump as it goes; every parse function RETURNS A
+// NODE INDEX into a parallel-array AST. Checking needs the program
+// as data, so the print-as-you-parse trick retires exactly here (the
+// toy's history said it would). The five category passes collapse
+// back to ONE pass: check.n's output is errors, not ordered dumps,
+// so there is no dump order to buy — declarations land in tables the
+// way ncc's own single pass builds them.
+//
+// THE CONTRACT IS DIFFERENTIAL, against the NEGATIVE CORPUS
+// (tests/bad/ + MANIFEST.txt): for every claimed file, check.n must
+// print ncc's exact first error — location AND wording — then stop
+// (ncc dies on its first error; the flag st[41] mirrors that). One
+// normalization, documented in tests/bad/README.md: check.n reads a
+// fixed target path and cannot know the original basename, so it
+// prints `line: message` and the harness strips the filename column
+// from the manifest side (cut -d: -f2-). A clean program prints
+// NOTHING — the harness also claims positive targets whose output
+// must be empty.
+//
+// Rung 1 claims four manifest rows — the name-resolution family, no
+// type inference needed:
+//   bad_undecl.n      undeclared variable 'y'
+//   bad_mut.n         cannot assign to immutable 'x' (...)
+//   bad_unknown_fn.n  unknown function 'launch'
+//   bad_arity.n       'write' takes 3 argument(s), got 1
+// and two positive silences: hello.n, countdown.n.
+//
+// Rung-1 coverage, stated honestly: extern blocks and functions are
+// parsed for real (name/arity tables + full body trees); struct,
+// enum and impl items are brace-SKIPPED (their rows arrive with the
+// decl-table rung); `match` is not parsed yet (its binds need scope
+// seeding — a later rung). The checker resolves paths against a
+// scoped name table (params seeded immutable, blocks save/restore,
+// innermost shadows — ncc's VARS discipline), enforces `mut` on
+// assignment roots (field writes mutate the root binding), and holds
+// calls to the merged extern+fn table (ncc's fn_lookup order) for
+// existence and arity. Everything else recurses generically; types,
+// caps, methods, enums and pageflags consts are later rungs.
+//
+// THE TREE: one arena, 8 words per node —
+//   [0] kind  [1] a  [2] b  [3] c  [4] line  [5] span-start
+//   [6] span-len  [7] next (statement chaining)
+// kinds: expressions 1 int(a=val) 2 bool 3 str(a=count)
+//   4 interp(a=list,b=holes) 5 path(span) 6 call(a=callee,b=list,
+//   c=nargs) 7 field(a=base,span) 8 un(a,c=op) 9 bin(a,b,c=op)
+//   10 cast(a) 11 slit(a=list,c=n,span) 12 elit(a=list,c=n,span)
+//   13 index(a,b); statements 20 let(a=rhs,c=mut,span) 21 assign
+//   (a=lhs,b=rhs,c=aop) 22 ret(a) 23 expr(a,c=try) 24 while(a,b)
+//   25 if(a,b,c=else) 26 break 27 continue 28 defer(a) 30 for
+//   (a=lo,b=hi,c=body,span); 40 block(a=first,b=tail,c=count).
+// Node 0 is nil. Child lists (call args, interp holes, literal
+// values, fn params as span pairs) live in a flat list arena.
+//
+// State lives in one sbrk'd word block:
+//   st[0..32]  the lexer + token window (parse.n's block, unchanged)
+//   st[33] node arena   st[34] node count   st[35] list arena
+//   st[36] list count   st[37] fn table (externs + fns, 8 words:
+//     span, np, caps, body, param-list start, kind 0=extern 1=fn)
+//   st[38] fn count     st[39] vars (span + mut, 3 words)
+//   st[40] var count    st[41] the error flag (first error wins)
+//
+// The target path is fixed: /tmp/n_check_target.n — the harness
+// copies each source there before a run.
+
+#[caps(syscall)]
+extern syscall {
+    fn write(fd: i32, buf: #[user] *u8, len: isize) -> i64 = 1
+    fn sys_open(path: *u8, flags: i64, mode: i64) -> i64   = 3
+    fn sys_read(fd: i64, buf: *u8, len: isize) -> i64      = 4
+    fn sys_close(fd: i64) -> i64                           = 5
+    fn sys_sbrk(incr: i64) -> i64                          = 7
+}
+
+#[caps(syscall)]
+fn put(s: str) {
+    write(1, s.ptr as #[user] *u8, s.len as isize);
+}
+
+// Write buf[s .. s+l) — the span echo, from lex.n's dump.
+#[caps(syscall)]
+fn put_span(p: *u8, s: i64, l: i64) {
+    write(1, (p as addr + s as addr) as #[user] *u8, l as isize);
+}
+
+fn is_idc(b: i64) -> bool {
+    return (b >= 97 && b <= 122) || (b >= 65 && b <= 90) || b == 95;
+}
+
+fn is_dg(b: i64) -> bool {
+    return b >= 48 && b <= 57;
+}
+
+fn is_hx(b: i64) -> bool {
+    return is_dg(b) || (b >= 97 && b <= 102) || (b >= 65 && b <= 70);
+}
+
+fn hxv(d: i64) -> i64 {
+    if is_dg(d) { return d - 48; }
+    if d >= 97 { return d - 87; }          // a-f
+    return d - 55;                         // A-F
+}
+
+fn eq2(p: *u8, s: i64, a: i64, b: i64) -> bool {
+    return p[s] as i64 == a && p[s + 1] as i64 == b;
+}
+
+fn eq3(p: *u8, s: i64, a: i64, b: i64, c: i64) -> bool {
+    return eq2(p, s, a, b) && p[s + 2] as i64 == c;
+}
+
+fn eq4(p: *u8, s: i64, a: i64, b: i64, c: i64, d: i64) -> bool {
+    return eq3(p, s, a, b, c) && p[s + 3] as i64 == d;
+}
+
+fn eq5(p: *u8, s: i64, a: i64, b: i64, c: i64, d: i64, e: i64) -> bool {
+    return eq4(p, s, a, b, c, d) && p[s + 4] as i64 == e;
+}
+
+fn eq6(p: *u8, s: i64, a: i64, b: i64, c: i64, d: i64, e: i64, f: i64) -> bool {
+    return eq5(p, s, a, b, c, d, e) && p[s + 5] as i64 == f;
+}
+
+fn eq7(p: *u8, s: i64, a: i64, b: i64, c: i64, d: i64, e: i64, f: i64, g: i64) -> bool {
+    return eq6(p, s, a, b, c, d, e, f) && p[s + 6] as i64 == g;
+}
+
+fn eq8(p: *u8, s: i64, a: i64, b: i64, c: i64, d: i64, e: i64, f: i64, g: i64, h: i64) -> bool {
+    return eq7(p, s, a, b, c, d, e, f, g) && p[s + 7] as i64 == h;
+}
+
+// ncc's keyword table (the lex.n copy, unchanged).
+fn kwlook(p: *u8, s: i64, n: i64) -> i64 {
+    if n == 2 {
+        if eq2(p, s, 102, 110) { return 10; }             // fn
+        if eq2(p, s, 97, 115) { return 18; }              // as
+        if eq2(p, s, 105, 102) { return 13; }             // if
+        if eq2(p, s, 105, 110) { return 29; }             // in
+    }
+    if n == 3 {
+        if eq3(p, s, 109, 117, 116) { return 11; }        // mut
+        if eq3(p, s, 114, 97, 119) { return 19; }         // raw
+        if eq3(p, s, 102, 111, 114) { return 28; }        // for
+        if eq3(p, s, 111, 119, 110) { return 36; }        // own
+    }
+    if n == 4 {
+        if eq4(p, s, 101, 108, 115, 101) { return 14; }   // else
+        if eq4(p, s, 116, 114, 117, 101) { return 20; }   // true
+        if eq4(p, s, 101, 110, 117, 109) { return 24; }   // enum
+        if eq4(p, s, 105, 109, 112, 108) { return 27; }   // impl
+    }
+    if n == 5 {
+        if eq5(p, s, 119, 104, 105, 108, 101) { return 15; }   // while
+        if eq5(p, s, 98, 114, 101, 97, 107) { return 16; }     // break
+        if eq5(p, s, 102, 97, 108, 115, 101) { return 21; }    // false
+        if eq5(p, s, 100, 101, 102, 101, 114) { return 23; }   // defer
+        if eq5(p, s, 109, 97, 116, 99, 104) { return 25; }     // match
+    }
+    if n == 6 {
+        if eq6(p, s, 101, 120, 116, 101, 114, 110) { return 8; }    // extern
+        if eq6(p, s, 115, 116, 114, 117, 99, 116) { return 22; }    // struct
+        if eq6(p, s, 114, 101, 116, 117, 114, 110) { return 12; }   // return
+    }
+    if n == 7 {
+        if eq7(p, s, 115, 121, 115, 99, 97, 108, 108) { return 9; } // syscall
+    }
+    if n == 8 {
+        if eq8(p, s, 99, 111, 110, 116, 105, 110, 117, 101) { return 17; }  // continue
+    }
+    return 7;                              // T_IDENT
+}
+
+// The lex.n scanner pair, unchanged: scan_string + next_kind.
+fn scan_string(p: *u8, n: i64, st: *i64, cont: i64) -> i64 {
+    st[5] = st[1];
+    mut cnt := 0;                          // processed-body byte count
+    mut going := true;
+    while going {
+        if st[0] >= n { return -1; }       // unterminated string
+        b := p[st[0]] as i64;
+        if b == 34 {                       // the closing quote
+            st[0] = st[0] + 1;
+            st[6] = cnt;
+            if cont == 1 { return 5; }
+            return 2;
+        }
+        if b == 123 {                      // a hole opens: push and hand
+            st[0] = st[0] + 1;             // the stream to the expression
+            if st[2] + 1 >= 16 { return -1; }   // interpolation too deep
+            st[2] = st[2] + 1;
+            st[8 + st[2]] = st[3];
+            st[6] = cnt;
+            if cont == 1 { return 4; }
+            return 3;
+        }
+        if b == 92 {                       // an escape: validate + skip,
+            st[0] = st[0] + 1;             // one processed byte
+            if st[0] >= n { return -1; }
+            e := p[st[0]] as i64;
+            st[0] = st[0] + 1;
+            ok := e == 110 || e == 116 || e == 114 || e == 48 || e == 92
+               || e == 34 || e == 39 || e == 123 || e == 125;
+            if !ok { return -1; }          // bad escape
+            cnt = cnt + 1;
+            continue;
+        }
+        if b == 10 { st[1] = st[1] + 1; }
+        cnt = cnt + 1;
+        st[0] = st[0] + 1;
+    }
+    0
+}
+
+fn next_kind(p: *u8, n: i64, st: *i64) -> i64 {
+    if st[4] == 1 {                        // '}' closed a hole: resume
+        st[4] = 0;
+        return scan_string(p, n, st, 1);
+    }
+    mut b := 0;
+    mut scanning := true;
+    while scanning {                       // whitespace + comments
+        if st[0] >= n { st[5] = st[1]; return 0; }   // T_EOF
+        b = p[st[0]] as i64;
+        if b == 32 || b == 9 || b == 13 { st[0] = st[0] + 1; continue; }
+        if b == 10 { st[0] = st[0] + 1; st[1] = st[1] + 1; continue; }
+        if b == 47 && st[0] + 1 < n && p[st[0] + 1] as i64 == 47 {
+            while st[0] < n && p[st[0]] as i64 != 10 { st[0] = st[0] + 1; }
+            continue;
+        }
+        if b == 47 && st[0] + 1 < n && p[st[0] + 1] as i64 == 42 {
+            mut d := 1;
+            st[0] = st[0] + 2;
+            while st[0] < n && d > 0 {
+                c := p[st[0]] as i64;
+                if c == 47 && st[0] + 1 < n && p[st[0] + 1] as i64 == 42 {
+                    d = d + 1;
+                    st[0] = st[0] + 2;
+                    continue;
+                }
+                if c == 42 && st[0] + 1 < n && p[st[0] + 1] as i64 == 47 {
+                    d = d - 1;
+                    st[0] = st[0] + 2;
+                    continue;
+                }
+                if c == 10 { st[1] = st[1] + 1; }
+                st[0] = st[0] + 1;
+            }
+            continue;
+        }
+        scanning = false;
+    }
+    st[5] = st[1];
+    if is_idc(b) {
+        s := st[0];
+        while st[0] < n && (is_idc(p[st[0]] as i64) || is_dg(p[st[0]] as i64)) {
+            st[0] = st[0] + 1;
+        }
+        st[6] = s;
+        st[7] = st[0] - s;
+        return kwlook(p, s, st[0] - s);
+    }
+    if is_dg(b) {
+        mut v := 0;
+        if b == 48 && st[0] + 1 < n && p[st[0] + 1] as i64 == 120 {
+            st[0] = st[0] + 2;
+            while st[0] < n && (is_hx(p[st[0]] as i64) || p[st[0]] as i64 == 95) {
+                d := p[st[0]] as i64;
+                if d != 95 { v = v * 16 + hxv(d); }
+                st[0] = st[0] + 1;
+            }
+            st[6] = v;
+            return 1;
+        }
+        while st[0] < n && (is_dg(p[st[0]] as i64) || p[st[0]] as i64 == 95) {
+            d := p[st[0]] as i64;
+            if d != 95 { v = v * 10 + (d - 48); }
+            st[0] = st[0] + 1;
+        }
+        st[6] = v;
+        return 1;                          // T_INT
+    }
+    if b == 34 {
+        st[0] = st[0] + 1;
+        return scan_string(p, n, st, 0);
+    }
+    st[0] = st[0] + 1;
+    mut b2 := 0;
+    if st[0] < n { b2 = p[st[0]] as i64; }
+    if b == 40 { return 37; }              // (
+    if b == 41 { return 38; }              // )
+    if b == 44 { return 41; }              // ,
+    if b == 59 { return 42; }              // ;
+    if b == 46 {
+        if b2 == 46 { st[0] = st[0] + 1; return 30; }
+        return 68;
+    }
+    if b == 91 { return 34; }              // [
+    if b == 93 { return 35; }              // ]
+    if b == 63 { return 69; }              // ?
+    if b == 94 { return 65; }              // ^
+    if b == 37 { return 51; }              // %
+    if b == 42 { return 49; }              // *
+    if b == 47 { return 50; }              // /
+    if b == 123 {
+        st[3] = st[3] + 1;
+        return 39;
+    }
+    if b == 125 {
+        if st[2] >= 0 && st[3] == st[8 + st[2]] {
+            st[2] = st[2] - 1;
+            st[4] = 1;
+            return 6;
+        }
+        st[3] = st[3] - 1;
+        return 40;
+    }
+    if b == 58 {
+        if b2 == 61 { st[0] = st[0] + 1; return 44; }
+        return 43;
+    }
+    if b == 45 {
+        if b2 == 62 { st[0] = st[0] + 1; return 45; }
+        if b2 == 61 { st[0] = st[0] + 1; return 53; }
+        return 48;
+    }
+    if b == 43 {
+        if b2 == 61 { st[0] = st[0] + 1; return 52; }
+        return 47;
+    }
+    if b == 61 {
+        if b2 == 61 { st[0] = st[0] + 1; return 54; }
+        if b2 == 62 { st[0] = st[0] + 1; return 26; }
+        return 46;
+    }
+    if b == 33 {
+        if b2 == 61 { st[0] = st[0] + 1; return 55; }
+        return 60;
+    }
+    if b == 60 {
+        if b2 == 61 { st[0] = st[0] + 1; return 57; }
+        if b2 == 60 { st[0] = st[0] + 1; return 66; }
+        return 56;
+    }
+    if b == 62 {
+        if b2 == 61 { st[0] = st[0] + 1; return 59; }
+        if b2 == 62 { st[0] = st[0] + 1; return 67; }
+        return 58;
+    }
+    if b == 38 {
+        if b2 == 38 { st[0] = st[0] + 1; return 61; }
+        return 63;
+    }
+    if b == 124 {
+        if b2 == 124 { st[0] = st[0] + 1; return 62; }
+        return 64;
+    }
+    if b == 35 {
+        if st[0] + 6 <= n && eq6(p, st[0], 91, 117, 115, 101, 114, 93) {
+            st[0] = st[0] + 6;
+            return 31;                     // #[user]
+        }
+        if st[0] + 15 <= n && eq8(p, st[0], 91, 99, 97, 112, 115, 40, 115, 121)
+            && eq7(p, st[0] + 8, 115, 99, 97, 108, 108, 41, 93) {
+            st[0] = st[0] + 15;
+            return 32;                     // #[caps(syscall)]
+        }
+        if st[0] + 6 <= n && eq6(p, st[0], 91, 100, 114, 111, 112, 40) {
+            st[0] = st[0] + 6;
+            s2 := st[0];
+            mut got := false;
+            while st[0] < n && (is_idc(p[st[0]] as i64) || is_dg(p[st[0]] as i64)) {
+                st[0] = st[0] + 1;
+                got = true;
+            }
+            if !got { return -1; }
+            if st[0] + 2 > n { return -1; }
+            if !(p[st[0]] as i64 == 41 && p[st[0] + 1] as i64 == 93) { return -1; }
+            st[6] = s2;
+            st[7] = st[0] - s2;
+            st[0] = st[0] + 2;
+            return 33;
+        }
+        return -1;                         // unknown attribute
+    }
+    return -1;                             // unexpected character
+}
+
+// ---------------------------------------------------------------- //
+// The token window (parse.n's, unchanged): CUR at st[24..27], NEXT
+// at st[28..31]; adv() shifts and lexes.
+
+fn adv(p: *u8, n: i64, st: *i64) {
+    st[24] = st[28]; st[25] = st[29]; st[26] = st[30]; st[27] = st[31];
+    k := next_kind(p, n, st);
+    st[28] = k; st[29] = st[5]; st[30] = st[6]; st[31] = st[7];
+}
+
+fn ck(st: *i64, k: i64) -> bool {
+    return st[24] == k;
+}
+
+fn ck2(st: *i64, k: i64) -> bool {
+    return st[28] == k;
+}
+
+fn acc(p: *u8, n: i64, st: *i64, k: i64) -> bool {
+    if st[24] == k { adv(p, n, st); return true; }
+    return false;
+}
+
+// An unsupported or unexpected construct. Claimed targets are valid
+// sources inside the stated coverage, so this line appearing in a
+// run means the PARSER is wrong — the differential catches it.
+fn perr(st: *i64) {
+    l := st[25];
+    put("PARSE-ERR {l}\n");
+}
+
+// ---------------------------------------------------------------- //
+// The tree and the tables.
+
+// Allocate one node; returns its index. The next-link slot starts 0.
+fn nnew(st: *i64, k: i64, a: i64, b: i64, c: i64, ln: i64, ss: i64, sl: i64) -> i64 {
+    nd := st[33] as *i64;
+    i := st[34];
+    st[34] = i + 1;
+    nd[i * 8] = k;
+    nd[i * 8 + 1] = a;
+    nd[i * 8 + 2] = b;
+    nd[i * 8 + 3] = c;
+    nd[i * 8 + 4] = ln;
+    nd[i * 8 + 5] = ss;
+    nd[i * 8 + 6] = sl;
+    nd[i * 8 + 7] = 0;
+    return i;
+}
+
+// Append one word to the flat list arena; returns its index.
+fn ladd(st: *i64, v: i64) -> i64 {
+    al := st[35] as *i64;
+    i := st[36];
+    al[i] = v;
+    st[36] = i + 1;
+    return i;
+}
+
+// Byte-compare two source spans (names are equal iff same bytes).
+fn span_eq(p: *u8, s1: i64, l1: i64, s2: i64, l2: i64) -> bool {
+    if l1 != l2 { return false; }
+    mut i := 0;
+    while i < l1 {
+        if p[s1 + i] as i64 != p[s2 + i] as i64 { return false; }
+        i = i + 1;
+    }
+    return true;
+}
+
+// One record in the merged extern+fn table (declaration order — the
+// order ncc's fn_lookup searches: XFNS first, then FNS; our targets
+// declare externs first, so one table preserves it).
+fn fadd(st: *i64, ss: i64, sl: i64, np: i64, caps: i64, body: i64, pst: i64, knd: i64) {
+    ft := st[37] as *i64;
+    i := st[38];
+    ft[i * 8] = ss;
+    ft[i * 8 + 1] = sl;
+    ft[i * 8 + 2] = np;
+    ft[i * 8 + 3] = caps;
+    ft[i * 8 + 4] = body;
+    ft[i * 8 + 5] = pst;
+    ft[i * 8 + 6] = knd;
+    ft[i * 8 + 7] = 0;
+    st[38] = i + 1;
+}
+
+fn ffind(p: *u8, st: *i64, ss: i64, sl: i64) -> i64 {
+    ft := st[37] as *i64;
+    mut i := 0;
+    while i < st[38] {
+        if span_eq(p, ft[i * 8], ft[i * 8 + 1], ss, sl) { return i; }
+        i = i + 1;
+    }
+    return -1;
+}
+
+// The scoped name table: ncc's VARS discipline — vars_add appends,
+// vars_find scans backward (innermost shadows), blocks record the
+// count on entry and truncate on exit.
+fn vadd(st: *i64, ss: i64, sl: i64, m: i64) {
+    va := st[39] as *i64;
+    i := st[40];
+    va[i * 3] = ss;
+    va[i * 3 + 1] = sl;
+    va[i * 3 + 2] = m;
+    st[40] = i + 1;
+}
+
+fn vfind(p: *u8, st: *i64, ss: i64, sl: i64) -> i64 {
+    va := st[39] as *i64;
+    mut i := st[40] - 1;
+    while i >= 0 {
+        if span_eq(p, va[i * 3], va[i * 3 + 1], ss, sl) { return i; }
+        i = i - 1;
+    }
+    return -1;
+}
+
+// A parsed type, by value: ptrs, is_user, and the name's span.
+struct T { pt: i64, us: i64, s: i64, l: i64 }
+
+// ncc's parse_type: [#[user]] [raw] *... name. Rung 1 checks no
+// types; the tokens still have to be consumed correctly.
+fn pty(p: *u8, n: i64, st: *i64) -> T {
+    mut us := 0;
+    if acc(p, n, st, 31) { us = 1; }       // #[user]
+    if ck(st, 19) { adv(p, n, st); }       // raw (lowers identically)
+    mut pt := 0;
+    mut going := true;
+    while going {
+        going = false;
+        if ck(st, 49) { adv(p, n, st); pt = pt + 1; going = true; }
+    }
+    if !ck(st, 7) { perr(st); return T{ pt: 0, us: 0, s: 0, l: 0 }; }
+    s := st[26];
+    l := st[27];
+    adv(p, n, st);
+    T{ pt: pt, us: us, s: s, l: l }
+}
+
+// ---- the expression ladder: parse and BUILD, node indexes up ---- //
+
+fn pexpr(p: *u8, n: i64, st: *i64) -> i64 {
+    return por(p, n, st);
+}
+
+// Interpolation: hole expressions become a child list; the text
+// fragments and format specs are consumed but not kept (checking
+// needs the holes, not the text).
+#[caps(syscall)]
+fn pinterp(p: *u8, n: i64, st: *i64) -> i64 {
+    hx := sys_sbrk(256) as *i64;           // hole scratch (16 deep max)
+    mut nh := 0;
+    ln := st[25];
+    adv(p, n, st);                         // past the HEAD text
+    mut going := true;
+    while going {
+        hx[nh] = pexpr(p, n, st);          // the hole, as a node
+        nh = nh + 1;
+        if acc(p, n, st, 43) {             // ':' format spec (one ident)
+            if !ck(st, 7) { perr(st); return 0; }
+            adv(p, n, st);
+        }
+        if !ck(st, 6) { perr(st); return 0; }    // T_INTERP_R
+        adv(p, n, st);
+        if ck(st, 4) { adv(p, n, st); continue; }     // MID
+        if ck(st, 5) { adv(p, n, st); going = false; continue; }   // TAIL
+        perr(st);
+        return 0;
+    }
+    ast := st[36];
+    mut q := 0;
+    while q < nh { ladd(st, hx[q]); q = q + 1; }
+    return nnew(st, 4, ast, nh, 0, ln, 0, 0);
+}
+
+#[caps(syscall)]
+fn pprimary(p: *u8, n: i64, st: *i64) -> i64 {
+    if ck(st, 1) {                         // int
+        v := st[26];
+        ln := st[25];
+        adv(p, n, st);
+        return nnew(st, 1, v, 0, 0, ln, 0, 0);
+    }
+    if ck(st, 20) || ck(st, 21) {          // true / false
+        mut v := 0;
+        if ck(st, 20) { v = 1; }
+        ln := st[25];
+        adv(p, n, st);
+        return nnew(st, 2, v, 0, 0, ln, 0, 0);
+    }
+    if ck(st, 2) {                         // plain string
+        c := st[26];
+        ln := st[25];
+        adv(p, n, st);
+        return nnew(st, 3, c, 0, 0, ln, 0, 0);
+    }
+    if ck(st, 3) {                         // interpolation HEAD
+        return pinterp(p, n, st);
+    }
+    if ck(st, 37) {                        // '(': parens re-enable slits
+        adv(p, n, st);
+        save := st[32];
+        st[32] = 0;
+        h := pexpr(p, n, st);
+        st[32] = save;
+        if !ck(st, 38) { perr(st); return 0; }
+        adv(p, n, st);
+        return h;
+    }
+    if ck(st, 7) {                         // a name, or Name{ ... }
+        ns := st[26];
+        nl := st[27];
+        ln := st[25];
+        adv(p, n, st);
+        if ck(st, 39) && st[32] == 0 {     // struct literal
+            adv(p, n, st);
+            vx := sys_sbrk(512) as *i64;   // value scratch
+            mut na := 0;
+            mut more := !ck(st, 40);
+            while more {
+                more = false;
+                if ck(st, 40) { continue; }    // trailing comma
+                if !ck(st, 7) { perr(st); return 0; }
+                adv(p, n, st);             // the field name (later rung)
+                if !ck(st, 43) { perr(st); return 0; }
+                adv(p, n, st);
+                vx[na] = pexpr(p, n, st);
+                na = na + 1;
+                if acc(p, n, st, 41) { more = true; }
+            }
+            if !ck(st, 40) { perr(st); return 0; }
+            adv(p, n, st);
+            ast := st[36];
+            mut q := 0;
+            while q < na { ladd(st, vx[q]); q = q + 1; }
+            return nnew(st, 11, ast, 0, na, ln, ns, nl);
+        }
+        return nnew(st, 5, 0, 0, 0, ln, ns, nl);
+    }
+    perr(st);
+    return 0;
+}
+
+// Postfix: same lookahead dance as parse.n — a variant literal needs
+// the path by NAME, so `Name . Name {` is peeled before the primary.
+#[caps(syscall)]
+fn ppostfix(p: *u8, n: i64, st: *i64) -> i64 {
+    if ck(st, 7) && ck2(st, 68) {
+        ns := st[26];
+        nl := st[27];
+        ln := st[25];
+        adv(p, n, st);                     // the name
+        adv(p, n, st);                     // '.'
+        if !ck(st, 7) { perr(st); return 0; }
+        fs := st[26];
+        fl := st[27];
+        adv(p, n, st);                     // the field name
+        if ck(st, 39) && st[32] == 0 {     // Enum.Variant{ ... }
+            adv(p, n, st);
+            vx := sys_sbrk(512) as *i64;
+            mut na := 0;
+            mut more := !ck(st, 40);
+            while more {
+                more = false;
+                if ck(st, 40) { continue; }
+                if !ck(st, 7) { perr(st); return 0; }
+                adv(p, n, st);
+                if !ck(st, 43) { perr(st); return 0; }
+                adv(p, n, st);
+                vx[na] = pexpr(p, n, st);
+                na = na + 1;
+                if acc(p, n, st, 41) { more = true; }
+            }
+            if !ck(st, 40) { perr(st); return 0; }
+            adv(p, n, st);
+            ast := st[36];
+            mut q := 0;
+            while q < na { ladd(st, vx[q]); q = q + 1; }
+            el := nnew(st, 12, ast, 0, na, ln, ns, nl);
+            return ppostfix_tail(p, n, st, el);
+        }
+        base := nnew(st, 5, 0, 0, 0, ln, ns, nl);
+        h := pfield_or_call(p, n, st, base, fs, fl);
+        return ppostfix_tail(p, n, st, h);
+    }
+    h2 := pprimary(p, n, st);
+    return ppostfix_tail(p, n, st, h2);
+}
+
+// The postfix loop AFTER the head expression is built.
+#[caps(syscall)]
+fn ppostfix_tail(p: *u8, n: i64, st: *i64, h0: i64) -> i64 {
+    mut h := h0;
+    mut going := true;
+    while going {
+        going = false;
+        if ck(st, 68) {                    // '.' field or method
+            adv(p, n, st);
+            if !ck(st, 7) { perr(st); return 0; }
+            fs := st[26];
+            fl := st[27];
+            adv(p, n, st);
+            h = pfield_or_call(p, n, st, h, fs, fl);
+            going = true;
+            continue;
+        }
+        if ck(st, 37) {                    // '(': a call on the head
+            ln := st[25];
+            adv(p, n, st);
+            ax := sys_sbrk(512) as *i64;   // arg scratch (nested calls
+            mut na := 0;                   // interleave the list arena)
+            mut more := !ck(st, 38);
+            while more {
+                more = false;
+                ax[na] = pexpr(p, n, st);
+                na = na + 1;
+                if acc(p, n, st, 41) { more = true; }
+            }
+            if !ck(st, 38) { perr(st); return 0; }
+            adv(p, n, st);
+            ast := st[36];
+            mut q := 0;
+            while q < na { ladd(st, ax[q]); q = q + 1; }
+            h = nnew(st, 6, h, ast, na, ln, 0, 0);
+            going = true;
+            continue;
+        }
+        if ck(st, 34) {                    // '[' index ']'
+            adv(p, n, st);
+            ix := pexpr(p, n, st);
+            if !ck(st, 35) { perr(st); return 0; }
+            adv(p, n, st);
+            h = nnew(st, 13, h, ix, 0, 0, 0, 0);
+            going = true;
+            continue;
+        }
+    }
+    return h;
+}
+
+// After base + '.' + name: a call makes the field node the callee
+// (ncc's method-call shape); a plain read is just the field node.
+#[caps(syscall)]
+fn pfield_or_call(p: *u8, n: i64, st: *i64, base: i64, fs: i64, fl: i64) -> i64 {
+    if ck(st, 37) {                        // method call
+        ln := st[25];
+        fld := nnew(st, 7, base, 0, 0, ln, fs, fl);
+        adv(p, n, st);
+        ax := sys_sbrk(512) as *i64;
+        mut na := 0;
+        mut more := !ck(st, 38);
+        while more {
+            more = false;
+            ax[na] = pexpr(p, n, st);
+            na = na + 1;
+            if acc(p, n, st, 41) { more = true; }
+        }
+        if !ck(st, 38) { perr(st); return 0; }
+        adv(p, n, st);
+        ast := st[36];
+        mut q := 0;
+        while q < na { ladd(st, ax[q]); q = q + 1; }
+        return nnew(st, 6, fld, ast, na, ln, 0, 0);
+    }
+    ln2 := st[25];
+    return nnew(st, 7, base, 0, 0, ln2, fs, fl);
+}
+
+fn punary(p: *u8, n: i64, st: *i64) -> i64 {
+    if ck(st, 48) {                        // unary '-'
+        ln := st[25];
+        adv(p, n, st);
+        h := punary(p, n, st);
+        return nnew(st, 8, h, 0, 48, ln, 0, 0);
+    }
+    if ck(st, 60) {                        // '!'
+        ln := st[25];
+        adv(p, n, st);
+        h2 := punary(p, n, st);
+        return nnew(st, 8, h2, 0, 60, ln, 0, 0);
+    }
+    return ppostfix(p, n, st);
+}
+
+fn pcast(p: *u8, n: i64, st: *i64) -> i64 {
+    mut h := punary(p, n, st);
+    mut going := true;
+    while going {
+        going = false;
+        if ck(st, 18) {                    // 'as' TYPE
+            ln := st[25];
+            adv(p, n, st);
+            t := pty(p, n, st);
+            h = nnew(st, 10, h, 0, 0, ln, t.s, t.l);
+            going = true;
+        }
+    }
+    return h;
+}
+
+fn pmul(p: *u8, n: i64, st: *i64) -> i64 {
+    mut h := pcast(p, n, st);
+    mut going := true;
+    while going {
+        going = false;
+        if ck(st, 49) { ln := st[25]; adv(p, n, st); r := pcast(p, n, st); h = nnew(st, 9, h, r, 49, ln, 0, 0); going = true; continue; }
+        if ck(st, 50) { ln := st[25]; adv(p, n, st); r := pcast(p, n, st); h = nnew(st, 9, h, r, 50, ln, 0, 0); going = true; continue; }
+        if ck(st, 51) { ln := st[25]; adv(p, n, st); r := pcast(p, n, st); h = nnew(st, 9, h, r, 51, ln, 0, 0); going = true; }
+    }
+    return h;
+}
+
+fn padd2(p: *u8, n: i64, st: *i64) -> i64 {
+    mut h := pmul(p, n, st);
+    mut going := true;
+    while going {
+        going = false;
+        if ck(st, 47) { ln := st[25]; adv(p, n, st); r := pmul(p, n, st); h = nnew(st, 9, h, r, 47, ln, 0, 0); going = true; continue; }
+        if ck(st, 48) { ln := st[25]; adv(p, n, st); r := pmul(p, n, st); h = nnew(st, 9, h, r, 48, ln, 0, 0); going = true; }
+    }
+    return h;
+}
+
+fn pshift(p: *u8, n: i64, st: *i64) -> i64 {
+    mut h := padd2(p, n, st);
+    mut going := true;
+    while going {
+        going = false;
+        if ck(st, 66) { ln := st[25]; adv(p, n, st); r := padd2(p, n, st); h = nnew(st, 9, h, r, 66, ln, 0, 0); going = true; continue; }
+        if ck(st, 67) { ln := st[25]; adv(p, n, st); r := padd2(p, n, st); h = nnew(st, 9, h, r, 67, ln, 0, 0); going = true; }
+    }
+    return h;
+}
+
+fn pband(p: *u8, n: i64, st: *i64) -> i64 {
+    mut h := pshift(p, n, st);
+    mut going := true;
+    while going {
+        going = false;
+        if ck(st, 63) { ln := st[25]; adv(p, n, st); r := pshift(p, n, st); h = nnew(st, 9, h, r, 63, ln, 0, 0); going = true; }
+    }
+    return h;
+}
+
+fn pbxor(p: *u8, n: i64, st: *i64) -> i64 {
+    mut h := pband(p, n, st);
+    mut going := true;
+    while going {
+        going = false;
+        if ck(st, 65) { ln := st[25]; adv(p, n, st); r := pband(p, n, st); h = nnew(st, 9, h, r, 65, ln, 0, 0); going = true; }
+    }
+    return h;
+}
+
+fn pbor(p: *u8, n: i64, st: *i64) -> i64 {
+    mut h := pbxor(p, n, st);
+    mut going := true;
+    while going {
+        going = false;
+        if ck(st, 64) { ln := st[25]; adv(p, n, st); r := pbxor(p, n, st); h = nnew(st, 9, h, r, 64, ln, 0, 0); going = true; }
+    }
+    return h;
+}
+
+fn pcmp(p: *u8, n: i64, st: *i64) -> i64 {
+    mut h := pbor(p, n, st);
+    mut going := true;
+    while going {
+        going = false;
+        if ck(st, 54) { ln := st[25]; adv(p, n, st); r := pbor(p, n, st); h = nnew(st, 9, h, r, 54, ln, 0, 0); going = true; continue; }
+        if ck(st, 55) { ln := st[25]; adv(p, n, st); r := pbor(p, n, st); h = nnew(st, 9, h, r, 55, ln, 0, 0); going = true; continue; }
+        if ck(st, 56) { ln := st[25]; adv(p, n, st); r := pbor(p, n, st); h = nnew(st, 9, h, r, 56, ln, 0, 0); going = true; continue; }
+        if ck(st, 57) { ln := st[25]; adv(p, n, st); r := pbor(p, n, st); h = nnew(st, 9, h, r, 57, ln, 0, 0); going = true; continue; }
+        if ck(st, 58) { ln := st[25]; adv(p, n, st); r := pbor(p, n, st); h = nnew(st, 9, h, r, 58, ln, 0, 0); going = true; continue; }
+        if ck(st, 59) { ln := st[25]; adv(p, n, st); r := pbor(p, n, st); h = nnew(st, 9, h, r, 59, ln, 0, 0); going = true; }
+    }
+    return h;
+}
+
+fn pand(p: *u8, n: i64, st: *i64) -> i64 {
+    mut h := pcmp(p, n, st);
+    mut going := true;
+    while going {
+        going = false;
+        if ck(st, 61) { ln := st[25]; adv(p, n, st); r := pcmp(p, n, st); h = nnew(st, 9, h, r, 61, ln, 0, 0); going = true; }
+    }
+    return h;
+}
+
+fn por(p: *u8, n: i64, st: *i64) -> i64 {
+    mut h := pand(p, n, st);
+    mut going := true;
+    while going {
+        going = false;
+        if ck(st, 62) { ln := st[25]; adv(p, n, st); r := pand(p, n, st); h = nnew(st, 9, h, r, 62, ln, 0, 0); going = true; }
+    }
+    return h;
+}
+
+// ---- statements + blocks --------------------------------------- //
+
+fn pif(p: *u8, n: i64, st: *i64) -> i64 {
+    ln := st[25];
+    adv(p, n, st);                         // 'if'
+    st[32] = 1;
+    c := pexpr(p, n, st);
+    st[32] = 0;
+    t := pblock(p, n, st);
+    mut e := 0;
+    if acc(p, n, st, 14) {                 // else, or else-if (the else
+        mut inner := 0;                    // slot then holds an if node)
+        if ck(st, 13) {
+            inner = 1;
+            e = pif(p, n, st);
+        }
+        if inner == 0 { e = pblock(p, n, st); }
+    }
+    return nnew(st, 25, c, t, e, ln, 0, 0);
+}
+
+// One block: statements chain through the next-link slot; the tail
+// expression rides the block node. Each dispatcher branch fills sn,
+// and the `sn == 0` guards keep one statement to one branch.
+fn pblock(p: *u8, n: i64, st: *i64) -> i64 {
+    if !ck(st, 39) { perr(st); return 0; }
+    bln := st[25];
+    adv(p, n, st);
+    mut first := 0;
+    mut last := 0;
+    mut cnt := 0;
+    mut tail := 0;
+    mut istail := 0;
+    mut going := true;
+    while going {
+        if ck(st, 40) { going = false; continue; }
+        if ck(st, 0) { perr(st); return 0; }
+        mut sn := 0;
+        if ck(st, 11) || (ck(st, 7) && ck2(st, 44)) {   // [mut] name :=
+            ln := st[25];
+            mut im := 0;
+            if acc(p, n, st, 11) { im = 1; }
+            if !ck(st, 7) { perr(st); return 0; }
+            is := st[26];
+            il := st[27];
+            adv(p, n, st);
+            if !ck(st, 44) { perr(st); return 0; }
+            adv(p, n, st);
+            if ck(st, 25) { perr(st); return 0; }   // := match — later rung
+            rhs := pexpr(p, n, st);
+            tr := acc(p, n, st, 69);       // x := e?; (try — later rung)
+            if !ck(st, 42) { perr(st); return 0; }
+            adv(p, n, st);
+            sn = nnew(st, 20, rhs, 0, im, ln, is, il);
+        }
+        if sn == 0 && ck(st, 12) {         // return [e] ;
+            ln := st[25];
+            adv(p, n, st);
+            if ck(st, 25) { perr(st); return 0; }   // return match — later
+            mut re := 0;
+            mut bare := 0;
+            if ck(st, 42) { adv(p, n, st); bare = 1; }
+            if bare == 0 {
+                re = pexpr(p, n, st);
+                if !ck(st, 42) { perr(st); return 0; }
+                adv(p, n, st);
+            }
+            sn = nnew(st, 22, re, 0, 0, ln, 0, 0);
+        }
+        if sn == 0 && ck(st, 16) {         // break ;
+            ln := st[25];
+            adv(p, n, st);
+            if !ck(st, 42) { perr(st); return 0; }
+            adv(p, n, st);
+            sn = nnew(st, 26, 0, 0, 0, ln, 0, 0);
+        }
+        if sn == 0 && ck(st, 17) {         // continue ;
+            ln := st[25];
+            adv(p, n, st);
+            if !ck(st, 42) { perr(st); return 0; }
+            adv(p, n, st);
+            sn = nnew(st, 27, 0, 0, 0, ln, 0, 0);
+        }
+        if sn == 0 && ck(st, 23) {         // defer e ;
+            ln := st[25];
+            adv(p, n, st);
+            de := pexpr(p, n, st);
+            if !ck(st, 42) { perr(st); return 0; }
+            adv(p, n, st);
+            sn = nnew(st, 28, de, 0, 0, ln, 0, 0);
+        }
+        if sn == 0 && ck(st, 15) {         // while cond { }
+            ln := st[25];
+            adv(p, n, st);
+            st[32] = 1;
+            c := pexpr(p, n, st);
+            st[32] = 0;
+            b := pblock(p, n, st);
+            sn = nnew(st, 24, c, b, 0, ln, 0, 0);
+        }
+        if sn == 0 && ck(st, 13) {         // if
+            sn = pif(p, n, st);
+        }
+        if sn == 0 && ck(st, 25) {         // match — a later rung
+            perr(st);
+            return 0;
+        }
+        if sn == 0 && ck(st, 28) {         // for name in a..b { }
+            ln := st[25];
+            adv(p, n, st);
+            if !ck(st, 7) { perr(st); return 0; }
+            fs2 := st[26];
+            fl2 := st[27];
+            adv(p, n, st);
+            if !ck(st, 29) { perr(st); return 0; }   // 'in'
+            adv(p, n, st);
+            st[32] = 1;
+            lo := pexpr(p, n, st);
+            if !ck(st, 30) { perr(st); return 0; }   // '..'
+            adv(p, n, st);
+            hi := pexpr(p, n, st);
+            st[32] = 0;
+            b2 := pblock(p, n, st);
+            sn = nnew(st, 30, lo, hi, b2, ln, fs2, fl2);
+        }
+        if sn == 0 {                       // expression, assignment, tail
+            ln := st[25];
+            h := pexpr(p, n, st);
+            mut done := 0;
+            if ck(st, 46) || ck(st, 52) || ck(st, 53) {
+                mut op := 0;               // 0 '=', 1 '+=', 2 '-='
+                if ck(st, 52) { op = 1; }
+                if ck(st, 53) { op = 2; }
+                adv(p, n, st);
+                if ck(st, 25) { perr(st); return 0; }   // = match — later
+                rhs2 := pexpr(p, n, st);
+                tr2 := acc(p, n, st, 69);
+                if !ck(st, 42) { perr(st); return 0; }
+                adv(p, n, st);
+                sn = nnew(st, 21, h, rhs2, op, ln, 0, 0);
+                done = 1;
+            }
+            if done == 0 && acc(p, n, st, 69) {     // e? ;
+                if !ck(st, 42) { perr(st); return 0; }
+                adv(p, n, st);
+                sn = nnew(st, 23, h, 0, 1, ln, 0, 0);
+                done = 1;
+            }
+            if done == 0 && acc(p, n, st, 42) {     // e ;
+                sn = nnew(st, 23, h, 0, 0, ln, 0, 0);
+                done = 1;
+            }
+            if done == 0 {                 // the block tail
+                if !ck(st, 40) { perr(st); return 0; }
+                adv(p, n, st);
+                tail = h;
+                istail = 1;
+                going = false;
+                continue;
+            }
+        }
+        if sn == 0 { perr(st); return 0; }
+        if first == 0 { first = sn; }
+        if last > 0 {
+            nd := st[33] as *i64;
+            nd[last * 8 + 7] = sn;
+        }
+        last = sn;
+        cnt = cnt + 1;
+    }
+    if istail == 0 { adv(p, n, st); }      // '}' (the tail path ate it)
+    return nnew(st, 40, first, tail, cnt, bln, 0, 0);
+}
+
+// ---- items ------------------------------------------------------ //
+
+// Params fill a caller-provided arena: name span + T, 6 words each.
+// Returns the count. (parse.n's, unchanged.)
+fn pparams(p: *u8, n: i64, st: *i64, ps: *i64) -> i64 {
+    if !ck(st, 37) { perr(st); return 0; }
+    adv(p, n, st);
+    mut np := 0;
+    mut more := !ck(st, 38);
+    while more {
+        more = false;
+        if !ck(st, 7) { perr(st); return np; }
+        ps[np * 6] = st[26];
+        ps[np * 6 + 1] = st[27];
+        adv(p, n, st);
+        if !ck(st, 43) { perr(st); return np; }
+        adv(p, n, st);
+        t := pty(p, n, st);
+        ps[np * 6 + 2] = t.pt;
+        ps[np * 6 + 3] = t.us;
+        ps[np * 6 + 4] = t.s;
+        ps[np * 6 + 5] = t.l;
+        np = np + 1;
+        if acc(p, n, st, 41) { more = true; }
+    }
+    if !ck(st, 38) { perr(st); return np; }
+    adv(p, n, st);
+    return np;
+}
+
+// Skip one top-level item: advance to its opening '{', then count
+// braces to the close. Safe: string-interpolation braces never
+// tokenize as LB/RB. (parse.n's, unchanged.)
+fn skip_item(p: *u8, n: i64, st: *i64) {
+    mut going := true;
+    while going {
+        if ck(st, 0) { return; }
+        if ck(st, 39) { going = false; continue; }
+        adv(p, n, st);
+    }
+    adv(p, n, st);
+    mut d := 1;
+    while d > 0 {
+        if ck(st, 0) { return; }
+        if ck(st, 39) { d = d + 1; }
+        if ck(st, 40) { d = d - 1; }
+        adv(p, n, st);
+    }
+}
+
+// extern syscall { fn name(params) [-> ty] = NUM [;] ... } — each
+// binding becomes a table record (no body).
+fn pextern(p: *u8, n: i64, st: *i64, caps: i64, ps: *i64) {
+    if !ck(st, 9) { perr(st); return; }    // 'syscall'
+    adv(p, n, st);
+    if !ck(st, 39) { perr(st); return; }
+    adv(p, n, st);
+    mut more := ck(st, 10);
+    while more {
+        more = false;
+        adv(p, n, st);                     // 'fn'
+        if !ck(st, 7) { perr(st); return; }
+        xs := st[26];
+        xl := st[27];
+        adv(p, n, st);
+        np := pparams(p, n, st, ps);
+        mut rt := T{ pt: 0, us: 0, s: 0, l: 0 };
+        if acc(p, n, st, 45) { rt = pty(p, n, st); }
+        if !ck(st, 46) { perr(st); return; }
+        adv(p, n, st);
+        if !ck(st, 1) { perr(st); return; }
+        adv(p, n, st);                     // the syscall number
+        if ck(st, 42) { adv(p, n, st); }   // optional ';'
+        pst := st[36];
+        mut q := 0;
+        while q < np {
+            ladd(st, ps[q * 6]);
+            ladd(st, ps[q * 6 + 1]);
+            q = q + 1;
+        }
+        fadd(st, xs, xl, np, caps, 0, pst, 0);
+        if ck(st, 10) { more = true; }
+    }
+    if !ck(st, 40) { perr(st); return; }
+    adv(p, n, st);
+}
+
+// fn name(params) [-> ty] { body } — params copy into the list arena
+// BEFORE the body parses (the body's own lists must not interleave),
+// then the body tree and the table record.
+fn pfn(p: *u8, n: i64, st: *i64, caps: i64, ps: *i64) {
+    if !ck(st, 7) { perr(st); return; }
+    fs := st[26];
+    fl := st[27];
+    adv(p, n, st);
+    np := pparams(p, n, st, ps);
+    mut rt := T{ pt: 0, us: 0, s: 0, l: 0 };
+    if acc(p, n, st, 45) { rt = pty(p, n, st); }
+    pst := st[36];
+    mut q := 0;
+    while q < np {
+        ladd(st, ps[q * 6]);
+        ladd(st, ps[q * 6 + 1]);
+        q = q + 1;
+    }
+    body := pblock(p, n, st);
+    fadd(st, fs, fl, np, caps, body, pst, 1);
+}
+
+// ONE pass over the whole token stream — ncc's own shape. Externs
+// and fns parse for real; struct/enum/impl items brace-skip (their
+// checking rows arrive with the decl-table rung).
+fn pitems(p: *u8, n: i64, st: *i64, ps: *i64) {
+    mut going := true;
+    while going {
+        if ck(st, 0) { going = false; continue; }
+        mut caps := 0;
+        if ck(st, 33) { adv(p, n, st); }   // #[drop(fn)] rides a struct
+        if acc(p, n, st, 32) { caps = 1; } // #[caps(syscall)]
+        ow := acc(p, n, st, 36);           // 'own' — its struct skips
+        if ck(st, 22) { skip_item(p, n, st); continue; }   // struct
+        if ck(st, 24) { skip_item(p, n, st); continue; }   // enum
+        if ck(st, 27) { skip_item(p, n, st); continue; }   // impl
+        if ck(st, 8) {                     // extern
+            adv(p, n, st);
+            pextern(p, n, st, caps, ps);
+            continue;
+        }
+        if ck(st, 10) {                    // fn
+            adv(p, n, st);
+            pfn(p, n, st, caps, ps);
+            continue;
+        }
+        perr(st);
+        going = false;
+    }
+}
+
+// ---- the checker ------------------------------------------------ //
+// A walk over the tree with the live name table — ncc's discipline:
+// the check runs statement by statement, names resolve at their
+// textual position, the first error prints and the flag stops
+// everything after it (ncc dies on its first error).
+
+#[caps(syscall)]
+fn cexpr(p: *u8, st: *i64, i: i64) {
+    if st[41] == 1 { return; }
+    if i == 0 { return; }
+    nd := st[33] as *i64;
+    al := st[35] as *i64;
+    k := nd[i * 8];
+    if k == 5 {                            // path: resolve or die
+        v := vfind(p, st, nd[i * 8 + 5], nd[i * 8 + 6]);
+        if v < 0 {
+            ln := nd[i * 8 + 4];
+            put("{ln}: undeclared variable '");
+            put_span(p, nd[i * 8 + 5], nd[i * 8 + 6]);
+            put("'\n");
+            st[41] = 1;
+        }
+        return;
+    }
+    if k == 6 {                            // call
+        cal := nd[i * 8 + 1];
+        ln := nd[i * 8 + 4];
+        na := nd[i * 8 + 3];
+        if nd[cal * 8] == 5 {              // named callee: the fn table
+            fi := ffind(p, st, nd[cal * 8 + 5], nd[cal * 8 + 6]);
+            if fi < 0 {
+                put("{ln}: unknown function '");
+                put_span(p, nd[cal * 8 + 5], nd[cal * 8 + 6]);
+                put("'\n");
+                st[41] = 1;
+                return;
+            }
+            ft := st[37] as *i64;
+            np := ft[fi * 8 + 2];
+            if na != np {
+                put("{ln}: '");
+                put_span(p, nd[cal * 8 + 5], nd[cal * 8 + 6]);
+                put("' takes {np} argument(s), got {na}\n");
+                st[41] = 1;
+                return;
+            }
+            mut q := 0;
+            while q < na {
+                cexpr(p, st, al[nd[i * 8 + 2] + q]);
+                q = q + 1;
+            }
+            return;
+        }
+        cexpr(p, st, cal);                 // method/computed callee: the
+        mut q2 := 0;                       // receiver resolves; dispatch
+        while q2 < na {                    // itself is a later rung
+            cexpr(p, st, al[nd[i * 8 + 2] + q2]);
+            q2 = q2 + 1;
+        }
+        return;
+    }
+    if k == 7 { cexpr(p, st, nd[i * 8 + 1]); return; }    // field: the base
+    if k == 8 { cexpr(p, st, nd[i * 8 + 1]); return; }    // unary
+    if k == 9 {                            // binary: left, then right
+        cexpr(p, st, nd[i * 8 + 1]);
+        cexpr(p, st, nd[i * 8 + 2]);
+        return;
+    }
+    if k == 10 { cexpr(p, st, nd[i * 8 + 1]); return; }   // cast
+    if k == 13 {                           // index: base, then index
+        cexpr(p, st, nd[i * 8 + 1]);
+        cexpr(p, st, nd[i * 8 + 2]);
+        return;
+    }
+    if k == 4 {                            // interp: every hole
+        mut q3 := 0;
+        while q3 < nd[i * 8 + 2] {
+            cexpr(p, st, al[nd[i * 8 + 1] + q3]);
+            q3 = q3 + 1;
+        }
+        return;
+    }
+    if k == 11 || k == 12 {                // struct/variant literal values
+        mut q4 := 0;
+        while q4 < nd[i * 8 + 3] {
+            cexpr(p, st, al[nd[i * 8 + 1] + q4]);
+            q4 = q4 + 1;
+        }
+        return;
+    }
+}
+
+#[caps(syscall)]
+fn cstmt(p: *u8, st: *i64, i: i64) {
+    if st[41] == 1 { return; }
+    if i == 0 { return; }
+    nd := st[33] as *i64;
+    k := nd[i * 8];
+    if k == 20 {                           // let: check the rhs, then bind
+        cexpr(p, st, nd[i * 8 + 1]);
+        if st[41] == 1 { return; }
+        vadd(st, nd[i * 8 + 5], nd[i * 8 + 6], nd[i * 8 + 3]);
+        return;
+    }
+    if k == 21 {                           // assign: lhs, rhs, then mut —
+        cexpr(p, st, nd[i * 8 + 1]);       // ncc's exact order
+        cexpr(p, st, nd[i * 8 + 2]);
+        if st[41] == 1 { return; }
+        mut r := nd[i * 8 + 1];            // field writes mutate the root
+        while nd[r * 8] == 7 { r = nd[r * 8 + 1]; }
+        if nd[r * 8] == 5 {
+            v := vfind(p, st, nd[r * 8 + 5], nd[r * 8 + 6]);
+            va := st[39] as *i64;
+            if v >= 0 && va[v * 3 + 2] == 0 {
+                ln := nd[i * 8 + 4];
+                put("{ln}: cannot assign to immutable '");
+                put_span(p, nd[r * 8 + 5], nd[r * 8 + 6]);
+                put("' (declare it with 'mut')\n");
+                st[41] = 1;
+            }
+        }
+        return;
+    }
+    if k == 22 { cexpr(p, st, nd[i * 8 + 1]); return; }   // return
+    if k == 23 { cexpr(p, st, nd[i * 8 + 1]); return; }   // expr stmt
+    if k == 24 {                           // while
+        cexpr(p, st, nd[i * 8 + 1]);
+        cblock(p, st, nd[i * 8 + 2]);
+        return;
+    }
+    if k == 25 {                           // if: cond, then, else (the
+        cexpr(p, st, nd[i * 8 + 1]);       // else slot may hold an if)
+        cblock(p, st, nd[i * 8 + 2]);
+        els := nd[i * 8 + 3];
+        if els > 0 {
+            if nd[els * 8] == 25 { cstmt(p, st, els); }
+            if nd[els * 8] == 40 { cblock(p, st, els); }
+        }
+        return;
+    }
+    if k == 28 { cexpr(p, st, nd[i * 8 + 1]); return; }   // defer
+    if k == 30 {                           // for: bounds, then the body
+        cexpr(p, st, nd[i * 8 + 1]);       // with the loop var seeded
+        cexpr(p, st, nd[i * 8 + 2]);       // (immutable) in its scope
+        if st[41] == 1 { return; }
+        vsave := st[40];
+        vadd(st, nd[i * 8 + 5], nd[i * 8 + 6], 0);
+        cblock(p, st, nd[i * 8 + 3]);
+        st[40] = vsave;
+        return;
+    }
+}
+
+// Block scope: record the name count on entry, truncate on exit —
+// ncc's gen_block move.
+#[caps(syscall)]
+fn cblock(p: *u8, st: *i64, i: i64) {
+    if st[41] == 1 { return; }
+    if i == 0 { return; }
+    nd := st[33] as *i64;
+    vsave := st[40];
+    mut s := nd[i * 8 + 1];
+    while s > 0 {
+        cstmt(p, st, s);
+        if st[41] == 1 { return; }
+        s = nd[s * 8 + 7];
+    }
+    t := nd[i * 8 + 2];
+    if t > 0 { cexpr(p, st, t); }
+    st[40] = vsave;
+}
+
+// One function: a fresh name table seeded with the params (params
+// are immutable — ncc adds them with is_mut 0), then the body.
+#[caps(syscall)]
+fn cfn(p: *u8, st: *i64, fi: i64) {
+    ft := st[37] as *i64;
+    al := st[35] as *i64;
+    st[40] = 0;
+    mut q := 0;
+    while q < ft[fi * 8 + 2] {
+        vadd(st, al[ft[fi * 8 + 5] + q * 2], al[ft[fi * 8 + 5] + q * 2 + 1], 0);
+        q = q + 1;
+    }
+    cblock(p, st, ft[fi * 8 + 4]);
+}
+
+#[caps(syscall)]
+fn main() -> i64 {
+    path := "/tmp/n_check_target.n";
+    fd := sys_open(path.ptr as *u8, 0, 0);
+    if fd < 0 {
+        put("(no check target - skipped)\n");
+        return 0;
+    }
+    buf := sys_sbrk(262144) as *u8;        // 256K, parse.n's size
+    mut total := 0;
+    mut r := 1;
+    while r > 0 {
+        r = sys_read(fd, (buf as addr + total as addr) as *u8, 16384);
+        if r > 0 { total = total + r; }
+    }
+    sys_close(fd);
+    if total < 1 { return 0; }
+    st := sys_sbrk(512) as *i64;
+    ps := sys_sbrk(1024) as *i64;          // the params arena
+    st[33] = sys_sbrk(1048576);            // nodes: 16K x 8 words
+    st[34] = 1;                            // node 0 is nil
+    st[35] = sys_sbrk(131072);             // the flat list arena
+    st[36] = 0;
+    st[37] = sys_sbrk(16384);              // fn table: 256 records
+    st[38] = 0;
+    st[39] = sys_sbrk(8192);               // vars: 256 x 3 words
+    st[40] = 0;
+    st[41] = 0;                            // the error flag
+    nil0 := st[33] as *i64;                // node 0: an explicit nil
+    mut z := 0;
+    while z < 8 { nil0[z] = 0; z = z + 1; }
+    st[0] = 0;
+    st[1] = 1;
+    st[2] = -1;
+    st[3] = 0;
+    st[4] = 0;
+    st[32] = 0;
+    adv(buf, total, st);                   // prime NEXT
+    adv(buf, total, st);                   // ... and CUR
+    pitems(buf, total, st, ps);            // ONE pass: tables + trees
+    ft := st[37] as *i64;
+    mut i := 0;                            // check fns in declaration
+    while i < st[38] {                     // order; first error stops
+        if ft[i * 8 + 6] == 1 {
+            cfn(buf, st, i);
+            if st[41] == 1 { return 1; }
+        }
+        i = i + 1;
+    }
+    0
+}

@@ -85,16 +85,51 @@ and the N lexer's, over hello.n (73 tokens) and countdown.n (124) —
 came back identical over serial. The lexer is proven on the machine
 it exists for.
 
-## check.n — the checker (anchor laid)
+## check.n — the checker (rung 1 landed)
 
 The third module's contract lives in
 [tests/bad/](tests/bad/): sixty-six wrong programs and a manifest of
 ncc's exact first-error lines. `check.n` must reproduce them —
 location and wording — for every file it claims; the corpus doubles
 as ncc's own regression battery, so the reference and its rewrite
-keep each other honest. The module itself begins by materializing
-the tree (the print-as-you-parse trick ends where checking starts)
-and climbs the manifest error by error.
+keep each other honest.
+
+**Rung 1 — the tree + the first errors (landed)**: the parser's code
+accretes one more time, transformed — every parse function now
+returns a NODE INDEX instead of printing, and the tree the toy
+proved in miniature materializes at real scale: one parallel-array
+arena (kind / children / line / span / next-link, eight words a
+node), child lists in a flat side arena, and the five category
+passes collapsed back to ncc's own single pass (errors have no dump
+order to buy; declarations land in tables). On top of the tree: a
+merged extern+fn table (ncc's fn_lookup order), a scoped name table
+with ncc's VARS discipline — params seeded immutable, innermost
+shadows, blocks truncate on exit — and a checker walk that mirrors
+ncc's own sequence (assignment checks lhs, then rhs, then `mut`;
+calls resolve, then arity, then arguments). The first error prints
+as `line: message` and stops, exactly as ncc dies on its first.
+
+Claimed and byte-exact — the manifest rows with the filename column
+stripped (the normalization rule lives in
+[tests/bad/README.md](tests/bad/README.md)):
+
+   bad_undecl       2: undeclared variable 'y'
+   bad_mut          3: cannot assign to immutable 'x' (declare it with 'mut')
+   bad_unknown_fn   2: unknown function 'launch'
+   bad_arity        3: 'write' takes 3 argument(s), got 1
+   bad_for_mut      3: cannot assign to immutable 'i' (declare it with 'mut')
+   bad_struct_mut   4: cannot assign to immutable 'r' (declare it with 'mut')
+
+plus two POSITIVE targets — hello.n and countdown.n check clean, and
+their required output is silence. Coverage, stated honestly: extern
+blocks and functions parse for real (full bodies, the whole
+expression ladder, for-loop variables seeded in their body scope);
+struct/enum/impl items brace-skip and `match` refuses — their
+manifest rows arrive with the decl-table and match rungs. The host
+shim's sbrk arena grew 1M → 8M (ncc/host/nyxrt.h): the checker's
+node arena was the first thing to outgrow it, and the differential
+reported the overflow as six segfaults before it could pass for an N
+bug. Suite stage [8c] holds all eight targets.
 
 **Rung 2 — lexemes (landed)**: the stream carries substance now, on
 both sides of the differential at once. `ncc --tokens` and `lex.n`

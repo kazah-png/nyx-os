@@ -18,3 +18,11 @@ The corpus doubles as ncc's own regression battery (the verification
 suite runs every file and asserts the message), so the two consumers
 keep each other honest: a reworded ncc error shows up here as a
 manifest diff before it can silently loosen check.n's target.
+
+One normalization: `check.n` reads a fixed target path
+(`/tmp/n_check_target.n`) and cannot know a file's original
+basename, so it prints its errors as `line: message` and the
+differential harness strips the manifest's filename column from the
+want side (`cut -d: -f2-`, plus `tr -d '\r'` for autocrlf
+checkouts). Location and wording still match to the byte — only the
+file's name, which only the harness knows, is normalized away.

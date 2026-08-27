@@ -554,6 +554,42 @@ ncc's `infer_type` re-infers on demand (types are not stored on the
 tree), so a `--types` dump is feasible when check.n wants a positive
 contract — the negative corpus is crisper and comes first.
 
+### Rung 1 — the tree materializes
+
+The transform the anchor promised happened, and it was mechanical in
+exactly the way the design predicted: parse.n's functions accrete
+into check.n with every `put` replaced by a node allocation — the
+parser returns indexes now, and recursive descent builds in
+postorder the same tree it used to print. The five category passes
+collapse back to one (errors have no dump order to buy),
+declarations land in tables, and the toy's parallel-array AST
+reappears at real scale: a node is eight words, child lists live in
+a flat side arena, and the arena pointers ride the same state block
+the lexer already threads — the transform never changed a signature.
+
+The checker walk is small because rung 1 claims the name-resolution
+family: six manifest rows — undeclared variable, immutable
+assignment (plain, through a struct field, and on a for-loop
+variable), unknown function, arity — each byte-exact against ncc's
+wording, plus hello.n and countdown.n as positive targets whose
+required output is silence. The scope table is ncc's VARS
+discipline (params immutable, innermost shadows, blocks truncate on
+exit); the check order inside a statement is ncc's own — assignment
+checks lhs, then rhs, then `mut`, and the order decides which error
+a doubly-wrong program reports first, so it is part of the
+contract. One normalization, recorded in the corpus README: check.n
+cannot know the target's original basename, so it prints
+`line: message` and the harness strips the manifest's filename
+column. The first error stops the run — ncc dies on its first
+error, and a checker held to first-error lines must die the same
+way.
+
+One host-side find: the shim that runs N programs on Linux served
+sbrk from a 1M static arena, and the checker's node arena was the
+first thing to outgrow it (8M now). The differential reported the
+overflow as six segfaults before it could pass for an N bug — the
+harness keeps ruling on both sides of the fence.
+
 And the hardest lexer feature landed: **interpolation**. A toy string
 containing a brace lexes as segments — HEAD before the first hole,
 MID between holes, TAIL after the last (ncc's own
