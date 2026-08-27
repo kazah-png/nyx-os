@@ -85,6 +85,17 @@ and the N lexer's, over hello.n (73 tokens) and countdown.n (124) —
 came back identical over serial. The lexer is proven on the machine
 it exists for.
 
+## check.n — the checker (anchor laid)
+
+The third module's contract lives in
+[tests/bad/](tests/bad/): sixty-six wrong programs and a manifest of
+ncc's exact first-error lines. `check.n` must reproduce them —
+location and wording — for every file it claims; the corpus doubles
+as ncc's own regression battery, so the reference and its rewrite
+keep each other honest. The module itself begins by materializing
+the tree (the print-as-you-parse trick ends where checking starts)
+and climbs the manifest error by error.
+
 **Rung 2 — lexemes (landed)**: the stream carries substance now, on
 both sides of the differential at once. `ncc --tokens` and `lex.n`
 both print, per token: identifiers and `#[drop]` names **verbatim**

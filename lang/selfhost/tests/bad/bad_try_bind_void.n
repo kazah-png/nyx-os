@@ -1,0 +1,7 @@
+enum R { Ok, Err(e: i64), }
+fn get() -> R { R.Ok }
+fn f() -> R {
+    x := get()?;
+    R.Ok
+}
+fn main() -> i64 { 0 }

@@ -1,0 +1,6 @@
+fn spin() -> i64 {
+    while true {
+        return 1;
+    }
+}
+fn main() -> i64 { spin() }

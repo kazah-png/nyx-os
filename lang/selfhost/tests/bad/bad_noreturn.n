@@ -1,0 +1,6 @@
+fn pick(c: i64) -> i64 {
+    if c > 0 {
+        return 1;
+    }
+}
+fn main() -> i64 { pick(1) }

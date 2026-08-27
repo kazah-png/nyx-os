@@ -1,0 +1,12 @@
+struct Rect { w: i64, h: i64 }
+impl Rect {
+    fn area(self) -> i64 {
+        if self.w > 0 {
+            return self.w * self.h;
+        }
+    }
+}
+fn main() -> i64 {
+    r := Rect{ w: 2, h: 3 };
+    r.area()
+}

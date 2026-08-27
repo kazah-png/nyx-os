@@ -1,0 +1,10 @@
+own struct File { fd: i64 }
+fn sink(f: File) { f.fd; }
+fn main() -> i64 {
+    f := File{ fd: 3 };
+    c := 1;
+    while c > 0 {
+        sink(f);
+    }
+    0
+}

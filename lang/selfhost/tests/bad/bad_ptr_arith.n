@@ -1,0 +1,5 @@
+fn main() -> i64 {
+    msg := "a";
+    q := msg.ptr + 1;
+    0
+}

@@ -1,0 +1,66 @@
+bad_argty.n	bad_argty.n:6: argument 1 to 'put': expected str, got i64
+bad_arity.n	bad_arity.n:3: 'write' takes 3 argument(s), got 1
+bad_assign_ty.n	bad_assign_ty.n:3: cannot assign i64 to a str target
+bad_binop_str.n	bad_binop_str.n:3: operator '+' cannot be applied to str values (build strings with interpolation)
+bad_caps.n	bad_caps.n:7: 'write' requires the syscall capability — mark the calling function #[caps(syscall)]
+bad_caps_item.n	bad_caps_item.n:2: #[caps(syscall)] applies to a fn or an extern syscall block
+bad_cname.n	bad_cname.n:1: function name 'double' is a C keyword — generated code uses names verbatim, pick another name
+bad_defer_nested.n	bad_defer_nested.n:4: defer is only allowed in the function's outermost block
+bad_drop_branch.n	bad_drop_branch.n:7: own value 'p' is consumed in only one branch of this if — both branches must agree (v0.18)
+bad_drop_nonown.n	bad_drop_nonown.n:2: expected 'own' after #[drop(...)] — only an own struct has a destructor
+bad_drop_ret.n	bad_drop_ret.n: drop function 'free_it' must not return a value — the value ends there
+bad_drop_sig.n	bad_drop_sig.n: drop function 'free_it' must take exactly one Page parameter
+bad_drop_unknown.n	bad_drop_unknown.n: #[drop(nosuch)] on 'Page': unknown function 'nosuch'
+bad_fmt_nowidth.n	bad_fmt_nowidth.n:5: unknown format spec ':z' — the format specs are :x, :X (hex), :wN (width), :zN (zero-pad), and wN/zN composed with a trailing x or X
+bad_fmt_str.n	bad_fmt_str.n:5: format specs apply to integers — a str interpolates as text
+bad_fmt_trail.n	bad_fmt_trail.n:5: unknown format spec ':w4q' — the format specs are :x, :X (hex), :wN (width), :zN (zero-pad), and wN/zN composed with a trailing x or X
+bad_fmt_unknown.n	bad_fmt_unknown.n:5: unknown format spec ':q' — the format specs are :x, :X (hex), :wN (width), :zN (zero-pad), and wN/zN composed with a trailing x or X
+bad_fmt_width_str.n	bad_fmt_width_str.n:5: format specs apply to integers — a str interpolates as text
+bad_for_mut.n	bad_for_mut.n:3: cannot assign to immutable 'i' (declare it with 'mut')
+bad_for_range.n	bad_for_range.n:2: for range bounds must be integers (got str .. str)
+bad_index_idx.n	bad_index_idx.n:4: index must be an integer (got str)
+bad_index_ty.n	bad_index_ty.n:3: cannot index a i64 value (only pointers and str)
+bad_index_valty.n	bad_index_valty.n:4: cannot assign str to a u8 target
+bad_index_write.n	bad_index_write.n:3: cannot write through a str index — str is an immutable view of its text
+bad_match_binds.n	bad_match_binds.n:5: arm 'Circle' binds 2 name(s), but the payload has 1 field(s)
+bad_match_missing.n	bad_match_missing.n:4: match must cover variant 'Empty' exactly once
+bad_match_nonenum.n	bad_match_nonenum.n:3: match subject must be an enum value (got i64)
+bad_method.n	bad_method.n:7: Rect has no method 'grow'
+bad_method_arity.n	bad_method_arity.n:7: method 'Rect.scale' takes 1 argument(s), got 0
+bad_mexpr_types.n	bad_mexpr_types.n:5: match arms disagree: arm 'B' yields str, expected i64
+bad_mexpr_void.n	bad_mexpr_void.n:5: match arm 'A' must yield a value
+bad_mut.n	bad_mut.n:3: cannot assign to immutable 'x' (declare it with 'mut')
+bad_noreturn.n	bad_noreturn.n: not every path through 'pick' returns a i64 — add a tail expression or a return
+bad_noreturn_loop.n	bad_noreturn_loop.n: not every path through 'spin' returns a i64 — add a tail expression or a return
+bad_noreturn_method.n	bad_noreturn_method.n: not every path through method 'Rect.area' returns a i64 — add a tail expression or a return
+bad_own_branch.n	bad_own_branch.n:6: own value 'f' is consumed in only one branch of this if — both branches must agree (v0.18)
+bad_own_branch_noelse.n	bad_own_branch_noelse.n:6: own value 'f' is consumed in only one branch of this if — both branches must agree (v0.18)
+bad_own_discard.n	bad_own_discard.n:5: own result discarded — bind it so someone owns it
+bad_own_leak.n	bad_own_leak.n:3: unconsumed own value 'f' at the end of the function — return it, pass it on, or give the type a #[drop] destructor
+bad_own_loop.n	bad_own_loop.n:7: own value 'f' cannot move inside a loop — the move could run zero or many times (v0.18)
+bad_own_match_move.n	bad_own_match_move.n:8: own value 'f' cannot move inside a match arm — consume it with if/else instead (v0.18)
+bad_own_mut.n	bad_own_mut.n:4: own bindings are immutable — ownership transfers by move (v0.17)
+bad_own_nest.n	bad_own_nest.n: own type in field 'Holder.f' — own values cannot nest in other types (v0.17)
+bad_own_useafter.n	bad_own_useafter.n:6: use of 'f' after move
+bad_own_while_cond.n	bad_own_while_cond.n:5: own value 'f' cannot move inside a loop — the move could run zero or many times (v0.18)
+bad_pf_castin.n	bad_pf_castin.n:2: cannot cast into pageflags — build it from the PROT_* constants (the W^X proof needs static flag sets)
+bad_pf_op.n	bad_pf_op.n:2: pageflags compose only with '|' between pageflags values (got pageflags + pageflags)
+bad_pf_param.n	bad_pf_param.n:2: compose pageflags from the PROT_* constants — a parameter's flags are opaque here (fixed at its call sites)
+bad_ptr_arith.n	bad_ptr_arith.n:3: operator '+': pointers only support comparison against a compatible pointer (cast to addr for arithmetic)
+bad_ret_ty.n	bad_ret_ty.n:2: return type mismatch: expected i64, got str
+bad_ret_void.n	bad_ret_void.n:2: 'return' with a value in a function with no return type
+bad_struct_field.n	bad_struct_field.n:4: struct 'Rect' has no field 'z'
+bad_struct_missing.n	bad_struct_missing.n:3: literal for 'Rect' must initialize field 'h' exactly once
+bad_struct_mut.n	bad_struct_mut.n:4: cannot assign to immutable 'r' (declare it with 'mut')
+bad_struct_unknown.n	bad_struct_unknown.n:2: unknown struct 'Point'
+bad_try_bind_void.n	bad_try_bind_void.n:4: R.Ok carries no payload to bind — use the statement form `expr?;`
+bad_try_errty.n	bad_try_errty.n:5: cannot propagate R.Err (str) as S.Err (i64)
+bad_try_operand.n	bad_try_operand.n:4: operand of '?' must be a result enum (exactly the variants Ok and Err), got Maybe
+bad_try_ret.n	bad_try_ret.n:4: '?' propagates by returning, so the function must return a result enum (it returns i64)
+bad_undecl.n	bad_undecl.n:2: undeclared variable 'y'
+bad_unknown_fn.n	bad_unknown_fn.n:2: unknown function 'launch'
+bad_user_nonptr.n	bad_user_nonptr.n:1: #[user] applies only to pointer types (got i64)
+bad_user_raw.n	bad_user_raw.n:1: #[user] and raw are mutually exclusive — raw is the explicit opt-out
+bad_userptr.n	bad_userptr.n:6: argument 2 to 'write': expected #[user] *u8, got *u8
+bad_variant_payload.n	bad_variant_payload.n:3: variant 'Shape.Circle' carries a payload — construct it with Shape.Circle{ ... }
+bad_wx.n	bad_wx.n:2: W^X violation: a mapping cannot be both writable and executable

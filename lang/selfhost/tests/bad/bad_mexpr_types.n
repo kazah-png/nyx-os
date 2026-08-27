@@ -1,0 +1,8 @@
+enum E { A(x: i64), B, }
+fn main() -> i64 {
+    v := match (E.B) {
+        A(x) => x,
+        B    => "nope",
+    };
+    0
+}

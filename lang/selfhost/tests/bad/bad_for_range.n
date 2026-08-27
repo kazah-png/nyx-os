@@ -1,0 +1,6 @@
+fn main() -> i64 {
+    for i in "a".."b" {
+        i;
+    }
+    0
+}

@@ -1,0 +1,9 @@
+own struct File { fd: i64 }
+fn check(f: File) -> i64 { f.fd }
+fn main() -> i64 {
+    f := File{ fd: 3 };
+    while check(f) > 0 {
+        break;
+    }
+    0
+}

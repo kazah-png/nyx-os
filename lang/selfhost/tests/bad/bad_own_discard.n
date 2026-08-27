@@ -1,0 +1,6 @@
+own struct File { fd: i64 }
+fn make() -> File { File{ fd: 3 } }
+fn main() -> i64 {
+    make();
+    0
+}

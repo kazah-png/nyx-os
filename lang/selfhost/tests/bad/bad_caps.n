@@ -1,0 +1,9 @@
+#[caps(syscall)]
+extern syscall {
+    fn write(fd: i32, buf: *u8, len: isize) -> i64 = 1
+}
+fn main() -> i64 {
+    s := "x";
+    write(1, s.ptr as *u8, 1);
+    0
+}

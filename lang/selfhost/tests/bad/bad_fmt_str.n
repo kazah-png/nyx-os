@@ -1,0 +1,7 @@
+extern syscall { fn write(fd: i32, buf: *u8, len: isize) -> i64 = 1 }
+fn put(s: str) { write(1, s.ptr as *u8, s.len as isize); }
+fn main() -> i64 {
+    s := "hello";
+    put("{s:x}\n");
+    0
+}

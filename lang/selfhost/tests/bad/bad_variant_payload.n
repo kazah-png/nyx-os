@@ -1,0 +1,5 @@
+enum Shape { Circle(r: i64), Empty }
+fn main() -> i64 {
+    s := Shape.Circle;
+    0
+}

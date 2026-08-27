@@ -1,0 +1,9 @@
+struct Rect { w: i64, h: i64 }
+impl Rect {
+    fn area(self) -> i64 { self.w * self.h }
+}
+fn main() -> i64 {
+    r := Rect{ w: 1, h: 2 };
+    x := r.grow();
+    0
+}

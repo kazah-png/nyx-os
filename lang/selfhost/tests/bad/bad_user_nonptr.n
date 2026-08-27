@@ -1,0 +1,2 @@
+fn f(x: #[user] i64) -> i64 { x }
+fn main() -> i64 { 0 }

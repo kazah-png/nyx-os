@@ -1,0 +1,6 @@
+fn main() -> i64 {
+    s := "abc";
+    p := s.ptr;
+    p[0] = "hi";
+    0
+}

@@ -1,0 +1,6 @@
+struct Rect { w: i64, h: i64 }
+fn main() -> i64 {
+    r := Rect{ w: 1, h: 2 };
+    y := r.z;
+    0
+}

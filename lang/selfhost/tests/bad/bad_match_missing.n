@@ -1,0 +1,8 @@
+enum Shape { Circle(r: i64), Empty }
+fn main() -> i64 {
+    s := Shape.Circle{ r: 1 };
+    match s {
+        Circle(r) => { r = r; },
+    }
+    0
+}

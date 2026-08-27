@@ -1,0 +1,7 @@
+enum Maybe { Some(v: i64), Nothing, }
+fn get() -> Maybe { Maybe.Some{ v: 1 } }
+fn f() -> Maybe {
+    x := get()?;
+    Maybe.Nothing
+}
+fn main() -> i64 { 0 }

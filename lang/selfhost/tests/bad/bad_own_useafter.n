@@ -1,0 +1,8 @@
+own struct File { fd: i64 }
+fn sink(f: File) { f.fd; }
+fn main() -> i64 {
+    f := File{ fd: 3 };
+    sink(f);
+    x := f.fd;
+    0
+}

@@ -1,0 +1,12 @@
+own struct File { fd: i64 }
+fn sink(f: File) { f.fd; }
+enum Tag { A, B }
+fn main() -> i64 {
+    f := File{ fd: 3 };
+    t := Tag.A;
+    match t {
+        A => { sink(f); },
+        B => { sink(f); },
+    }
+    0
+}

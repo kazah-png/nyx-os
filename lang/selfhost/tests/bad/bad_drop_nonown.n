@@ -1,0 +1,4 @@
+#[drop(free_it)]
+struct Page { addr: i64 }
+fn free_it(p: Page) { p.addr; }
+fn main() -> i64 { 0 }

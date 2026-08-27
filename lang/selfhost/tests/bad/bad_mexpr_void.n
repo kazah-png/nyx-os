@@ -1,0 +1,9 @@
+enum E { A, B, }
+fn nothing() { }
+fn main() -> i64 {
+    v := match (E.A) {
+        A => nothing(),
+        B => 1,
+    };
+    0
+}
