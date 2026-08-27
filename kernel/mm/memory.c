@@ -33,7 +33,12 @@ static uint32_t free_pages = 0;
 // the frame to the bitmap when the last reference drops. A refcount of 0 for a
 // page that was never tracked (reserved at init, or pre-refcount allocations)
 // simply means "unconditional free", so legacy callers keep working.
-static uint8_t page_refcount[MAX_PAGES];
+// uint16 (not uint8): a shared frame's reference count can reach the number of address
+// spaces mapping it, and MAX_PROCESSES is 512 — past a uint8's 255 ceiling. A saturating
+// uint8 under-counted a widely-shared COW frame and freed it early (use-after-free); 16
+// bits holds every reachable count with room to spare (the incref still saturates safely
+// at 0xFFFF, now unreachable). Costs 2*MAX_PAGES bytes of BSS (256 KB at 512 MB).
+static uint16_t page_refcount[MAX_PAGES];
 
 // Frames that must NEVER return to the allocator, whatever the refcount says: the
 // shared-libc master pages (loaded once at boot, mapped read-only into every
@@ -156,8 +161,8 @@ void page_incref(void* addr) {
     // Only an already-allocated frame can gain a reference. Incref'ing a free frame
     // (refcount 0) would leave it "referenced" yet still marked free in the bitmap,
     // so alloc_page could hand the same frame out a second time (issue #53). Saturate
-    // at 0xFF rather than wrapping.
-    if (page_refcount[page_idx] >= 1 && page_refcount[page_idx] < 0xFF)
+    // at 0xFFFF rather than wrapping (unreachable at MAX_PROCESSES=512, but safe).
+    if (page_refcount[page_idx] >= 1 && page_refcount[page_idx] < 0xFFFF)
         page_refcount[page_idx]++;
     spin_unlock_irqrestore(&page_lock, fl);
 }
@@ -264,6 +269,21 @@ int page_alloc_selftest(void) {
     for (int i = 0; i < 32; i++) { v[i] = alloc_page(); if (!v[i]) return 14; }
     for (int i = 0; i < 32; i++) free_page(v[i]);
     if (get_free_pages() != free0) return 15;
+    // --- refcount above the old uint8 ceiling (255) --------------------------------
+    // MAX_PROCESSES is 512, so a read-only COW frame (e.g. a program's .rodata that
+    // forks into hundreds of children without a write) can be referenced by more than
+    // 255 address spaces. A uint8 refcount saturated there and then freed the frame
+    // 255 decrefs later — while the remaining owners still had it mapped (use-after-
+    // free). Count exactly to 300 and back to prove the type now holds it.
+    void* q = alloc_page();
+    if (!q) return 16;                                    // fresh: refcount 1
+    for (int i = 0; i < 299; i++) page_incref(q);         // 300 references in total
+    if (page_get_refcount(q) != 300) return 17;           // a uint8 refcount capped at 255 here
+    for (int i = 0; i < 299; i++) free_page(q);           // drop back toward the single owner
+    if (page_get_refcount(q) != 1) return 18;             // still referenced: NOT freed early
+    if (get_free_pages() != free0 - 1) return 19;         // exactly the one frame still out
+    free_page(q);                                         // last reference -> back to the pool
+    if (get_free_pages() != free0) return 20;             // net-zero restored
     return 0;
 }
 
