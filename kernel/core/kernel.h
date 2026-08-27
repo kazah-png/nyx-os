@@ -18,7 +18,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.4.410"
+#define KERNEL_VERSION "6.4.411"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -795,6 +795,8 @@ void tss_set_ist_cpu(uint32_t cpu, uint8_t ist_idx, uint64_t stack_top);
 void load_tss(void);
 void load_tss_for_cpu(uint32_t cpu);   // each core loads its OWN TSS (see gdt.c)
 void sched_target(process_t* p);       // aim this CPU's next_rsp/next_cr3/TSS at p
+extern volatile uint64_t g_ctx_switches;   // total context switches since boot (/proc/stat ctxt)
+uint64_t total_procs_created(void);        // monotonic count of processes ever created (/proc/stat processes)
 void sched_forget(process_t* p);       // clear p from every core's sched_cur before freeing it
 void cpu_enable_sse_fpu(void);         // per-CPU CR0/CR4 FPU+SSE enable (kernel.c); every core calls it
 extern uint8_t g_fpu_initial[];        // clean 512-byte fxsave template (process.c), 16-byte aligned

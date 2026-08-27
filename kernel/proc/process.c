@@ -5,6 +5,13 @@ extern process_t* process_table[MAX_PROCESSES];
 extern int process_count;
 static uint64_t next_pid = 1;
 
+// Total context switches since boot — bumped once per scheduler dispatch at the single
+// switch chokepoint sched_target(), on the BSP and every AP. Exposed as /proc/stat's
+// `ctxt`. Incremented with an atomic add because sched_target runs concurrently on
+// several cores under smpbalance; a plain ++ would drop counts there.
+volatile uint64_t g_ctx_switches = 0;
+uint64_t total_procs_created(void) { return next_pid - 1; }   // /proc/stat `processes`
+
 int current_idx = 0;
 
 // Guards the SHAPE of process_table — the entries array and process_count —
@@ -959,6 +966,7 @@ static void fpu_switch(process_t* next) {
 // in the kernel address space; user processes get their own CR3, and the TSS
 // RSP0 must be their kernel stack so their next ring3→ring0 entry lands safely.
 void sched_target(process_t* p) {
+    __atomic_fetch_add(&g_ctx_switches, 1, __ATOMIC_RELAXED);   // one dispatch = one context switch
     next_rsp = (uint64_t)p->stack;
     if (p->page_directory) {
         // A process interrupted in ring 0 (mid-syscall) resumes there, whose

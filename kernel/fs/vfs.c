@@ -80,6 +80,7 @@ typedef struct vfs_node {
 #define PROC_PID_CMDLINE 7   // /proc/<pid>/cmdline (proc_pid set)
 #define PROC_PID_MAPS    8   // /proc/<pid>/maps    (mapped memory regions)
 #define PROC_MOUNTS      9   // /proc/mounts        (mounted filesystems)
+#define PROC_STAT        10  // /proc/stat          (ctxt / processes / procs_running / btime)
 
 /* /dev/random and /dev/urandom are served by the kernel CSPRNG (an HMAC-DRBG seeded from
  * RDSEED/RDRAND hardware entropy) — the same source uuid/mktemp/shuf/encrypt already use.
@@ -484,6 +485,29 @@ static int proc_generate(vfs_node_t* ino, char* buf, int bufsz) {
         case PROC_CPUINFO:
             snprintf(buf, bufsz, "arch\t: x86_64\nvendor\t: NyxOS\n");
             break;
+        case PROC_STAT: {
+            // Aggregate scheduler/system counters, Linux /proc/stat layout (the fields we
+            // can report HONESTLY): ctxt = context switches since boot (the new sched_target
+            // counter), processes = procs ever created (next_pid-1), procs_running = live
+            // RUN-state tasks right now, btime = boot wall-clock (RTC now minus uptime).
+            extern volatile uint64_t g_ctx_switches;
+            extern uint64_t total_procs_created(void);
+            extern int64_t rtc_epoch_now(void);
+            extern uint32_t get_uptime_seconds(void);
+            extern process_t* process_table[MAX_PROCESSES];
+            extern int process_count;
+            uint32_t running = 0;
+            for (int i = 0; i < process_count; i++)
+                if (process_table[i] && process_table[i]->state == PROC_RUN) running++;
+            int64_t btime = rtc_epoch_now() - (int64_t)get_uptime_seconds();
+            if (btime < 0) btime = 0;
+            snprintf(buf, bufsz,
+                     "ctxt %llu\nprocesses %llu\nprocs_running %u\nbtime %u\n",
+                     (unsigned long long)g_ctx_switches,
+                     (unsigned long long)total_procs_created(),
+                     running, (uint32_t)btime);
+            break;
+        }
         case PROC_PID_STATUS: {
             process_t* p = find_process(ino->proc_pid);
             if (p) {
@@ -672,7 +696,7 @@ void init_vfs(void) {
     static const struct { const char* name; uint32_t pt; } procf[] = {
         {"meminfo", PROC_MEMINFO}, {"uptime", PROC_UPTIME},
         {"version", PROC_VERSION}, {"cpuinfo", PROC_CPUINFO},
-        {"mounts",  PROC_MOUNTS},
+        {"mounts",  PROC_MOUNTS},  {"stat",   PROC_STAT},
     };
     for (unsigned i = 0; i < sizeof(procf) / sizeof(procf[0]); i++)
         proc_make(proc_node, procf[i].name, 0, procf[i].pt, 0);
