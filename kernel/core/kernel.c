@@ -164,6 +164,7 @@ static void cmd_convert(int argc, char** argv);
 static void cmd_tar(int argc, char** argv);
 static void cmd_iniget(int argc, char** argv);
 static void cmd_factor(int argc, char** argv);
+static void cmd_fact(int argc, char** argv);
 static void cmd_isprime(int argc, char** argv);
 static void cmd_strings(int argc, char** argv);
 static void cmd_sha256sum(int argc, char** argv);
@@ -440,6 +441,7 @@ static const command_t commands[] = {
     {"nl",        cmd_nl,        "Number lines: nl [-b a|t|n] [-w N] [-s SEP] <file>", false},
     {"factor",    cmd_factor,    "Prime factorization: factor N [N ...]", false},
     {"isprime",   cmd_isprime,   "Test primality of each integer: isprime N [N ...]", false},
+    {"fact",      cmd_fact,      "Exact factorial N! (arbitrary precision): fact N [N ...]", false},
     {"strings",   cmd_strings,   "Print printable-character runs in a file: strings [-n MIN] <file>", false},
     {"sha256sum", cmd_sha256sum, "Print the SHA-256 digest of each file: sha256sum <file>...", false},
     {"hmac",      cmd_hmac,      "HMAC-SHA256 of a message under a key: hmac <key> <message>", false},
@@ -930,6 +932,7 @@ static const man_page_t man_pages[] = {
     {"nl",       "Number the lines of <file>. By default only non-empty lines are numbered (-b t); -b a numbers every line and -b n numbers none. Each line number is right-justified in a field N columns wide (6 by default, or -w N) and followed by a separator (a tab by default, or -s SEP), then the line text."},
     {"factor",   "Print the prime factorization of each integer argument, one per line, as `N: p1 p2 ...` with factors ascending and repeated by multiplicity (e.g. `factor 90` prints `90: 2 3 3 5`). 0 and 1 print just `N:`. Accepts any 64-bit unsigned value; a non-numeric or negative argument is reported and skipped. Small factors are peeled by trial division and the rest by Miller-Rabin + Pollard's rho, so even a large 64-bit semiprime factors quickly."},
     {"isprime",  "Test each integer argument for primality and print `N is prime` or `N is not prime`. Uses an exact deterministic Miller-Rabin (the twelve witnesses 2..37, proven correct for all 64-bit N), so the answer is definitive — not probabilistic — and it correctly rejects Carmichael numbers that fool a naive Fermat test. Much faster than `factor` for a large prime, since it never has to find the factors. A non-numeric or negative argument is reported and skipped."},
+    {"fact",     "Print the exact factorial N! of each argument, to arbitrary precision. Ordinary 64-bit arithmetic (calc, expr) overflows at 21!, so this keeps the running product in base-1,000,000,000 limbs and multiplies by each k up to N — the result is exact no matter how many digits it has (e.g. `fact 50` prints all 65 digits of 30414093201713378043612608166064768844377641568960512000000000000). Bounded at 4608 digits (about 1560!); beyond that it reports the limit. 0! and 1! are 1. A non-numeric or negative argument is reported and skipped."},
     {"strings",  "Print each run of at least MIN (default 4, or -n MIN) consecutive printable characters found in <file>, one run per line — the classic way to read the text embedded in a binary (an ELF, an image, a package). A printable character is a space through `~` (0x20-0x7E) or a tab; any other byte ends the current run. The file is streamed in fixed chunks, so even a large binary needs no whole-file buffer."},
     {"hmac","Compute HMAC-SHA256 of <message> keyed by <key> and print it as 64 lowercase hex digits: `hmac <key> <message>`. HMAC is the standard keyed-hash message authentication code (RFC 2104 / FIPS 198) — the way API requests are signed, JWT `HS256` tokens are built, and webhook payloads are verified: the same key + message always yields the same tag, and without the key the tag can't be forged. Both arguments are taken as text (quote a message with spaces). Backed by the same KAT'd `hmac_sha256` the CSPRNG, HKDF and PBKDF2 auth path use; the RFC 4231 test vectors pin it (the `hmac` self-test)."},
     {"encrypt",  "Encrypt a file under a password: `encrypt <in> <out> <password>`. A 128-bit key is derived from the password with PBKDF2-HMAC-SHA256 (4096 iterations) over a random 16-byte salt, and the file is sealed with AES-128-GCM using a random 12-byte nonce. The output is `\"NYXC\" | salt | nonce | 16-byte auth tag | ciphertext`, so encrypting the same file twice yields different bytes and any tampering is detectable. Decrypt it with `decrypt` and the same password. Payloads up to 4 MB. Keys are wiped from memory after use. (A convenience tool — for real archival use a vetted implementation.)"},
@@ -2059,6 +2062,65 @@ static void cmd_isprime(int argc, char** argv) {
             continue;
         }
         printf("%llu is %s\n", (unsigned long long)n, is_prime_u64(n) ? "prime" : "not prime");
+    }
+}
+
+// Exact factorial as a decimal string — arbitrary precision, since 64-bit math overflows
+// at 21! (calc/expr top out there). The running product lives in base-1e9 limbs (each
+// 0..999999999, little-endian): multiplying by the next k is one carry-propagating pass,
+// and printing is trivial in base 1e9 (top limb bare, the rest zero-padded to 9 digits) —
+// no bignum division needed, unlike a base-2^32 representation. Pure (no I/O), so `fact`'s
+// KAT / a host-diff can pin it. Writes N! into `out` (NUL-terminated); returns its length,
+// or -1 if it would exceed `outsz` or the limb budget.
+#define FACT_LIMBS 512                      // 512 * 9 = 4608 decimal digits (N! up to ~1560!)
+static int fact_decimal(uint64_t n, char* out, int outsz) {
+    static uint32_t limb[FACT_LIMBS];       // static: 2 KB, and the shell is single-threaded
+    int len = 1; limb[0] = 1;               // 0! = 1! = 1
+    for (uint64_t k = 2; k <= n; k++) {
+        uint64_t carry = 0;
+        for (int i = 0; i < len; i++) {
+            uint64_t cur = (uint64_t)limb[i] * k + carry;
+            limb[i] = (uint32_t)(cur % 1000000000ULL);
+            carry   = cur / 1000000000ULL;
+        }
+        while (carry) {
+            if (len >= FACT_LIMBS) return -1;              // out of limbs
+            limb[len++] = (uint32_t)(carry % 1000000000ULL);
+            carry /= 1000000000ULL;
+        }
+    }
+    int o = 0;
+    uint32_t top = limb[len - 1];           // top limb: no leading zeros
+    char rev[10]; int rl = 0;
+    if (top == 0) rev[rl++] = '0';
+    else while (top) { rev[rl++] = (char)('0' + top % 10); top /= 10; }
+    while (rl) { if (o >= outsz - 1) return -1; out[o++] = rev[--rl]; }
+    for (int i = len - 2; i >= 0; i--) {    // lower limbs: exactly 9 digits, zero-padded
+        uint32_t v = limb[i];
+        char d[9];
+        for (int p = 8; p >= 0; p--) { d[p] = (char)('0' + v % 10); v /= 10; }
+        for (int p = 0; p < 9; p++) { if (o >= outsz - 1) return -1; out[o++] = d[p]; }
+    }
+    out[o] = '\0';
+    return o;
+}
+
+// fact N [N ...] — print each N! exactly (arbitrary precision). The number-theory
+// companion to factor/isprime, and a compute demo that blows past the 64-bit ceiling.
+static void cmd_fact(int argc, char** argv) {
+    if (argc < 2) { printf("Usage: fact N [N ...]  (exact N!, arbitrary precision)\n"); return; }
+    static char buf[FACT_LIMBS * 9 + 1];
+    for (int a = 1; a < argc; a++) {
+        uint64_t n;
+        if (parse_u64(argv[a], &n) != 0) {
+            printf("fact: '%s' is not a valid non-negative integer\n", argv[a]);
+            continue;
+        }
+        if (fact_decimal(n, buf, sizeof(buf)) < 0) {
+            printf("fact: %llu! exceeds the %d-digit limit\n", (unsigned long long)n, FACT_LIMBS * 9);
+            continue;
+        }
+        printf("%s\n", buf);
     }
 }
 
