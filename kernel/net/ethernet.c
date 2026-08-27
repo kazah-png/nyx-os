@@ -25,6 +25,8 @@ int eth_send(const uint8_t* dst_mac, uint16_t type, const uint8_t* data, uint32_
     if (data && len > 0) memcpy(packet + ETH_HEADER_LEN, data, len);
     int result = rtl8139_send_packet(packet, ETH_HEADER_LEN + len);
     kfree(packet);
+    if (result >= 0 && iface_idx >= 0 && iface_idx < 8)
+        net_interfaces[iface_idx].tx_packets++;      // a frame handed to the NIC
     return result;
 }
 
@@ -50,6 +52,7 @@ void eth_poll(int iface_idx) {
                      (dm[0] == om[0] && dm[1] == om[1] && dm[2] == om[2] &&
                       dm[3] == om[3] && dm[4] == om[4] && dm[5] == om[5]);
         if (!for_us) return;
+        net_interfaces[iface_idx].rx_packets++;      // an inbound frame accepted for this host
     }
     uint16_t type = ntohs(hdr->type);
     uint8_t* payload = buffer + ETH_HEADER_LEN;

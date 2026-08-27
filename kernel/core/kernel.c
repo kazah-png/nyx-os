@@ -8229,6 +8229,8 @@ static void cmd_ifconfig(int argc, char** argv) {
                 net_interfaces[i].mac[2], net_interfaces[i].mac[3],
                 net_interfaces[i].mac[4], net_interfaces[i].mac[5],
                 IP4_OCTETS(net_interfaces[i].ip));
+            printf("      RX packets %u  TX packets %u\n",
+                net_interfaces[i].rx_packets, net_interfaces[i].tx_packets);
         }
     }
 }

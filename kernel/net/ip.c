@@ -73,6 +73,7 @@ static void loopback_enqueue(const uint8_t* pkt, uint32_t len) {
     memcpy(lo_ring[lo_head], pkt, len);
     lo_ring_len[lo_head] = (uint16_t)len;
     lo_head = next;
+    net_interfaces[0].tx_packets++;              // lo: a packet queued for self-delivery
 }
 
 // Drain queued loopback packets into the normal receive path. A handler may
@@ -82,6 +83,7 @@ void ip_loopback_poll(void) {
     while (lo_tail != lo_head) {
         int i = lo_tail;
         lo_tail = (lo_tail + 1) % LO_QUEUE_LEN;
+        net_interfaces[0].rx_packets++;          // lo: a self-addressed packet delivered
         ip_handle_packet(lo_ring[i], lo_ring_len[i]);
     }
 }
