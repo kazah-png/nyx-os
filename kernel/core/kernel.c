@@ -429,7 +429,7 @@ static const command_t commands[] = {
     {"alias",     cmd_alias,     "Define/list command aliases: alias [name[=value]]", false},
     {"unalias",   cmd_unalias,   "Remove a command alias: unalias <name>", false},
     {"find",      cmd_find,      "Find files by name: find <name> [path]", false},
-    {"grep",      cmd_grep,      "Search file contents: grep [-inv] <pattern> <file>", false},
+    {"grep",      cmd_grep,      "Search file contents: grep [-cinv] <pattern> <file>", false},
     {"tail",      cmd_tail,      "Show last lines of a file: tail <file> [lines]", false},
     {"sort",      cmd_sort,      "Sort lines of a file: sort [-rnfu] <file>", false},
     {"rev",       cmd_rev,       "Reverse the characters of each line: rev <file>", false},
@@ -922,7 +922,7 @@ static const man_page_t man_pages[] = {
     {"readlink", "Print the target path a symbolic link points at, without following it: `readlink <symlink>`."},
     {"chmod",    "Change a file's permission bits: `chmod <octal> <file>` (e.g. `chmod 644 f`, `chmod 444 f`). Clearing the owner-write bit (e.g. `444`) makes the file read-only — `vfs_write_file`/overwrites are refused until you `chmod` it writable again. Applies to the ramdisk tree; new files default to 644, directories to 755."},
     {"echo",     "Write the arguments to standard output separated by spaces and followed by a newline. `echo text > file` writes to a file instead of the screen."},
-    {"grep",     "Print the lines of <file> that match <pattern>. -i ignores letter case, -n prefixes each match with its line number, and -v inverts the search to print the lines that do NOT match."},
+    {"grep",     "Print the lines of <file> that match <pattern>. -i ignores letter case, -n prefixes each match with its line number, -v inverts the search to print the lines that do NOT match, and -c prints only the COUNT of matching lines (honouring -i/-v) instead of the lines themselves."},
     {"sort",     "Sort the lines of <file>. -r reverses the result; -n sorts numerically by the integer at the start of each line instead of alphabetically; -f folds case (compare case-insensitively); -u drops duplicate lines (keep one per equal key, like GNU sort -u). Flags combine, e.g. sort -fu."},
     {"rev",      "Print each line of <file> with the order of its characters reversed."},
     {"sed",      "Substitute text with the s command: sed s/old/new/[g] <file> replaces the literal string <old> with <new> on each line (the first match per line, or every match with the g flag) and prints the result — the file itself is not changed. Any character right after the s works as the delimiter, so s|a|b|g is the same as s/a/b/g. Matching is literal (NyxOS has no regex engine); unlike tr, which works one character at a time, sed replaces whole strings."},
@@ -4813,15 +4813,16 @@ static int grep_line_match(const char* hay, const char* needle, int ignore_case)
 }
 
 static void cmd_grep(int argc, char** argv) {
-    int ignore_case = 0, show_lineno = 0, invert = 0, ai = 1;
+    int ignore_case = 0, show_lineno = 0, invert = 0, count_only = 0, ai = 1;
     for (; ai < argc && argv[ai][0] == '-' && argv[ai][1]; ai++)
         for (char* f = argv[ai] + 1; *f; f++) {
             if (*f == 'i') ignore_case = 1;
             else if (*f == 'n') show_lineno = 1;
             else if (*f == 'v') invert = 1;
+            else if (*f == 'c') count_only = 1;   // print only the count of matching lines
             else { printf("grep: invalid option -%c\n", *f); return; }
         }
-    if (ai + 1 >= argc) { printf("Usage: grep [-inv] <pattern> <file>\n"); return; }
+    if (ai + 1 >= argc) { printf("Usage: grep [-cinv] <pattern> <file>\n"); return; }
     const char* pat = argv[ai];
     const char* path = argv[ai + 1];
     int fd = vfs_open(path, 0, 0);
@@ -4829,9 +4830,11 @@ static void cmd_grep(int argc, char** argv) {
     static char buf[8192];
     int bytes = vfs_read(fd, buf, sizeof(buf) - 1);
     vfs_close(fd);
-    if (bytes <= 0) return;
+    // -c always reports a count, including 0 for an empty/absent-match file (GNU parity);
+    // without -c an empty read simply prints nothing.
+    if (bytes <= 0) { if (count_only) printf("0\n"); return; }
     buf[bytes] = '\0';
-    int line = 1;
+    int line = 1, matches = 0;
     char* p = buf;
     while (*p) {
         char* nl = p;
@@ -4841,13 +4844,15 @@ static void cmd_grep(int argc, char** argv) {
         int hit = grep_line_match(p, pat, ignore_case);
         if (invert) hit = !hit;
         if (hit) {
-            if (show_lineno) printf("%d:%s\n", line, p);
-            else            printf("%s\n", p);
+            if (count_only)       matches++;               // -c: tally, don't print the line
+            else if (show_lineno) printf("%d:%s\n", line, p);
+            else                  printf("%s\n", p);
         }
         *nl = saved;
         if (*nl == '\n') { p = nl + 1; line++; }
         else break;
     }
+    if (count_only) printf("%d\n", matches);
 }
 
 static void cmd_tail(int argc, char** argv) {
