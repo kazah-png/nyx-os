@@ -8800,6 +8800,58 @@ static uint8_t  grub_fb_red_pos = 0, grub_fb_red_sz = 0;
 static uint8_t  grub_fb_green_pos = 0, grub_fb_green_sz = 0;
 static uint8_t  grub_fb_blue_pos = 0, grub_fb_blue_sz = 0;
 
+// Real-hardware framebuffer-source pick (PURE). GRUB, answering our multiboot2 type-5
+// framebuffer request, hands back a type-8 tag describing the linear framebuffer it set
+// via UEFI GOP (or VBE under legacy BIOS). This decides whether NyxOS can drive that
+// framebuffer directly. Pulled out of kernel_main so the decision — which otherwise only
+// ever runs on a physical boot — gets a KAT, and so the "GRUB gave us a mode we can't
+// drive" case becomes a loud diagnostic instead of a silent fall-through to the QEMU-only
+// Bochs VBE (which on real hardware is just a black screen, undebuggable on the serial-less
+// UMPC). NyxOS's renderer is BGRX 32-bpp direct-colour only:
+//   addr == 0                -> FB_PICK_BOCHS    : GRUB set no LFB (legacy QEMU BIOS path)
+//   type != 1 or bpp != 32   -> FB_PICK_UNUSABLE : an LFB we can't drive (indexed / EGA-text
+//                                                  / 24-/16-bpp) -> caller warns, tries Bochs
+//   direct-RGB 32bpp         -> FB_PICK_GRUB     : use it; *rgb_swapped set if not BGRX
+enum { FB_PICK_BOCHS = 0, FB_PICK_GRUB = 1, FB_PICK_UNUSABLE = 2 };
+static int fb_pick_source(uint64_t addr, uint8_t fb_type, uint8_t bpp,
+                          uint8_t red_pos, uint8_t green_pos, uint8_t blue_pos,
+                          int* rgb_swapped) {
+    if (rgb_swapped) *rgb_swapped = 0;
+    if (addr == 0)                 return FB_PICK_BOCHS;    // no GRUB LFB -> QEMU Bochs VBE
+    if (fb_type != 1 || bpp != 32) return FB_PICK_UNUSABLE; // present but not driveable
+    if (rgb_swapped && !(red_pos == 16 && green_pos == 8 && blue_pos == 0))
+        *rgb_swapped = 1;                                  // not BGRX -> red/blue swapped
+    return FB_PICK_GRUB;
+}
+
+// KAT for fb_pick_source — pins the metal-display gate (GRUB GOP framebuffer vs QEMU Bochs
+// VBE) and the BGRX-vs-swapped colour test that otherwise only ever run on a real boot.
+static int fb_pick_selftest(void) {
+    int sw = -1;
+    // no GRUB framebuffer (addr 0) -> Bochs; swap flag cleared
+    if (fb_pick_source(0, 1, 32, 16, 8, 0, &sw) != FB_PICK_BOCHS) return 1;
+    if (sw != 0) return 2;
+    // real Intel GOP: BGRX 32-bpp direct-colour -> GRUB, no swap
+    if (fb_pick_source(0xC0000000ull, 1, 32, 16, 8, 0, &sw) != FB_PICK_GRUB) return 3;
+    if (sw != 0) return 4;
+    // RGBX GOP (red@0, blue@16) -> GRUB, swap flagged
+    if (fb_pick_source(0xC0000000ull, 1, 32, 0, 8, 16, &sw) != FB_PICK_GRUB) return 5;
+    if (sw != 1) return 6;
+    // indexed / palette framebuffer (type 0) -> unusable
+    if (fb_pick_source(0xC0000000ull, 0, 32, 16, 8, 0, &sw) != FB_PICK_UNUSABLE) return 7;
+    // EGA text (type 2) -> unusable
+    if (fb_pick_source(0xC0000000ull, 2, 0, 0, 0, 0, &sw) != FB_PICK_UNUSABLE) return 8;
+    // direct-colour but 24-bpp -> unusable (renderer is 32-bpp only)
+    if (fb_pick_source(0xC0000000ull, 1, 24, 16, 8, 0, &sw) != FB_PICK_UNUSABLE) return 9;
+    // direct-colour but 16-bpp -> unusable
+    if (fb_pick_source(0xC0000000ull, 1, 16, 11, 5, 0, &sw) != FB_PICK_UNUSABLE) return 10;
+    // an unusable pick must not report a colour swap
+    sw = 7;
+    fb_pick_source(0xC0000000ull, 1, 24, 16, 8, 0, &sw);
+    if (sw != 0) return 11;
+    return 0;
+}
+
 // Enable the CPU's Supervisor Mode Execution/Access Prevention (SMEP/SMAP), if the
 // processor advertises them (CPUID.(EAX=7,ECX=0):EBX bit 7 = SMEP, bit 20 = SMAP).
 //  - SMEP (CR4.SMEP, bit 20): a #GP if ring 0 tries to EXECUTE a user (U=1) page.
@@ -9266,6 +9318,7 @@ static void run_selftests(void) {
         {"nvme",         nvme_selftest},
         {"kbdmap",       kbd_translate_selftest}, {"mouse-decode",  mouse_decode_selftest},
         {"nyxgrub",      nyxgrub_selftest},
+        {"fbpick",       fb_pick_selftest},
         {"gpt",          gpt_selftest},
         {"fat",          fat_selftest},
         {"mbr",          mbr_selftest},
@@ -9432,7 +9485,11 @@ void kernel_main(uint64_t magic, void* mboot_ptr) {
     printf("[INIT] Slab Allocator...\n"); slab_init_all();
     printf("[INIT] SMP...\n"); smp_init();
     fb_set_rotation(rotate_deg);   // portrait-panel display rotation (0 unless "rotate=" on the cmdline)
-    if (grub_fb_addr && grub_fb_type == 1 && grub_fb_bpp == 32) {
+    int fb_rgb_swapped = 0;
+    int fb_pick = fb_pick_source(grub_fb_addr, grub_fb_type, grub_fb_bpp,
+                                 grub_fb_red_pos, grub_fb_green_pos, grub_fb_blue_pos,
+                                 &fb_rgb_swapped);
+    if (fb_pick == FB_PICK_GRUB) {
         // REAL-HARDWARE / UEFI path: GRUB (via GOP, or VBE under BIOS) already set a linear
         // framebuffer and handed it to us in the multiboot2 type-8 tag. Map it and use it
         // directly — no QEMU-only Bochs-VBE poking. (QEMU also fills this tag now, so this same
@@ -9445,7 +9502,7 @@ void kernel_main(uint64_t magic, void* mboot_ptr) {
         // NyxOS renders as BGRX (blue@0, green@8, red@16). If the display reports anything else
         // (some non-Intel GOPs are RGBX), on-screen reds and blues will be swapped — flag it so a
         // blind physical bringup knows why, without changing the render path (untested on real HW).
-        if (!(grub_fb_red_pos == 16 && grub_fb_green_pos == 8 && grub_fb_blue_pos == 0))
+        if (fb_rgb_swapped)
             printf("[WARN] fb is not BGRX(R16/G8/B0); red/blue may be swapped on this panel\n");
         void* lfb = vbe_map_lfb(grub_fb_addr, grub_fb_pitch * grub_fb_h);
         fb_init_ex(grub_fb_w, grub_fb_h, grub_fb_bpp, lfb, grub_fb_pitch / 4);
@@ -9459,6 +9516,12 @@ void kernel_main(uint64_t magic, void* mboot_ptr) {
         printf("[INIT] Framebuffer (GRUB): %ux%ux%u at 0x%llx\n",
                grub_fb_w, grub_fb_h, grub_fb_bpp, (uint64_t)(uintptr_t)lfb);
     } else {
+        // FB_PICK_UNUSABLE: GRUB handed back a framebuffer NyxOS can't drive (indexed, EGA
+        // text, or not 32-bpp). Falling through to Bochs VBE works under the QEMU BIOS but is
+        // a black screen on real hardware — say so loudly for a blind bringup, then try Bochs.
+        if (fb_pick == FB_PICK_UNUSABLE)
+            printf("[WARN] GRUB framebuffer present (type=%u bpp=%u) but NyxOS needs direct-RGB 32bpp; on real hardware the display will stay blank.\n",
+                   grub_fb_type, grub_fb_bpp);
         printf("[INIT] VBE (Bochs)...\n"); vbe_init();
         printf("[INIT] VBE mode 1024x768x32...\n");
         if (vbe_set_mode(1024, 768, 32) == 0) {
