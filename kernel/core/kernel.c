@@ -165,6 +165,7 @@ static void cmd_tar(int argc, char** argv);
 static void cmd_iniget(int argc, char** argv);
 static void cmd_factor(int argc, char** argv);
 static void cmd_fact(int argc, char** argv);
+static void cmd_size(int argc, char** argv);
 static void cmd_isprime(int argc, char** argv);
 static void cmd_strings(int argc, char** argv);
 static void cmd_sha256sum(int argc, char** argv);
@@ -443,6 +444,7 @@ static const command_t commands[] = {
     {"isprime",   cmd_isprime,   "Test primality of each integer: isprime N [N ...]", false},
     {"fact",      cmd_fact,      "Exact factorial N! (arbitrary precision): fact N [N ...]", false},
     {"strings",   cmd_strings,   "Print printable-character runs in a file: strings [-n MIN] <file>", false},
+    {"size",      cmd_size,      "ELF section footprint (text/data/bss): size <file>...", false},
     {"sha256sum", cmd_sha256sum, "Print the SHA-256 digest of each file: sha256sum <file>...", false},
     {"hmac",      cmd_hmac,      "HMAC-SHA256 of a message under a key: hmac <key> <message>", false},
     {"totp",      cmd_totp,      "RFC 6238 auth code: totp <base32-secret> [unix-time]", false},
@@ -934,6 +936,7 @@ static const man_page_t man_pages[] = {
     {"isprime",  "Test each integer argument for primality and print `N is prime` or `N is not prime`. Uses an exact deterministic Miller-Rabin (the twelve witnesses 2..37, proven correct for all 64-bit N), so the answer is definitive — not probabilistic — and it correctly rejects Carmichael numbers that fool a naive Fermat test. Much faster than `factor` for a large prime, since it never has to find the factors. A non-numeric or negative argument is reported and skipped."},
     {"fact",     "Print the exact factorial N! of each argument, to arbitrary precision. Ordinary 64-bit arithmetic (calc, expr) overflows at 21!, so this keeps the running product in base-1,000,000,000 limbs and multiplies by each k up to N — the result is exact no matter how many digits it has (e.g. `fact 50` prints all 65 digits of 30414093201713378043612608166064768844377641568960512000000000000). Bounded at 4608 digits (about 1560!); beyond that it reports the limit. 0! and 1! are 1. A non-numeric or negative argument is reported and skipped."},
     {"strings",  "Print each run of at least MIN (default 4, or -n MIN) consecutive printable characters found in <file>, one run per line — the classic way to read the text embedded in a binary (an ELF, an image, a package). A printable character is a space through `~` (0x20-0x7E) or a tab; any other byte ends the current run. The file is streamed in fixed chunks, so even a large binary needs no whole-file buffer."},
+    {"size",     "Print the footprint of each ELF binary in the classic `size` columns: text, data, bss, their total in decimal (dec) and hex, and the filename. text is the allocated read-only sections (code + rodata), data the allocated writable sections that occupy file bytes (.data/.got), and bss the allocated zero-init sections (.bss — memory but no file bytes). Only loaded (SHF_ALLOC) sections count; symbol/debug/string tables do not. Reads the section headers only, so it never runs or loads the program. A non-ELF argument is reported and skipped."},
     {"hmac","Compute HMAC-SHA256 of <message> keyed by <key> and print it as 64 lowercase hex digits: `hmac <key> <message>`. HMAC is the standard keyed-hash message authentication code (RFC 2104 / FIPS 198) — the way API requests are signed, JWT `HS256` tokens are built, and webhook payloads are verified: the same key + message always yields the same tag, and without the key the tag can't be forged. Both arguments are taken as text (quote a message with spaces). Backed by the same KAT'd `hmac_sha256` the CSPRNG, HKDF and PBKDF2 auth path use; the RFC 4231 test vectors pin it (the `hmac` self-test)."},
     {"encrypt",  "Encrypt a file under a password: `encrypt <in> <out> <password>`. A 128-bit key is derived from the password with PBKDF2-HMAC-SHA256 (4096 iterations) over a random 16-byte salt, and the file is sealed with AES-128-GCM using a random 12-byte nonce. The output is `\"NYXC\" | salt | nonce | 16-byte auth tag | ciphertext`, so encrypting the same file twice yields different bytes and any tampering is detectable. Decrypt it with `decrypt` and the same password. Payloads up to 4 MB. Keys are wiped from memory after use. (A convenience tool — for real archival use a vetted implementation.)"},
     {"decrypt",  "Decrypt a file produced by `encrypt`: `decrypt <in> <out> <password>`. It re-derives the key from the password and the salt stored in the file, then AES-128-GCM verifies the authentication tag BEFORE writing anything: a wrong password or a corrupted/tampered file fails the check and no output is written (`auth failed`). On success the recovered plaintext is written to <out>."},
@@ -5295,6 +5298,63 @@ static void cmd_sb16play(int argc, char** argv) {
 }
 
 #include "../proc/elf.h"
+
+// ELF section flags/types not defined in elf.h — `size` needs them to classify sections.
+#define SHT_PROGBITS 1
+#define SHT_NOBITS   8
+#define SHF_WRITE    0x1
+#define SHF_ALLOC    0x2
+
+// Sum an ELF64 image's ALLOCATED sections into the classic text/data/bss buckets, the way
+// `size` reports a binary's footprint: text = allocated read-only (code + rodata), data =
+// allocated writable with file content (.data/.got), bss = allocated writable NOBITS (.bss,
+// takes memory but no file bytes). Non-allocated sections (symbols, debug, strtab) don't
+// count. Pure (parses `data` only), bounds-checked, so a host-diff vs GNU size can pin it.
+// Returns 0, or -1 if the section table doesn't fit in the image.
+static int elf_sizes(const uint8_t* data, uint32_t len, uint64_t* text, uint64_t* dat, uint64_t* bss) {
+    *text = *dat = *bss = 0;
+    if (len < sizeof(elf64_hdr_t)) return -1;
+    const elf64_hdr_t* h = (const elf64_hdr_t*)data;
+    if (h->e_shoff == 0 || h->e_shentsize < sizeof(elf64_shdr_t)) return -1;
+    if (h->e_shoff + (uint64_t)h->e_shnum * h->e_shentsize > len) return -1;
+    for (int i = 0; i < h->e_shnum; i++) {
+        const elf64_shdr_t* s = (const elf64_shdr_t*)(data + h->e_shoff + (uint64_t)i * h->e_shentsize);
+        if (!(s->sh_flags & SHF_ALLOC)) continue;          // only loaded sections have a footprint
+        if (s->sh_flags & SHF_WRITE) {
+            if (s->sh_type == SHT_NOBITS) *bss += s->sh_size;
+            else                          *dat += s->sh_size;
+        } else {
+            *text += s->sh_size;
+        }
+    }
+    return 0;
+}
+
+// size <file> [file ...] — print each ELF's text/data/bss footprint plus their total in
+// decimal and hex, like GNU `size`. The composition companion to `file`/`identify`, and a
+// dev aid for the in-OS toolchain (cc/xbm): see a binary's code vs data vs zero-init split
+// without running it. Sizes fit a uint32 for any real binary, so the columns cast to it.
+static void cmd_size(int argc, char** argv) {
+    if (argc < 2) { printf("Usage: size <file> [file ...]\n"); return; }
+    printf("%7s %7s %7s %7s %7s %s\n", "text", "data", "bss", "dec", "hex", "filename");
+    for (int a = 1; a < argc; a++) {
+        int fd = vfs_open(argv[a], 0, 0);
+        if (fd < 0) { printf("size: %s: cannot open\n", argv[a]); continue; }
+        uint32_t sz = vfs_fsize(fd);
+        uint8_t* d = vfs_fdata(fd);
+        uint64_t text, dat, bss;
+        if (!d || sz == 0 || !elf_validate(d, sz) || elf_sizes(d, sz, &text, &dat, &bss) != 0) {
+            printf("size: %s: not a valid ELF\n", argv[a]);
+            vfs_close(fd);
+            continue;
+        }
+        uint64_t dec = text + dat + bss;
+        printf("%7u %7u %7u %7u %7x %s\n",
+               (unsigned)text, (unsigned)dat, (unsigned)bss, (unsigned)dec, (unsigned)dec, argv[a]);
+        vfs_close(fd);
+    }
+}
+
 // Run an ELF as a FOREGROUND job: spawn it into the preemptive scheduler, then
 // wait for it to exit — WITHOUT freezing the desktop. Rather than blocking the
 // compositor thread in kwait() (which would park it and stop all repainting), we
