@@ -12,9 +12,14 @@ typedef struct {
     int scroll_offset;
     unsigned char cpu_hist[MON_HISTORY];   // CPU utilization samples, 0..100
     unsigned char mem_hist[MON_HISTORY];   // memory-in-use samples, 0..100
+    unsigned char net_hist[MON_HISTORY];   // network activity samples, 0..100 (pkt/s, scaled)
     int hist_count;        // valid samples so far (ramps up to MON_HISTORY)
     int hist_head;         // ring write cursor (next slot to fill)
     int tick_accum;        // on_tick frames since the last sample was taken
+    uint32_t net_prev;     // previous cumulative rx+tx packet total (all interfaces)
+    uint32_t net_last_tick;// tick_count at the previous sample (for an accurate pkt/s)
+    uint32_t net_rate;     // packets/second over the last interval (shown in the label)
+    int net_primed;        // 1 once a baseline exists, so the first delta isn't the whole boot total
 } taskman_win_t;
 
 taskman_win_t* taskman_create_ctx(void);

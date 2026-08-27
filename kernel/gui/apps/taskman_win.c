@@ -17,6 +17,7 @@
 
 #define GRAPH_H   56          // plot height of each performance graph
 #define LABEL_H   15          // caption row above each graph
+#define NET_FULL_PPS 200      // packets/second that fills the network graph to 100% (a busy link)
 
 taskman_win_t* taskman_create_ctx(void) {
     taskman_win_t* tm = (taskman_win_t*)kmalloc(sizeof(taskman_win_t));
@@ -59,8 +60,30 @@ int taskman_win_tick(window_t* win) {
     uint32_t mem, u, t;
     mon_mem(&mem, &u, &t);
 
+    // Network activity: packets/second since the last sample, from the honest per-interface
+    // rx/tx counters (v6.4.405). Sum both directions across every interface, diff against the
+    // previous total, and divide by the real elapsed time (tick_count ms) for an accurate rate.
+    extern volatile uint32_t tick_count;
+    uint32_t net_total = 0;
+    for (int i = 0; i < 8; i++)
+        if (net_interfaces[i].name[0])
+            net_total += net_interfaces[i].rx_packets + net_interfaces[i].tx_packets;
+    uint32_t now = tick_count;
+    uint32_t rate = 0;
+    if (tm->net_primed) {
+        uint32_t dpkt = net_total - tm->net_prev;          // wraps cleanly in uint32
+        uint32_t dms  = now - tm->net_last_tick;
+        if (dms > 0) rate = (dpkt * 1000u) / dms;          // packets per second
+    }
+    tm->net_prev = net_total;
+    tm->net_last_tick = now;
+    tm->net_primed = 1;
+    tm->net_rate = rate;
+    uint32_t nv = rate >= NET_FULL_PPS ? 100 : (rate * 100u) / NET_FULL_PPS;
+
     tm->cpu_hist[tm->hist_head] = (unsigned char)(cpu > 100 ? 100 : cpu);
     tm->mem_hist[tm->hist_head] = (unsigned char)(mem > 100 ? 100 : mem);
+    tm->net_hist[tm->hist_head] = (unsigned char)nv;
     tm->hist_head = (tm->hist_head + 1) % MON_HISTORY;
     if (tm->hist_count < MON_HISTORY) tm->hist_count++;
     return 1;
@@ -126,6 +149,13 @@ void taskman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     font_draw_string(gx, y, lbl, fb_rgb(150, 235, 215), THEME_WINDOW_BG);
     mon_draw_graph(gx, y + LABEL_H, gw, GRAPH_H, tm->mem_hist, tm->hist_count, tm->hist_head,
                    fb_rgb(90, 210, 180), fb_rgb(25, 85, 72), fb_rgb(150, 240, 220));
+
+    // --- Network activity graph (amber) ---
+    y = y + LABEL_H + GRAPH_H + 5;
+    snprintf(lbl, sizeof(lbl), "NET  %u pkt/s", tm->net_rate);
+    font_draw_string(gx, y, lbl, fb_rgb(255, 205, 130), THEME_WINDOW_BG);
+    mon_draw_graph(gx, y + LABEL_H, gw, GRAPH_H, tm->net_hist, tm->hist_count, tm->hist_head,
+                   fb_rgb(250, 175, 70), fb_rgb(110, 70, 20), fb_rgb(255, 210, 150));
 
     // --- Process table ---
     int list_y = y + LABEL_H + GRAPH_H + 6;
