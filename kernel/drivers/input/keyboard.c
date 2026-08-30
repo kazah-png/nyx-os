@@ -13,6 +13,7 @@ static int caps_lock = 0;
 static int ctrl_pressed = 0;
 static int alt_pressed = 0;        // Left Alt — tracked for window-management chords
 static int e0_prefix = 0;          // Flag para el prefijo 0xE0
+static int e1_swallow = 0;         // Pause/Break (0xE1 1D 45 / 0xE1 9D C5): bytes left to eat
 
 // ------------------------------------------------------------
 // Buffer circular para caracteres (ISR -> getchar)
@@ -133,6 +134,14 @@ void init_keyboard(void) {
 // from both the IRQ handler and getchar_poll's poll-direct fallback — i.e. from
 // potentially two cores once smpbalance is on.
 char scancode_to_ascii(uint8_t sc) {
+    // --- 0xE1 prefix (Pause/Break: E1 1D 45 then E1 9D C5) ---
+    // Only the Pause key emits 0xE1. Swallow it plus the two bytes that follow, so the
+    // embedded 0x1D isn't decoded as a Left-Ctrl PRESS (which left Ctrl stuck down until an
+    // unrelated 0x9D arrived) and the 0x45 doesn't emit a stray character. Pause has no
+    // action in NyxOS, so eating the whole sequence is correct.
+    if (sc == 0xE1) { e1_swallow = 2; return 0; }
+    if (e1_swallow) { e1_swallow--; return 0; }
+
     // --- 0xE0 prefix (extended keys) ---
     // Checked on the RAW byte, before the press-bit masking below: 0xE0 & 0x7F is
     // 0x60, so the old post-mask comparison could never match and extended keys
