@@ -18,7 +18,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.4.425"
+#define KERNEL_VERSION "6.4.426"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -977,6 +977,7 @@ void sleep(uint32_t milliseconds);
 void init_serial(void);
 void serial_putchar(char c);
 void serial_puts(const char* str);
+void klog_dump(void);                         // dump the captured kernel log ring (`dmesg`)
 char serial_getchar(void);
 char serial_getchar_nonblock(void);
 

@@ -107,6 +107,7 @@ static void cmd_nyxfetch(int argc, char** argv);
 static void cmd_echo(int argc, char** argv);
 static void cmd_reboot(int argc, char** argv);
 static void cmd_poweroff(int argc, char** argv);
+static void cmd_dmesg(int argc, char** argv);
 static void cmd_ps(int argc, char** argv);
 static void cmd_pstree(int argc, char** argv);
 static void cmd_uptime(int argc, char** argv);
@@ -355,6 +356,7 @@ static const command_t commands[] = {
     {"poweroff",  cmd_poweroff,  "Power off the machine (ACPI soft-off)", false},
     {"halt",      cmd_poweroff,  "Halt/power off the machine", false},
     {"shutdown",  cmd_poweroff,  "Shut the machine down", false},
+    {"dmesg",     cmd_dmesg,     "Replay the kernel log (boot/[INIT] messages)", false},
     {"ps",        cmd_ps,        "List processes", false},
     {"pstree",    cmd_pstree,    "Show processes as a parent->child tree", false},
     {"uptime",    cmd_uptime,    "Show uptime, process count, load, and CPUs", false},
@@ -1042,6 +1044,7 @@ static const man_page_t man_pages[] = {
     {"clear",    "Clear the terminal and move the cursor back to the top-left corner."},
     {"history",  "List the most recently entered shell commands, oldest first."},
     {"reboot",   "Restart the machine immediately."},
+    {"dmesg",    "Replay the kernel message log — every line the kernel printed to its serial console since boot, captured into an in-RAM ring buffer. Lets you scroll back through the `[INIT]`/`[LOGIN]`/driver boot messages after they have scrolled off the screen, and is the ONLY way to read them on the real UMPC, which has no physical serial port. The ring keeps the most recent 16 KB and overwrites the oldest output once full."},
     {"poweroff", "Power the machine off via ACPI soft-off (aliases: `halt`, `shutdown`). Writes SLP_TYP|SLP_EN to the PM1a control port — powers down QEMU/VirtualBox; on real hardware without an ACPI FADT parse it halts safely instead. Complements `reboot`."},
     {"cpus",     "List the logical CPU cores the kernel started (SMP), with each core's id and state."},
     {"hexdump",  "Print a side-by-side hex and ASCII dump of memory, starting at <addr> for [bytes] bytes (256 by default)."},
@@ -1443,6 +1446,14 @@ static void cmd_poweroff(int argc, char** argv) {
     // Still executing => no ACPI soft-off on this machine. Halt so power can be cut safely.
     printf("ACPI power-off unavailable here; halted. Safe to power off now.\n");
     for (;;) __asm__ volatile("cli; hlt");
+}
+
+// dmesg — replay the captured kernel log (every char the kernel wrote to the serial
+// console since boot). Handy for reviewing the [INIT]/[LOGIN] boot messages after they
+// scroll off, and the only way to see them on the real UMPC, which has no serial port.
+static void cmd_dmesg(int argc, char** argv) {
+    (void)argc; (void)argv;
+    klog_dump();
 }
 
 // time <command> [args...] — run a command and report the wall-clock time it took.
