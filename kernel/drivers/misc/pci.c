@@ -42,8 +42,14 @@ const char* pci_class_name(uint8_t cls, uint8_t sub, uint8_t prog) {
                 case 0x04: return "PCI-to-PCI bridge";
                 default:   return "Bridge";
             }
+        case 0x07: return "Communication controller";       // serial/modem
+        case 0x08: return "Base system peripheral";         // PIC/DMA/timer/RTC
+        case 0x09: return "Input device controller";        // keyboard/mouse/etc.
+        case 0x0B: return "Processor";                      // co-processor
         case 0x0C:                                          // serial bus
             return (sub == 0x03) ? "USB controller" : "Serial bus controller";
+        case 0x0D: return "Wireless controller";            // e.g. an Intel AX200 Wi-Fi
+        case 0x10: return "Encryption controller";
         default:   return "PCI device";
     }
 }
@@ -91,10 +97,11 @@ int pci_selftest(void) {
         {0,  3, 0, 0x0E, 0x8000180Cu},   // offset masked to 0x0C
     };
     for (int i = 0; i < (int)(sizeof(av) / sizeof(av[0])); i++)
-        if (pci_cfg_address(av[i].b, av[i].s, av[i].f, av[i].o) != av[i].want) return 1;
+        if (pci_cfg_address(av[i].b, av[i].s, av[i].f, av[i].o) != av[i].want) return 10 + i;
 
-    // (class, subclass, prog-if) -> label, esp. the storage controllers an
-    // installer must tell apart (NVMe vs AHCI vs IDE)
+    // (class, subclass, prog-if) -> label, esp. the storage controllers an installer must
+    // tell apart (NVMe vs AHCI vs IDE) and the other classes a real machine reports (Wi-Fi,
+    // base-system peripherals, USB) so `lspci` names them instead of a bare "PCI device".
     struct { uint8_t c, s, p; const char* want; } cv[] = {
         {0x01, 0x08, 0x02, "NVMe controller"},
         {0x01, 0x06, 0x01, "SATA AHCI controller"},
@@ -103,8 +110,13 @@ int pci_selftest(void) {
         {0x03, 0x00, 0x00, "Display/VGA controller"},
         {0x06, 0x00, 0x00, "Host bridge"},
         {0x0C, 0x03, 0x30, "USB controller"},
+        {0x0D, 0x80, 0x00, "Wireless controller"},          // Intel AX200-class Wi-Fi
+        {0x08, 0x00, 0x00, "Base system peripheral"},
+        {0x07, 0x00, 0x00, "Communication controller"},
+        {0x09, 0x00, 0x00, "Input device controller"},
+        {0x99, 0x00, 0x00, "PCI device"},                   // unknown class -> generic label
     };
     for (int i = 0; i < (int)(sizeof(cv) / sizeof(cv[0])); i++)
-        if (strcmp(pci_class_name(cv[i].c, cv[i].s, cv[i].p), cv[i].want) != 0) return 1;
+        if (strcmp(pci_class_name(cv[i].c, cv[i].s, cv[i].p), cv[i].want) != 0) return 40 + i;
     return 0;
 }
