@@ -309,6 +309,41 @@ int der_selftest(void) {
         else      printf("der: X.509 EC public-key extraction FAIL\n");
     }
 
+    // 4) ADVERSARIAL / malformed inputs — der_read must REJECT every one (return -1) and
+    //    never read past the buffer. The DER cursor is the TLS trust root (it parses the
+    //    server's X.509 cert), so these pin its bounds checks: a future edit that drops a
+    //    check reintroduces an over-read and this case turns red. der_read is correct today.
+    {
+        int ok = 1;
+        uint8_t t; const uint8_t* v; uint32_t vl;
+        // empty buffer: no tag byte
+        { der_t c = { (const uint8_t*)"", (const uint8_t*)"" }; if (der_read(&c, &t, &v, &vl) != -1) ok = 0; }
+        // tag present but no length byte
+        { static const uint8_t d[] = {0x02}; der_t c = { d, d + sizeof(d) }; if (der_read(&c, &t, &v, &vl) != -1) ok = 0; }
+        // short-form length 5 but only 2 value bytes present
+        { static const uint8_t d[] = {0x04,0x05,0x01,0x02}; der_t c = { d, d + sizeof(d) }; if (der_read(&c, &t, &v, &vl) != -1) ok = 0; }
+        // indefinite length (0x80, nb==0) — rejected
+        { static const uint8_t d[] = {0x30,0x80}; der_t c = { d, d + sizeof(d) }; if (der_read(&c, &t, &v, &vl) != -1) ok = 0; }
+        // long-form nb==5 (>4, would overflow a 32-bit length) — rejected
+        { static const uint8_t d[] = {0x02,0x85,0,0,0,0,0}; der_t c = { d, d + sizeof(d) }; if (der_read(&c, &t, &v, &vl) != -1) ok = 0; }
+        // long-form claims 2 length bytes but only 1 is present
+        { static const uint8_t d[] = {0x04,0x82,0x01}; der_t c = { d, d + sizeof(d) }; if (der_read(&c, &t, &v, &vl) != -1) ok = 0; }
+        // long-form length 0xFFFF but a tiny buffer
+        { static const uint8_t d[] = {0x04,0x82,0xFF,0xFF,0x00}; der_t c = { d, d + sizeof(d) }; if (der_read(&c, &t, &v, &vl) != -1) ok = 0; }
+        // maximal-but-VALID long form (nb==4, len==3) IS accepted — pins the nb<=4 boundary
+        { static const uint8_t d[] = {0x04,0x84,0,0,0,3, 0xAA,0xBB,0xCC}; der_t c = { d, d + sizeof(d) };
+          if (der_read(&c, &t, &v, &vl) != 0 || t != 0x04 || vl != 3 || v[2] != 0xCC) ok = 0; }
+        // der_enter with the wrong expected tag rejects (it is 0x30, not 0x02)
+        { static const uint8_t d[] = {0x30,0x03,0x02,0x01,0x07}; der_t c = { d, d + sizeof(d) }, inner;
+          if (der_enter(&c, 0x02, &inner) != -1) ok = 0; }
+        // the X.509 navigator on a truncated cert fails cleanly (no OOB): SEQUENCE claims 256 bytes
+        { static const uint8_t junk[] = {0x30,0x82,0x01,0x00,0x30}; const uint8_t* pt; uint32_t pl;
+          if (der_x509_ec_pubkey(junk, sizeof(junk), &pt, &pl) != -1) ok = 0; }
+        total++;
+        if (ok) { pass++; printf("der: adversarial/malformed rejection PASS\n"); }
+        else      printf("der: adversarial/malformed rejection FAIL\n");
+    }
+
     printf("der: self-test %d/%d passed\n", pass, total);
     return (pass == total) ? 0 : -1;
 }
