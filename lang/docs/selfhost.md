@@ -590,6 +590,32 @@ first thing to outgrow it (8M now). The differential reported the
 overflow as six segfaults before it could pass for an N bug — the
 harness keeps ruling on both sides of the fence.
 
+### Proven inside NyxOS — and the road up the manifest
+
+The rung's on-target proof came a batch later, and it is the
+prettiest differential the ladder has run yet: the in-OS ncc (itself
+compiled by the in-OS tcc) compiled check.n on target, both ncc and
+the freshly built checker were pointed at the same wrong program,
+and the two first-error lines — the C reference's and the N
+rewrite's, both produced inside the operating system — matched to
+the byte once the filename column was stripped. The same batch
+closed the parser's last on-target gap (methods.n's impl/M dump,
+byte-identical), with zero panics and the VFS census on its exact
+baseline.
+
+The scout for the next rungs sorted the remaining sixty manifest
+rows by what they need. **Rung 2 is the structural family, no types
+required**: the capability check (`#[caps(syscall)]` — the caps bit
+already rides the fn table), the C-keyword name check, and nested
+`defer` — each a small judgment over machinery check.n already has.
+**Rung 3 is the mountain's next real face: `infer_type` in N** —
+struct and enum tables, parameter and binding types, and the
+compatibility lattice — which unlocks the forty-odd rows that speak
+about types (argument and assignment mismatches, str and pointer
+operator rules, match and result semantics, and the own/move
+family). The negative corpus keeps the order honest: every rung
+claims exactly the rows its differential proves.
+
 And the hardest lexer feature landed: **interpolation**. A toy string
 containing a brace lexes as segments — HEAD before the first hole,
 MID between holes, TAIL after the last (ncc's own

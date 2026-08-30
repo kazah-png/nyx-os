@@ -131,6 +131,17 @@ node arena was the first thing to outgrow it, and the differential
 reported the overflow as six segfaults before it could pass for an N
 bug. Suite stage [8c] holds all eight targets.
 
+**Proven inside NyxOS (batch V45)**: the in-OS ncc+tcc pipeline
+compiled check.n on target and ran it against bad_mut.n — its output
+matched the in-OS ncc's own first-error line, location and wording,
+with only the filename column normalized away (a two-sided on-target
+differential: both the reference and the rewrite ran inside the OS).
+The same batch closed the parser's last on-target gap: methods.n's
+53-line AST dump — the impl/M-lines anchor — came back byte-identical
+from the in-OS parse.n. Zero panics; the VFS census held its exact
+baseline (219/512 live, high-water 221) despite two more compiles in
+the workload — the node pool recycles.
+
 **Rung 2 — lexemes (landed)**: the stream carries substance now, on
 both sides of the differential at once. `ncc --tokens` and `lex.n`
 both print, per token: identifiers and `#[drop]` names **verbatim**
