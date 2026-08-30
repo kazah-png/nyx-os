@@ -1410,8 +1410,21 @@ static void cmd_realpath(int argc, char** argv) {
 static void cmd_reboot(int argc, char** argv) {
     (void)argc; (void)argv;
     printf("Rebooting...\n");
+    __asm__ volatile("cli");
+    // 1) Pulse the CPU reset line via the 8042 keyboard controller — works on QEMU and on
+    //    most PCs, including the UMPC's legacy-8042 emulation. Drain the input buffer first
+    //    (bit 1 of status port 0x64) so the 0xFE command isn't dropped.
+    for (int i = 0; i < 100000 && (inb(0x64) & 0x02); i++) io_wait();
     outb(0x64, 0xFE);
-    __asm__ volatile("int $0");
+    for (volatile int i = 0; i < 2000000; i++) __asm__ volatile("pause");
+    // 2) Last resort: force a TRIPLE FAULT. Load a zero-length IDT and raise an interrupt —
+    //    the CPU can dispatch neither it nor the resulting double fault, so it triple-faults
+    //    and resets. (The old fallback was `int $0`, which just hit the #DE handler ->
+    //    kernel_panic -> HALT, so `reboot` used to hang with a panic screen on any machine
+    //    whose 8042 reset didn't fire, instead of actually rebooting.)
+    struct { uint16_t limit; uint64_t base; } __attribute__((packed)) null_idt = { 0, 0 };
+    __asm__ volatile("lidt %0; int3" : : "m"(null_idt));
+    for (;;) __asm__ volatile("hlt");   // unreachable
 }
 
 // poweroff / halt / shutdown — turn the machine off (ACPI soft-off). NyxOS had `reboot`
