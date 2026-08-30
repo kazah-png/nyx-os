@@ -1562,7 +1562,39 @@ fn cstmt(p: *u8, st: *i64, i: i64) {
         }
         return;
     }
-    if k == 22 { cexpr(p, st, nd[i * 8 + 1]); return; }   // return
+    if k == 22 {                           // return: resolve the value,
+        cexpr(p, st, nd[i * 8 + 1]);       // then ncc's three judgments
+        if st[41] == 1 { return; }         // (never counts as no-type)
+        rt4 := T{ pt: st[45], us: st[46], s: st[47], l: st[48] };
+        nvr := rt4.l == 5 && eq5(p, rt4.s, 110, 101, 118, 101, 114);
+        if nd[i * 8 + 1] > 0 {
+            if rt4.l == 0 || nvr {
+                ln := nd[i * 8 + 4];
+                put("{ln}: 'return' with a value in a function with no return type\n");
+                st[41] = 1;
+                return;
+            }
+            vt := cinfer(p, st, nd[i * 8 + 1]);
+            if !tcompat(p, vt, rt4) {
+                ln2 := nd[i * 8 + 4];
+                put("{ln2}: return type mismatch: expected ");
+                ty_put(p, st, rt4);
+                put(", got ");
+                ty_put(p, st, vt);
+                put("\n");
+                st[41] = 1;
+            }
+            return;
+        }
+        if rt4.l > 0 && !nvr {
+            ln3 := nd[i * 8 + 4];
+            put("{ln3}: 'return' without a value in a function returning ");
+            ty_put(p, st, rt4);
+            put("\n");
+            st[41] = 1;
+        }
+        return;
+    }
     if k == 23 { cexpr(p, st, nd[i * 8 + 1]); return; }   // expr stmt
     if k == 24 {                           // while
         cexpr(p, st, nd[i * 8 + 1]);
@@ -1631,6 +1663,11 @@ fn cfn(p: *u8, st: *i64, fi: i64) {
     st[40] = 0;
     st[42] = ft[fi * 8 + 3];               // CUR_FN_CAPS, ncc's reset
     st[43] = 0;                            // BLOCK_DEPTH, per function
+    crt := frty(st, fi);                   // CUR_RET at st[45..48]
+    st[45] = crt.pt;
+    st[46] = crt.us;
+    st[47] = crt.s;
+    st[48] = crt.l;
     mut q := 0;
     while q < ft[fi * 8 + 2] {             // params: span + declared type
         r := ft[fi * 8 + 5] + q * 6;

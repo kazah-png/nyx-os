@@ -667,6 +667,17 @@ compiled, and it grows the compiler's limits from inside. Struct
 fields, enums and methods still fall back softly; their tables are
 the remaining rungs, and the corpus will call them out row by row.
 
+The rung's coda: the return judgments (CUR_RET set per function,
+ncc's three branches in ncc's order, `never` counting as no-type)
+made row fifteen — and batch V46 took the new families onto the
+machine. The in-OS ncc compiled the 75-function checker (the 64→128
+function-table growth, exercised on target by the OS's own
+compiler), then reference and rewrite were pointed at one structural
+row and one type row each — bad_caps and bad_argty — and all first
+error lines matched to the byte inside NyxOS, em-dash and
+`expected str, got i64` included. Zero panics; the census on its
+exact baseline. Fifteen rows, three families, both worlds.
+
 And the hardest lexer feature landed: **interpolation**. A toy string
 containing a brace lexes as segments — HEAD before the first hole,
 MID between holes, TAIL after the last (ncc's own

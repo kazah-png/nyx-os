@@ -127,6 +127,7 @@ stripped (the normalization rule lives in
    bad_assign_ty    3: cannot assign i64 to a str target
    bad_index_valty  4: cannot assign str to a u8 target
    bad_index_write  3: cannot write through a str index — ...
+   bad_ret_void     2: 'return' with a value in a function with no return type
 
 plus two POSITIVE targets — hello.n and countdown.n check clean, and
 their required output is silence. Coverage, stated honestly: extern
@@ -179,16 +180,26 @@ fields, enum semantics and method returns still fall back softly
 (their tables are the next rungs); the claimed rows never reach
 them.
 
-**Proven inside NyxOS (batch V45)**: the in-OS ncc+tcc pipeline
-compiled check.n on target and ran it against bad_mut.n — its output
-matched the in-OS ncc's own first-error line, location and wording,
-with only the filename column normalized away (a two-sided on-target
-differential: both the reference and the rewrite ran inside the OS).
-The same batch closed the parser's last on-target gap: methods.n's
-53-line AST dump — the impl/M-lines anchor — came back byte-identical
-from the in-OS parse.n. Zero panics; the VFS census held its exact
-baseline (219/512 live, high-water 221) despite two more compiles in
-the workload — the node pool recycles.
+**The return judgments (row 15)**: `CUR_RET` rides the checker's
+state (set per function from the recorded return type), and the
+return case mirrors ncc's three branches in order — a value in a
+no-return function (the claimed row), the value/return-type
+mismatch, and a bare `return` in a value-returning function — with
+`never` counting as no-type, exactly as ncc's `is_never` does.
+
+**Proven inside NyxOS (batches V45 + V46)**: the in-OS ncc+tcc
+pipeline compiled check.n on target twice over. V45 ran it against
+bad_mut.n; V46 ran it against a row from EACH new family —
+bad_caps.n (structural) and bad_argty.n (types) — and both first
+error lines matched the in-OS ncc's own, location and wording, with
+only the filename column normalized away (two-sided on-target
+differentials: reference and rewrite both ran inside the OS). V46's
+in-OS ncc also compiled the 75-function checker itself — the 64→128
+function-table growth, exercised by the operating system's own
+compiler. V45 additionally closed the parser's last on-target gap
+(methods.n's 53-line impl/M dump, byte-identical). Zero panics both
+times; the VFS census held its exact baseline (219/512 live,
+high-water 221) — the node pool recycles.
 
 **Rung 2 — lexemes (landed)**: the stream carries substance now, on
 both sides of the differential at once. `ncc --tokens` and `lex.n`
