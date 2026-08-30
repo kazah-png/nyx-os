@@ -164,6 +164,8 @@ static void cmd_convert(int argc, char** argv);
 static void cmd_tar(int argc, char** argv);
 static void cmd_iniget(int argc, char** argv);
 static void cmd_factor(int argc, char** argv);
+static void cmd_gcd(int argc, char** argv);
+static void cmd_lcm(int argc, char** argv);
 static void cmd_fact(int argc, char** argv);
 static void cmd_size(int argc, char** argv);
 static void cmd_isprime(int argc, char** argv);
@@ -441,6 +443,8 @@ static const command_t commands[] = {
     {"fmt",       cmd_fmt,       "Reflow text to fill lines up to a width: fmt [-w width] <file>", false},
     {"nl",        cmd_nl,        "Number lines: nl [-b a|t|n] [-w N] [-s SEP] <file>", false},
     {"factor",    cmd_factor,    "Prime factorization: factor N [N ...]", false},
+    {"gcd",       cmd_gcd,       "Greatest common divisor: gcd N [N ...]", false},
+    {"lcm",       cmd_lcm,       "Least common multiple: lcm N [N ...]", false},
     {"isprime",   cmd_isprime,   "Test primality of each integer: isprime N [N ...]", false},
     {"fact",      cmd_fact,      "Exact factorial N! (arbitrary precision): fact N [N ...]", false},
     {"strings",   cmd_strings,   "Print printable-character runs in a file: strings [-n MIN] <file>", false},
@@ -933,6 +937,8 @@ static const man_page_t man_pages[] = {
     {"fmt",      "Reflow (rewrap) the prose in <file> to fill lines up to a width (75 by default, or -w width) -- the paragraph formatter. Unlike `fold`, which only hard-breaks over-long lines at a fixed column, fmt COLLAPSES each paragraph's internal whitespace and repacks its words greedily, so short lines are joined and long ones split at word boundaries. A blank line separates paragraphs and is preserved as a single blank line; a word longer than the width is left whole on its own line rather than broken. Reads one bounded chunk of the file (like head/fold)."},
     {"nl",       "Number the lines of <file>. By default only non-empty lines are numbered (-b t); -b a numbers every line and -b n numbers none. Each line number is right-justified in a field N columns wide (6 by default, or -w N) and followed by a separator (a tab by default, or -s SEP), then the line text."},
     {"factor",   "Print the prime factorization of each integer argument, one per line, as `N: p1 p2 ...` with factors ascending and repeated by multiplicity (e.g. `factor 90` prints `90: 2 3 3 5`). 0 and 1 print just `N:`. Accepts any 64-bit unsigned value; a non-numeric or negative argument is reported and skipped. Small factors are peeled by trial division and the rest by Miller-Rabin + Pollard's rho, so even a large 64-bit semiprime factors quickly."},
+    {"gcd",      "Print the greatest common divisor of the integer arguments (two or more), folded left with Euclid's algorithm — e.g. `gcd 12 18` prints `6`, `gcd 24 36 60` prints `12`. gcd(0, n) is n and gcd(0, 0) is 0. Accepts any 64-bit non-negative values; a non-numeric or negative argument is reported and the command stops. The companion of `lcm`."},
+    {"lcm",      "Print the least common multiple of the integer arguments (two or more), folded left — e.g. `lcm 4 6` prints `12`, `lcm 2 3 4` prints `12`. Computed as a/gcd(a,b)*b so the intermediate never overflows unnecessarily; lcm with a 0 operand is 0. If the true result would exceed 64 bits it reports `result overflows 64 bits` rather than printing a wrapped value. The companion of `gcd`."},
     {"isprime",  "Test each integer argument for primality and print `N is prime` or `N is not prime`. Uses an exact deterministic Miller-Rabin (the twelve witnesses 2..37, proven correct for all 64-bit N), so the answer is definitive — not probabilistic — and it correctly rejects Carmichael numbers that fool a naive Fermat test. Much faster than `factor` for a large prime, since it never has to find the factors. A non-numeric or negative argument is reported and skipped."},
     {"fact",     "Print the exact factorial N! of each argument, to arbitrary precision. Ordinary 64-bit arithmetic (calc, expr) overflows at 21!, so this keeps the running product in base-1,000,000,000 limbs and multiplies by each k up to N — the result is exact no matter how many digits it has (e.g. `fact 50` prints all 65 digits of 30414093201713378043612608166064768844377641568960512000000000000). Bounded at 4608 digits (about 1560!); beyond that it reports the limit. 0! and 1! are 1. A non-numeric or negative argument is reported and skipped."},
     {"strings",  "Print each run of at least MIN (default 4, or -n MIN) consecutive printable characters found in <file>, one run per line — the classic way to read the text embedded in a binary (an ELF, an image, a package). A printable character is a space through `~` (0x20-0x7E) or a tab; any other byte ends the current run. The file is streamed in fixed chunks, so even a large binary needs no whole-file buffer."},
@@ -2050,6 +2056,68 @@ static void cmd_factor(int argc, char** argv) {
         for (int j = 0; j < k; j++) printf(" %llu", (unsigned long long)f[j]);
         printf("\n");
     }
+}
+
+// Pure 64-bit GCD/LCM, backing the `gcd`/`lcm` builtins. Euclid: gcd(0,0)=0, gcd(a,0)=a.
+uint64_t u64_gcd(uint64_t a, uint64_t b) {
+    while (b) { uint64_t t = a % b; a = b; b = t; }
+    return a;
+}
+// lcm(a,b) into *out; returns 1 on success, 0 if the result overflows 64 bits. lcm with a
+// zero operand is 0 (the standard convention). Divides by the gcd BEFORE multiplying so the
+// intermediate stays small, and checks the remaining product against UINT64_MAX.
+int u64_lcm(uint64_t a, uint64_t b, uint64_t* out) {
+    if (a == 0 || b == 0) { *out = 0; return 1; }
+    uint64_t q = a / u64_gcd(a, b);                 // exact: gcd divides a
+    if (q > 0xFFFFFFFFFFFFFFFFULL / b) return 0;     // q*b would overflow
+    *out = q * b;
+    return 1;
+}
+
+// KAT for u64_gcd/u64_lcm — pins the Euclid math, the zero/coprime edges, and the lcm
+// overflow guard. 0 = PASS, else the failing case.
+int gcdlcm_selftest(void) {
+    uint64_t o;
+    if (u64_gcd(12, 18) != 6)  return 1;
+    if (u64_gcd(18, 12) != 6)  return 2;   // order-independent
+    if (u64_gcd(17, 5)  != 1)  return 3;   // coprime
+    if (u64_gcd(0, 5)   != 5)  return 4;   // gcd(0,n) = n
+    if (u64_gcd(5, 0)   != 5)  return 5;
+    if (u64_gcd(0, 0)   != 0)  return 6;
+    if (u64_gcd(1000000007ULL * 3, 1000000007ULL * 7) != 1000000007ULL) return 7;  // large
+    if (!u64_lcm(4, 6, &o)  || o != 12) return 8;
+    if (!u64_lcm(21, 6, &o) || o != 42) return 9;
+    if (!u64_lcm(0, 5, &o)  || o != 0)  return 10;  // lcm(0,n) = 0
+    if (!u64_lcm(7, 7, &o)  || o != 7)  return 11;
+    if (u64_lcm(0xFFFFFFFFFFFFFFFFULL, 2, &o) != 0)  return 12;  // overflow -> 0
+    if (!u64_lcm(1ULL << 40, 1ULL << 20, &o) || o != (1ULL << 40)) return 13;
+    return 0;
+}
+
+// gcd N [N ...] — greatest common divisor of the arguments (folded left).
+static void cmd_gcd(int argc, char** argv) {
+    if (argc < 2) { printf("Usage: gcd N [N ...]\n"); return; }
+    uint64_t g = 0; int have = 0;
+    for (int i = 1; i < argc; i++) {
+        uint64_t n;
+        if (parse_u64(argv[i], &n) != 0) { printf("gcd: '%s' is not a valid non-negative integer\n", argv[i]); return; }
+        g = have ? u64_gcd(g, n) : n; have = 1;
+    }
+    printf("%llu\n", (unsigned long long)g);
+}
+
+// lcm N [N ...] — least common multiple of the arguments (folded left); reports if the
+// result overflows 64 bits rather than printing a wrapped value.
+static void cmd_lcm(int argc, char** argv) {
+    if (argc < 2) { printf("Usage: lcm N [N ...]\n"); return; }
+    uint64_t l = 0; int have = 0;
+    for (int i = 1; i < argc; i++) {
+        uint64_t n;
+        if (parse_u64(argv[i], &n) != 0) { printf("lcm: '%s' is not a valid non-negative integer\n", argv[i]); return; }
+        if (!have) { l = n; have = 1; }
+        else if (!u64_lcm(l, n, &l)) { printf("lcm: result overflows 64 bits\n"); return; }
+    }
+    printf("%llu\n", (unsigned long long)l);
 }
 
 // isprime N [N ...] — test each argument for primality with the exact 64-bit
@@ -9263,6 +9331,7 @@ static void run_selftests(void) {
         {"tar",          tar_selftest},            {"datefmt",       datefmt_selftest},
         {"iniparse",     ini_selftest},
         {"factor",       factor_selftest},
+        {"gcdlcm",       gcdlcm_selftest},
         {"strings",      strings_selftest},
         {"sha256sum",    sha256sum_selftest},
         {"hmac",         hmac_selftest},          {"encfile",       enc_selftest},
