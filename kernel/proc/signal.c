@@ -272,16 +272,28 @@ void do_sigreturn(void) {
  * be caught again — that's what makes repeated fault recovery work. `how` is
  * SIG_BLOCK(0) / SIG_UNBLOCK(1) / SIG_SETMASK(2); oldset_ptr (if non-zero)
  * receives the previous mask. Returns 0, or -1. */
+/* Pure core of sigprocmask: apply `how` (SIG_BLOCK/UNBLOCK/SETMASK) to `old` using `set`,
+ * then force SIGKILL/SIGSTOP to stay UNBLOCKED — they can never be masked, or a process
+ * could block SIGKILL and make itself unkillable. Returns 0 and writes *out on success, or
+ * -1 for an unknown `how` (POSIX EINVAL). Pulled out so the `signal` KAT can pin the mask
+ * math AND that uncatchable-can't-be-blocked invariant, both previously untested. */
+static int sigmask_apply(int how, uint32_t old, uint32_t set, uint32_t* out) {
+    uint32_t nm;
+    if (how == 0)      nm = old | set;                /* SIG_BLOCK   */
+    else if (how == 1) nm = old & ~set;               /* SIG_UNBLOCK */
+    else if (how == 2) nm = set;                      /* SIG_SETMASK */
+    else return -1;                                   /* EINVAL: unknown how */
+    nm &= ~((1u << SIGKILL) | (1u << SIGSTOP));        /* SIGKILL/SIGSTOP are never blockable */
+    *out = nm;
+    return 0;
+}
+
 long do_sigprocmask(int how, uint64_t set, uint64_t oldset_ptr) {
     process_t* p = get_current_process();
     if (!p) return -1;
-    uint32_t old = p->sig_mask;
-    if (oldset_ptr) { uint64_t o = old; if (copy_to_user(oldset_ptr, &o, 8) != 0) return -1; }
-    uint32_t nm = old;
-    if (how == 0)      nm = old | (uint32_t)set;      /* SIG_BLOCK   */
-    else if (how == 1) nm = old & ~(uint32_t)set;     /* SIG_UNBLOCK */
-    else if (how == 2) nm = (uint32_t)set;            /* SIG_SETMASK */
-    nm &= ~((1u << SIGKILL) | (1u << SIGSTOP));        /* never block the uncatchable ones */
+    uint32_t nm;
+    if (sigmask_apply(how, p->sig_mask, (uint32_t)set, &nm) != 0) return -1;  /* EINVAL, no change */
+    if (oldset_ptr) { uint64_t o = p->sig_mask; if (copy_to_user(oldset_ptr, &o, 8) != 0) return -1; }
     p->sig_mask = nm;
     p->sig_active &= nm;   /* a signal we just unblocked is no longer "in its handler" */
     return 0;
@@ -344,6 +356,20 @@ int signal_selftest(void) {
     signal_raise(&sp, SIGCONT);                      /* resumes a job-control-stopped process */
     if (sp.state != PROC_RUN) return 6;
     if (!(sp.sig_pending & (1u << SIGCONT))) return 7;
+
+    /* do_sigprocmask's mask core (sigmask_apply): the block/unblock/setmask math, the
+     * EINVAL on an unknown `how`, and — critically — that SIGKILL/SIGSTOP can NEVER be
+     * blocked (else a process could mask SIGKILL and become unkillable). Untested before. */
+    uint32_t m;
+    if (sigmask_apply(0, 0, (1u << SIGINT), &m) != 0 || m != (1u << SIGINT)) return 8;   /* BLOCK */
+    if (sigmask_apply(1, (1u << SIGINT) | (1u << SIGTERM), (1u << SIGINT), &m) != 0
+        || m != (1u << SIGTERM)) return 9;                                                /* UNBLOCK */
+    if (sigmask_apply(2, (1u << SIGINT), (1u << SIGUSR1), &m) != 0 || m != (1u << SIGUSR1)) return 10; /* SETMASK replaces */
+    if (sigmask_apply(3, 0, 0, &m)  != -1) return 11;   /* unknown how -> EINVAL */
+    if (sigmask_apply(-1, 0, 0, &m) != -1) return 12;   /* unknown how -> EINVAL */
+    /* the uncatchable-can't-be-blocked invariant, whatever `how`/`set` ask for */
+    if (sigmask_apply(2, 0, 0xFFFFFFFFu, &m) != 0 || (m & (1u << SIGKILL)) || (m & (1u << SIGSTOP))) return 13;
+    if (sigmask_apply(0, 0, (1u << SIGKILL) | (1u << SIGSTOP), &m) != 0 || m != 0) return 14;
 
     return 0;
 }
