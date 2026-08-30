@@ -350,7 +350,7 @@ static const command_t commands[] = {
     {"echo",      cmd_echo,      "Print a line of text", false},
     {"hexdump",   cmd_hexdump,   "Dump memory: hexdump <addr> [bytes]", false},
     {"date",      cmd_date,      "Show date/time; date +FORMAT for strftime output", false},
-    {"uname",     cmd_uname,     "Show system information", false},
+    {"uname",     cmd_uname,     "System information: uname [-snrvma]  (no flag = -s)", false},
     {"reboot",    cmd_reboot,    "Reboot the system", false},
     {"poweroff",  cmd_poweroff,  "Power off the machine (ACPI soft-off)", false},
     {"halt",      cmd_poweroff,  "Halt/power off the machine", false},
@@ -1037,7 +1037,7 @@ static const man_page_t man_pages[] = {
     {"screenshot","Save a snapshot of the whole screen to an image file: `screenshot [path]` (default /tmp/screenshot.png; pass /mnt/shot.png to keep it on disk). If the path ends in .png the image is written as a real PNG (8-bit RGB, DEFLATE-compressed - small and universally viewable); any other extension writes an uncompressed binary PPM (Netpbm P6). Captured from the framebuffer the compositor last presented, at the current resolution."},
     {"mount",    "Mount an ext2 filesystem onto /mnt. With no arguments it probes the first ATA disk; [drive] and [part_lba] select a specific disk and partition."},
     {"date",     "Print the current date and time from the CMOS real-time clock. With a `+FORMAT` argument, format it strftime-style: %Y %y %m %d %e %H %I %M %S %p (year/month/day/hour/min/sec), %A/%a (weekday), %B/%b (month name), %j (day of year), %% — e.g. `date +%A` or `date +%Y-%m-%d`."},
-    {"uname",    "Print system information: the operating-system name, its version and the machine architecture."},
+    {"uname",    "Print system information, POSIX-style. With no option it prints just the operating-system name (`uname -s`). Flags select fields, shown in the canonical order sysname/nodename/release/version/machine: -s name, -n nodename, -r release (kernel version), -v version (codename), -m machine (`x86_64`), -o operating system, and -a all of them (e.g. `uname -a` -> `NyxOS nyxos 6.4.x GUI Suite x86_64`). Flags combine, e.g. `uname -sr`."},
     {"nyxfetch", "Print a system summary beside the NyxOS logo: the version, uptime, memory use and other details. `fastfetch` is an alias."},
     {"clear",    "Clear the terminal and move the cursor back to the top-left corner."},
     {"history",  "List the most recently entered shell commands, oldest first."},
@@ -7717,8 +7717,33 @@ static void cmd_date(int argc, char** argv) {
 }
 
 static void cmd_uname(int argc, char** argv) {
-    (void)argc; (void)argv;
-    printf("%s %s (%s) %s\n", KERNEL_NAME, KERNEL_VERSION, KERNEL_CODENAME, "x86");
+    // POSIX system info. No flags -> the sysname alone (like `uname -s`). Flags select
+    // fields, printed in the canonical order (sysname nodename release version machine),
+    // space-separated; -a selects them all. -m now yields a real "x86_64" (NyxOS runs in
+    // long mode) instead of the whole banner — scripts like tcc's configure use `uname -m`.
+    int fs = 0, fn = 0, fr = 0, fv = 0, fm = 0;
+    if (argc < 2) fs = 1;
+    else for (int i = 1; i < argc; i++) {
+        if (argv[i][0] != '-' || !argv[i][1]) { printf("uname: invalid operand '%s'\n", argv[i]); return; }
+        for (char* f = argv[i] + 1; *f; f++) {
+            switch (*f) {
+                case 's': case 'o': fs = 1; break;   // sysname (and -o, the operating system)
+                case 'n': fn = 1; break;             // nodename
+                case 'r': fr = 1; break;             // release (kernel version)
+                case 'v': fv = 1; break;             // version (codename)
+                case 'm': fm = 1; break;             // machine
+                case 'a': fs = fn = fr = fv = fm = 1; break;
+                default: printf("uname: invalid option -%c\n", *f); return;
+            }
+        }
+    }
+    int first = 1;
+    if (fs) { printf("%s", KERNEL_NAME);                     first = 0; }
+    if (fn) { printf(first ? "%s" : " %s", "nyxos");         first = 0; }
+    if (fr) { printf(first ? "%s" : " %s", KERNEL_VERSION);  first = 0; }
+    if (fv) { printf(first ? "%s" : " %s", KERNEL_CODENAME); first = 0; }
+    if (fm) { printf(first ? "%s" : " %s", "x86_64");        first = 0; }
+    printf("\n");
 }
 
 static void cmd_layout(int argc, char** argv) {
