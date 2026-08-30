@@ -18,7 +18,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.4.420"
+#define KERNEL_VERSION "6.4.421"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -598,80 +598,9 @@ extern void _gdt_flush(uint64_t gdt_ptr);
 extern void _idt_flush(uint64_t idt_ptr);
 
 // ============================================================
-// FUNCIONES DE E/S INLINE
+// FUNCIONES DE E/S INLINE  (moved to cpuio.h — first slice of the header split)
 // ============================================================
-static inline void outb(uint16_t port, uint8_t val) {
-    __asm__ volatile ("outb %0, %1" : : "a"(val), "Nd"(port));
-}
-static inline uint8_t inb(uint16_t port) {
-    uint8_t ret;
-    __asm__ volatile ("inb %1, %0" : "=a"(ret) : "Nd"(port));
-    return ret;
-}
-static inline void outw(uint16_t port, uint16_t val) {
-    __asm__ volatile ("outw %0, %1" : : "a"(val), "Nd"(port));
-}
-static inline uint16_t inw(uint16_t port) {
-    uint16_t ret;
-    __asm__ volatile ("inw %1, %0" : "=a"(ret) : "Nd"(port));
-    return ret;
-}
-static inline void outl(uint16_t port, uint32_t val) {
-    __asm__ volatile ("outl %0, %1" : : "a"(val), "Nd"(port));
-}
-static inline uint32_t inl(uint16_t port) {
-    uint32_t ret;
-    __asm__ volatile ("inl %1, %0" : "=a"(ret) : "Nd"(port));
-    return ret;
-}
-static inline void io_wait(void) { outb(0x80, 0); }
-static inline void enable_interrupts(void) { __asm__ volatile ("sti"); }
-static inline void disable_interrupts(void) { __asm__ volatile ("cli"); }
-static inline uint64_t read_cr0(void) {
-    uint64_t val;
-    __asm__ volatile ("mov %%cr0, %0" : "=r"(val));
-    return val;
-}
-static inline void write_cr0(uint64_t val) {
-    __asm__ volatile ("mov %0, %%cr0" : : "r"(val));
-}
-static inline uint64_t read_cr2(void) {
-    uint64_t val;
-    __asm__ volatile ("mov %%cr2, %0" : "=r"(val));
-    return val;
-}
-static inline uint64_t read_cr3(void) {
-    uint64_t val;
-    __asm__ volatile ("mov %%cr3, %0" : "=r"(val));
-    return val;
-}
-static inline void write_cr3(uint64_t val) {
-    __asm__ volatile ("mov %0, %%cr3" : : "r"(val));
-}
-static inline uint64_t read_cr4(void) {
-    uint64_t val;
-    __asm__ volatile ("mov %%cr4, %0" : "=r"(val));
-    return val;
-}
-static inline void write_cr4(uint64_t val) {
-    __asm__ volatile ("mov %0, %%cr4" : : "r"(val));
-}
-static inline void flush_tlb(void) {
-    uint64_t cr3;
-    __asm__ volatile ("mov %%cr3, %0; mov %0, %%cr3" : "=r"(cr3) :: "memory");
-}
-static inline void invlpg(void *addr) {
-    __asm__ volatile ("invlpg (%0)" : : "r"(addr) : "memory");
-}
-
-static inline uint64_t read_msr(uint32_t msr) {
-    uint32_t lo, hi;
-    __asm__ volatile ("rdmsr" : "=a"(lo), "=d"(hi) : "c"(msr));
-    return ((uint64_t)hi << 32) | lo;
-}
-static inline void write_msr(uint32_t msr, uint64_t val) {
-    __asm__ volatile ("wrmsr" : : "a"((uint32_t)val), "d"((uint32_t)(val >> 32)), "c"(msr));
-}
+#include "cpuio.h"
 
 // ============================================================
 // FUNCIONES UTILITARIAS
