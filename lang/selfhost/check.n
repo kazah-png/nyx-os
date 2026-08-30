@@ -561,6 +561,37 @@ fn ffind(p: *u8, st: *i64, ss: i64, sl: i64) -> i64 {
     return -1;
 }
 
+// The struct table (ncc's STRUCTS/struct_lookup): 4-word records —
+// name span, field count, field-record start (6-word span+T records
+// in the flat list arena, the same shape params use).
+fn sadd(st: *i64, ss: i64, sl: i64, nf: i64, fst: i64) {
+    sa := st[49] as *i64;
+    i := st[50];
+    sa[i * 4] = ss;
+    sa[i * 4 + 1] = sl;
+    sa[i * 4 + 2] = nf;
+    sa[i * 4 + 3] = fst;
+    st[50] = i + 1;
+}
+
+fn sfind(p: *u8, st: *i64, ss: i64, sl: i64) -> i64 {
+    sa := st[49] as *i64;
+    mut i := 0;
+    while i < st[50] {
+        if span_eq(p, sa[i * 4], sa[i * 4 + 1], ss, sl) { return i; }
+        i = i + 1;
+    }
+    return -1;
+}
+
+// Field q of struct record si, as (span, T) out of the list arena.
+fn sfty(st: *i64, si: i64, q: i64) -> T {
+    sa := st[49] as *i64;
+    al := st[35] as *i64;
+    r := sa[si * 4 + 3] + q * 6;
+    T{ pt: al[r + 2], us: al[r + 3], s: al[r + 4], l: al[r + 5] }
+}
+
 // The scoped name table: ncc's VARS discipline — vars_add appends,
 // vars_find scans backward (innermost shadows), blocks record the
 // count on entry and truncate on exit.
@@ -769,19 +800,21 @@ fn pprimary(p: *u8, n: i64, st: *i64) -> i64 {
         nl := st[27];
         ln := st[25];
         adv(p, n, st);
-        if ck(st, 39) && st[32] == 0 {     // struct literal
-            adv(p, n, st);
-            vx := sys_sbrk(512) as *i64;   // value scratch
+        if ck(st, 39) && st[32] == 0 {     // struct literal: field
+            adv(p, n, st);                 // names AND values (3-word
+            vx := sys_sbrk(768) as *i64;   // records: span + value)
             mut na := 0;
             mut more := !ck(st, 40);
             while more {
                 more = false;
                 if ck(st, 40) { continue; }    // trailing comma
                 if !ck(st, 7) { perr(st); return 0; }
-                adv(p, n, st);             // the field name (later rung)
+                vx[na * 3] = st[26];
+                vx[na * 3 + 1] = st[27];
+                adv(p, n, st);
                 if !ck(st, 43) { perr(st); return 0; }
                 adv(p, n, st);
-                vx[na] = pexpr(p, n, st);
+                vx[na * 3 + 2] = pexpr(p, n, st);
                 na = na + 1;
                 if acc(p, n, st, 41) { more = true; }
             }
@@ -789,7 +822,7 @@ fn pprimary(p: *u8, n: i64, st: *i64) -> i64 {
             adv(p, n, st);
             ast := st[36];
             mut q := 0;
-            while q < na { ladd(st, vx[q]); q = q + 1; }
+            while q < na * 3 { ladd(st, vx[q]); q = q + 1; }
             return nnew(st, 11, ast, 0, na, ln, ns, nl);
         }
         return nnew(st, 5, 0, 0, 0, ln, ns, nl);
@@ -1278,6 +1311,49 @@ fn skip_item(p: *u8, n: i64, st: *i64) {
     }
 }
 
+// struct Name { f: ty, ... } — parse.n's pstruct accreted back,
+// transformed: fields land in the struct table instead of a D line.
+// The #[drop]/own attributes were consumed by the item loop; their
+// semantics (destructors, ownership) are later rungs.
+fn pstruct(p: *u8, n: i64, st: *i64, ps: *i64) {
+    if !ck(st, 7) { perr(st); return; }
+    ns := st[26];
+    nl := st[27];
+    adv(p, n, st);
+    if !ck(st, 39) { perr(st); return; }
+    adv(p, n, st);
+    mut nf := 0;
+    mut more := !ck(st, 40);
+    while more {
+        more = false;
+        if !ck(st, 7) { perr(st); return; }
+        ps[nf * 6] = st[26];
+        ps[nf * 6 + 1] = st[27];
+        adv(p, n, st);
+        if !ck(st, 43) { perr(st); return; }
+        adv(p, n, st);
+        t := pty(p, n, st);
+        ps[nf * 6 + 2] = t.pt;
+        ps[nf * 6 + 3] = t.us;
+        ps[nf * 6 + 4] = t.s;
+        ps[nf * 6 + 5] = t.l;
+        nf = nf + 1;
+        if acc(p, n, st, 41) {
+            if !ck(st, 40) { more = true; }
+        }
+    }
+    if !ck(st, 40) { perr(st); return; }
+    adv(p, n, st);
+    fst := st[36];
+    mut q := 0;
+    while q < nf {
+        mut w := 0;
+        while w < 6 { ladd(st, ps[q * 6 + w]); w = w + 1; }
+        q = q + 1;
+    }
+    sadd(st, ns, nl, nf, fst);
+}
+
 // extern syscall { fn name(params) [-> ty] = NUM [;] ... } — each
 // binding becomes a table record (no body).
 fn pextern(p: *u8, n: i64, st: *i64, caps: i64, ps: *i64) {
@@ -1358,7 +1434,11 @@ fn pitems(p: *u8, n: i64, st: *i64, ps: *i64) {
         if ck(st, 33) { adv(p, n, st); }   // #[drop(fn)] rides a struct
         if acc(p, n, st, 32) { caps = 1; } // #[caps(syscall)]
         ow := acc(p, n, st, 36);           // 'own' — its struct skips
-        if ck(st, 22) { skip_item(p, n, st); continue; }   // struct
+        if ck(st, 22) {                    // struct: a real parse now —
+            adv(p, n, st);                 // the table rung landed
+            pstruct(p, n, st, ps);
+            continue;
+        }
         if ck(st, 24) { skip_item(p, n, st); continue; }   // enum
         if ck(st, 27) { skip_item(p, n, st); continue; }   // impl
         if ck(st, 8) {                     // extern
@@ -1451,15 +1531,61 @@ fn cexpr(p: *u8, st: *i64, i: i64) {
             }
             return;
         }
-        cexpr(p, st, cal);                 // method/computed callee: the
-        mut q2 := 0;                       // receiver resolves; dispatch
-        while q2 < na {                    // itself is a later rung
+        if nd[cal * 8] == 7 {              // method call: ncc checks the
+            cexpr(p, st, nd[cal * 8 + 1]); // RECEIVER, not the field node
+        }                                  // (dispatch is a later rung)
+        if nd[cal * 8] != 7 { cexpr(p, st, cal); }
+        mut q2 := 0;
+        while q2 < na {
             cexpr(p, st, al[nd[i * 8 + 2] + q2]);
             q2 = q2 + 1;
         }
         return;
     }
-    if k == 7 { cexpr(p, st, nd[i * 8 + 1]); return; }    // field: the base
+    if k == 7 {                            // field read: base resolves,
+        cexpr(p, st, nd[i * 8 + 1]);       // then ncc's three arms —
+        if st[41] == 1 { return; }         // str, struct, has-no-fields
+        bt := cinfer(p, st, nd[i * 8 + 1]);
+        ln2 := nd[i * 8 + 4];
+        if span_is(p, bt, st[44] + 7, 3) {
+            isp := nd[i * 8 + 6] == 3 && eq3(p, nd[i * 8 + 5], 112, 116, 114);
+            isl := nd[i * 8 + 6] == 3 && eq3(p, nd[i * 8 + 5], 108, 101, 110);
+            if !isp && !isl {
+                put("{ln2}: str has no field '");
+                put_span(p, nd[i * 8 + 5], nd[i * 8 + 6]);
+                put("' (only .ptr and .len)\n");
+                st[41] = 1;
+            }
+            return;
+        }
+        if bt.pt == 0 && bt.l > 0 {
+            si := sfind(p, st, bt.s, bt.l);
+            if si >= 0 {
+                sa := st[49] as *i64;
+                mut ok := 0;
+                mut q5 := 0;
+                while q5 < sa[si * 4 + 2] {
+                    r := sa[si * 4 + 3] + q5 * 6;
+                    if span_eq(p, al[r], al[r + 1], nd[i * 8 + 5], nd[i * 8 + 6]) { ok = 1; }
+                    q5 = q5 + 1;
+                }
+                if ok == 0 {
+                    put("{ln2}: struct '");
+                    put_span(p, bt.s, bt.l);
+                    put("' has no field '");
+                    put_span(p, nd[i * 8 + 5], nd[i * 8 + 6]);
+                    put("'\n");
+                    st[41] = 1;
+                }
+                return;
+            }
+        }
+        put("{ln2}: ");
+        ty_put(p, st, bt);
+        put(" has no fields\n");
+        st[41] = 1;
+        return;
+    }
     if k == 8 { cexpr(p, st, nd[i * 8 + 1]); return; }    // unary
     if k == 9 {                            // binary: left, then right
         cexpr(p, st, nd[i * 8 + 1]);
@@ -1480,11 +1606,82 @@ fn cexpr(p: *u8, st: *i64, i: i64) {
         }
         return;
     }
-    if k == 11 || k == 12 {                // struct/variant literal values
+    if k == 11 {                           // struct literal: ncc's order —
+        ln3 := nd[i * 8 + 4];              // known struct, every declared
+        na2 := nd[i * 8 + 3];              // field exactly once, no extra
+        si2 := sfind(p, st, nd[i * 8 + 5], nd[i * 8 + 6]);   // names, then
+        if si2 < 0 {                       // per-value resolve + type
+            put("{ln3}: unknown struct '");
+            put_span(p, nd[i * 8 + 5], nd[i * 8 + 6]);
+            put("'\n");
+            st[41] = 1;
+            return;
+        }
+        sa2 := st[49] as *i64;
+        nf := sa2[si2 * 4 + 2];
+        lst := nd[i * 8 + 1];
         mut q4 := 0;
-        while q4 < nd[i * 8 + 3] {
-            cexpr(p, st, al[nd[i * 8 + 1] + q4]);
+        while q4 < nf {
+            r2 := sa2[si2 * 4 + 3] + q4 * 6;
+            mut seen := 0;
+            mut j := 0;
+            while j < na2 {
+                if span_eq(p, al[lst + j * 3], al[lst + j * 3 + 1], al[r2], al[r2 + 1]) { seen = seen + 1; }
+                j = j + 1;
+            }
+            if seen != 1 {
+                put("{ln3}: literal for '");
+                put_span(p, nd[i * 8 + 5], nd[i * 8 + 6]);
+                put("' must initialize field '");
+                put_span(p, al[r2], al[r2 + 1]);
+                put("' exactly once\n");
+                st[41] = 1;
+                return;
+            }
             q4 = q4 + 1;
+        }
+        if na2 != nf {
+            put("{ln3}: literal for '");
+            put_span(p, nd[i * 8 + 5], nd[i * 8 + 6]);
+            put("' names a field it does not have\n");
+            st[41] = 1;
+            return;
+        }
+        mut j2 := 0;
+        while j2 < na2 {
+            vv := al[lst + j2 * 3 + 2];
+            cexpr(p, st, vv);
+            if st[41] == 1 { return; }
+            at2 := cinfer(p, st, vv);
+            mut dt := t_i64(st);
+            mut q6 := 0;
+            while q6 < nf {
+                r3 := sa2[si2 * 4 + 3] + q6 * 6;
+                if span_eq(p, al[r3], al[r3 + 1], al[lst + j2 * 3], al[lst + j2 * 3 + 1]) { dt = sfty(st, si2, q6); }
+                q6 = q6 + 1;
+            }
+            if !tcompat(p, at2, dt) {
+                put("{ln3}: field '");
+                put_span(p, al[lst + j2 * 3], al[lst + j2 * 3 + 1]);
+                put("' of '");
+                put_span(p, nd[i * 8 + 5], nd[i * 8 + 6]);
+                put("': expected ");
+                ty_put(p, st, dt);
+                put(", got ");
+                ty_put(p, st, at2);
+                put("\n");
+                st[41] = 1;
+                return;
+            }
+            j2 = j2 + 1;
+        }
+        return;
+    }
+    if k == 12 {                           // enum literal values (the
+        mut q7 := 0;                       // enum table is a later rung)
+        while q7 < nd[i * 8 + 3] {
+            cexpr(p, st, al[nd[i * 8 + 1] + q7]);
+            q7 = q7 + 1;
         }
         return;
     }
@@ -1718,8 +1915,8 @@ fn cinfer(p: *u8, st: *i64, i: i64) -> T {
         }
         return t_i64(st);                  // methods: a later rung
     }
-    if k == 7 {                            // field: str.ptr / str.len
-        bt := cinfer(p, st, nd[i * 8 + 1]);
+    if k == 7 {                            // field: str.ptr / str.len,
+        bt := cinfer(p, st, nd[i * 8 + 1]);    // then the struct table
         if span_is(p, bt, st[44] + 7, 3) {                 // base is str
             if nd[i * 8 + 6] == 3 && eq3(p, nd[i * 8 + 5], 112, 116, 114) {
                 return t_pu8(st);                          // .ptr
@@ -1728,7 +1925,22 @@ fn cinfer(p: *u8, st: *i64, i: i64) -> T {
                 return t_u64(st);                          // .len
             }
         }
-        return t_i64(st);                  // struct fields: a later rung
+        if bt.pt == 0 && bt.l > 0 {
+            si := sfind(p, st, bt.s, bt.l);
+            if si >= 0 {
+                sa := st[49] as *i64;
+                al := st[35] as *i64;
+                mut q := 0;
+                while q < sa[si * 4 + 2] {
+                    r := sa[si * 4 + 3] + q * 6;
+                    if span_eq(p, al[r], al[r + 1], nd[i * 8 + 5], nd[i * 8 + 6]) {
+                        return sfty(st, si, q);
+                    }
+                    q = q + 1;
+                }
+            }
+        }
+        return t_i64(st);                  // enums/methods: later rungs
     }
     if k == 8 {                            // unary: '!' -> bool
         if nd[i * 8 + 3] == 60 { return t_bool(st); }
@@ -1794,6 +2006,8 @@ fn main() -> i64 {
     st[42] = 0;                            // CUR_FN_CAPS
     st[43] = 0;                            // block depth
     st[44] = total;                        // the intern base
+    st[49] = sys_sbrk(8192);               // the struct table
+    st[50] = 0;
     nil0 := st[33] as *i64;                // node 0: an explicit nil
     mut z := 0;
     while z < 8 { nil0[z] = 0; z = z + 1; }

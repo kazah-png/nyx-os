@@ -678,6 +678,28 @@ error lines matched to the byte inside NyxOS, em-dash and
 `expected str, got i64` included. Zero panics; the census on its
 exact baseline. Fifteen rows, three families, both worlds.
 
+### Rung 4 — the struct table
+
+The decl-table rung the docs promised, and the first time accreted
+code came BACK: pstruct — dropped to a brace-skip when the five
+passes collapsed — returns as a real parse, transformed like every
+other parser function, its fields landing in a table instead of a
+dump line. The struct literal's node grew names beside its values
+(the checker needs to know WHICH field each value initializes), and
+with the table in place three of ncc's judgments transliterate in
+ncc's exact order: unknown struct, every-declared-field-exactly-once
+(checked per declared field, so the missing-field wording names the
+field that is missing), and the extra-name refusal — then each
+value checks against its declared field's type. Field reads got
+ncc's three arms whole, and `cinfer`'s struct case replaced its soft
+fallback with the real lookup — which means a struct field's type
+now flows into every judgment downstream of it: the probe hands a
+str field to an i64 parameter and gets ncc's argument-mismatch line,
+byte for byte, because the table, the inference and the argument
+check are all telling each other the truth. Three more rows and a
+third positive target (structs.n, silent); eighteen rows and the
+enum table left standing.
+
 And the hardest lexer feature landed: **interpolation**. A toy string
 containing a brace lexes as segments — HEAD before the first hole,
 MID between holes, TAIL after the last (ncc's own

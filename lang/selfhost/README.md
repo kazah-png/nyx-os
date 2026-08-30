@@ -128,6 +128,9 @@ stripped (the normalization rule lives in
    bad_index_valty  4: cannot assign str to a u8 target
    bad_index_write  3: cannot write through a str index — ...
    bad_ret_void     2: 'return' with a value in a function with no return type
+   bad_struct_unknown 2: unknown struct 'Point'
+   bad_struct_missing 3: literal for 'Rect' must initialize field 'h' exactly once
+   bad_struct_field 4: struct 'Rect' has no field 'z'
 
 plus two POSITIVE targets — hello.n and countdown.n check clean, and
 their required output is silence. Coverage, stated honestly: extern
@@ -179,6 +182,22 @@ the checker became the biggest N program yet written. Struct
 fields, enum semantics and method returns still fall back softly
 (their tables are the next rungs); the claimed rows never reach
 them.
+
+**Rung 4 — the struct table (landed)**: pstruct accretes back from
+the brace-skip, transformed — fields land in a struct table (name
+span + field records, the same span+T shape params use) instead of a
+D line. Struct literals now carry their field NAMES as well as their
+values, and the checker runs ncc's E_SLIT sequence in ncc's order:
+known struct, every declared field exactly once, no extra names,
+then each value resolved and type-checked against its declared
+field. Field reads run ncc's three arms — str's `.ptr`/`.len`, the
+struct-table lookup, and the `has no fields` refusal — and `cinfer`
+returns real field types now, so a struct field feeds every
+downstream judgment (probed: a str field passed to an i64 parameter
+reports the argument mismatch, ncc-identical). structs.n joins the
+positive targets: a real example exercising the table must stay
+silent. Method calls check their receiver, not their field node —
+ncc's own shape; dispatch is a later rung.
 
 **The return judgments (row 15)**: `CUR_RET` rides the checker's
 state (set per function from the recorded return type), and the
