@@ -788,6 +788,28 @@ pageflags.n alone waits for its constants. Thirty-six rows. What
 remains: own/move, drop, pageflags, and the no-return analysis —
 the corpus's last four dialects.
 
+### Rung 9 — pageflags, and the ledger closes
+
+W^X is the language's proudest check — a security property proven
+totally at compile time, because pageflags values can only be built
+from four predeclared constants and `|`, so the compiler always
+knows every value's exact bits. The transliteration kept the whole
+argument: the constants predeclare before name resolution, every
+binding carries its statically-known mask (a parameter's is opaque
+— its flags were proven at its call sites), `|` compositions fold,
+anything else refuses, and a mask that holds both WRITE and EXEC is
+refused with the row the corpus has waited nine rungs to claim.
+The operator rules rode along in ncc's arm order — pageflags, str,
+pointers, integers — collecting the no-arithmetic-on-strings and
+pointers-compare-only rows on the way.
+
+And with that, pageflags.n checks in silence, and the ledger
+closes: **every example the N language ships — all twenty-two —
+now passes through its own self-hosted checker with zero output
+enforced by the suite.** Forty-two manifest rows to the byte. The
+corpus's remainder is three dialects deep in the semantics: own and
+move, drop, and the not-every-path-returns analysis.
+
 And the hardest lexer feature landed: **interpolation**. A toy string
 containing a brace lexes as segments — HEAD before the first hole,
 MID between holes, TAIL after the last (ncc's own

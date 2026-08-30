@@ -707,8 +707,8 @@ fn vadd(st: *i64, ss: i64, sl: i64, m: i64, t: T) {
     va[i * 8 + 4] = t.us;
     va[i * 8 + 5] = t.s;
     va[i * 8 + 6] = t.l;
-    va[i * 8 + 7] = 0;
-    st[40] = i + 1;
+    va[i * 8 + 7] = -1;                    // pmask: -1 = unknown flags
+    st[40] = i + 1;                        // (ncc's parameter default)
 }
 
 fn vty(st: *i64, v: i64) -> T {
@@ -744,6 +744,72 @@ fn t_pu8(st: *i64) -> T  { return T{ pt: 1, us: 0, s: st[44] + 10, l: 2 }; }
 fn t_u8(st: *i64) -> T   { return T{ pt: 0, us: 0, s: st[44] + 10, l: 2 }; }
 fn t_u64(st: *i64) -> T  { return T{ pt: 0, us: 0, s: st[44] + 12, l: 3 }; }
 fn t_void() -> T         { return T{ pt: 0, us: 0, s: 0, l: 0 }; }
+fn t_pf(st: *i64) -> T   { return T{ pt: 0, us: 0, s: st[44] + 28, l: 9 }; }
+
+// ncc's PF_CONSTS: the four predeclared page-permission constants.
+// Returns the bit value, or -1 when the span is not one of them.
+fn is_pfc(p: *u8, s: i64, l: i64) -> i64 {
+    if l < 9 { return -1; }
+    if !eq5(p, s, 80, 82, 79, 84, 95) { return -1; }       // PROT_
+    if l == 9 {
+        if eq4(p, s + 5, 78, 79, 78, 69) { return 0; }     // NONE
+        if eq4(p, s + 5, 82, 69, 65, 68) { return 1; }     // READ
+        if eq4(p, s + 5, 69, 88, 69, 67) { return 4; }     // EXEC
+    }
+    if l == 10 {
+        if eq5(p, s + 5, 87, 82, 73, 84, 69) { return 2; } // WRITE
+    }
+    return -1;
+}
+
+// ncc's pf_mask over nodes: the statically-known bit set of a
+// pageflags expression — constants, bindings (their tracked pmask),
+// and '|' compositions; -1 = unknown (a parameter's flags were
+// W^X-proven at its call sites and are opaque here).
+fn cpfmask(p: *u8, st: *i64, i: i64) -> i64 {
+    nd := st[33] as *i64;
+    if nd[i * 8] == 5 {
+        b := is_pfc(p, nd[i * 8 + 5], nd[i * 8 + 6]);
+        if b >= 0 { return b; }
+        v := vfind(p, st, nd[i * 8 + 5], nd[i * 8 + 6]);
+        if v >= 0 {
+            va := st[39] as *i64;
+            return va[v * 8 + 7];
+        }
+        return -1;
+    }
+    if nd[i * 8] == 9 && nd[i * 8 + 3] == 64 {   // '|'
+        l2 := cpfmask(p, st, nd[i * 8 + 1]);
+        r2 := cpfmask(p, st, nd[i * 8 + 2]);
+        if l2 < 0 || r2 < 0 { return -1; }
+        return l2 | r2;
+    }
+    return -1;
+}
+
+// Render a binary operator's source text from its token kind — the
+// diagnostics quote the operator verbatim.
+#[caps(syscall)]
+fn op_put(c: i64) {
+    if c == 47 { put("+"); }
+    if c == 48 { put("-"); }
+    if c == 49 { put("*"); }
+    if c == 50 { put("/"); }
+    if c == 51 { put("%"); }
+    if c == 54 { put("=="); }
+    if c == 55 { put("!="); }
+    if c == 56 { put("<"); }
+    if c == 57 { put("<="); }
+    if c == 58 { put(">"); }
+    if c == 59 { put(">="); }
+    if c == 61 { put("&&"); }
+    if c == 62 { put("||"); }
+    if c == 63 { put("&"); }
+    if c == 64 { put("|"); }
+    if c == 65 { put("^"); }
+    if c == 66 { put("<<"); }
+    if c == 67 { put(">>"); }
+}
 
 fn span_is(p: *u8, t: T, ss: i64, sl: i64) -> bool {
     return t.pt == 0 && span_eq(p, t.s, t.l, ss, sl);
@@ -1853,9 +1919,10 @@ fn cexpr(p: *u8, st: *i64, i: i64) {
     nd := st[33] as *i64;
     al := st[35] as *i64;
     k := nd[i * 8];
-    if k == 5 {                            // path: resolve or die
-        v := vfind(p, st, nd[i * 8 + 5], nd[i * 8 + 6]);
-        if v < 0 {
+    if k == 5 {                            // path: a predeclared
+        if is_pfc(p, nd[i * 8 + 5], nd[i * 8 + 6]) >= 0 { return; }
+        v := vfind(p, st, nd[i * 8 + 5], nd[i * 8 + 6]);   // pageflags
+        if v < 0 {                         // const passes; else resolve
             ln := nd[i * 8 + 4];
             put("{ln}: undeclared variable '");
             put_span(p, nd[i * 8 + 5], nd[i * 8 + 6]);
@@ -2051,12 +2118,96 @@ fn cexpr(p: *u8, st: *i64, i: i64) {
         return;
     }
     if k == 8 { cexpr(p, st, nd[i * 8 + 1]); return; }    // unary
-    if k == 9 {                            // binary: left, then right
-        cexpr(p, st, nd[i * 8 + 1]);
-        cexpr(p, st, nd[i * 8 + 2]);
+    if k == 9 {                            // binary: operands resolve,
+        cexpr(p, st, nd[i * 8 + 1]);       // then ncc's operand rules —
+        cexpr(p, st, nd[i * 8 + 2]);       // pageflags, str, pointers,
+        if st[41] == 1 { return; }         // integers, in that order
+        lt := cinfer(p, st, nd[i * 8 + 1]);
+        rt := cinfer(p, st, nd[i * 8 + 2]);
+        c := nd[i * 8 + 3];
+        ln8 := nd[i * 8 + 4];
+        lpf := span_is(p, lt, st[44] + 28, 9);
+        rpf := span_is(p, rt, st[44] + 28, 9);
+        if lpf || rpf {                    // v0.13: '|' only, statically
+            mut bd := 0;                   // known, and never W|X
+            if !lpf || !rpf { bd = 1; }
+            if c != 64 { bd = 1; }
+            if bd == 1 {
+                put("{ln8}: pageflags compose only with '|' between pageflags values (got ");
+                ty_put(p, st, lt);
+                put(" ");
+                op_put(c);
+                put(" ");
+                ty_put(p, st, rt);
+                put(")\n");
+                st[41] = 1;
+                return;
+            }
+            m := cpfmask(p, st, i);
+            if m < 0 {
+                put("{ln8}: compose pageflags from the PROT_* constants — a parameter's flags are opaque here (fixed at its call sites)\n");
+                st[41] = 1;
+                return;
+            }
+            if (m & 2) > 0 && (m & 4) > 0 {
+                put("{ln8}: W^X violation: a mapping cannot be both writable and executable\n");
+                st[41] = 1;
+            }
+            return;
+        }
+        lstr := span_is(p, lt, st[44] + 7, 3);
+        rstr := span_is(p, rt, st[44] + 7, 3);
+        if lstr || rstr {
+            put("{ln8}: operator '");
+            op_put(c);
+            put("' cannot be applied to str values (build strings with interpolation)\n");
+            st[41] = 1;
+            return;
+        }
+        if lt.pt > 0 || rt.pt > 0 {        // pointers compare only
+            iscmp := c == 54 || c == 55 || c == 56 || c == 57 || c == 58 || c == 59;
+            mut okp := 0;
+            if iscmp && lt.pt > 0 && rt.pt > 0 && tcompat(p, lt, rt) { okp = 1; }
+            if okp == 0 {
+                put("{ln8}: operator '");
+                op_put(c);
+                put("': pointers only support comparison against a compatible pointer (cast to addr for arithmetic)\n");
+                st[41] = 1;
+            }
+            return;
+        }
+        if !is_int_ty(p, lt) || !is_int_ty(p, rt) {
+            put("{ln8}: operator '");
+            op_put(c);
+            put("' expects integer operands (got ");
+            ty_put(p, st, lt);
+            put(" and ");
+            ty_put(p, st, rt);
+            put(")\n");
+            st[41] = 1;
+        }
         return;
     }
-    if k == 10 { cexpr(p, st, nd[i * 8 + 1]); return; }   // cast
+    if k == 10 {                           // cast: never INTO pageflags;
+        cexpr(p, st, nd[i * 8 + 1]);       // pageflags cast OUT only to
+        if st[41] == 1 { return; }         // an integer (for a syscall)
+        ct := T{ pt: nd[i * 8 + 2], us: nd[i * 8 + 3], s: nd[i * 8 + 5], l: nd[i * 8 + 6] };
+        if span_is(p, ct, st[44] + 28, 9) {
+            ln9 := nd[i * 8 + 4];
+            put("{ln9}: cannot cast into pageflags — build it from the PROT_* constants (the W^X proof needs static flag sets)\n");
+            st[41] = 1;
+            return;
+        }
+        sty2 := cinfer(p, st, nd[i * 8 + 1]);
+        if span_is(p, sty2, st[44] + 28, 9) && !is_int_ty(p, ct) {
+            ln10 := nd[i * 8 + 4];
+            put("{ln10}: pageflags may only be cast to an integer type (for a syscall argument), got ");
+            ty_put(p, st, ct);
+            put("\n");
+            st[41] = 1;
+        }
+        return;
+    }
     if k == 13 {                           // index: base, then index
         cexpr(p, st, nd[i * 8 + 1]);
         cexpr(p, st, nd[i * 8 + 2]);
@@ -2424,6 +2575,10 @@ fn cstmt(p: *u8, st: *i64, i: i64) {
             return;
         }
         vadd(st, nd[i * 8 + 5], nd[i * 8 + 6], nd[i * 8 + 3], rt2);
+        if span_is(p, rt2, st[44] + 28, 9) {   // a pageflags bind tracks
+            va2 := st[39] as *i64;             // its static flag set
+            va2[(st[40] - 1) * 8 + 7] = cpfmask(p, st, nd[i * 8 + 1]);
+        }
         return;
     }
     if k == 21 {                           // assign: lhs, rhs, the root
@@ -2474,6 +2629,14 @@ fn cstmt(p: *u8, st: *i64, i: i64) {
             ty_put(p, st, lt);
             put(")\n");
             st[41] = 1;
+            return;
+        }
+        if nd[r * 8] == 5 {                // a reassigned pageflags bind
+            v9 := vfind(p, st, nd[r * 8 + 5], nd[r * 8 + 6]);
+            if v9 >= 0 && span_is(p, vty(st, v9), st[44] + 28, 9) {
+                va9 := st[39] as *i64;     // keeps its flag set current
+                va9[v9 * 8 + 7] = cpfmask(p, st, nd[i * 8 + 2]);
+            }
         }
         return;
     }
@@ -2824,7 +2987,10 @@ fn cinfer(p: *u8, st: *i64, i: i64) -> T {
     if k == 1 { return t_i64(st); }
     if k == 2 { return t_bool(st); }
     if k == 3 || k == 4 { return t_str(st); }
-    if k == 5 {                            // path: the binding's type
+    if k == 5 {                            // path: a pageflags constant
+        if is_pfc(p, nd[i * 8 + 5], nd[i * 8 + 6]) >= 0 {   // first (ncc's
+            return t_pf(st);               // order), then the binding
+        }
         v := vfind(p, st, nd[i * 8 + 5], nd[i * 8 + 6]);
         if v >= 0 { return vty(st, v); }
         return t_i64(st);
@@ -2922,12 +3088,12 @@ fn main() -> i64 {
     }
     sys_close(fd);
     if total < 1 { return 0; }
-    inb := "i64boolstru8u64voidOkErrself"; // the intern tail: synthesized
-    mut z2 := 0;                           // type names, the result
-    while z2 < 28 {                        // variants, and self — AFTER
-        buf[total + z2] = inb.ptr[z2];     // the source, same buffer
-        z2 = z2 + 1;                       // (+19 Ok/2, +21 Err/3,
-    }                                      // +24 self/4)
+    inb := "i64boolstru8u64voidOkErrselfpageflags";   // the intern tail
+    mut z2 := 0;                           // (synthesized type names, the
+    while z2 < 37 {                        // result variants, self, and
+        buf[total + z2] = inb.ptr[z2];     // pageflags) — AFTER the
+        z2 = z2 + 1;                       // source, same buffer (+19 Ok
+    }                                      // +21 Err +24 self +28 pf/9)
     st := sys_sbrk(512) as *i64;
     ps := sys_sbrk(1024) as *i64;          // the params arena
     st[33] = sys_sbrk(1048576);            // nodes: 16K x 8 words

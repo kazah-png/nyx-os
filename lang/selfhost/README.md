@@ -149,12 +149,15 @@ stripped (the normalization rule lives in
    bad_fmt_trail    5: unknown format spec ':w4q' — ...
    bad_fmt_str      5: format specs apply to integers — a str interpolates as text
    bad_fmt_width_str 5: format specs apply to integers — ...
+   bad_wx           2: W^X violation: a mapping cannot be both writable and executable
+   bad_pf_castin    2: cannot cast into pageflags — build it from the PROT_* constants ...
+   bad_pf_op        2: pageflags compose only with '|' ... (got pageflags + pageflags)
+   bad_pf_param     2: compose pageflags from the PROT_* constants — ...
+   bad_binop_str    3: operator '+' cannot be applied to str values ...
+   bad_ptr_arith    3: operator '+': pointers only support comparison ...
 
-plus twenty-one POSITIVE targets — every example except
-pageflags.n (which waits for the pageflags-constant family) checks
-clean, and their required output is silence. The list includes
-nparse.n, the 150K toy compiler, and covers the whole ladder's own
-history. Coverage, stated honestly: extern
+plus ALL TWENTY-TWO examples as POSITIVE targets — the complete
+directory checks clean, silence enforced, nparse.n's 150K included. Coverage, stated honestly: extern
 blocks and functions parse for real (full bodies, the whole
 expression ladder, for-loop variables seeded in their body scope);
 struct/enum/impl items brace-skip and `match` refuses — their
@@ -203,6 +206,22 @@ the checker became the biggest N program yet written. Struct
 fields, enum semantics and method returns still fall back softly
 (their tables are the next rungs); the claimed rows never reach
 them.
+
+**Rung 9 — pageflags and the operator rules (landed): THE EXAMPLES
+LEDGER CLOSES.** The four PROT_* constants predeclare (checked
+before name resolution, ncc's order), every pageflags binding
+tracks its statically-known flag set (`pmask`, -1 for a parameter's
+opaque flags), and `cpfmask` folds constants, bindings and `|`
+compositions exactly as ncc's `pf_mask` does — which makes W^X a
+total compile-time proof, transliterated: compose only with `|`,
+only from statically-known sets, and never writable and executable
+together. Casts never go INTO pageflags, and only integers come
+out. The binary-operator rules landed with it in ncc's arm order —
+pageflags, then str (no `+` on strings), then pointers (comparison
+only), then integers. Six rows — and with pageflags.n silent,
+**every example the language ships is now an enforced silence: 22
+of 22.** The checker holds the whole examples directory to zero
+output and forty-two manifest rows to the byte.
 
 **Rung 8 — the format specs (landed)**: the parser stops dropping
 `:spec` — each hole records whether a spec rode it, and the spec
