@@ -119,6 +119,9 @@ stripped (the normalization rule lives in
    bad_arity        3: 'write' takes 3 argument(s), got 1
    bad_for_mut      3: cannot assign to immutable 'i' (declare it with 'mut')
    bad_struct_mut   4: cannot assign to immutable 'r' (declare it with 'mut')
+   bad_caps         7: 'write' requires the syscall capability — ...
+   bad_cname        1: function name 'double' is a C keyword — ...
+   bad_defer_nested 4: defer is only allowed in the function's outermost block
 
 plus two POSITIVE targets — hello.n and countdown.n check clean, and
 their required output is silence. Coverage, stated honestly: extern
@@ -130,6 +133,22 @@ shim's sbrk arena grew 1M → 8M (ncc/host/nyxrt.h): the checker's
 node arena was the first thing to outgrow it, and the differential
 reported the overflow as six segfaults before it could pass for an N
 bug. Suite stage [8c] holds all eight targets.
+
+**Rung 2 — the structural family (landed)**: three more rows, no
+types needed, each a small judgment over machinery rung 1 already
+built. The **capability gate** reads the caps bit the fn table
+already carries — and mirrors ncc's shape exactly: `xfn_caps` is
+XFNS-only, so fn-to-fn calls never gate, and the check sits between
+existence and arity (a call that is wrong twice reports the
+capability first, ncc's order — probed differentially). The
+**C-keyword name refusal** is parse-time, at the function's name,
+because ncc's `pexp` fires it before the program is even whole; the
+24-entry keyword table lands in kwlook's length-gated shape. The
+**defer depth judgment** is the first thing the defer case does —
+before its expression resolves (ncc's S_DEFER order) — with
+BLOCK_DEPTH tracked exactly as ncc tracks it: incremented per block,
+1 meaning the function's own. Nine rows claimed, all byte-exact;
+positive silences unchanged.
 
 **Proven inside NyxOS (batch V45)**: the in-OS ncc+tcc pipeline
 compiled check.n on target and ran it against bad_mut.n — its output

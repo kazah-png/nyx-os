@@ -23,15 +23,26 @@
 // NOTHING — the harness also claims positive targets whose output
 // must be empty.
 //
-// Rung 1 claims four manifest rows — the name-resolution family, no
-// type inference needed:
-//   bad_undecl.n      undeclared variable 'y'
-//   bad_mut.n         cannot assign to immutable 'x' (...)
-//   bad_unknown_fn.n  unknown function 'launch'
-//   bad_arity.n       'write' takes 3 argument(s), got 1
-// and two positive silences: hello.n, countdown.n.
+// Claimed manifest rows (rungs 1+2 — the name-resolution family plus
+// the structural family, no type inference needed):
+//   bad_undecl.n        undeclared variable 'y'
+//   bad_mut.n           cannot assign to immutable 'x' (...)
+//   bad_unknown_fn.n    unknown function 'launch'
+//   bad_arity.n         'write' takes 3 argument(s), got 1
+//   bad_for_mut.n       cannot assign to immutable 'i' (...)
+//   bad_struct_mut.n    cannot assign to immutable 'r' (...)
+//   bad_caps.n          'write' requires the syscall capability (...)
+//   bad_cname.n         function name 'double' is a C keyword (...)
+//   bad_defer_nested.n  defer is only allowed in the (...) outermost block
+// and two positive silences: hello.n, countdown.n. Rung 2's checks:
+// the capability gate (XFNS-only, ncc's xfn_caps — fn-to-fn calls
+// never gate; checked between existence and arity), the C-keyword
+// name refusal (parse-time, at the function's name — ncc's pexp
+// timing), and the defer depth judgment (first thing in the defer
+// case, before its expression resolves — ncc's S_DEFER order;
+// BLOCK_DEPTH rides st[43], 1 = the function's own block).
 //
-// Rung-1 coverage, stated honestly: extern blocks and functions are
+// Parse coverage, stated honestly: extern blocks and functions are
 // parsed for real (name/arity tables + full body trees); struct,
 // enum and impl items are brace-SKIPPED (their rows arrive with the
 // decl-table rung); `match` is not parsed yet (its binds need scope
@@ -458,6 +469,69 @@ fn span_eq(p: *u8, s1: i64, l1: i64, s2: i64, l2: i64) -> bool {
         i = i + 1;
     }
     return true;
+}
+
+// ncc's C_KEYWORDS table: N identifiers lower into the generated C
+// verbatim, so a name that is a C keyword would break the C build
+// downstream — ncc rejects it at the declaration site instead, and
+// check.n mirrors the judgment (kwlook's length-gated shape; N's own
+// keywords never reach an identifier slot on either side).
+fn is_ckw(p: *u8, s: i64, n: i64) -> bool {
+    if n == 2 {
+        if eq2(p, s, 100, 111) { return true; }                 // do
+    }
+    if n == 3 {
+        if eq3(p, s, 105, 110, 116) { return true; }            // int
+    }
+    if n == 4 {
+        if eq4(p, s, 97, 117, 116, 111) { return true; }        // auto
+        if eq4(p, s, 99, 97, 115, 101) { return true; }         // case
+        if eq4(p, s, 99, 104, 97, 114) { return true; }         // char
+        if eq4(p, s, 103, 111, 116, 111) { return true; }       // goto
+        if eq4(p, s, 108, 111, 110, 103) { return true; }       // long
+        if eq4(p, s, 118, 111, 105, 100) { return true; }       // void
+    }
+    if n == 5 {
+        if eq5(p, s, 99, 111, 110, 115, 116) { return true; }   // const
+        if eq5(p, s, 102, 108, 111, 97, 116) { return true; }   // float
+        if eq5(p, s, 115, 104, 111, 114, 116) { return true; }  // short
+        if eq5(p, s, 117, 110, 105, 111, 110) { return true; }  // union
+    }
+    if n == 6 {
+        if eq6(p, s, 100, 111, 117, 98, 108, 101) { return true; }   // double
+        if eq6(p, s, 105, 110, 108, 105, 110, 101) { return true; }  // inline
+        if eq6(p, s, 115, 105, 103, 110, 101, 100) { return true; }  // signed
+        if eq6(p, s, 115, 105, 122, 101, 111, 102) { return true; }  // sizeof
+        if eq6(p, s, 115, 116, 97, 116, 105, 99) { return true; }    // static
+        if eq6(p, s, 115, 119, 105, 116, 99, 104) { return true; }   // switch
+    }
+    if n == 7 {
+        if eq7(p, s, 100, 101, 102, 97, 117, 108, 116) { return true; }   // default
+        if eq7(p, s, 116, 121, 112, 101, 100, 101, 102) { return true; }  // typedef
+    }
+    if n == 8 {
+        if eq8(p, s, 114, 101, 103, 105, 115, 116, 101, 114) { return true; }  // register
+        if eq8(p, s, 114, 101, 115, 116, 114, 105, 99, 116) { return true; }   // restrict
+        if eq8(p, s, 117, 110, 115, 105, 103, 110, 101, 100) { return true; }  // unsigned
+        if eq8(p, s, 118, 111, 108, 97, 116, 105, 108, 101) { return true; }   // volatile
+    }
+    return false;
+}
+
+// The C-keyword refusal, ncc's wording. ncc checks EVERY declaration
+// site (its pexp does it for free); check.n mirrors the function-name
+// site — the one the corpus exercises — and the other sites arrive as
+// rows demand them. Fires at parse time, like ncc's.
+#[caps(syscall)]
+fn cname_fn(p: *u8, st: *i64, ss: i64, sl: i64, ln: i64) -> bool {
+    if is_ckw(p, ss, sl) {
+        put("{ln}: function name '");
+        put_span(p, ss, sl);
+        put("' is a C keyword — generated code uses names verbatim, pick another name\n");
+        st[41] = 1;
+        return true;
+    }
+    return false;
 }
 
 // One record in the merged extern+fn table (declaration order — the
@@ -1159,7 +1233,8 @@ fn pfn(p: *u8, n: i64, st: *i64, caps: i64, ps: *i64) {
     if !ck(st, 7) { perr(st); return; }
     fs := st[26];
     fl := st[27];
-    adv(p, n, st);
+    if cname_fn(p, st, fs, fl, st[25]) { return; }   // ncc dies at the
+    adv(p, n, st);                                   // name — so do we
     np := pparams(p, n, st, ps);
     mut rt := T{ pt: 0, us: 0, s: 0, l: 0 };
     if acc(p, n, st, 45) { rt = pty(p, n, st); }
@@ -1180,7 +1255,8 @@ fn pfn(p: *u8, n: i64, st: *i64, caps: i64, ps: *i64) {
 fn pitems(p: *u8, n: i64, st: *i64, ps: *i64) {
     mut going := true;
     while going {
-        if ck(st, 0) { going = false; continue; }
+        if st[41] == 1 { going = false; continue; }   // a parse-time
+        if ck(st, 0) { going = false; continue; }     // error already won
         mut caps := 0;
         if ck(st, 33) { adv(p, n, st); }   // #[drop(fn)] rides a struct
         if acc(p, n, st, 32) { caps = 1; } // #[caps(syscall)]
@@ -1241,6 +1317,13 @@ fn cexpr(p: *u8, st: *i64, i: i64) {
                 return;
             }
             ft := st[37] as *i64;
+            if ft[fi * 8 + 6] == 0 && ft[fi * 8 + 3] == 1 && st[42] == 0 {
+                put("{ln}: '");           // ncc's xfn_caps is XFNS-only:
+                put_span(p, nd[cal * 8 + 5], nd[cal * 8 + 6]);
+                put("' requires the syscall capability — mark the calling function #[caps(syscall)]\n");
+                st[41] = 1;               // fn-to-fn calls never gate;
+                return;                   // order: exists, caps, arity
+            }
             np := ft[fi * 8 + 2];
             if na != np {
                 put("{ln}: '");
@@ -1343,7 +1426,16 @@ fn cstmt(p: *u8, st: *i64, i: i64) {
         }
         return;
     }
-    if k == 28 { cexpr(p, st, nd[i * 8 + 1]); return; }   // defer
+    if k == 28 {                           // defer: the depth judgment
+        if st[43] != 1 {                   // FIRST (ncc's S_DEFER order),
+            ln := nd[i * 8 + 4];           // then the expression resolves
+            put("{ln}: defer is only allowed in the function's outermost block\n");
+            st[41] = 1;
+            return;
+        }
+        cexpr(p, st, nd[i * 8 + 1]);
+        return;
+    }
     if k == 30 {                           // for: bounds, then the body
         cexpr(p, st, nd[i * 8 + 1]);       // with the loop var seeded
         cexpr(p, st, nd[i * 8 + 2]);       // (immutable) in its scope
@@ -1364,7 +1456,8 @@ fn cblock(p: *u8, st: *i64, i: i64) {
     if i == 0 { return; }
     nd := st[33] as *i64;
     vsave := st[40];
-    mut s := nd[i * 8 + 1];
+    st[43] = st[43] + 1;                   // ncc's BLOCK_DEPTH: 1 = the
+    mut s := nd[i * 8 + 1];                // function's own block
     while s > 0 {
         cstmt(p, st, s);
         if st[41] == 1 { return; }
@@ -1372,6 +1465,7 @@ fn cblock(p: *u8, st: *i64, i: i64) {
     }
     t := nd[i * 8 + 2];
     if t > 0 { cexpr(p, st, t); }
+    st[43] = st[43] - 1;
     st[40] = vsave;
 }
 
@@ -1382,6 +1476,8 @@ fn cfn(p: *u8, st: *i64, fi: i64) {
     ft := st[37] as *i64;
     al := st[35] as *i64;
     st[40] = 0;
+    st[42] = ft[fi * 8 + 3];               // CUR_FN_CAPS, ncc's reset
+    st[43] = 0;                            // BLOCK_DEPTH, per function
     mut q := 0;
     while q < ft[fi * 8 + 2] {
         vadd(st, al[ft[fi * 8 + 5] + q * 2], al[ft[fi * 8 + 5] + q * 2 + 1], 0);
@@ -1418,6 +1514,8 @@ fn main() -> i64 {
     st[39] = sys_sbrk(8192);               // vars: 256 x 3 words
     st[40] = 0;
     st[41] = 0;                            // the error flag
+    st[42] = 0;                            // CUR_FN_CAPS
+    st[43] = 0;                            // block depth
     nil0 := st[33] as *i64;                // node 0: an explicit nil
     mut z := 0;
     while z < 8 { nil0[z] = 0; z = z + 1; }
@@ -1430,6 +1528,7 @@ fn main() -> i64 {
     adv(buf, total, st);                   // prime NEXT
     adv(buf, total, st);                   // ... and CUR
     pitems(buf, total, st, ps);            // ONE pass: tables + trees
+    if st[41] == 1 { return 1; }           // a parse-time refusal (cname)
     ft := st[37] as *i64;
     mut i := 0;                            // check fns in declaration
     while i < st[38] {                     // order; first error stops

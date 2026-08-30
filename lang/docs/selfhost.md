@@ -616,6 +616,26 @@ operator rules, match and result semantics, and the own/move
 family). The negative corpus keeps the order honest: every rung
 claims exactly the rows its differential proves.
 
+### Rung 2 — the structural family
+
+The scout's three rows landed as predicted — each one a short
+judgment over machinery the tree rung already built. The capability
+gate found its data waiting (the caps bit has ridden the fn table
+since rung 1) and its subtlety in ncc's source: `xfn_caps` searches
+the extern table only, so a plain function calling another plain
+function never gates — the capability is a property of the syscall
+boundary, not of call graphs — and the check runs between existence
+and arity, an order the differential can see (a call that is wrong
+twice reports the capability first, and check.n's line matches
+ncc's). The C-keyword refusal turned out to live in the parser: ncc
+fires it in `pexp`, at the declaration's name, before the program is
+whole — so check.n refuses there too, and a file whose first
+function is named `double` never reaches the checker at all. The
+defer depth judgment is the first line of the defer case, before the
+deferred expression resolves its names — the manifest's
+nested-defer row pins that order. Nine rows byte-exact; the type
+family is next, and it is the mountain's face.
+
 And the hardest lexer feature landed: **interpolation**. A toy string
 containing a brace lexes as segments — HEAD before the first hole,
 MID between holes, TAIL after the last (ncc's own
