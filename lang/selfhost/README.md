@@ -131,9 +131,17 @@ stripped (the normalization rule lives in
    bad_struct_unknown 2: unknown struct 'Point'
    bad_struct_missing 3: literal for 'Rect' must initialize field 'h' exactly once
    bad_struct_field 4: struct 'Rect' has no field 'z'
+   bad_ret_ty       2: return type mismatch: expected i64, got str
+   bad_variant_payload 3: variant 'Shape.Circle' carries a payload — ...
+   bad_match_nonenum 3: match subject must be an enum value (got i64)
+   bad_match_missing 4: match must cover variant 'Empty' exactly once
+   bad_match_binds  5: arm 'Circle' binds 2 name(s), but the payload has 1 field(s)
+   bad_mexpr_types  5: match arms disagree: arm 'B' yields str, expected i64
+   bad_mexpr_void   5: match arm 'A' must yield a value
 
-plus two POSITIVE targets — hello.n and countdown.n check clean, and
-their required output is silence. Coverage, stated honestly: extern
+plus eleven POSITIVE targets (hello, countdown, structs, enums,
+matchexpr, inference, defer, forloop, caps, bytes, userptr) — they
+check clean, and their required output is silence. Coverage, stated honestly: extern
 blocks and functions parse for real (full bodies, the whole
 expression ladder, for-loop variables seeded in their body scope);
 struct/enum/impl items brace-skip and `match` refuses — their
@@ -182,6 +190,27 @@ the checker became the biggest N program yet written. Struct
 fields, enum semantics and method returns still fall back softly
 (their tables are the next rungs); the claimed rows never reach
 them.
+
+**Rung 5 — the enum table, and match comes back (landed)**: penum
+accretes back like pstruct did, and `match` — refused since the tree
+rung — parses again in all four positions (statement, `:=`, `=`,
+`return`), building nodes whose arms carry variant spans, bind
+spans, and body/value nodes. The checker transliterates ncc's whole
+S_MATCH sequence in order: the subject must be an enum, every
+declared variant covered exactly once, no stray arm names, each
+arm's binds counted against its variant's payload — then, for the
+value forms, every arm checks WITH ITS BINDS IN SCOPE (typed from
+the payload fields, ncc's positional rule), the first arm fixes the
+result type, later arms must agree, and the `:=`/`=`/`return`
+targets get their own statement's checks against the match's result.
+Variant references (`Shape.Empty`) judge before the base could
+misresolve as a variable, payload-carrying variants point at the
+constructor, and enum literals check their payload fields with
+slit's exact discipline. Seven rows landed at once — and eight more
+examples joined the silences (enums.n and matchexpr.n among them:
+the whole match machinery, exercised by real programs that must
+stay quiet). results.n stays off the list honestly: it uses `?`,
+and the try rung has not been climbed.
 
 **Rung 4 — the struct table (landed)**: pstruct accretes back from
 the brace-skip, transformed — fields land in a struct table (name

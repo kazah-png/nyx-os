@@ -700,6 +700,33 @@ check are all telling each other the truth. Three more rows and a
 third positive target (structs.n, silent); eighteen rows and the
 enum table left standing.
 
+### Rung 5 — the enum table, and match comes back
+
+The last standing family fell in one climb. penum accreted back the
+way pstruct had, and with the enum table in place `match` — refused
+since print-as-you-parse retired — returned to the parser in all
+four of its positions, building nodes instead of S 9 lines. The
+checker is ncc's S_MATCH block whole, in order: enum subject,
+exhaustive-and-unduplicated cover (the wording names the variant
+that is missing), stray-arm refusal, binds counted against each
+variant's payload — and then the part that makes match an
+expression: every arm checks with its binds seeded in scope, typed
+positionally from the payload fields, the first arm fixes the
+result type and the rest must agree with it, and the `:=`, `=` and
+`return` targets replay their own statement's checks against that
+result. Variant references judge before their enum name could
+misresolve as a variable, and payload-carrying variants point the
+user at the constructor — braces escaped in N's own strings,
+because braces interpolate.
+
+Seven rows landed at once (one of them free: the return-mismatch
+check written two rungs early found its corpus row waiting), and
+the positive ledger tripled — eleven examples now check in
+enforced silence, enums.n and matchexpr.n among them. Twenty-five
+rows; what remains of the corpus speaks own, try, drop, methods and
+the pageflags dialect — each a bounded rung on a mountain whose
+shape is now familiar.
+
 And the hardest lexer feature landed: **interpolation**. A toy string
 containing a brace lexes as segments — HEAD before the first hole,
 MID between holes, TAIL after the last (ncc's own

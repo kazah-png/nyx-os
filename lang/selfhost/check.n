@@ -23,18 +23,10 @@
 // NOTHING — the harness also claims positive targets whose output
 // must be empty.
 //
-// Claimed manifest rows (rungs 1+2 — the name-resolution family plus
-// the structural family, no type inference needed):
-//   bad_undecl.n        undeclared variable 'y'
-//   bad_mut.n           cannot assign to immutable 'x' (...)
-//   bad_unknown_fn.n    unknown function 'launch'
-//   bad_arity.n         'write' takes 3 argument(s), got 1
-//   bad_for_mut.n       cannot assign to immutable 'i' (...)
-//   bad_struct_mut.n    cannot assign to immutable 'r' (...)
-//   bad_caps.n          'write' requires the syscall capability (...)
-//   bad_cname.n         function name 'double' is a C keyword (...)
-//   bad_defer_nested.n  defer is only allowed in the (...) outermost block
-// and two positive silences: hello.n, countdown.n. Rung 2's checks:
+// The CLAIMED LEDGER (which manifest rows and which positive
+// silences this checker is held to) lives in ../selfhost/README.md
+// and in the verification suite's stage [8c] — one canonical list,
+// grown rung by rung, never duplicated here. Rung 2's checks:
 // the capability gate (XFNS-only, ncc's xfn_caps — fn-to-fn calls
 // never gate; checked between existence and arity), the C-keyword
 // name refusal (parse-time, at the function's name — ncc's pexp
@@ -592,6 +584,59 @@ fn sfty(st: *i64, si: i64, q: i64) -> T {
     T{ pt: al[r + 2], us: al[r + 3], s: al[r + 4], l: al[r + 5] }
 }
 
+// The enum table (ncc's ENUMS/enum_lookup): 4-word records — name
+// span, variant count, variant-record start. Variant records (also
+// 4-word: span, payload count, payload-field start) and their
+// payload fields (6-word span+T) live in the flat list arena.
+fn eadd(st: *i64, ss: i64, sl: i64, nv: i64, vst: i64) {
+    ea := st[51] as *i64;
+    i := st[52];
+    ea[i * 4] = ss;
+    ea[i * 4 + 1] = sl;
+    ea[i * 4 + 2] = nv;
+    ea[i * 4 + 3] = vst;
+    st[52] = i + 1;
+}
+
+fn efind(p: *u8, st: *i64, ss: i64, sl: i64) -> i64 {
+    ea := st[51] as *i64;
+    mut i := 0;
+    while i < st[52] {
+        if span_eq(p, ea[i * 4], ea[i * 4 + 1], ss, sl) { return i; }
+        i = i + 1;
+    }
+    return -1;
+}
+
+// ncc's variant_index: the variant's position within enum ei, or -1.
+fn vfindx(p: *u8, st: *i64, ei: i64, vs: i64, vl: i64) -> i64 {
+    ea := st[51] as *i64;
+    al := st[35] as *i64;
+    vbase := ea[ei * 4 + 3];
+    mut i := 0;
+    while i < ea[ei * 4 + 2] {
+        if span_eq(p, al[vbase + i * 4], al[vbase + i * 4 + 1], vs, vl) { return i; }
+        i = i + 1;
+    }
+    return -1;
+}
+
+// Seed one arm's binds, positionally typed from the variant's
+// payload fields — ncc's vars_add(bind, field ty, 0) loop.
+fn mseed(p: *u8, st: *i64, ei: i64, vi: i64, bst: i64, nb: i64) {
+    al := st[35] as *i64;
+    ea := st[51] as *i64;
+    vbase := ea[ei * 4 + 3];
+    fst := al[vbase + vi * 4 + 3];
+    mut b2 := 0;
+    while b2 < nb {
+        r := fst + b2 * 6;
+        ft2 := T{ pt: al[r + 2], us: al[r + 3], s: al[r + 4], l: al[r + 5] };
+        vadd(st, al[bst + b2 * 2], al[bst + b2 * 2 + 1], 0, ft2);
+        b2 = b2 + 1;
+    }
+}
+
 // The scoped name table: ncc's VARS discipline — vars_add appends,
 // vars_find scans backward (innermost shadows), blocks record the
 // count on entry and truncate on exit.
@@ -845,19 +890,21 @@ fn ppostfix(p: *u8, n: i64, st: *i64) -> i64 {
         fs := st[26];
         fl := st[27];
         adv(p, n, st);                     // the field name
-        if ck(st, 39) && st[32] == 0 {     // Enum.Variant{ ... }
-            adv(p, n, st);
-            vx := sys_sbrk(512) as *i64;
+        if ck(st, 39) && st[32] == 0 {     // Enum.Variant{ ... }: field
+            adv(p, n, st);                 // names AND values, like slit
+            vx := sys_sbrk(768) as *i64;
             mut na := 0;
             mut more := !ck(st, 40);
             while more {
                 more = false;
                 if ck(st, 40) { continue; }
                 if !ck(st, 7) { perr(st); return 0; }
+                vx[na * 3] = st[26];
+                vx[na * 3 + 1] = st[27];
                 adv(p, n, st);
                 if !ck(st, 43) { perr(st); return 0; }
                 adv(p, n, st);
-                vx[na] = pexpr(p, n, st);
+                vx[na * 3 + 2] = pexpr(p, n, st);
                 na = na + 1;
                 if acc(p, n, st, 41) { more = true; }
             }
@@ -865,9 +912,11 @@ fn ppostfix(p: *u8, n: i64, st: *i64) -> i64 {
             adv(p, n, st);
             ast := st[36];
             mut q := 0;
-            while q < na { ladd(st, vx[q]); q = q + 1; }
-            el := nnew(st, 12, ast, 0, na, ln, ns, nl);
-            return ppostfix_tail(p, n, st, el);
+            while q < na * 3 { ladd(st, vx[q]); q = q + 1; }
+            el := nnew(st, 12, ast, fs, na, ln, ns, nl);
+            nd2 := st[33] as *i64;         // the variant span: b = start,
+            nd2[el * 8 + 7] = fl;          // x = length (exprs never
+            return ppostfix_tail(p, n, st, el);   // chain, so x is free)
         }
         base := nnew(st, 5, 0, 0, 0, ln, ns, nl);
         h := pfield_or_call(p, n, st, base, fs, fl);
@@ -1089,6 +1138,96 @@ fn por(p: *u8, n: i64, st: *i64) -> i64 {
 
 // ---- statements + blocks --------------------------------------- //
 
+// match <subject> { arms }, `match` already consumed — parse.n's
+// pmatch accreted back, transformed to nodes. exprarms: 1 = the
+// value forms (arm bodies are expressions), 0 = the statement form
+// (arm bodies are blocks). The K_MATCH node: a = subject, b = the
+// list-arena HEADER (8 words: mtarget, lhs node, aop, let-name span,
+// is_mut, arm-record start, bind-area start — patched after the
+// binds land), c = narms. Arm records are 6 words: variant span,
+// bind count, bind start (2-word spans), body/value node, line.
+#[caps(syscall)]
+fn pmatch(p: *u8, n: i64, st: *i64, exprarms: i64, mt: i64, mln: i64, ns2: i64, nl2: i64, aop: i64, im: i64, lhs: i64) -> i64 {
+    st[32] = 1;
+    subj := pexpr(p, n, st);
+    st[32] = 0;
+    if !ck(st, 39) { perr(st); return 0; }
+    adv(p, n, st);
+    bs := sys_sbrk(2048) as *i64;          // bind-span scratch
+    ar := sys_sbrk(1024) as *i64;          // arm scratch: 16 x 6
+    mut na := 0;
+    mut btop := 0;
+    mut more := !ck(st, 40);
+    while more {
+        more = false;
+        if !ck(st, 7) { perr(st); return 0; }
+        vs := st[26];
+        vl := st[27];
+        aln := st[25];
+        adv(p, n, st);
+        mut nb := 0;
+        bst := btop;
+        if acc(p, n, st, 37) {             // (binds)
+            mut inner := true;
+            while inner {
+                inner = false;
+                if !ck(st, 7) { perr(st); return 0; }
+                bs[btop * 2] = st[26];
+                bs[btop * 2 + 1] = st[27];
+                btop = btop + 1;
+                adv(p, n, st);
+                nb = nb + 1;
+                if acc(p, n, st, 41) { inner = true; }
+            }
+            if !ck(st, 38) { perr(st); return 0; }
+            adv(p, n, st);
+        }
+        if !ck(st, 26) { perr(st); return 0; }   // '=>'
+        adv(p, n, st);
+        mut bd := 0;
+        if exprarms == 1 { bd = pexpr(p, n, st); }
+        if exprarms == 0 { bd = pblock(p, n, st); }
+        ar[na * 6] = vs;
+        ar[na * 6 + 1] = vl;
+        ar[na * 6 + 2] = nb;
+        ar[na * 6 + 3] = bst;              // scratch index, made absolute
+        ar[na * 6 + 4] = bd;               // when routed into the arena
+        ar[na * 6 + 5] = aln;
+        na = na + 1;
+        if acc(p, n, st, 41) {
+            if !ck(st, 40) { more = true; }
+        }
+    }
+    if !ck(st, 40) { perr(st); return 0; }
+    adv(p, n, st);
+    hst := st[36];                         // the header
+    ladd(st, mt);
+    ladd(st, lhs);
+    ladd(st, aop);
+    ladd(st, ns2);
+    ladd(st, nl2);
+    ladd(st, im);
+    ladd(st, 0);                           // arm start (patched below)
+    ladd(st, 0);
+    bbase := st[36];                       // all binds, then arm records
+    mut q := 0;
+    while q < btop * 2 { ladd(st, bs[q]); q = q + 1; }
+    abase := st[36];
+    mut q2 := 0;
+    while q2 < na {
+        ladd(st, ar[q2 * 6]);
+        ladd(st, ar[q2 * 6 + 1]);
+        ladd(st, ar[q2 * 6 + 2]);
+        ladd(st, bbase + ar[q2 * 6 + 3] * 2);
+        ladd(st, ar[q2 * 6 + 4]);
+        ladd(st, ar[q2 * 6 + 5]);
+        q2 = q2 + 1;
+    }
+    al := st[35] as *i64;
+    al[hst + 6] = abase;
+    return nnew(st, 29, subj, hst, na, mln, 0, 0);
+}
+
 fn pif(p: *u8, n: i64, st: *i64) -> i64 {
     ln := st[25];
     adv(p, n, st);                         // 'if'
@@ -1135,26 +1274,40 @@ fn pblock(p: *u8, n: i64, st: *i64) -> i64 {
             adv(p, n, st);
             if !ck(st, 44) { perr(st); return 0; }
             adv(p, n, st);
-            if ck(st, 25) { perr(st); return 0; }   // := match — later rung
-            rhs := pexpr(p, n, st);
-            tr := acc(p, n, st, 69);       // x := e?; (try — later rung)
-            if !ck(st, 42) { perr(st); return 0; }
-            adv(p, n, st);
-            sn = nnew(st, 20, rhs, 0, im, ln, is, il);
+            if ck(st, 25) {                // x := match subj { ... };
+                adv(p, n, st);
+                sn = pmatch(p, n, st, 1, 1, ln, is, il, 0, im, 0);
+                if !ck(st, 42) { perr(st); return 0; }
+                adv(p, n, st);
+            }
+            if sn == 0 {
+                rhs := pexpr(p, n, st);
+                tr := acc(p, n, st, 69);   // x := e?; (try — later rung)
+                if !ck(st, 42) { perr(st); return 0; }
+                adv(p, n, st);
+                sn = nnew(st, 20, rhs, 0, im, ln, is, il);
+            }
         }
         if sn == 0 && ck(st, 12) {         // return [e] ;
             ln := st[25];
             adv(p, n, st);
-            if ck(st, 25) { perr(st); return 0; }   // return match — later
-            mut re := 0;
-            mut bare := 0;
-            if ck(st, 42) { adv(p, n, st); bare = 1; }
-            if bare == 0 {
-                re = pexpr(p, n, st);
+            if ck(st, 25) {                // return match subj { ... };
+                adv(p, n, st);
+                sn = pmatch(p, n, st, 1, 3, ln, 0, 0, 0, 0, 0);
                 if !ck(st, 42) { perr(st); return 0; }
                 adv(p, n, st);
             }
-            sn = nnew(st, 22, re, 0, 0, ln, 0, 0);
+            if sn == 0 {
+                mut re := 0;
+                mut bare := 0;
+                if ck(st, 42) { adv(p, n, st); bare = 1; }
+                if bare == 0 {
+                    re = pexpr(p, n, st);
+                    if !ck(st, 42) { perr(st); return 0; }
+                    adv(p, n, st);
+                }
+                sn = nnew(st, 22, re, 0, 0, ln, 0, 0);
+            }
         }
         if sn == 0 && ck(st, 16) {         // break ;
             ln := st[25];
@@ -1190,9 +1343,10 @@ fn pblock(p: *u8, n: i64, st: *i64) -> i64 {
         if sn == 0 && ck(st, 13) {         // if
             sn = pif(p, n, st);
         }
-        if sn == 0 && ck(st, 25) {         // match — a later rung
-            perr(st);
-            return 0;
+        if sn == 0 && ck(st, 25) {         // match subj { arms } — the
+            ln := st[25];                  // statement form
+            adv(p, n, st);
+            sn = pmatch(p, n, st, 0, 0, ln, 0, 0, 0, 0, 0);
         }
         if sn == 0 && ck(st, 28) {         // for name in a..b { }
             ln := st[25];
@@ -1221,13 +1375,21 @@ fn pblock(p: *u8, n: i64, st: *i64) -> i64 {
                 if ck(st, 52) { op = 1; }
                 if ck(st, 53) { op = 2; }
                 adv(p, n, st);
-                if ck(st, 25) { perr(st); return 0; }   // = match — later
-                rhs2 := pexpr(p, n, st);
-                tr2 := acc(p, n, st, 69);
-                if !ck(st, 42) { perr(st); return 0; }
-                adv(p, n, st);
-                sn = nnew(st, 21, h, rhs2, op, ln, 0, 0);
-                done = 1;
+                if ck(st, 25) {            // lhs = match subj { ... };
+                    adv(p, n, st);
+                    sn = pmatch(p, n, st, 1, 2, ln, 0, 0, op + 1, 0, h);
+                    if !ck(st, 42) { perr(st); return 0; }
+                    adv(p, n, st);
+                    done = 1;
+                }
+                if done == 0 {
+                    rhs2 := pexpr(p, n, st);
+                    tr2 := acc(p, n, st, 69);
+                    if !ck(st, 42) { perr(st); return 0; }
+                    adv(p, n, st);
+                    sn = nnew(st, 21, h, rhs2, op, ln, 0, 0);
+                    done = 1;
+                }
             }
             if done == 0 && acc(p, n, st, 69) {     // e? ;
                 if !ck(st, 42) { perr(st); return 0; }
@@ -1354,6 +1516,72 @@ fn pstruct(p: *u8, n: i64, st: *i64, ps: *i64) {
     sadd(st, ns, nl, nf, fst);
 }
 
+// enum Name { V, W(f: ty, ...), ... } — parse.n's penum accreted
+// back, transformed: variants and their payload fields land in the
+// enum table instead of V/U lines.
+#[caps(syscall)]
+fn penum(p: *u8, n: i64, st: *i64, ps: *i64) {
+    if !ck(st, 7) { perr(st); return; }
+    ns := st[26];
+    nl := st[27];
+    adv(p, n, st);
+    if !ck(st, 39) { perr(st); return; }
+    adv(p, n, st);
+    vx := sys_sbrk(1024) as *i64;          // variant scratch: 32 x 4
+    mut nv := 0;
+    mut more := !ck(st, 40);
+    while more {
+        more = false;
+        if !ck(st, 7) { perr(st); return; }
+        vs := st[26];
+        vl := st[27];
+        adv(p, n, st);
+        mut nf := 0;
+        if acc(p, n, st, 37) {             // optional named payload
+            mut inner := true;
+            while inner {
+                inner = false;
+                if !ck(st, 7) { perr(st); return; }
+                ps[nf * 6] = st[26];
+                ps[nf * 6 + 1] = st[27];
+                adv(p, n, st);
+                if !ck(st, 43) { perr(st); return; }
+                adv(p, n, st);
+                t := pty(p, n, st);
+                ps[nf * 6 + 2] = t.pt;
+                ps[nf * 6 + 3] = t.us;
+                ps[nf * 6 + 4] = t.s;
+                ps[nf * 6 + 5] = t.l;
+                nf = nf + 1;
+                if acc(p, n, st, 41) { inner = true; }
+            }
+            if !ck(st, 38) { perr(st); return; }
+            adv(p, n, st);
+        }
+        fst := st[36];                     // this variant's payload
+        mut q := 0;                        // fields into the list arena
+        while q < nf {
+            mut w := 0;
+            while w < 6 { ladd(st, ps[q * 6 + w]); w = w + 1; }
+            q = q + 1;
+        }
+        vx[nv * 4] = vs;
+        vx[nv * 4 + 1] = vl;
+        vx[nv * 4 + 2] = nf;
+        vx[nv * 4 + 3] = fst;
+        nv = nv + 1;
+        if acc(p, n, st, 41) {
+            if !ck(st, 40) { more = true; }
+        }
+    }
+    if !ck(st, 40) { perr(st); return; }
+    adv(p, n, st);
+    vst := st[36];
+    mut q2 := 0;
+    while q2 < nv * 4 { ladd(st, vx[q2]); q2 = q2 + 1; }
+    eadd(st, ns, nl, nv, vst);
+}
+
 // extern syscall { fn name(params) [-> ty] = NUM [;] ... } — each
 // binding becomes a table record (no body).
 fn pextern(p: *u8, n: i64, st: *i64, caps: i64, ps: *i64) {
@@ -1439,7 +1667,11 @@ fn pitems(p: *u8, n: i64, st: *i64, ps: *i64) {
             pstruct(p, n, st, ps);
             continue;
         }
-        if ck(st, 24) { skip_item(p, n, st); continue; }   // enum
+        if ck(st, 24) {                    // enum: a real parse now —
+            adv(p, n, st);                 // the table rung landed
+            penum(p, n, st, ps);
+            continue;
+        }
         if ck(st, 27) { skip_item(p, n, st); continue; }   // impl
         if ck(st, 8) {                     // extern
             adv(p, n, st);
@@ -1542,11 +1774,42 @@ fn cexpr(p: *u8, st: *i64, i: i64) {
         }
         return;
     }
-    if k == 7 {                            // field read: base resolves,
-        cexpr(p, st, nd[i * 8 + 1]);       // then ncc's three arms —
-        if st[41] == 1 { return; }         // str, struct, has-no-fields
+    if k == 7 {                            // field read: the variant-ref
+        b1 := nd[i * 8 + 1];               // judgment FIRST (ncc's order
+        ln2 := nd[i * 8 + 4];              // — the enum name must not
+        if nd[b1 * 8] == 5 {               // resolve as a variable),
+            ei1 := efind(p, st, nd[b1 * 8 + 5], nd[b1 * 8 + 6]);
+            if ei1 >= 0 {                  // then base + the three arms
+                vi0 := vfindx(p, st, ei1, nd[i * 8 + 5], nd[i * 8 + 6]);
+                if vi0 < 0 {
+                    put("{ln2}: enum '");
+                    put_span(p, nd[b1 * 8 + 5], nd[b1 * 8 + 6]);
+                    put("' has no variant '");
+                    put_span(p, nd[i * 8 + 5], nd[i * 8 + 6]);
+                    put("'\n");
+                    st[41] = 1;
+                    return;
+                }
+                ea0 := st[51] as *i64;
+                if al[ea0[ei1 * 4 + 3] + vi0 * 4 + 2] != 0 {
+                    put("{ln2}: variant '");
+                    put_span(p, nd[b1 * 8 + 5], nd[b1 * 8 + 6]);
+                    put(".");
+                    put_span(p, nd[i * 8 + 5], nd[i * 8 + 6]);
+                    put("' carries a payload — construct it with ");
+                    put_span(p, nd[b1 * 8 + 5], nd[b1 * 8 + 6]);
+                    put(".");
+                    put_span(p, nd[i * 8 + 5], nd[i * 8 + 6]);
+                    put("\{ ... \}\n");
+                    st[41] = 1;
+                    return;
+                }
+                return;
+            }
+        }
+        cexpr(p, st, nd[i * 8 + 1]);
+        if st[41] == 1 { return; }
         bt := cinfer(p, st, nd[i * 8 + 1]);
-        ln2 := nd[i * 8 + 4];
         if span_is(p, bt, st[44] + 7, 3) {
             isp := nd[i * 8 + 6] == 3 && eq3(p, nd[i * 8 + 5], 112, 116, 114);
             isl := nd[i * 8 + 6] == 3 && eq3(p, nd[i * 8 + 5], 108, 101, 110);
@@ -1677,11 +1940,94 @@ fn cexpr(p: *u8, st: *i64, i: i64) {
         }
         return;
     }
-    if k == 12 {                           // enum literal values (the
-        mut q7 := 0;                       // enum table is a later rung)
-        while q7 < nd[i * 8 + 3] {
-            cexpr(p, st, al[nd[i * 8 + 1] + q7]);
+    if k == 12 {                           // enum literal: ncc's order —
+        ln6 := nd[i * 8 + 4];              // known enum, known variant,
+        na6 := nd[i * 8 + 3];              // payload fields exactly once,
+        ei2 := efind(p, st, nd[i * 8 + 5], nd[i * 8 + 6]);
+        if ei2 < 0 {                       // then per-value type
+            put("{ln6}: unknown enum '");
+            put_span(p, nd[i * 8 + 5], nd[i * 8 + 6]);
+            put("'\n");
+            st[41] = 1;
+            return;
+        }
+        vi5 := vfindx(p, st, ei2, nd[i * 8 + 2], nd[i * 8 + 7]);
+        if vi5 < 0 {
+            put("{ln6}: enum '");
+            put_span(p, nd[i * 8 + 5], nd[i * 8 + 6]);
+            put("' has no variant '");
+            put_span(p, nd[i * 8 + 2], nd[i * 8 + 7]);
+            put("'\n");
+            st[41] = 1;
+            return;
+        }
+        ea3 := st[51] as *i64;
+        vb := ea3[ei2 * 4 + 3];
+        nf4 := al[vb + vi5 * 4 + 2];
+        fs4 := al[vb + vi5 * 4 + 3];
+        lst3 := nd[i * 8 + 1];
+        mut q7 := 0;
+        while q7 < nf4 {
+            r4 := fs4 + q7 * 6;
+            mut seen2 := 0;
+            mut j3 := 0;
+            while j3 < na6 {
+                if span_eq(p, al[lst3 + j3 * 3], al[lst3 + j3 * 3 + 1], al[r4], al[r4 + 1]) { seen2 = seen2 + 1; }
+                j3 = j3 + 1;
+            }
+            if seen2 != 1 {
+                put("{ln6}: literal for '");
+                put_span(p, nd[i * 8 + 5], nd[i * 8 + 6]);
+                put(".");
+                put_span(p, nd[i * 8 + 2], nd[i * 8 + 7]);
+                put("' must initialize field '");
+                put_span(p, al[r4], al[r4 + 1]);
+                put("' exactly once\n");
+                st[41] = 1;
+                return;
+            }
             q7 = q7 + 1;
+        }
+        if na6 != nf4 {
+            put("{ln6}: literal for '");
+            put_span(p, nd[i * 8 + 5], nd[i * 8 + 6]);
+            put(".");
+            put_span(p, nd[i * 8 + 2], nd[i * 8 + 7]);
+            put("' names a field it does not have\n");
+            st[41] = 1;
+            return;
+        }
+        mut j4 := 0;
+        while j4 < na6 {
+            vv2 := al[lst3 + j4 * 3 + 2];
+            cexpr(p, st, vv2);
+            if st[41] == 1 { return; }
+            at6 := cinfer(p, st, vv2);
+            mut dt2 := t_i64(st);
+            mut q8 := 0;
+            while q8 < nf4 {
+                r5 := fs4 + q8 * 6;
+                if span_eq(p, al[r5], al[r5 + 1], al[lst3 + j4 * 3], al[lst3 + j4 * 3 + 1]) {
+                    dt2 = T{ pt: al[r5 + 2], us: al[r5 + 3], s: al[r5 + 4], l: al[r5 + 5] };
+                }
+                q8 = q8 + 1;
+            }
+            if !tcompat(p, at6, dt2) {
+                put("{ln6}: field '");
+                put_span(p, al[lst3 + j4 * 3], al[lst3 + j4 * 3 + 1]);
+                put("' of '");
+                put_span(p, nd[i * 8 + 5], nd[i * 8 + 6]);
+                put(".");
+                put_span(p, nd[i * 8 + 2], nd[i * 8 + 7]);
+                put("': expected ");
+                ty_put(p, st, dt2);
+                put(", got ");
+                ty_put(p, st, at6);
+                put("\n");
+                st[41] = 1;
+                return;
+            }
+            j4 = j4 + 1;
         }
         return;
     }
@@ -1828,6 +2174,183 @@ fn cstmt(p: *u8, st: *i64, i: i64) {
         st[40] = vsave;
         return;
     }
+    if k == 29 {                           // match: ncc's S_MATCH whole,
+        al := st[35] as *i64;              // in ncc's order
+        hd := nd[i * 8 + 2];
+        na3 := nd[i * 8 + 3];
+        ln4 := nd[i * 8 + 4];
+        cexpr(p, st, nd[i * 8 + 1]);
+        if st[41] == 1 { return; }
+        sty := cinfer(p, st, nd[i * 8 + 1]);
+        mut ei := -1;
+        if sty.pt == 0 && sty.l > 0 { ei = efind(p, st, sty.s, sty.l); }
+        if ei < 0 {                        // the subject must be an enum
+            put("{ln4}: match subject must be an enum value (got ");
+            ty_put(p, st, sty);
+            put(")\n");
+            st[41] = 1;
+            return;
+        }
+        ea := st[51] as *i64;
+        nv := ea[ei * 4 + 2];
+        vbase := ea[ei * 4 + 3];
+        armb := al[hd + 6];
+        mut v2 := 0;
+        while v2 < nv {                    // exhaustive, no duplicates
+            mut seen := 0;
+            mut a2 := 0;
+            while a2 < na3 {
+                if span_eq(p, al[armb + a2 * 6], al[armb + a2 * 6 + 1], al[vbase + v2 * 4], al[vbase + v2 * 4 + 1]) { seen = seen + 1; }
+                a2 = a2 + 1;
+            }
+            if seen != 1 {
+                put("{ln4}: match must cover variant '");
+                put_span(p, al[vbase + v2 * 4], al[vbase + v2 * 4 + 1]);
+                put("' exactly once\n");
+                st[41] = 1;
+                return;
+            }
+            v2 = v2 + 1;
+        }
+        if na3 != nv {
+            put("{ln4}: match names a variant '");
+            put_span(p, ea[ei * 4], ea[ei * 4 + 1]);
+            put("' does not have\n");
+            st[41] = 1;
+            return;
+        }
+        mut a3 := 0;
+        while a3 < na3 {                   // binds match the payload
+            vix := vfindx(p, st, ei, al[armb + a3 * 6], al[armb + a3 * 6 + 1]);
+            if al[armb + a3 * 6 + 2] != al[vbase + vix * 4 + 2] {
+                arl := al[armb + a3 * 6 + 5];
+                nb2 := al[armb + a3 * 6 + 2];
+                pf := al[vbase + vix * 4 + 2];
+                put("{arl}: arm '");
+                put_span(p, al[armb + a3 * 6], al[armb + a3 * 6 + 1]);
+                put("' binds {nb2} name(s), but the payload has {pf} field(s)\n");
+                st[41] = 1;
+                return;
+            }
+            a3 = a3 + 1;
+        }
+        mt2 := al[hd];
+        if mt2 == 0 {                      // statement form: arm bodies
+            mut a4 := 0;                   // check with binds in scope
+            while a4 < na3 {
+                vi6 := vfindx(p, st, ei, al[armb + a4 * 6], al[armb + a4 * 6 + 1]);
+                vsave2 := st[40];
+                mseed(p, st, ei, vi6, al[armb + a4 * 6 + 3], al[armb + a4 * 6 + 2]);
+                cblock(p, st, al[armb + a4 * 6 + 4]);
+                st[40] = vsave2;
+                if st[41] == 1 { return; }
+                a4 = a4 + 1;
+            }
+            return;
+        }
+        mut res := t_void();               // expression forms: every arm
+        mut a5 := 0;                       // yields; the first fixes the
+        while a5 < na3 {                   // type, the rest must agree
+            vi7 := vfindx(p, st, ei, al[armb + a5 * 6], al[armb + a5 * 6 + 1]);
+            vsave3 := st[40];
+            mseed(p, st, ei, vi7, al[armb + a5 * 6 + 3], al[armb + a5 * 6 + 2]);
+            cexpr(p, st, al[armb + a5 * 6 + 4]);
+            if st[41] == 1 { return; }
+            at5 := cinfer(p, st, al[armb + a5 * 6 + 4]);
+            st[40] = vsave3;
+            arl2 := al[armb + a5 * 6 + 5];
+            nvr2 := at5.l == 5 && eq5(p, at5.s, 110, 101, 118, 101, 114);
+            if at5.l == 0 || nvr2 {
+                put("{arl2}: match arm '");
+                put_span(p, al[armb + a5 * 6], al[armb + a5 * 6 + 1]);
+                put("' must yield a value\n");
+                st[41] = 1;
+                return;
+            }
+            if a5 == 0 { res = at5; }
+            if a5 > 0 && !tcompat(p, at5, res) {
+                put("{arl2}: match arms disagree: arm '");
+                put_span(p, al[armb + a5 * 6], al[armb + a5 * 6 + 1]);
+                put("' yields ");
+                ty_put(p, st, at5);
+                put(", expected ");
+                ty_put(p, st, res);
+                put("\n");
+                st[41] = 1;
+                return;
+            }
+            a5 = a5 + 1;
+        }
+        if mt2 == 2 {                      // lhs = match: S_ASSIGN's own
+            lhs2 := al[hd + 1];            // checks against the result
+            cexpr(p, st, lhs2);
+            if st[41] == 1 { return; }
+            mut r6 := lhs2;
+            while nd[r6 * 8] == 7 { r6 = nd[r6 * 8 + 1]; }
+            if nd[r6 * 8] == 13 {
+                ibt2 := cinfer(p, st, nd[r6 * 8 + 1]);
+                if span_is(p, ibt2, st[44] + 7, 3) {
+                    put("{ln4}: cannot write through a str index — str is an immutable view of its text\n");
+                    st[41] = 1;
+                    return;
+                }
+            }
+            if nd[r6 * 8] == 5 {
+                v6 := vfind(p, st, nd[r6 * 8 + 5], nd[r6 * 8 + 6]);
+                va2 := st[39] as *i64;
+                if v6 >= 0 && va2[v6 * 8 + 2] == 0 {
+                    put("{ln4}: cannot assign to immutable '");
+                    put_span(p, nd[r6 * 8 + 5], nd[r6 * 8 + 6]);
+                    put("' (declare it with 'mut')\n");
+                    st[41] = 1;
+                    return;
+                }
+            }
+            lt3 := cinfer(p, st, lhs2);
+            if !tcompat(p, res, lt3) {
+                put("{ln4}: cannot assign ");
+                ty_put(p, st, res);
+                put(" to a ");
+                ty_put(p, st, lt3);
+                put(" target\n");
+                st[41] = 1;
+                return;
+            }
+            aop2 := al[hd + 2];
+            if aop2 > 1 && !is_int_ty(p, lt3) {
+                put("{ln4}: '");
+                if aop2 == 2 { put("+="); }
+                if aop2 == 3 { put("-="); }
+                put("' requires an integer target (got ");
+                ty_put(p, st, lt3);
+                put(")\n");
+                st[41] = 1;
+            }
+            return;
+        }
+        if mt2 == 3 {                      // return match: S_RET's checks
+            rt6 := T{ pt: st[45], us: st[46], s: st[47], l: st[48] };
+            nvr3 := rt6.l == 5 && eq5(p, rt6.s, 110, 101, 118, 101, 114);
+            if rt6.l == 0 || nvr3 {
+                put("{ln4}: 'return' with a value in a function with no return type\n");
+                st[41] = 1;
+                return;
+            }
+            if !tcompat(p, res, rt6) {
+                put("{ln4}: return type mismatch: expected ");
+                ty_put(p, st, rt6);
+                put(", got ");
+                ty_put(p, st, res);
+                put("\n");
+                st[41] = 1;
+            }
+            return;
+        }
+        if mt2 == 1 {                      // x := match: the binding
+            vadd(st, al[hd + 3], al[hd + 4], al[hd + 5], res);   // lands
+        }                                  // AFTER (shadowing is legal)
+        return;
+    }
 }
 
 // Block scope: record the name count on entry, truncate on exit —
@@ -1915,8 +2438,15 @@ fn cinfer(p: *u8, st: *i64, i: i64) -> T {
         }
         return t_i64(st);                  // methods: a later rung
     }
-    if k == 7 {                            // field: str.ptr / str.len,
-        bt := cinfer(p, st, nd[i * 8 + 1]);    // then the struct table
+    if k == 7 {                            // field: a variant reference
+        b0 := nd[i * 8 + 1];               // first (Shape.Empty is a
+        if nd[b0 * 8] == 5 {               // value of the enum, not a
+            ei0 := efind(p, st, nd[b0 * 8 + 5], nd[b0 * 8 + 6]);
+            if ei0 >= 0 {                  // field read), then str.ptr /
+                return T{ pt: 0, us: 0, s: nd[b0 * 8 + 5], l: nd[b0 * 8 + 6] };
+            }                              // str.len, then the struct
+        }                                  // table
+        bt := cinfer(p, st, nd[i * 8 + 1]);
         if span_is(p, bt, st[44] + 7, 3) {                 // base is str
             if nd[i * 8 + 6] == 3 && eq3(p, nd[i * 8 + 5], 112, 116, 114) {
                 return t_pu8(st);                          // .ptr
@@ -2008,6 +2538,8 @@ fn main() -> i64 {
     st[44] = total;                        // the intern base
     st[49] = sys_sbrk(8192);               // the struct table
     st[50] = 0;
+    st[51] = sys_sbrk(8192);               // the enum table
+    st[52] = 0;
     nil0 := st[33] as *i64;                // node 0: an explicit nil
     mut z := 0;
     while z < 8 { nil0[z] = 0; z = z + 1; }
