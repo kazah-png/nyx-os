@@ -810,6 +810,34 @@ enforced by the suite.** Forty-two manifest rows to the byte. The
 corpus's remainder is three dialects deep in the semantics: own and
 move, drop, and the not-every-path-returns analysis.
 
+### The own/move ladder — the scout's verdict
+
+Batch V49 first: nine families on target, and the eighth fence is
+the one to frame — the W^X refusal verified differentially inside
+the operating system whose kernel enforces W^X. The reference and
+the rewrite, both compiled and run in NyxOS, agreeing on a memory-
+safety violation byte for byte.
+
+Then the scout read v0.17–18 whole, and the deepest family
+resolved into a three-rung ladder. **Rung 10a, states and consume
+points**: the struct table records `own` and its drop function,
+bindings carry an ownership state (NONE, LIVE, HELD for parameters,
+MOVED), and `own_move_expr` transliterated — a bare path naming an
+own binding, consumed as a value at a call argument, a binding, an
+assignment, a return or a tail, transfers ownership there; moved
+values refuse further use; and the v0.18 gates refuse moves where a
+statement may run zero or many times (loop bodies AND while
+conditions) or inside match arms. That rung alone claims six rows.
+**Rung 10b, the flow analysis**: LIVE values must be consumed —
+the leak scan at returns and function ends — and `if`/`else` arms
+are checked from the same pre-branch states and must AGREE at the
+merge point, with an arm that returns exempted (its own scan
+already policed that path). **Rung 10c, the declarations**: the
+`#[drop]` validations and the own-cannot-nest rule, whose messages
+are FILE-level — no line number — which will need one more
+normalization design in the harness. The ladder's shape is
+familiar by now; the semantics are the deepest yet.
+
 And the hardest lexer feature landed: **interpolation**. A toy string
 containing a brace lexes as segments — HEAD before the first hole,
 MID between holes, TAIL after the last (ncc's own
