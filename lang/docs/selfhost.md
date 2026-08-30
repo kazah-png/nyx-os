@@ -750,6 +750,27 @@ the example the ledger had to refuse honestly one rung ago, checks
 clean now that the machinery it exercises exists. Twenty-nine rows;
 own, drop, methods, pageflags and the format specs remain.
 
+### Rung 7 — methods
+
+The last brace-skipped item came back: pimpl accretes into a method
+table — (impl type, name) keyed, `self` excluded from the params
+the way ncc's own Method records exclude it — and the E_CALL
+method arm completes. Dispatch keys on the RECEIVER'S TYPE: the
+receiver resolves, its inferred type finds the method or the
+refusal renders that type through ty_str (`Rect has no method
+'grow'` — the type bare, no quotes, ncc's exact shape), then arity
+in the method wording, then per-argument types. Two mirrored
+subtleties matter more than the two rows they landed: method BODIES
+check before function bodies, because that is gen_program's order
+and first-error contracts inherit their reference's order; and
+`self` enters the name table first, an immutable binding of the
+impl type whose name lives in the intern tail beside the
+synthesized type names — the same trick, stretched one word
+further. methods.n, the dispatch machinery's own example, is the
+thirteenth silence; thirty-one rows, and the corpus's remainder is
+own/move, drop, pageflags, the format specs and the no-return
+analysis.
+
 And the hardest lexer feature landed: **interpolation**. A toy string
 containing a brace lexes as segments — HEAD before the first hole,
 MID between holes, TAIL after the last (ncc's own

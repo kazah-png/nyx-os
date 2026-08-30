@@ -621,6 +621,49 @@ fn vfindx(p: *u8, st: *i64, ei: i64, vs: i64, vl: i64) -> i64 {
     return -1;
 }
 
+// The method table (ncc's METHODS/method_lookup): 8-word records —
+// impl-type span, method-name span, np, param-record start (6-word
+// span+T records + a 4-word return type after them, the fn table's
+// exact shape), body. self is EXCLUDED from the params, like ncc.
+fn madd(st: *i64, ts: i64, tl: i64, ns: i64, nl: i64, np: i64, pst: i64, body: i64) {
+    ma := st[53] as *i64;
+    i := st[54];
+    ma[i * 8] = ts;
+    ma[i * 8 + 1] = tl;
+    ma[i * 8 + 2] = ns;
+    ma[i * 8 + 3] = nl;
+    ma[i * 8 + 4] = np;
+    ma[i * 8 + 5] = pst;
+    ma[i * 8 + 6] = body;
+    ma[i * 8 + 7] = 0;
+    st[54] = i + 1;
+}
+
+fn mfind(p: *u8, st: *i64, ts: i64, tl: i64, ns: i64, nl: i64) -> i64 {
+    ma := st[53] as *i64;
+    mut i := 0;
+    while i < st[54] {
+        if span_eq(p, ma[i * 8], ma[i * 8 + 1], ts, tl)
+            && span_eq(p, ma[i * 8 + 2], ma[i * 8 + 3], ns, nl) { return i; }
+        i = i + 1;
+    }
+    return -1;
+}
+
+fn mpty(st: *i64, mi: i64, q: i64) -> T {
+    ma := st[53] as *i64;
+    al := st[35] as *i64;
+    r := ma[mi * 8 + 5] + q * 6;
+    T{ pt: al[r + 2], us: al[r + 3], s: al[r + 4], l: al[r + 5] }
+}
+
+fn mrty(st: *i64, mi: i64) -> T {
+    ma := st[53] as *i64;
+    al := st[35] as *i64;
+    r := ma[mi * 8 + 5] + ma[mi * 8 + 4] * 6;
+    T{ pt: al[r], us: al[r + 1], s: al[r + 2], l: al[r + 3] }
+}
+
 // ncc's enum_is_result: exactly the variants Ok and Err, each with
 // at most one payload field.
 fn eresult(p: *u8, st: *i64, ei: i64) -> bool {
@@ -1665,9 +1708,72 @@ fn pfn(p: *u8, n: i64, st: *i64, caps: i64, ps: *i64) {
     fadd(st, fs, fl, np, caps, body, pst, 1);
 }
 
-// ONE pass over the whole token stream — ncc's own shape. Externs
-// and fns parse for real; struct/enum/impl items brace-skip (their
-// checking rows arrive with the decl-table rung).
+// impl Name { fn m(self, p: ty...) [-> ty] { body } ... } — parse.n's
+// pimpl accreted back, transformed: each method becomes a table
+// record (self consumed here, excluded from the params, and seeded
+// at check time — ncc's shape exactly).
+fn pimpl(p: *u8, n: i64, st: *i64, ps: *i64) {
+    if !ck(st, 7) { perr(st); return; }
+    ts := st[26];
+    tl := st[27];
+    adv(p, n, st);
+    if !ck(st, 39) { perr(st); return; }
+    adv(p, n, st);
+    mut more := ck(st, 10);
+    while more {
+        more = false;
+        adv(p, n, st);                     // 'fn'
+        if !ck(st, 7) { perr(st); return; }
+        ms := st[26];
+        ml := st[27];
+        adv(p, n, st);
+        if !ck(st, 37) { perr(st); return; }
+        adv(p, n, st);
+        if !ck(st, 7) { perr(st); return; }    // 'self' leads (ncc
+        adv(p, n, st);                     // validates the spelling)
+        mut np := 0;
+        mut inner := acc(p, n, st, 41);
+        while inner {
+            inner = false;
+            if !ck(st, 7) { perr(st); return; }
+            ps[np * 6] = st[26];
+            ps[np * 6 + 1] = st[27];
+            adv(p, n, st);
+            if !ck(st, 43) { perr(st); return; }
+            adv(p, n, st);
+            t := pty(p, n, st);
+            ps[np * 6 + 2] = t.pt;
+            ps[np * 6 + 3] = t.us;
+            ps[np * 6 + 4] = t.s;
+            ps[np * 6 + 5] = t.l;
+            np = np + 1;
+            if acc(p, n, st, 41) { inner = true; }
+        }
+        if !ck(st, 38) { perr(st); return; }
+        adv(p, n, st);
+        mut rt := T{ pt: 0, us: 0, s: 0, l: 0 };
+        if acc(p, n, st, 45) { rt = pty(p, n, st); }
+        pst := st[36];
+        mut q := 0;
+        while q < np {
+            mut w := 0;
+            while w < 6 { ladd(st, ps[q * 6 + w]); w = w + 1; }
+            q = q + 1;
+        }
+        ladd(st, rt.pt);
+        ladd(st, rt.us);
+        ladd(st, rt.s);
+        ladd(st, rt.l);
+        body := pblock(p, n, st);
+        madd(st, ts, tl, ms, ml, np, pst, body);
+        if ck(st, 10) { more = true; }
+    }
+    if !ck(st, 40) { perr(st); return; }
+    adv(p, n, st);
+}
+
+// ONE pass over the whole token stream — ncc's own shape. Externs,
+// fns, structs, enums and impls all parse for real now.
 fn pitems(p: *u8, n: i64, st: *i64, ps: *i64) {
     mut going := true;
     while going {
@@ -1687,7 +1793,11 @@ fn pitems(p: *u8, n: i64, st: *i64, ps: *i64) {
             penum(p, n, st, ps);
             continue;
         }
-        if ck(st, 27) { skip_item(p, n, st); continue; }   // impl
+        if ck(st, 27) {                    // impl: a real parse now —
+            adv(p, n, st);                 // the method rung landed
+            pimpl(p, n, st, ps);
+            continue;
+        }
         if ck(st, 8) {                     // extern
             adv(p, n, st);
             pextern(p, n, st, caps, ps);
@@ -1778,10 +1888,59 @@ fn cexpr(p: *u8, st: *i64, i: i64) {
             }
             return;
         }
-        if nd[cal * 8] == 7 {              // method call: ncc checks the
-            cexpr(p, st, nd[cal * 8 + 1]); // RECEIVER, not the field node
-        }                                  // (dispatch is a later rung)
-        if nd[cal * 8] != 7 { cexpr(p, st, cal); }
+        if nd[cal * 8] == 7 {              // method call: recv resolves,
+            cexpr(p, st, nd[cal * 8 + 1]); // then ncc's dispatch — the
+            if st[41] == 1 { return; }     // lookup keys on the RECEIVER
+            rt8 := cinfer(p, st, nd[cal * 8 + 1]);   // TYPE + the name
+            mut mi := -1;
+            if rt8.pt == 0 && rt8.l > 0 {
+                mi = mfind(p, st, rt8.s, rt8.l, nd[cal * 8 + 5], nd[cal * 8 + 6]);
+            }
+            if mi < 0 {
+                put("{ln}: ");
+                ty_put(p, st, rt8);
+                put(" has no method '");
+                put_span(p, nd[cal * 8 + 5], nd[cal * 8 + 6]);
+                put("'\n");
+                st[41] = 1;
+                return;
+            }
+            ma := st[53] as *i64;
+            mnp := ma[mi * 8 + 4];
+            if na != mnp {
+                put("{ln}: method '");
+                put_span(p, ma[mi * 8], ma[mi * 8 + 1]);
+                put(".");
+                put_span(p, ma[mi * 8 + 2], ma[mi * 8 + 3]);
+                put("' takes {mnp} argument(s), got {na}\n");
+                st[41] = 1;
+                return;
+            }
+            mut q3 := 0;
+            while q3 < na {
+                cexpr(p, st, al[nd[i * 8 + 2] + q3]);
+                if st[41] == 1 { return; }
+                at7 := cinfer(p, st, al[nd[i * 8 + 2] + q3]);
+                pt3 := mpty(st, mi, q3);
+                if !tcompat(p, at7, pt3) {
+                    qq2 := q3 + 1;
+                    put("{ln}: argument {qq2} to '");
+                    put_span(p, ma[mi * 8], ma[mi * 8 + 1]);
+                    put(".");
+                    put_span(p, ma[mi * 8 + 2], ma[mi * 8 + 3]);
+                    put("': expected ");
+                    ty_put(p, st, pt3);
+                    put(", got ");
+                    ty_put(p, st, at7);
+                    put("\n");
+                    st[41] = 1;
+                    return;
+                }
+                q3 = q3 + 1;
+            }
+            return;
+        }
+        cexpr(p, st, cal);                 // computed callee: recurse
         mut q2 := 0;
         while q2 < na {
             cexpr(p, st, al[nd[i * 8 + 2] + q2]);
@@ -2542,6 +2701,33 @@ fn cblock(p: *u8, st: *i64, i: i64) {
     st[40] = vsave;
 }
 
+// One method: like a function, but self leads the name table (the
+// impl type, immutable — ncc's vars_add("self", ty_named(type), 0))
+// and methods hold no capabilities (v0.14).
+#[caps(syscall)]
+fn cmeth(p: *u8, st: *i64, mi: i64) {
+    ma := st[53] as *i64;
+    al := st[35] as *i64;
+    st[40] = 0;
+    st[42] = 0;                            // CUR_FN_CAPS: none
+    st[43] = 0;
+    crt2 := mrty(st, mi);                  // CUR_RET = the method's
+    st[45] = crt2.pt;
+    st[46] = crt2.us;
+    st[47] = crt2.s;
+    st[48] = crt2.l;
+    selfty := T{ pt: 0, us: 0, s: ma[mi * 8], l: ma[mi * 8 + 1] };
+    vadd(st, st[44] + 24, 4, 0, selfty);   // self, interned span
+    mut q := 0;
+    while q < ma[mi * 8 + 4] {
+        r := ma[mi * 8 + 5] + q * 6;
+        pt4 := T{ pt: al[r + 2], us: al[r + 3], s: al[r + 4], l: al[r + 5] };
+        vadd(st, al[r], al[r + 1], 0, pt4);
+        q = q + 1;
+    }
+    cblock(p, st, ma[mi * 8 + 6]);
+}
+
 // One function: a fresh name table seeded with the params (params
 // are immutable — ncc adds them with is_mut 0), then the body.
 #[caps(syscall)]
@@ -2604,7 +2790,14 @@ fn cinfer(p: *u8, st: *i64, i: i64) -> T {
             fi := ffind(p, st, nd[cal * 8 + 5], nd[cal * 8 + 6]);
             if fi >= 0 { return frty(st, fi); }
         }
-        return t_i64(st);                  // methods: a later rung
+        if nd[cal * 8] == 7 {              // method: the receiver's
+            rt9 := cinfer(p, st, nd[cal * 8 + 1]);   // method's return
+            if rt9.pt == 0 && rt9.l > 0 {
+                mi2 := mfind(p, st, rt9.s, rt9.l, nd[cal * 8 + 5], nd[cal * 8 + 6]);
+                if mi2 >= 0 { return mrty(st, mi2); }
+            }
+        }
+        return t_i64(st);
     }
     if k == 7 {                            // field: a variant reference
         b0 := nd[i * 8 + 1];               // first (Shape.Empty is a
@@ -2684,12 +2877,12 @@ fn main() -> i64 {
     }
     sys_close(fd);
     if total < 1 { return 0; }
-    inb := "i64boolstru8u64voidOkErr";     // the intern tail: synthesized
-    mut z2 := 0;                           // type names + the result
-    while z2 < 24 {                        // variants live AFTER the
-        buf[total + z2] = inb.ptr[z2];     // source, same buffer — spans
-        z2 = z2 + 1;                       // stay uniform (+19 Ok/2,
-    }                                      // +21 Err/3)
+    inb := "i64boolstru8u64voidOkErrself"; // the intern tail: synthesized
+    mut z2 := 0;                           // type names, the result
+    while z2 < 28 {                        // variants, and self — AFTER
+        buf[total + z2] = inb.ptr[z2];     // the source, same buffer
+        z2 = z2 + 1;                       // (+19 Ok/2, +21 Err/3,
+    }                                      // +24 self/4)
     st := sys_sbrk(512) as *i64;
     ps := sys_sbrk(1024) as *i64;          // the params arena
     st[33] = sys_sbrk(1048576);            // nodes: 16K x 8 words
@@ -2708,6 +2901,8 @@ fn main() -> i64 {
     st[50] = 0;
     st[51] = sys_sbrk(8192);               // the enum table
     st[52] = 0;
+    st[53] = sys_sbrk(8192);               // the method table
+    st[54] = 0;
     nil0 := st[33] as *i64;                // node 0: an explicit nil
     mut z := 0;
     while z < 8 { nil0[z] = 0; z = z + 1; }
@@ -2721,8 +2916,14 @@ fn main() -> i64 {
     adv(buf, total, st);                   // ... and CUR
     pitems(buf, total, st, ps);            // ONE pass: tables + trees
     if st[41] == 1 { return 1; }           // a parse-time refusal (cname)
+    mut m2 := 0;                           // METHOD bodies first — ncc's
+    while m2 < st[54] {                    // gen_program checks methods
+        cmeth(buf, st, m2);                // before functions
+        if st[41] == 1 { return 1; }
+        m2 = m2 + 1;
+    }
     ft := st[37] as *i64;
-    mut i := 0;                            // check fns in declaration
+    mut i := 0;                            // then fns in declaration
     while i < st[38] {                     // order; first error stops
         if ft[i * 8 + 6] == 1 {
             cfn(buf, st, i);

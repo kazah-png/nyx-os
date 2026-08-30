@@ -142,10 +142,13 @@ stripped (the normalization rule lives in
    bad_try_ret      4: '?' propagates by returning, so the function must (...)
    bad_try_errty    5: cannot propagate R.Err (str) as S.Err (i64)
    bad_try_bind_void 4: R.Ok carries no payload to bind — use `expr?;`
+   bad_method       7: Rect has no method 'grow'
+   bad_method_arity 7: method 'Rect.scale' takes 1 argument(s), got 0
 
-plus twelve POSITIVE targets (hello, countdown, structs, enums,
+plus thirteen POSITIVE targets (hello, countdown, structs, enums,
 matchexpr, inference, defer, forloop, caps, bytes, userptr,
-results) — they check clean, and their required output is silence. Coverage, stated honestly: extern
+results, methods) — they check clean, and their required output is
+silence. Coverage, stated honestly: extern
 blocks and functions parse for real (full bodies, the whole
 expression ladder, for-loop variables seeded in their body scope);
 struct/enum/impl items brace-skip and `match` refuses — their
@@ -194,6 +197,22 @@ the checker became the biggest N program yet written. Struct
 fields, enum semantics and method returns still fall back softly
 (their tables are the next rungs); the claimed rows never reach
 them.
+
+**Rung 7 — methods (landed)**: pimpl accretes back — the last
+brace-skipped item parses for real — and each method lands in a
+method table keyed on (impl type, name), with `self` excluded from
+the params exactly as ncc's Method records exclude it. The E_CALL
+method arm completes: the receiver resolves and its TYPE keys the
+lookup (a missing method renders the receiver through ty_str, so
+`Rect has no method 'grow'` prints the type bare), then arity, then
+per-argument types against the declared params. Method BODIES check
+before function bodies — ncc's gen_program order — with `self`
+seeded first as an immutable binding of the impl type (its name
+interned like the synthesized type names) and no capabilities
+(v0.14). cinfer's method-return fallback became the real lookup, so
+a method call's result types everything downstream. Two rows, and
+methods.n — the dispatch machinery's own example — is the
+thirteenth silence.
 
 **Rung 6 — `?` propagation (landed)**: the try flags the parser had
 been consuming and dropping now ride the nodes, and try statements
