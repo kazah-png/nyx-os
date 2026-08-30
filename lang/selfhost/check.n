@@ -564,23 +564,112 @@ fn ffind(p: *u8, st: *i64, ss: i64, sl: i64) -> i64 {
 // The scoped name table: ncc's VARS discipline — vars_add appends,
 // vars_find scans backward (innermost shadows), blocks record the
 // count on entry and truncate on exit.
-fn vadd(st: *i64, ss: i64, sl: i64, m: i64) {
+fn vadd(st: *i64, ss: i64, sl: i64, m: i64, t: T) {
     va := st[39] as *i64;
     i := st[40];
-    va[i * 3] = ss;
-    va[i * 3 + 1] = sl;
-    va[i * 3 + 2] = m;
+    va[i * 8] = ss;
+    va[i * 8 + 1] = sl;
+    va[i * 8 + 2] = m;
+    va[i * 8 + 3] = t.pt;
+    va[i * 8 + 4] = t.us;
+    va[i * 8 + 5] = t.s;
+    va[i * 8 + 6] = t.l;
+    va[i * 8 + 7] = 0;
     st[40] = i + 1;
+}
+
+fn vty(st: *i64, v: i64) -> T {
+    va := st[39] as *i64;
+    T{ pt: va[v * 8 + 3], us: va[v * 8 + 4], s: va[v * 8 + 5], l: va[v * 8 + 6] }
 }
 
 fn vfind(p: *u8, st: *i64, ss: i64, sl: i64) -> i64 {
     va := st[39] as *i64;
     mut i := st[40] - 1;
     while i >= 0 {
-        if span_eq(p, va[i * 3], va[i * 3 + 1], ss, sl) { return i; }
+        if span_eq(p, va[i * 8], va[i * 8 + 1], ss, sl) { return i; }
         i = i - 1;
     }
     return -1;
+}
+
+// ---------------------------------------------------------------- //
+// Types. ncc's Ty={name,ptrs,is_user} is exactly the parser's T
+// (pt, us, name-span); sl == 0 marks "no type" (void), ncc's NULL
+// name. SYNTHESIZED types (an int literal is "i64" with no source
+// span to point at) use the INTERN TRICK: the six fixed names are
+// appended after the source text in the same buffer — the lexer
+// never sees them (its length excludes the tail) and span_eq stays
+// uniform. st[44] = the intern base; offsets are fixed:
+//   +0 i64(3)  +3 bool(4)  +7 str(3)  +10 u8(2)  +12 u64(3)
+//   +15 void(4)
+
+fn t_i64(st: *i64) -> T  { return T{ pt: 0, us: 0, s: st[44], l: 3 }; }
+fn t_bool(st: *i64) -> T { return T{ pt: 0, us: 0, s: st[44] + 3, l: 4 }; }
+fn t_str(st: *i64) -> T  { return T{ pt: 0, us: 0, s: st[44] + 7, l: 3 }; }
+fn t_pu8(st: *i64) -> T  { return T{ pt: 1, us: 0, s: st[44] + 10, l: 2 }; }
+fn t_u8(st: *i64) -> T   { return T{ pt: 0, us: 0, s: st[44] + 10, l: 2 }; }
+fn t_u64(st: *i64) -> T  { return T{ pt: 0, us: 0, s: st[44] + 12, l: 3 }; }
+fn t_void() -> T         { return T{ pt: 0, us: 0, s: 0, l: 0 }; }
+
+fn span_is(p: *u8, t: T, ss: i64, sl: i64) -> bool {
+    return t.pt == 0 && span_eq(p, t.s, t.l, ss, sl);
+}
+
+// ncc's ty_is_int: the twelve integer names (bool counts — C
+// semantics), value types only.
+fn is_int_ty(p: *u8, t: T) -> bool {
+    if t.pt != 0 || t.l == 0 { return false; }
+    s := t.s;
+    if t.l == 2 {
+        if eq2(p, s, 105, 56) { return true; }             // i8
+        if eq2(p, s, 117, 56) { return true; }             // u8
+    }
+    if t.l == 3 {
+        if eq3(p, s, 105, 49, 54) { return true; }         // i16
+        if eq3(p, s, 117, 49, 54) { return true; }         // u16
+        if eq3(p, s, 105, 51, 50) { return true; }         // i32
+        if eq3(p, s, 117, 51, 50) { return true; }         // u32
+        if eq3(p, s, 105, 54, 52) { return true; }         // i64
+        if eq3(p, s, 117, 54, 52) { return true; }         // u64
+    }
+    if t.l == 4 {
+        if eq4(p, s, 98, 111, 111, 108) { return true; }   // bool
+        if eq4(p, s, 97, 100, 100, 114) { return true; }   // addr
+    }
+    if t.l == 5 {
+        if eq5(p, s, 105, 115, 105, 122, 101) { return true; }   // isize
+        if eq5(p, s, 117, 115, 105, 122, 101) { return true; }   // usize
+    }
+    return false;
+}
+
+// ncc's ty_compat, transliterated: the #[user] boundary first (so
+// the byte-pointer wildcards cannot smuggle across), then exact
+// name+depth, then integer inter-conversion, then the *u8/*void
+// byte-pointer escape at equal depth.
+fn tcompat(p: *u8, a: T, b: T) -> bool {
+    if (a.pt > 0 || b.pt > 0) && a.us != b.us { return false; }
+    if a.l > 0 && b.l > 0 && a.pt == b.pt && span_eq(p, a.s, a.l, b.s, b.l) { return true; }
+    if is_int_ty(p, a) && is_int_ty(p, b) { return true; }
+    if a.pt > 0 && b.pt > 0 && a.pt == b.pt {
+        if eq2(p, a.s, 117, 56) && a.l == 2 { return true; }     // u8
+        if eq2(p, b.s, 117, 56) && b.l == 2 { return true; }
+        if a.l == 4 && eq4(p, a.s, 118, 111, 105, 100) { return true; }   // void
+        if b.l == 4 && eq4(p, b.s, 118, 111, 105, 100) { return true; }
+    }
+    return false;
+}
+
+// ncc's ty_str, as prints: "#[user] " prefix, one '*' per level,
+// the name ("void" when absent).
+#[caps(syscall)]
+fn ty_put(p: *u8, st: *i64, t: T) {
+    if t.us == 1 { put("#[user] "); }
+    mut q := 0;
+    while q < t.pt { put("*"); q = q + 1; }
+    if t.l > 0 { put_span(p, t.s, t.l); }
+    if t.l == 0 { put_span(p, st[44] + 15, 4); }   // void
 }
 
 // A parsed type, by value: ptrs, is_user, and the name's span.
@@ -855,11 +944,11 @@ fn pcast(p: *u8, n: i64, st: *i64) -> i64 {
     mut going := true;
     while going {
         going = false;
-        if ck(st, 18) {                    // 'as' TYPE
-            ln := st[25];
-            adv(p, n, st);
-            t := pty(p, n, st);
-            h = nnew(st, 10, h, 0, 0, ln, t.s, t.l);
+        if ck(st, 18) {                    // 'as' TYPE — the node carries
+            ln := st[25];                  // the whole T: b=ptrs, c=user,
+            adv(p, n, st);                 // span=name (casts are the
+            t := pty(p, n, st);            // authoritative type source)
+            h = nnew(st, 10, h, t.pt, t.us, ln, t.s, t.l);
             going = true;
         }
     }
@@ -1214,11 +1303,15 @@ fn pextern(p: *u8, n: i64, st: *i64, caps: i64, ps: *i64) {
         if ck(st, 42) { adv(p, n, st); }   // optional ';'
         pst := st[36];
         mut q := 0;
-        while q < np {
-            ladd(st, ps[q * 6]);
-            ladd(st, ps[q * 6 + 1]);
-            q = q + 1;
+        while q < np {                     // full 6-word param records
+            mut w := 0;                    // (span + T), then 4 words of
+            while w < 6 { ladd(st, ps[q * 6 + w]); w = w + 1; }
+            q = q + 1;                     // return type
         }
+        ladd(st, rt.pt);
+        ladd(st, rt.us);
+        ladd(st, rt.s);
+        ladd(st, rt.l);
         fadd(st, xs, xl, np, caps, 0, pst, 0);
         if ck(st, 10) { more = true; }
     }
@@ -1240,11 +1333,15 @@ fn pfn(p: *u8, n: i64, st: *i64, caps: i64, ps: *i64) {
     if acc(p, n, st, 45) { rt = pty(p, n, st); }
     pst := st[36];
     mut q := 0;
-    while q < np {
-        ladd(st, ps[q * 6]);
-        ladd(st, ps[q * 6 + 1]);
-        q = q + 1;
-    }
+    while q < np {                         // full 6-word param records,
+        mut w := 0;                        // then the return type — all
+        while w < 6 { ladd(st, ps[q * 6 + w]); w = w + 1; }
+        q = q + 1;                         // BEFORE the body parses (its
+    }                                      // lists must not interleave)
+    ladd(st, rt.pt);
+    ladd(st, rt.us);
+    ladd(st, rt.s);
+    ladd(st, rt.l);
     body := pblock(p, n, st);
     fadd(st, fs, fl, np, caps, body, pst, 1);
 }
@@ -1333,8 +1430,23 @@ fn cexpr(p: *u8, st: *i64, i: i64) {
                 return;
             }
             mut q := 0;
-            while q < na {
-                cexpr(p, st, al[nd[i * 8 + 2] + q]);
+            while q < na {                 // per argument: resolve, then
+                cexpr(p, st, al[nd[i * 8 + 2] + q]);   // type-check —
+                if st[41] == 1 { return; } // ncc's per-arg order
+                at := cinfer(p, st, al[nd[i * 8 + 2] + q]);
+                pt2 := fpty(st, fi, q);
+                if !tcompat(p, at, pt2) {
+                    qq := q + 1;
+                    put("{ln}: argument {qq} to '");
+                    put_span(p, nd[cal * 8 + 5], nd[cal * 8 + 6]);
+                    put("': expected ");
+                    ty_put(p, st, pt2);
+                    put(", got ");
+                    ty_put(p, st, at);
+                    put("\n");
+                    st[41] = 1;
+                    return;
+                }
                 q = q + 1;
             }
             return;
@@ -1384,28 +1496,69 @@ fn cstmt(p: *u8, st: *i64, i: i64) {
     if i == 0 { return; }
     nd := st[33] as *i64;
     k := nd[i * 8];
-    if k == 20 {                           // let: check the rhs, then bind
-        cexpr(p, st, nd[i * 8 + 1]);
+    if k == 20 {                           // let: check the rhs, infer
+        cexpr(p, st, nd[i * 8 + 1]);       // its type, then bind
         if st[41] == 1 { return; }
-        vadd(st, nd[i * 8 + 5], nd[i * 8 + 6], nd[i * 8 + 3]);
+        rt2 := cinfer(p, st, nd[i * 8 + 1]);
+        if rt2.l == 0 {                    // a void call has no value
+            ln := nd[i * 8 + 4];
+            put("{ln}: cannot bind '");
+            put_span(p, nd[i * 8 + 5], nd[i * 8 + 6]);
+            put("' to an expression with no value\n");
+            st[41] = 1;
+            return;
+        }
+        vadd(st, nd[i * 8 + 5], nd[i * 8 + 6], nd[i * 8 + 3], rt2);
         return;
     }
-    if k == 21 {                           // assign: lhs, rhs, then mut —
-        cexpr(p, st, nd[i * 8 + 1]);       // ncc's exact order
-        cexpr(p, st, nd[i * 8 + 2]);
-        if st[41] == 1 { return; }
+    if k == 21 {                           // assign: lhs, rhs, the root
+        cexpr(p, st, nd[i * 8 + 1]);       // judgments (str-index write,
+        cexpr(p, st, nd[i * 8 + 2]);       // mut), then value/target
+        if st[41] == 1 { return; }         // types — ncc's exact order
         mut r := nd[i * 8 + 1];            // field writes mutate the root
         while nd[r * 8] == 7 { r = nd[r * 8 + 1]; }
+        if nd[r * 8] == 13 {               // element writes through a
+            ibt := cinfer(p, st, nd[r * 8 + 1]);   // pointer are free;
+            if span_is(p, ibt, st[44] + 7, 3) {    // str stays immutable
+                ln := nd[i * 8 + 4];
+                put("{ln}: cannot write through a str index — str is an immutable view of its text\n");
+                st[41] = 1;
+                return;
+            }
+        }
         if nd[r * 8] == 5 {
             v := vfind(p, st, nd[r * 8 + 5], nd[r * 8 + 6]);
             va := st[39] as *i64;
-            if v >= 0 && va[v * 3 + 2] == 0 {
+            if v >= 0 && va[v * 8 + 2] == 0 {
                 ln := nd[i * 8 + 4];
                 put("{ln}: cannot assign to immutable '");
                 put_span(p, nd[r * 8 + 5], nd[r * 8 + 6]);
                 put("' (declare it with 'mut')\n");
                 st[41] = 1;
+                return;
             }
+        }
+        lt := cinfer(p, st, nd[i * 8 + 1]);
+        rt3 := cinfer(p, st, nd[i * 8 + 2]);
+        if !tcompat(p, rt3, lt) {
+            ln2 := nd[i * 8 + 4];
+            put("{ln2}: cannot assign ");
+            ty_put(p, st, rt3);
+            put(" to a ");
+            ty_put(p, st, lt);
+            put(" target\n");
+            st[41] = 1;
+            return;
+        }
+        if nd[i * 8 + 3] != 0 && !is_int_ty(p, lt) {
+            ln3 := nd[i * 8 + 4];
+            put("{ln3}: '");
+            if nd[i * 8 + 3] == 1 { put("+="); }
+            if nd[i * 8 + 3] == 2 { put("-="); }
+            put("' requires an integer target (got ");
+            ty_put(p, st, lt);
+            put(")\n");
+            st[41] = 1;
         }
         return;
     }
@@ -1441,7 +1594,7 @@ fn cstmt(p: *u8, st: *i64, i: i64) {
         cexpr(p, st, nd[i * 8 + 2]);       // (immutable) in its scope
         if st[41] == 1 { return; }
         vsave := st[40];
-        vadd(st, nd[i * 8 + 5], nd[i * 8 + 6], 0);
+        vadd(st, nd[i * 8 + 5], nd[i * 8 + 6], 0, t_i64(st));
         cblock(p, st, nd[i * 8 + 3]);
         st[40] = vsave;
         return;
@@ -1479,11 +1632,92 @@ fn cfn(p: *u8, st: *i64, fi: i64) {
     st[42] = ft[fi * 8 + 3];               // CUR_FN_CAPS, ncc's reset
     st[43] = 0;                            // BLOCK_DEPTH, per function
     mut q := 0;
-    while q < ft[fi * 8 + 2] {
-        vadd(st, al[ft[fi * 8 + 5] + q * 2], al[ft[fi * 8 + 5] + q * 2 + 1], 0);
+    while q < ft[fi * 8 + 2] {             // params: span + declared type
+        r := ft[fi * 8 + 5] + q * 6;
+        pt2 := T{ pt: al[r + 2], us: al[r + 3], s: al[r + 4], l: al[r + 5] };
+        vadd(st, al[r], al[r + 1], 0, pt2);
         q = q + 1;
     }
     cblock(p, st, ft[fi * 8 + 4]);
+}
+
+// The recorded param type / return type of one fn-table record.
+fn fpty(st: *i64, fi: i64, q: i64) -> T {
+    ft := st[37] as *i64;
+    al := st[35] as *i64;
+    r := ft[fi * 8 + 5] + q * 6;
+    T{ pt: al[r + 2], us: al[r + 3], s: al[r + 4], l: al[r + 5] }
+}
+
+fn frty(st: *i64, fi: i64) -> T {
+    ft := st[37] as *i64;
+    al := st[35] as *i64;
+    r := ft[fi * 8 + 5] + ft[fi * 8 + 2] * 6;
+    T{ pt: al[r], us: al[r + 1], s: al[r + 2], l: al[r + 3] }
+}
+
+// ncc's infer_type, transliterated: bottom-up, re-inferring on
+// demand, i64 as the soft fallback (check.n's unresolved cases —
+// struct fields, enum refs, method returns — fall back the same way
+// until their tables land; the claimed rows never reach them).
+#[caps(syscall)]
+fn cinfer(p: *u8, st: *i64, i: i64) -> T {
+    if i == 0 { return t_void(); }
+    nd := st[33] as *i64;
+    k := nd[i * 8];
+    if k == 1 { return t_i64(st); }
+    if k == 2 { return t_bool(st); }
+    if k == 3 || k == 4 { return t_str(st); }
+    if k == 5 {                            // path: the binding's type
+        v := vfind(p, st, nd[i * 8 + 5], nd[i * 8 + 6]);
+        if v >= 0 { return vty(st, v); }
+        return t_i64(st);
+    }
+    if k == 6 {                            // call: the callee's return
+        cal := nd[i * 8 + 1];
+        if nd[cal * 8] == 5 {
+            fi := ffind(p, st, nd[cal * 8 + 5], nd[cal * 8 + 6]);
+            if fi >= 0 { return frty(st, fi); }
+        }
+        return t_i64(st);                  // methods: a later rung
+    }
+    if k == 7 {                            // field: str.ptr / str.len
+        bt := cinfer(p, st, nd[i * 8 + 1]);
+        if span_is(p, bt, st[44] + 7, 3) {                 // base is str
+            if nd[i * 8 + 6] == 3 && eq3(p, nd[i * 8 + 5], 112, 116, 114) {
+                return t_pu8(st);                          // .ptr
+            }
+            if nd[i * 8 + 6] == 3 && eq3(p, nd[i * 8 + 5], 108, 101, 110) {
+                return t_u64(st);                          // .len
+            }
+        }
+        return t_i64(st);                  // struct fields: a later rung
+    }
+    if k == 8 {                            // unary: '!' -> bool
+        if nd[i * 8 + 3] == 60 { return t_bool(st); }
+        return cinfer(p, st, nd[i * 8 + 1]);
+    }
+    if k == 9 {                            // binary: comparisons and
+        c := nd[i * 8 + 3];                // logic -> bool, arithmetic
+        if c == 54 || c == 55 || c == 56 || c == 57 || c == 58 || c == 59
+            || c == 61 || c == 62 { return t_bool(st); }
+        return cinfer(p, st, nd[i * 8 + 1]);   // left operand rules
+    }
+    if k == 10 {                           // cast: authoritative
+        return T{ pt: nd[i * 8 + 2], us: nd[i * 8 + 3], s: nd[i * 8 + 5], l: nd[i * 8 + 6] };
+    }
+    if k == 11 || k == 12 {                // struct / enum literal: its
+        return T{ pt: 0, us: 0, s: nd[i * 8 + 5], l: nd[i * 8 + 6] };   // name
+    }
+    if k == 13 {                           // index: element type
+        bt := cinfer(p, st, nd[i * 8 + 1]);
+        if bt.pt > 0 {
+            return T{ pt: bt.pt - 1, us: 0, s: bt.s, l: bt.l };
+        }
+        if span_is(p, bt, st[44] + 7, 3) { return t_u8(st); }   // str
+        return t_i64(st);
+    }
+    return t_i64(st);
 }
 
 #[caps(syscall)]
@@ -1503,6 +1737,12 @@ fn main() -> i64 {
     }
     sys_close(fd);
     if total < 1 { return 0; }
+    inb := "i64boolstru8u64void";          // the intern tail: synthesized
+    mut z2 := 0;                           // type names live AFTER the
+    while z2 < 19 {                        // source, same buffer — spans
+        buf[total + z2] = inb.ptr[z2];     // stay uniform, the lexer's
+        z2 = z2 + 1;                       // length never includes them
+    }
     st := sys_sbrk(512) as *i64;
     ps := sys_sbrk(1024) as *i64;          // the params arena
     st[33] = sys_sbrk(1048576);            // nodes: 16K x 8 words
@@ -1516,6 +1756,7 @@ fn main() -> i64 {
     st[41] = 0;                            // the error flag
     st[42] = 0;                            // CUR_FN_CAPS
     st[43] = 0;                            // block depth
+    st[44] = total;                        // the intern base
     nil0 := st[33] as *i64;                // node 0: an explicit nil
     mut z := 0;
     while z < 8 { nil0[z] = 0; z = z + 1; }

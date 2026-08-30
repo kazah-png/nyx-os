@@ -636,6 +636,37 @@ deferred expression resolves its names — the manifest's
 nested-defer row pins that order. Nine rows byte-exact; the type
 family is next, and it is the mountain's face.
 
+### Rung 3 — the type family opens
+
+The face turned out to have a ledge, and the ledge held five rows.
+The design questions all had short answers. What is `Ty` in N? The
+parser's `struct T` — ptrs, is_user, name-span — was already ncc's
+`Ty` member for member, with an empty span playing ncc's NULL name.
+Where does a synthesized name point, when an int literal must be
+`i64` and there is no `i64` in the source? Into the same buffer: the
+six fixed names are interned AFTER the source text, so every span
+comparison stays one uniform operation and the lexer, whose length
+stops at the source's end, never meets them. Where do types live?
+Where ncc keeps them: on the name table (each binding records what
+its initializer inferred), on the fn table (full parameter records
+and return types), and nowhere else — `cinfer` re-infers bottom-up
+on demand, exactly as `infer_type` does, right down to the soft i64
+fallback and the rule that arithmetic takes its type from the left
+operand. `tcompat` preserves ncc's clause order because the order is
+semantics: the `#[user]` boundary is checked before the byte-pointer
+wildcards precisely so those wildcards cannot smuggle a pointer
+across it.
+
+The five rows: argument types (the plain mismatch and the `#[user]`
+one — the differential renders `#[user] *u8` byte-for-byte),
+assignment value-vs-target, the element-write type through a
+pointer, and the str-index write refusal. One milestone hid in the
+climb: check.n crossed sixty-four functions and ncc's own function
+table had to double — the checker is now the largest N program ever
+compiled, and it grows the compiler's limits from inside. Struct
+fields, enums and methods still fall back softly; their tables are
+the remaining rungs, and the corpus will call them out row by row.
+
 And the hardest lexer feature landed: **interpolation**. A toy string
 containing a brace lexes as segments — HEAD before the first hole,
 MID between holes, TAIL after the last (ncc's own

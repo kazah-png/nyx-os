@@ -508,7 +508,7 @@ typedef struct { char* name; Param* ps; int np; Ty ret; long long num; int caps;
 typedef struct { char* name; Param* ps; int np; Ty ret; Block* body; int caps; } Fn;
 
 static XFn XFNS[64]; static int NXFN;
-static Fn  FNS[64];  static int NFN;
+static Fn  FNS[128]; static int NFN;   /* 128: the selfhost checker crossed 64 */
 
 /* struct declarations (v0.5): named field records, C-struct layout.
  * is_own (v0.17, N++ P5): a move-not-copy, must-consume type — the
@@ -1114,7 +1114,7 @@ static void parse_extern_block(int caps) {
 }
 
 static void parse_fn(int caps) {
-    if (NFN >= 64) die("too many functions");
+    if (NFN >= 128) die("too many functions");
     Fn* f = &FNS[NFN++];
     f->caps = caps;                       /* fn declares the capabilities it holds */
     Tok id = pexp(T_IDENT, "function name");

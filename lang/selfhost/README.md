@@ -122,6 +122,11 @@ stripped (the normalization rule lives in
    bad_caps         7: 'write' requires the syscall capability — ...
    bad_cname        1: function name 'double' is a C keyword — ...
    bad_defer_nested 4: defer is only allowed in the function's outermost block
+   bad_argty        6: argument 1 to 'put': expected str, got i64
+   bad_userptr      6: argument 2 to 'write': expected #[user] *u8, got *u8
+   bad_assign_ty    3: cannot assign i64 to a str target
+   bad_index_valty  4: cannot assign str to a u8 target
+   bad_index_write  3: cannot write through a str index — ...
 
 plus two POSITIVE targets — hello.n and countdown.n check clean, and
 their required output is silence. Coverage, stated honestly: extern
@@ -149,6 +154,30 @@ before its expression resolves (ncc's S_DEFER order) — with
 BLOCK_DEPTH tracked exactly as ncc tracks it: incremented per block,
 1 meaning the function's own. Nine rows claimed, all byte-exact;
 positive silences unchanged.
+
+**Rung 3 opens — the type family**: `infer_type` arrives in N.
+`Ty` was hiding in plain sight — the parser's `struct T` (ptrs,
+is_user, name-span) is ncc's `Ty` exactly, with an empty span as
+ncc's NULL name (void). Synthesized names (an int literal is `i64`
+with no source text to point at) use the INTERN TRICK: the six fixed
+names are appended after the source in the same buffer, so spans
+stay uniform and the lexer never sees them. The name table carries
+each binding's inferred type, the fn table carries full parameter
+records and return types, and `cinfer` transliterates ncc's
+`infer_type` case for case — literals, paths, calls, str's `.ptr`
+and `.len`, unary and binary (comparisons to bool, arithmetic by the
+left operand), casts as the authoritative source, indexing down one
+pointer level. `tcompat` is ncc's `ty_compat` in order: the
+`#[user]` boundary first (so the byte-pointer wildcards cannot
+smuggle across), exact name+depth, integer inter-conversion, then
+the `*u8`/`*void` escapes. Five rows landed with it — argument
+types (including the `#[user]` mismatch, rendered `#[user] *u8`
+exactly), assignment targets, and the str-index write refusal —
+and ncc's own function table had to grow from 64 to 128 on the way:
+the checker became the biggest N program yet written. Struct
+fields, enum semantics and method returns still fall back softly
+(their tables are the next rungs); the claimed rows never reach
+them.
 
 **Proven inside NyxOS (batch V45)**: the in-OS ncc+tcc pipeline
 compiled check.n on target and ran it against bad_mut.n — its output
