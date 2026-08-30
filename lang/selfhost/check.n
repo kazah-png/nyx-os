@@ -420,7 +420,8 @@ fn acc(p: *u8, n: i64, st: *i64, k: i64) -> bool {
 // sources inside the stated coverage, so this line appearing in a
 // run means the PARSER is wrong — the differential catches it.
 fn perr(st: *i64) {
-    l := st[25];
+    if st[41] == 1 { return; }             // a real error already spoke —
+    l := st[25];                           // the unwind stays silent
     put("PARSE-ERR {l}\n");
 }
 
@@ -837,18 +838,44 @@ fn pexpr(p: *u8, n: i64, st: *i64) -> i64 {
 // needs the holes, not the text).
 #[caps(syscall)]
 fn pinterp(p: *u8, n: i64, st: *i64) -> i64 {
-    hx := sys_sbrk(256) as *i64;           // hole scratch (16 deep max)
-    mut nh := 0;
+    hx := sys_sbrk(512) as *i64;           // hole scratch: 2-word records
+    mut nh := 0;                           // (node, has-spec)
     ln := st[25];
     adv(p, n, st);                         // past the HEAD text
     mut going := true;
     while going {
-        hx[nh] = pexpr(p, n, st);          // the hole, as a node
-        nh = nh + 1;
-        if acc(p, n, st, 43) {             // ':' format spec (one ident)
-            if !ck(st, 7) { perr(st); return 0; }
+        hx[nh * 2] = pexpr(p, n, st);      // the hole, as a node
+        hx[nh * 2 + 1] = 0;
+        if acc(p, n, st, 43) {             // ':' format spec — validated
+            if !ck(st, 7) { perr(st); return 0; }   // AT PARSE TIME, ncc's
+            fss := st[26];                 // exact grammar walk:
+            fsl := st[27];                 // [wN|zN][x|X] | x | X
             adv(p, n, st);
-        }
+            mut fi := 0;
+            mut bad := 0;
+            c0 := p[fss] as i64;
+            if c0 == 119 || c0 == 122 {    // w / z
+                fi = 1;
+                mut wd := 0;
+                while fi < fsl && is_dg(p[fss + fi] as i64) {
+                    wd = wd * 10 + (p[fss + fi] as i64 - 48);
+                    fi = fi + 1;
+                }
+                if fi == 1 || wd <= 0 || wd > 128 { bad = 1; }
+            }
+            mut hexdone := 0;
+            if fi < fsl && p[fss + fi] as i64 == 120 { fi = fi + 1; hexdone = 1; }
+            if hexdone == 0 && fi < fsl && p[fss + fi] as i64 == 88 { fi = fi + 1; }
+            if fi != fsl || bad == 1 {
+                put("{ln}: unknown format spec ':");
+                put_span(p, fss, fsl);
+                put("' — the format specs are :x, :X (hex), :wN (width), :zN (zero-pad), and wN/zN composed with a trailing x or X\n");
+                st[41] = 1;
+                return 0;
+            }
+            hx[nh * 2 + 1] = 1;            // a valid spec always demands
+        }                                  // an integer hole downstream
+        nh = nh + 1;
         if !ck(st, 6) { perr(st); return 0; }    // T_INTERP_R
         adv(p, n, st);
         if ck(st, 4) { adv(p, n, st); continue; }     // MID
@@ -858,7 +885,7 @@ fn pinterp(p: *u8, n: i64, st: *i64) -> i64 {
     }
     ast := st[36];
     mut q := 0;
-    while q < nh { ladd(st, hx[q]); q = q + 1; }
+    while q < nh * 2 { ladd(st, hx[q]); q = q + 1; }
     return nnew(st, 4, ast, nh, 0, ln, 0, 0);
 }
 
@@ -2035,10 +2062,28 @@ fn cexpr(p: *u8, st: *i64, i: i64) {
         cexpr(p, st, nd[i * 8 + 2]);
         return;
     }
-    if k == 4 {                            // interp: every hole
-        mut q3 := 0;
-        while q3 < nd[i * 8 + 2] {
-            cexpr(p, st, al[nd[i * 8 + 1] + q3]);
+    if k == 4 {                            // interp: every hole resolves
+        ln7 := nd[i * 8 + 4];              // and must interpolate (str or
+        mut q3 := 0;                       // integer); a spec'd hole must
+        while q3 < nd[i * 8 + 2] {         // be an integer — ncc's order
+            hh := al[nd[i * 8 + 1] + q3 * 2];
+            cexpr(p, st, hh);
+            if st[41] == 1 { return; }
+            ht := cinfer(p, st, hh);
+            hstr := span_is(p, ht, st[44] + 7, 3);
+            hint := is_int_ty(p, ht);
+            if !hstr && !hint {
+                put("{ln7}: cannot interpolate a ");
+                ty_put(p, st, ht);
+                put(" value (only str and integers)\n");
+                st[41] = 1;
+                return;
+            }
+            if al[nd[i * 8 + 1] + q3 * 2 + 1] == 1 && !hint {
+                put("{ln7}: format specs apply to integers — a str interpolates as text\n");
+                st[41] = 1;
+                return;
+            }
             q3 = q3 + 1;
         }
         return;

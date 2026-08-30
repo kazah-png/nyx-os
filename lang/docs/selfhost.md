@@ -771,6 +771,23 @@ thirteenth silence; thirty-one rows, and the corpus's remainder is
 own/move, drop, pageflags, the format specs and the no-return
 analysis.
 
+### Rung 8 — the format specs, and the great silence sweep
+
+Batch V48 put the try and method families on target first — six
+two-sided differentials inside NyxOS, every line byte-identical.
+Then the parser stopped dropping `:spec`: the grammar validates at
+parse time in ncc's exact walk, the teaching message prints
+verbatim (all three refusal shapes — an unknown letter, a width
+digit missing, trailing garbage — share it), and at check time a
+spec'd hole must be an integer. Five rows — and then the sweep.
+Seven more examples check in silence, and so does nparse.n: the
+150K toy compiler, fifteen thousand nodes of it, through the
+checker's arenas without a squeak, along with lex.n itself.
+Twenty-one of twenty-two examples are enforced silences;
+pageflags.n alone waits for its constants. Thirty-six rows. What
+remains: own/move, drop, pageflags, and the no-return analysis —
+the corpus's last four dialects.
+
 And the hardest lexer feature landed: **interpolation**. A toy string
 containing a brace lexes as segments — HEAD before the first hole,
 MID between holes, TAIL after the last (ncc's own

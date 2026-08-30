@@ -144,11 +144,17 @@ stripped (the normalization rule lives in
    bad_try_bind_void 4: R.Ok carries no payload to bind — use `expr?;`
    bad_method       7: Rect has no method 'grow'
    bad_method_arity 7: method 'Rect.scale' takes 1 argument(s), got 0
+   bad_fmt_unknown  5: unknown format spec ':q' — the format specs are ...
+   bad_fmt_nowidth  5: unknown format spec ':z' — ...
+   bad_fmt_trail    5: unknown format spec ':w4q' — ...
+   bad_fmt_str      5: format specs apply to integers — a str interpolates as text
+   bad_fmt_width_str 5: format specs apply to integers — ...
 
-plus thirteen POSITIVE targets (hello, countdown, structs, enums,
-matchexpr, inference, defer, forloop, caps, bytes, userptr,
-results, methods) — they check clean, and their required output is
-silence. Coverage, stated honestly: extern
+plus twenty-one POSITIVE targets — every example except
+pageflags.n (which waits for the pageflags-constant family) checks
+clean, and their required output is silence. The list includes
+nparse.n, the 150K toy compiler, and covers the whole ladder's own
+history. Coverage, stated honestly: extern
 blocks and functions parse for real (full bodies, the whole
 expression ladder, for-loop variables seeded in their body scope);
 struct/enum/impl items brace-skip and `match` refuses — their
@@ -197,6 +203,21 @@ the checker became the biggest N program yet written. Struct
 fields, enum semantics and method returns still fall back softly
 (their tables are the next rungs); the claimed rows never reach
 them.
+
+**Rung 8 — the format specs (landed)**: the parser stops dropping
+`:spec` — each hole records whether a spec rode it, and the spec
+GRAMMAR validates at parse time, ncc's site and walk exactly
+(`[wN|zN][x|X] | x | X`; no digits after w/z, a zero or absurd
+width, or trailing garbage all print the one long teaching message
+verbatim). At check time every hole must interpolate at all (str or
+integer), and a spec'd hole must be an integer — a str interpolates
+as text. Five rows. The silence sweep then paid twice over: seven
+more examples check clean (ntokens, ncalc, nemit, nstack, nwin,
+own, fsio) and so does nparse.n — the 150K toy compiler, ~15,000
+nodes through the checker's arenas without a squeak — plus lex.n
+itself. Twenty-one of the twenty-two examples are enforced
+silences now; pageflags.n alone waits for its family (PROT_READ is
+a predeclared constant the checker does not yet know).
 
 **Rung 7 — methods (landed)**: pimpl accretes back — the last
 brace-skipped item parses for real — and each method lands in a
@@ -270,6 +291,12 @@ return case mirrors ncc's three branches in order — a value in a
 no-return function (the claimed row), the value/return-type
 mismatch, and a bare `return` in a value-returning function — with
 `never` counting as no-type, exactly as ncc's `is_never` does.
+
+**Proven inside NyxOS (batches V45–V48)**: V48 added the try and
+method families — six two-sided differentials on target now (caps,
+argument types, struct fields, match cover, result-enum operands,
+method dispatch), every first-error line byte-identical inside the
+OS, the census steady each run.
 
 **Proven inside NyxOS (batches V45–V47)**: V47 added the struct and
 enum/match families to the on-target ledger — four two-sided
