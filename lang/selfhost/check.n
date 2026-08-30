@@ -621,6 +621,19 @@ fn vfindx(p: *u8, st: *i64, ei: i64, vs: i64, vl: i64) -> i64 {
     return -1;
 }
 
+// ncc's enum_is_result: exactly the variants Ok and Err, each with
+// at most one payload field.
+fn eresult(p: *u8, st: *i64, ei: i64) -> bool {
+    ea := st[51] as *i64;
+    al := st[35] as *i64;
+    if ea[ei * 4 + 2] != 2 { return false; }
+    oki := vfindx(p, st, ei, st[44] + 19, 2);
+    eri := vfindx(p, st, ei, st[44] + 21, 3);
+    if oki < 0 || eri < 0 { return false; }
+    vb := ea[ei * 4 + 3];
+    return al[vb + oki * 4 + 2] <= 1 && al[vb + eri * 4 + 2] <= 1;
+}
+
 // Seed one arm's binds, positionally typed from the variant's
 // payload fields — ncc's vars_add(bind, field ty, 0) loop.
 fn mseed(p: *u8, st: *i64, ei: i64, vi: i64, bst: i64, nb: i64) {
@@ -1282,10 +1295,11 @@ fn pblock(p: *u8, n: i64, st: *i64) -> i64 {
             }
             if sn == 0 {
                 rhs := pexpr(p, n, st);
-                tr := acc(p, n, st, 69);   // x := e?; (try — later rung)
+                mut tf := 0;               // x := e?; — the try flag
+                if acc(p, n, st, 69) { tf = 1; }   // rides slot b
                 if !ck(st, 42) { perr(st); return 0; }
                 adv(p, n, st);
-                sn = nnew(st, 20, rhs, 0, im, ln, is, il);
+                sn = nnew(st, 20, rhs, tf, im, ln, is, il);
             }
         }
         if sn == 0 && ck(st, 12) {         // return [e] ;
@@ -1384,10 +1398,11 @@ fn pblock(p: *u8, n: i64, st: *i64) -> i64 {
                 }
                 if done == 0 {
                     rhs2 := pexpr(p, n, st);
-                    tr2 := acc(p, n, st, 69);
+                    mut tf2 := 0;          // lhs = e?; — the try flag
+                    if acc(p, n, st, 69) { tf2 = 1; }   // rides slot ss
                     if !ck(st, 42) { perr(st); return 0; }
                     adv(p, n, st);
-                    sn = nnew(st, 21, h, rhs2, op, ln, 0, 0);
+                    sn = nnew(st, 21, h, rhs2, op, ln, tf2, 0);
                     done = 1;
                 }
             }
@@ -2033,12 +2048,165 @@ fn cexpr(p: *u8, st: *i64, i: i64) {
     }
 }
 
+// v0.10 `?` propagation — ncc's gen_try judgments, in ncc's order:
+// the operand must be a result enum, the enclosing function must
+// return one, different result enums must agree on the Err payload,
+// and the binding forms need an Ok payload to bind (which then types
+// the binding — the unwrap). form: 0 = `e?;`, 1 = `x := e?;`,
+// 2 = `lhs = e?;` (which replays S_ASSIGN's checks on the payload).
+#[caps(syscall)]
+fn ctry(p: *u8, st: *i64, i: i64, form: i64) {
+    nd := st[33] as *i64;
+    al := st[35] as *i64;
+    ea := st[51] as *i64;
+    ln := nd[i * 8 + 4];
+    mut opnd := nd[i * 8 + 1];
+    if form == 2 { opnd = nd[i * 8 + 2]; }
+    cexpr(p, st, opnd);
+    if st[41] == 1 { return; }
+    ot := cinfer(p, st, opnd);
+    mut oe := -1;
+    if ot.pt == 0 && ot.l > 0 { oe = efind(p, st, ot.s, ot.l); }
+    mut ores := false;
+    if oe >= 0 { ores = eresult(p, st, oe); }
+    if !ores {
+        put("{ln}: operand of '?' must be a result enum (exactly the variants Ok and Err), got ");
+        ty_put(p, st, ot);
+        put("\n");
+        st[41] = 1;
+        return;
+    }
+    rt7 := T{ pt: st[45], us: st[46], s: st[47], l: st[48] };
+    mut re := -1;
+    if rt7.pt == 0 && rt7.l > 0 { re = efind(p, st, rt7.s, rt7.l); }
+    mut rres := false;
+    if re >= 0 { rres = eresult(p, st, re); }
+    if !rres {
+        put("{ln}: '?' propagates by returning, so the function must return a result enum (it returns ");
+        ty_put(p, st, rt7);
+        put(")\n");
+        st[41] = 1;
+        return;
+    }
+    ovi := vfindx(p, st, oe, st[44] + 19, 2);    // Ok
+    oei := vfindx(p, st, oe, st[44] + 21, 3);    // Err
+    rei := vfindx(p, st, re, st[44] + 21, 3);
+    same := span_eq(p, ea[oe * 4], ea[oe * 4 + 1], ea[re * 4], ea[re * 4 + 1]);
+    if !same {                             // Err payloads must agree
+        onf := al[ea[oe * 4 + 3] + oei * 4 + 2];
+        rnf := al[ea[re * 4 + 3] + rei * 4 + 2];
+        if onf != rnf {
+            put("{ln}: cannot propagate: ");
+            put_span(p, ea[oe * 4], ea[oe * 4 + 1]);
+            put(".Err and ");
+            put_span(p, ea[re * 4], ea[re * 4 + 1]);
+            put(".Err disagree on carrying a payload\n");
+            st[41] = 1;
+            return;
+        }
+        if onf == 1 {
+            or2 := al[ea[oe * 4 + 3] + oei * 4 + 3];
+            rr2 := al[ea[re * 4 + 3] + rei * 4 + 3];
+            oT := T{ pt: al[or2 + 2], us: al[or2 + 3], s: al[or2 + 4], l: al[or2 + 5] };
+            rT := T{ pt: al[rr2 + 2], us: al[rr2 + 3], s: al[rr2 + 4], l: al[rr2 + 5] };
+            if !tcompat(p, oT, rT) {
+                put("{ln}: cannot propagate ");
+                put_span(p, ea[oe * 4], ea[oe * 4 + 1]);
+                put(".Err (");
+                ty_put(p, st, oT);
+                put(") as ");
+                put_span(p, ea[re * 4], ea[re * 4 + 1]);
+                put(".Err (");
+                ty_put(p, st, rT);
+                put(")\n");
+                st[41] = 1;
+                return;
+            }
+        }
+    }
+    oknf := al[ea[oe * 4 + 3] + ovi * 4 + 2];
+    if form != 0 && oknf != 1 {
+        put("{ln}: ");
+        put_span(p, ea[oe * 4], ea[oe * 4 + 1]);
+        put(".Ok carries no payload to bind — use the statement form `expr?;`\n");
+        st[41] = 1;
+        return;
+    }
+    mut okty := t_void();
+    if oknf == 1 {
+        orr := al[ea[oe * 4 + 3] + ovi * 4 + 3];
+        okty = T{ pt: al[orr + 2], us: al[orr + 3], s: al[orr + 4], l: al[orr + 5] };
+    }
+    if form == 2 {                         // lhs = e?; — S_ASSIGN's own
+        lhs3 := nd[i * 8 + 1];             // checks against the payload
+        cexpr(p, st, lhs3);
+        if st[41] == 1 { return; }
+        mut r7 := lhs3;
+        while nd[r7 * 8] == 7 { r7 = nd[r7 * 8 + 1]; }
+        if nd[r7 * 8] == 13 {
+            ibt3 := cinfer(p, st, nd[r7 * 8 + 1]);
+            if span_is(p, ibt3, st[44] + 7, 3) {
+                put("{ln}: cannot write through a str index — str is an immutable view of its text\n");
+                st[41] = 1;
+                return;
+            }
+        }
+        if nd[r7 * 8] == 5 {
+            v8 := vfind(p, st, nd[r7 * 8 + 5], nd[r7 * 8 + 6]);
+            va3 := st[39] as *i64;
+            if v8 >= 0 && va3[v8 * 8 + 2] == 0 {
+                put("{ln}: cannot assign to immutable '");
+                put_span(p, nd[r7 * 8 + 5], nd[r7 * 8 + 6]);
+                put("' (declare it with 'mut')\n");
+                st[41] = 1;
+                return;
+            }
+        }
+        lt4 := cinfer(p, st, lhs3);
+        if !tcompat(p, okty, lt4) {
+            put("{ln}: cannot assign ");
+            ty_put(p, st, okty);
+            put(" to a ");
+            ty_put(p, st, lt4);
+            put(" target\n");
+            st[41] = 1;
+            return;
+        }
+        aop3 := nd[i * 8 + 3];
+        if aop3 != 0 && !is_int_ty(p, lt4) {
+            put("{ln}: '");
+            if aop3 == 1 { put("+="); }
+            if aop3 == 2 { put("-="); }
+            put("' requires an integer target (got ");
+            ty_put(p, st, lt4);
+            put(")\n");
+            st[41] = 1;
+        }
+        return;
+    }
+    if form == 1 {                         // x := e?; — bind the payload
+        vadd(st, nd[i * 8 + 5], nd[i * 8 + 6], nd[i * 8 + 3], okty);
+    }
+}
+
 #[caps(syscall)]
 fn cstmt(p: *u8, st: *i64, i: i64) {
     if st[41] == 1 { return; }
     if i == 0 { return; }
     nd := st[33] as *i64;
     k := nd[i * 8];
+    if k == 20 && nd[i * 8 + 2] == 1 {     // try statements route whole
+        ctry(p, st, i, 1);                 // (ncc's gen_stmt does the
+        return;                            // same before its switch)
+    }
+    if k == 21 && nd[i * 8 + 5] == 1 {
+        ctry(p, st, i, 2);
+        return;
+    }
+    if k == 23 && nd[i * 8 + 3] == 1 {
+        ctry(p, st, i, 0);
+        return;
+    }
     if k == 20 {                           // let: check the rhs, infer
         cexpr(p, st, nd[i * 8 + 1]);       // its type, then bind
         if st[41] == 1 { return; }
@@ -2516,12 +2684,12 @@ fn main() -> i64 {
     }
     sys_close(fd);
     if total < 1 { return 0; }
-    inb := "i64boolstru8u64void";          // the intern tail: synthesized
-    mut z2 := 0;                           // type names live AFTER the
-    while z2 < 19 {                        // source, same buffer — spans
-        buf[total + z2] = inb.ptr[z2];     // stay uniform, the lexer's
-        z2 = z2 + 1;                       // length never includes them
-    }
+    inb := "i64boolstru8u64voidOkErr";     // the intern tail: synthesized
+    mut z2 := 0;                           // type names + the result
+    while z2 < 24 {                        // variants live AFTER the
+        buf[total + z2] = inb.ptr[z2];     // source, same buffer — spans
+        z2 = z2 + 1;                       // stay uniform (+19 Ok/2,
+    }                                      // +21 Err/3)
     st := sys_sbrk(512) as *i64;
     ps := sys_sbrk(1024) as *i64;          // the params arena
     st[33] = sys_sbrk(1048576);            // nodes: 16K x 8 words

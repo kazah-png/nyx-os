@@ -727,6 +727,29 @@ rows; what remains of the corpus speaks own, try, drop, methods and
 the pageflags dialect — each a bounded rung on a mountain whose
 shape is now familiar.
 
+### Rung 6 — `?` propagation, and the fifth family on target
+
+Batch V47 first: the struct and enum/match families joined the
+on-target ledger — four two-sided differentials inside NyxOS now,
+the in-OS ncc and the in-OS-compiled checker agreeing on caps,
+argument types, struct-literal fields and match cover, byte for
+byte, with the census steady on its exact baseline.
+
+Then the try rung, the scout's smallest-machinery pick, and it paid
+exactly as predicted. The parser had been consuming `?` and
+dropping it; now the flag rides the nodes, and a try statement
+routes whole through gen_try's judgments in gen_try's order —
+result-enum operand (Ok and Err exactly, transliterated), a
+result-enum return to propagate into, Err-payload agreement across
+DIFFERENT result enums (the subtlest wording in the family:
+`cannot propagate R.Err (str) as S.Err (i64)`), and the
+binding forms' demand for an Ok payload — which then types the
+binding: the unwrap is what makes `x := e?;` see the payload's
+type, not the enum's. Four rows, and the twelfth silence: results.n,
+the example the ledger had to refuse honestly one rung ago, checks
+clean now that the machinery it exercises exists. Twenty-nine rows;
+own, drop, methods, pageflags and the format specs remain.
+
 And the hardest lexer feature landed: **interpolation**. A toy string
 containing a brace lexes as segments — HEAD before the first hole,
 MID between holes, TAIL after the last (ncc's own

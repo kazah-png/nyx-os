@@ -138,10 +138,14 @@ stripped (the normalization rule lives in
    bad_match_binds  5: arm 'Circle' binds 2 name(s), but the payload has 1 field(s)
    bad_mexpr_types  5: match arms disagree: arm 'B' yields str, expected i64
    bad_mexpr_void   5: match arm 'A' must yield a value
+   bad_try_operand  4: operand of '?' must be a result enum (...), got Maybe
+   bad_try_ret      4: '?' propagates by returning, so the function must (...)
+   bad_try_errty    5: cannot propagate R.Err (str) as S.Err (i64)
+   bad_try_bind_void 4: R.Ok carries no payload to bind — use `expr?;`
 
-plus eleven POSITIVE targets (hello, countdown, structs, enums,
-matchexpr, inference, defer, forloop, caps, bytes, userptr) — they
-check clean, and their required output is silence. Coverage, stated honestly: extern
+plus twelve POSITIVE targets (hello, countdown, structs, enums,
+matchexpr, inference, defer, forloop, caps, bytes, userptr,
+results) — they check clean, and their required output is silence. Coverage, stated honestly: extern
 blocks and functions parse for real (full bodies, the whole
 expression ladder, for-loop variables seeded in their body scope);
 struct/enum/impl items brace-skip and `match` refuses — their
@@ -191,6 +195,19 @@ fields, enum semantics and method returns still fall back softly
 (their tables are the next rungs); the claimed rows never reach
 them.
 
+**Rung 6 — `?` propagation (landed)**: the try flags the parser had
+been consuming and dropping now ride the nodes, and try statements
+route whole through ncc's gen_try sequence, in its order: the
+operand must be a result enum (exactly the variants Ok and Err,
+each carrying at most one payload field — `enum_is_result`
+transliterated), the enclosing function must return one, DIFFERENT
+result enums must agree on their Err payloads (count, then type),
+and the binding forms need an Ok payload — which then types the
+binding: `x := e?;` binds the UNWRAPPED payload type, so everything
+downstream of a try sees what ncc sees. Four rows landed, and
+results.n — the example that had to stay off the positive list —
+checks in silence as the twelfth.
+
 **Rung 5 — the enum table, and match comes back (landed)**: penum
 accretes back like pstruct did, and `match` — refused since the tree
 rung — parses again in all four positions (statement, `:=`, `=`,
@@ -234,6 +251,13 @@ return case mirrors ncc's three branches in order — a value in a
 no-return function (the claimed row), the value/return-type
 mismatch, and a bare `return` in a value-returning function — with
 `never` counting as no-type, exactly as ncc's `is_never` does.
+
+**Proven inside NyxOS (batches V45–V47)**: V47 added the struct and
+enum/match families to the on-target ledger — four two-sided
+differentials now (caps, argument types, struct-literal fields,
+match cover), every first-error line matched byte-for-byte inside
+the OS, with the in-OS ncc compiling the 85-function checker each
+time. Zero panics; the census on its exact baseline every run.
 
 **Proven inside NyxOS (batches V45 + V46)**: the in-OS ncc+tcc
 pipeline compiled check.n on target twice over. V45 ran it against
