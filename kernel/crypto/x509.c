@@ -221,14 +221,22 @@ int x509_check_host(const uint8_t* leaf, uint32_t leaf_len, const char* host) {
     return saw_dns ? 1 : -1;
 }
 
+// Pure: is packed-decimal `now` (YYYYMMDDHHMMSS) inside the INCLUSIVE validity window [nb, na]?
+// 0 = valid, 1 = not yet valid (now < notBefore), 2 = expired (now > notAfter). Both bounds are
+// inclusive per RFC 5280 §4.1.2.5 (a cert is valid AT its notBefore and notAfter seconds). Split
+// out from x509_check_validity so the accept/reject verdict is testable without the hardware RTC.
+int x509_time_in_window(uint64_t now, uint64_t nb, uint64_t na) {
+    if (now < nb) return 1;                                // not yet valid
+    if (now > na) return 2;                                // expired
+    return 0;                                              // within the validity window
+}
+
 int x509_check_validity(const uint8_t* cert, uint32_t clen) {
     uint64_t nb, na;
     if (der_x509_validity(cert, clen, &nb, &na) != 0) return -1;
     rtc_time_t t; rtc_read_time(&t);
     uint64_t now = ((((( (uint64_t)t.year *100 + t.month)*100 + t.day)*100 + t.hour)*100 + t.minute)*100 + t.second);
-    if (now < nb) return 1;                                // not yet valid
-    if (now > na) return 2;                                // expired
-    return 0;                                              // within the validity window
+    return x509_time_in_window(now, nb, na);
 }
 
 // ---- known-answer self-test ----------------------------------------------------------
@@ -315,6 +323,21 @@ int x509_selftest(void) {
         } else {
             printf("x509: basicConstraints CA check FAIL (leaf=%d mid=%d root=%d)\n", leaf, mid, root);
         }
+    }
+
+    // 7) Validity-window accept/reject verdict (x509_time_in_window) — the in-date decision, split
+    //    out from the RTC read so its boundaries are pinned. Bounds are INCLUSIVE (RFC 5280): a cert
+    //    is valid AT the exact notBefore and notAfter seconds, one second outside is not.
+    total++;
+    {
+        const uint64_t nb = 20260531213912ULL, na = 20260829214126ULL;   // the real leaf's window
+        int ok = x509_time_in_window(20260715000000ULL, nb, na) == 0 &&   // mid-window     -> valid
+                 x509_time_in_window(nb,                 nb, na) == 0 &&   // exactly nb     -> valid (inclusive)
+                 x509_time_in_window(na,                 nb, na) == 0 &&   // exactly na     -> valid (inclusive)
+                 x509_time_in_window(nb - 1,             nb, na) == 1 &&   // one second early -> not yet valid
+                 x509_time_in_window(na + 1,             nb, na) == 2;     // one second late  -> expired
+        if (ok) { pass++; printf("x509: validity-window verdict PASS (inclusive bounds)\n"); }
+        else      printf("x509: validity-window verdict FAIL\n");
     }
 
     printf("x509: self-test %d/%d passed\n", pass, total);

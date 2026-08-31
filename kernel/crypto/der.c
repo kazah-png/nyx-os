@@ -344,6 +344,29 @@ int der_selftest(void) {
         else      printf("der: adversarial/malformed rejection FAIL\n");
     }
 
+    // 5) DER Time decode (parse_time) — the certificate-validity trust surface. Pins the RFC 5280
+    //    UTCTime 2-digit-year sliding window (<50 -> 20xx, >=50 -> 19xx), the GeneralizedTime
+    //    4-digit-year path, and rejection of malformed times. This is what decides whether a TLS
+    //    cert is in date; the window pivot and the malformed rejection were previously unpinned.
+    {
+        int ok = 1;
+        // UTCTime (tag 0x17): the sliding-window pivot, both sides of 50.
+        if (parse_time(0x17, (const uint8_t*)"490101000000Z", 13u) != 20490101000000ULL) ok = 0;  // 49 -> 2049
+        if (parse_time(0x17, (const uint8_t*)"500101000000Z", 13u) != 19500101000000ULL) ok = 0;  // 50 -> 1950
+        if (parse_time(0x17, (const uint8_t*)"260815143000Z", 13u) != 20260815143000ULL) ok = 0;
+        // GeneralizedTime (tag 0x18): explicit 4-digit year.
+        if (parse_time(0x18, (const uint8_t*)"20260815143000Z", 15u) != 20260815143000ULL) ok = 0;
+        // Malformed: a non-digit in a date slot must be REJECTED (return 0), not coerced.
+        if (parse_time(0x17, (const uint8_t*)"2608X5143000Z", 13u) != 0) ok = 0;
+        // Malformed: value too short for the required digit count -> rejected.
+        if (parse_time(0x17, (const uint8_t*)"260815", 6u) != 0) ok = 0;
+        // Unknown tag (neither UTCTime nor GeneralizedTime) -> rejected.
+        if (parse_time(0x16, (const uint8_t*)"260815143000Z", 13u) != 0) ok = 0;
+        total++;
+        if (ok) { pass++; printf("der: DER Time (UTCTime window + malformed reject) PASS\n"); }
+        else      printf("der: DER Time decode FAIL\n");
+    }
+
     printf("der: self-test %d/%d passed\n", pass, total);
     return (pass == total) ? 0 : -1;
 }

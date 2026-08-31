@@ -25,6 +25,11 @@ int x509_check_host(const uint8_t* leaf, uint32_t leaf_len, const char* host);
 // 1 if not yet valid, 2 if expired, -1 if the dates cannot be parsed.
 int x509_check_validity(const uint8_t* cert, uint32_t clen);
 
+// Pure accept/reject verdict for a validity window (packed-decimal YYYYMMDDHHMMSS times):
+// 0 = valid, 1 = not yet valid, 2 = expired. Bounds inclusive (RFC 5280). Used by
+// x509_check_validity; exposed so the boundary decision is independently KAT-tested.
+int x509_time_in_window(uint64_t now, uint64_t nb, uint64_t na);
+
 // Known-answer self-test: a real chain (accept), a one-byte-tampered copy (reject as forged),
 // and a root-less prefix (reject as not-anchored). Returns 0 if all pass.
 int x509_selftest(void);
