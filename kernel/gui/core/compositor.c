@@ -1478,6 +1478,16 @@ static void bg_star_line(int x0, int y0, int x1, int y1, int fw, int fh,
     }
 }
 
+// Does the current wallpaper style animate (twinkle / meteor / aurora …) — i.e. does the
+// desktop repaint every frame on its own? The drag partial-present falls back to a full
+// present for these, since an animated background changes OUTSIDE the dragged window's rect.
+static int wallpaper_animated(void) {
+    int s = wallpaper_style();
+    return s == WP_STYLE_STARFIELD || s == WP_STYLE_SHOOTINGSTAR || s == WP_STYLE_AURORA ||
+           s == WP_STYLE_NEBULA || s == WP_STYLE_LUCES || s == WP_STYLE_ONDAS ||
+           s == WP_STYLE_LLUVIA;
+}
+
 static void draw_background(void) {
     uint32_t fw = fb_get_width(), fh = fb_get_height();
     uint32_t base = wallpaper_base_color();
@@ -3724,8 +3734,13 @@ void compositor_run(void) {
     frame_dirty = 0;
     int redraw = 0;
     uint32_t clock_tick = 0;
+    // Window-drag partial present: the drag handler records the damaged region (old ∪ new
+    // window footprint, incl. drop shadow) each move so the present publishes just that rect
+    // instead of the whole 3 MB screen. Reset every iteration.
+    int drag_dmg_valid = 0, ddx = 0, ddy = 0, ddw = 0, ddh = 0;
     extern volatile int kbd_head, kbd_tail;
     while (!quit) {
+        drag_dmg_valid = 0;   // recomputed by the drag handler each iteration
         // Idle-yield: when nothing is happening — no key queued, no mouse button
         // held, the pointer hasn't moved, and no drag/resize/menu is active — sleep
         // briefly instead of busy-polling, so background jobs (or the CPU itself)
@@ -3948,7 +3963,18 @@ void compositor_run(void) {
             } else if (drag_id) {
                 window_t* win = find_window(drag_id);
                 if (win) {
+                    // Record the old footprint, move, record the new one → the damaged region
+                    // is their union (+ a margin covering the frame + drop shadow). The present
+                    // section blits just this rect instead of the whole screen.
+                    int oax = win->x, oay = win->y, oaw = (int)win->w, oah = (int)win_total_h(win);
                     window_move(drag_id, mx - win->drag_off_x, my - win->drag_off_y);
+                    int nbx = win->x, nby = win->y, nbw = (int)win->w, nbh = (int)win_total_h(win);
+                    const int M = SHADOW_OFFSET + SHADOW_RADIUS + 2;
+                    int x0 = (oax < nbx ? oax : nbx) - M;
+                    int y0 = (oay < nby ? oay : nby) - M;
+                    int x1 = ((oax + oaw) > (nbx + nbw) ? (oax + oaw) : (nbx + nbw)) + M;
+                    int y1 = ((oay + oah) > (nby + nbh) ? (oay + oah) : (nby + nbh)) + M;
+                    ddx = x0; ddy = y0; ddw = x1 - x0; ddh = y1 - y0; drag_dmg_valid = 1;
                     redraw = 1;
                 }
             } else if (resize_id) {
@@ -4404,11 +4430,7 @@ done_click:
         static uint32_t wp_anim_ms = 0;
         int wp_st = wallpaper_style();
         uint32_t wp_iv = (wp_st == WP_STYLE_SHOOTINGSTAR || wp_st == WP_STYLE_LLUVIA) ? 70u : 120u;
-        if ((wp_st == WP_STYLE_STARFIELD || wp_st == WP_STYLE_SHOOTINGSTAR ||
-             wp_st == WP_STYLE_AURORA || wp_st == WP_STYLE_NEBULA ||
-             wp_st == WP_STYLE_LUCES || wp_st == WP_STYLE_ONDAS ||
-             wp_st == WP_STYLE_LLUVIA) &&
-            now - wp_anim_ms >= wp_iv) {
+        if (wallpaper_animated() && now - wp_anim_ms >= wp_iv) {   // one animated-style list (drag partial uses it too)
             wp_anim_ms = now;
             redraw = 1;
         }
@@ -4463,7 +4485,25 @@ done_click:
         // to move the cursor one step was the single biggest per-frame cost (measured
         // ~3.4 ms vs microseconds for the two small rects), so pointer motion is now free.
         if (frame_dirty || (moved && mm_dispatched)) {
-            fb_present(); frame_dirty = 0;
+            // Window drag: publish just the dragged window's damaged region (old ∪ new
+            // footprint) instead of a full ~3 MB blit. Fall back to a full present whenever
+            // something OUTSIDE that rect could also have changed — a snap-hint at the screen
+            // edge, an animated wallpaper, a live toast, or an open menu — so nothing is left
+            // stale. redraw_all still rebuilt the whole back buffer; only the PUBLISH shrinks.
+            int drag_partial = drag_dmg_valid && drag_id && frame_dirty && !fb_fullscreen_active()
+                && snap_zone_for_cursor(mouse_x, mouse_y, (int)fw, (int)fh) == WSTATE_NORMAL
+                && !wallpaper_animated() && notify_active_count(now) == 0
+                && !start_menu_open && !ctx_menu_open && !user_menu_open;
+            if (drag_partial) {
+                fb_present_rect(ddx, ddy, ddw, ddh);
+                if (moved) {   // cursor may sit outside the window rect near a clamped edge
+                    fb_present_rect(old_cx, old_cy, CURSOR_W, CURSOR_H);
+                    fb_present_rect(mouse_x, mouse_y, CURSOR_W, CURSOR_H);
+                }
+            } else {
+                fb_present();
+            }
+            frame_dirty = 0;
         } else if (taskbar_only || widget_only) {
             // publish just the taskbar strip and/or the widget rect (each far smaller than
             // the full screen), plus the cursor's rects if it also moved this tick
