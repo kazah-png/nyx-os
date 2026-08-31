@@ -41,6 +41,11 @@ int wallpaper_style(void) {
 // (v6.5.23). Out-of-range is ignored; an unknown name returns -1 so the caller keeps the default.
 void wallpaper_set_style(int style) { if (style >= 0 && style < WP_STYLE_COUNT) g_style = style; }
 void wallpaper_set_color(int idx)   { if (idx   >= 0 && idx   < WALLPAPER_COUNT) g_wallpaper = idx; }
+int wallpaper_color(void)           { return g_wallpaper; }   // current base-color index
+// Index -> name, for writing /etc/nyx.conf back from the GUI (save_nyx_config). Out-of-range
+// falls back to the default names so a bad index never yields a NULL into snprintf.
+const char* wallpaper_style_name(int i) { return (i >= 0 && i < WP_STYLE_COUNT)  ? style_names[i] : "Nightfall"; }
+const char* wallpaper_color_name(int i) { return (i >= 0 && i < WALLPAPER_COUNT) ? palette[i].name : "Morado"; }
 int wallpaper_style_from_name(const char* name) {
     if (!name) return -1;
     for (int i = 0; i < WP_STYLE_COUNT; i++)
@@ -295,17 +300,22 @@ void wallpaper_win_click(window_t* win, int mx, int my, int btn) {
         int y = cy + WP_STYLE_Y(i);
         if (mx >= x && mx < x + WP_STYLE_BW && my >= y && my < y + WP_STYLE_BH) {
             g_style = i;                      // the compositor repaints (incl. the background)
+            save_nyx_config();                // persist the choice to /etc/nyx.conf
             return;
         }
     }
 
-    // Color grid hit-test.
+    // Color grid hit-test. Picking a color sets the wallpaper base AND retints the whole UI
+    // accent (title bars / taskbar / menus), matching nyx.conf's `accent` — so the picker is
+    // a live THEME switcher, not just a wallpaper tint. Then persist the choice.
     for (int i = 0; i < WALLPAPER_COUNT; i++) {
         int col = i % WP_COLS, row = i / WP_COLS;
         int x = cx + WP_OX + col * (WP_SW + WP_GAP);
         int y = cy + WP_OY + row * WP_ROW_H;
         if (mx >= x && mx < x + WP_SW && my >= y && my < y + WP_SH) {
             g_wallpaper = i;                  // the compositor repaints (incl. the background)
+            theme_set_accent(wallpaper_base_color());
+            save_nyx_config();
             return;
         }
     }

@@ -103,6 +103,8 @@ window_t* window_create(int x, int y, uint32_t w, uint32_t h, const char* title,
 // Change the screen mode and re-flow icons + open windows onto it. Callers must
 // pass a mode the hardware actually supports — vbe_set_mode validates nothing.
 void display_set_mode(uint32_t w, uint32_t h);
+void theme_set_accent(uint32_t rgb);   // set the runtime UI accent (the wallpaper picker + nyx.conf)
+void save_nyx_config(void);            // persist the current theme to /etc/nyx.conf
 void window_destroy(int id);
 void window_focus(int id);
 void window_move(int id, int x, int y);

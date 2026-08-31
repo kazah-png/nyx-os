@@ -296,7 +296,7 @@ uint32_t g_theme_accent_dim = 0;
 // Set the UI accent and derive the darker "pressed / frame-lo" shade from it, so every
 // scheme keeps the same light→dark relationship the purple had (28% ≈ the old 130,90,210
 // → 92,64,150 pair). Pure aside from the two globals it writes.
-static void theme_set_accent(uint32_t rgb) {
+void theme_set_accent(uint32_t rgb) {
     g_theme_accent     = rgb;
     g_theme_accent_dim = col_darken(rgb, 28);
     // The focused title-bar fill is cached in title_active (set once at compositor_init,
@@ -3665,6 +3665,24 @@ static void apply_nyx_config(void) {
         g_widget_on = !(strcmp(val, "off") == 0 || strcmp(val, "0") == 0 ||
                         strcmp(val, "false") == 0 || strcmp(val, "no") == 0);
     }
+}
+
+// Write the current theme (wallpaper style + accent color + widget state) back to
+// /etc/nyx.conf, so a change made in the GUI (the Wallpaper theme picker) persists across
+// reboots — apply_nyx_config reads it at desktop start. The inverse of apply_nyx_config.
+void save_nyx_config(void) {
+    char buf[256];
+    int n = snprintf(buf, sizeof buf,
+        "# NyxOS desktop config -- rice it here (also editable from the Wallpaper picker).\n"
+        "wallpaper = %s\n"
+        "accent = %s\n"
+        "widget = %s\n",
+        wallpaper_style_name(wallpaper_style()),
+        wallpaper_color_name(wallpaper_color()),
+        g_widget_on ? "on" : "off");
+    if (n <= 0) return;
+    int fd = vfs_open("/etc/nyx.conf", O_CREAT | O_TRUNC, 0644);
+    if (fd >= 0) { vfs_write(fd, buf, (size_t)n); vfs_close(fd); }
 }
 
 static void draw_welcome_windows(void) {
