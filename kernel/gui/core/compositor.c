@@ -3506,6 +3506,29 @@ static void draw_desktop_icons(void) {
     if (drag_icon_idx >= 0) draw_icon_at(drag_icon_idx);
 }
 
+// Rice config foundation (v6.5.23): read /etc/nyx.conf at desktop start and apply the
+// desktop settings it names. A missing file or unknown value just leaves the defaults, so
+// the desktop always comes up. Currently drives the wallpaper style + accent color; future
+// keys (font, taskbar, gaps…) hang off the same parser.
+static void apply_nyx_config(void) {
+    int fd = vfs_open("/etc/nyx.conf", 0, 0);   // O_RDONLY; -1 if absent
+    if (fd < 0) return;
+    static char buf[2048];
+    int n = vfs_read(fd, buf, sizeof(buf) - 1);
+    vfs_close(fd);
+    if (n <= 0) return;
+    buf[n] = '\0';
+    char val[64];
+    if (nyxconf_get(buf, "wallpaper", val, sizeof val)) {
+        int s = wallpaper_style_from_name(val);
+        if (s >= 0) wallpaper_set_style(s);
+    }
+    if (nyxconf_get(buf, "accent", val, sizeof val)) {
+        int c = wallpaper_color_from_name(val);
+        if (c >= 0) wallpaper_set_color(c);
+    }
+}
+
 static void draw_welcome_windows(void) {
     // Minimal desktop (v6.4.48+): open to a clean wallpaper with ONE subtle,
     // centered greeting card instead of the old three stacked boot windows (a
@@ -3577,6 +3600,7 @@ void compositor_run(void) {
     uint8_t prev_btns = 0;
     ss_last_activity = get_ticks(); screensaver_active = 0;   // start the idle timer fresh
 
+    apply_nyx_config();          // rice: /etc/nyx.conf picks the wallpaper/accent before first paint
     draw_welcome_windows();
     redraw_all();
     save_cursor_bg(mouse_x, mouse_y);

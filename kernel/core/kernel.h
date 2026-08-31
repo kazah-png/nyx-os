@@ -18,7 +18,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.5.22"
+#define KERNEL_VERSION "6.5.23"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -27,7 +27,7 @@
 // Erebus (primordial darkness) is the terminal emulator. Used wherever these
 // components identify themselves (nyxfetch, the terminal banner).
 #define COMPOSITOR_NAME    "Hemera"
-#define COMPOSITOR_VERSION "2.6"      // Hemera: the windowing compositor (2nd-gen daedalOS-style desktop)
+#define COMPOSITOR_VERSION "2.7"      // Hemera: the windowing compositor (2nd-gen daedalOS-style desktop)
 #define TERMINAL_NAME      "Erebus"
 #define TERMINAL_VERSION   "1.3"      // Erebus: the terminal emulator
 #define SELENE_NAME        "Selene"
@@ -922,6 +922,7 @@ int vfs_read(int fd, void* buf, size_t count);
 int vfs_write(int fd, const void* buf, size_t count);
 int vfs_pread(int fd, void* buf, uint32_t count, uint32_t offset);
 int vfs_pwrite(int fd, const void* buf, uint32_t count, uint32_t offset);
+int nyxconf_get(const char* text, const char* key, char* out, int outsz);  // nyx.conf parser (rice config)
 int vfs_close(int fd);
 void vfs_dup(int fd);   // count an extra fd aliasing a mount-backed mirror
 int vfs_stat(const char* path, uint32_t* size, int* is_dir);  // 0 ok / -1 not found

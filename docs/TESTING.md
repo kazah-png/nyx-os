@@ -39,7 +39,7 @@ struct { const char* name; int (*fn)(void); } t[] = {
     {"sha512",  sha512_selftest},   {"aes_gcm", aes_gcm_selftest},
     {"inflate", inflate_selftest},  {"png",     png_selftest},
     {"cut",     cut_selftest},      {"comm",    comm_selftest},
-    /* ... 173 entries and counting ... */
+    /* ... 174 entries and counting ... */
 };
 ```
 
@@ -53,7 +53,7 @@ SELFTEST-BEGIN
 [SELFTEST] aes_gcm      PASS
 ...
 [SELFTEST] join         PASS
-SELFTEST-SUMMARY passed=173 failed=0 total=173
+SELFTEST-SUMMARY passed=174 failed=0 total=174
 SELFTEST-END
 ```
 
@@ -69,7 +69,7 @@ battery covers:
 | **Compression** | raw DEFLATE, zlib, gzip (round-tripped through the encoder) |
 | **Images** | PNG (decode + encode), BMP, GIF (incl. LZW), JPEG, PPM, format sniffing + malformed-input rejection |
 | **Networking** | TCP checksum + window math, IPv4/IPv6, `ipcalc`, DNS (build + parse), ARP input parsing, the ICMP echo gate, DHCP options, HTTP response parsing |
-| **Text / data** | `cut`, `comm`, `join`, `xargs`, `sed`, `patch`, `fmt`, `pr`, `shuf`, `tsort`, `calc`, `gcd`/`lcm`, JSON (+ query), glob, CSV, INI, `strings`, semver, date formatting, path normalization, shell `$VAR` expansion |
+| **Text / data** | `cut`, `comm`, `join`, `xargs`, `sed`, `patch`, `fmt`, `pr`, `shuf`, `tsort`, `calc`, `gcd`/`lcm`, JSON (+ query), glob, CSV, INI, the `nyx.conf` desktop-config parser, `strings`, semver, date formatting, path normalization, shell `$VAR` expansion |
 | **Disk / boot** | mkfs.ext2 layout, FAT formatter, MBR/GPT partition tables, PCI/NVMe enumeration + Wi-Fi radio identification (Intel AX200 family), the GRUB boot image, the real-hardware framebuffer-source pick (multiboot2 GOP framebuffer vs QEMU Bochs VBE) |
 | **Kernel** | page-allocator refcount / COW, W^X mappings, slab/`kfree`, stack canaries, signal delivery, the pipe ring buffer, the ELF loader + dynamic linker, the CPU-utilization accountant, wall-clock uptime (civil→epoch), the software 3D rasterizer + `mat4`, the keyboard + PS/2-mouse packet decode, the ring-3 syscall pointer/length boundary + cwd path resolution (`..` can't escape root), the offset-aware file write behind `pwrite`/`>>` (geometric growth + zero-filled sparse gaps, so a file never reads back stale heap), the CMOS/RTC clock decode (BCD/binary, 12h/24h), the #PF error-code decode for the fault dump, the thread-group fd handoff when a leader exits before its workers (exit_group semantics), the context-cursor shape picked from the window under the pointer (I-beam over text areas, directional double-arrows over the resize borders), the file-manager selection mapping between a real entry index and its display position under a search filter, TOTP / account-lockout |
 

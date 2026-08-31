@@ -9587,6 +9587,62 @@ static int tg_fdhandoff_selftest(void) {
     return 0;
 }
 
+// nyx.conf parser (rice config foundation, v6.5.23). Extract the value for `key` from
+// `key = value` config text: skips blank lines and `#` comments, trims whitespace around
+// both the key and the value (and a trailing CR), matches the key case-sensitively at the
+// start of a line, first match wins. Copies the value NUL-terminated + bounded into out;
+// returns 1 if found, 0 otherwise. Pure -> KAT'd by nyxconf_selftest.
+int nyxconf_get(const char* text, const char* key, char* out, int outsz) {
+    if (!text || !key || !out || outsz <= 0) return 0;
+    int keylen = (int)strlen(key);
+    const char* p = text;
+    while (*p) {
+        const char* ls = p;
+        while (*ls == ' ' || *ls == '\t') ls++;        // skip leading blanks
+        const char* le = ls;
+        while (*le && *le != '\n') le++;               // line end
+        if (*ls != '#' && ls != le) {                  // not a comment / not empty
+            const char* eq = ls;
+            while (eq < le && *eq != '=') eq++;
+            if (eq < le) {
+                const char* ke = eq;                   // trim spaces before '='
+                while (ke > ls && (ke[-1] == ' ' || ke[-1] == '\t')) ke--;
+                if ((int)(ke - ls) == keylen && strncmp(ls, key, keylen) == 0) {
+                    const char* vs = eq + 1;           // trim spaces after '='
+                    while (vs < le && (*vs == ' ' || *vs == '\t')) vs++;
+                    const char* ve = le;               // trim trailing space / CR
+                    while (ve > vs && (ve[-1]==' ' || ve[-1]=='\t' || ve[-1]=='\r')) ve--;
+                    int vlen = (int)(ve - vs);
+                    if (vlen > outsz - 1) vlen = outsz - 1;
+                    for (int i = 0; i < vlen; i++) out[i] = vs[i];
+                    out[vlen] = '\0';
+                    return 1;
+                }
+            }
+        }
+        p = (*le == '\n') ? le + 1 : le;
+    }
+    return 0;
+}
+
+int nyxconf_selftest(void) {
+    const char* cfg =
+        "# NyxOS desktop config\n"
+        "wallpaper = Aurora\n"
+        "  accent=Rojo  \r\n"                 // leading spaces, no spaces round '=', trailing CR
+        "empty =\n"
+        "# hiddenkey = ghost\n";              // commented -> must never match
+    char v[32];
+    if (!nyxconf_get(cfg, "wallpaper", v, sizeof v) || strcmp(v, "Aurora")) return 1;
+    if (!nyxconf_get(cfg, "accent", v, sizeof v)    || strcmp(v, "Rojo"))   return 2;  // trims
+    if (!nyxconf_get(cfg, "empty", v, sizeof v)     || v[0] != '\0')        return 3;  // empty value
+    if (nyxconf_get(cfg, "missing", v, sizeof v))                          return 4;  // absent -> 0
+    if (nyxconf_get(cfg, "hiddenkey", v, sizeof v))                        return 5;  // comment skipped
+    char small[4];                                                                    // bounded copy
+    if (!nyxconf_get("k = abcdefgh\n", "k", small, sizeof small) || strcmp(small, "abc")) return 6;
+    return 0;
+}
+
 // Run the whole offline self-test battery, print a machine-readable summary, and
 // halt. Triggered ONLY by the "selftest" multiboot command line (used by CI); a
 // normal boot never calls this, so ordinary startup is unaffected. Each test is a
@@ -9719,6 +9775,7 @@ static void run_selftests(void) {
         {"tgfd",         tg_fdhandoff_selftest},
         {"curpick",      cursor_pick_selftest},
         {"resizecur",    cursor_resize_selftest},
+        {"nyxconf",      nyxconf_selftest},
         {"fmnav",        fileman_nav_selftest},
     };
     int n = (int)(sizeof(t) / sizeof(t[0])), passed = 0, failed = 0;

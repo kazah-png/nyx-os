@@ -676,6 +676,18 @@ void init_vfs(void) {
     vfs_write(fd, "Welcome to NyxOS v1.0.0\nType 'help' for commands.\n", 50);
     vfs_close(fd);
 
+    // Default desktop config — the rice lives here. The compositor reads this at desktop
+    // start (apply_nyx_config) to pick the wallpaper scene + accent color by name.
+    static const char* nyxconf =
+        "# NyxOS desktop config -- rice it here.\n"
+        "# wallpaper: Limpio Nightfall Plano Estrellas Meteoros Aurora Nebula Luces Ondas Astral Lluvia Cordillera\n"
+        "wallpaper = Nightfall\n"
+        "# accent: Morado Azul Turquesa Verde Lima Oro Naranja Rojo Rosa Pizarra Carbon\n"
+        "accent = Morado\n";
+    int cfd = vfs_open("/etc/nyx.conf", 1, 0644);
+    vfs_write(cfd, nyxconf, strlen(nyxconf));
+    vfs_close(cfd);
+
     // Special device files under /dev — regular-looking nodes whose read/write are
     // intercepted by dev_type in vfs_pread/vfs_pwrite. urandom is an alias of random.
     static const struct { const char* path; uint32_t dt; } devs[] = {

@@ -37,6 +37,23 @@ int wallpaper_style(void) {
     return g_style;
 }
 
+// Setters + name lookups so /etc/nyx.conf (the rice config) can pick the wallpaper by name
+// (v6.5.23). Out-of-range is ignored; an unknown name returns -1 so the caller keeps the default.
+void wallpaper_set_style(int style) { if (style >= 0 && style < WP_STYLE_COUNT) g_style = style; }
+void wallpaper_set_color(int idx)   { if (idx   >= 0 && idx   < WALLPAPER_COUNT) g_wallpaper = idx; }
+int wallpaper_style_from_name(const char* name) {
+    if (!name) return -1;
+    for (int i = 0; i < WP_STYLE_COUNT; i++)
+        if (strcmp(style_names[i], name) == 0) return i;
+    return -1;
+}
+int wallpaper_color_from_name(const char* name) {
+    if (!name) return -1;
+    for (int i = 0; i < WALLPAPER_COUNT; i++)
+        if (strcmp(palette[i].name, name) == 0) return i;
+    return -1;
+}
+
 // Style-button grid geometry (top of the content; shared by draw + click). Twelve
 // styles now, laid out 4 per row over 3 rows (the 3rd row is Ondas/Astral/Lluvia/Cordillera).
 #define WP_STYLE_COLS 4
