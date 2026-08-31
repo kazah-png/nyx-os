@@ -92,7 +92,53 @@ static const uint8_t ibeam_data[CURSOR_H][CURSOR_W] = {
     {0,0,0,0,1,2,2,1,0,0,0,0},{0,0,0,0,1,2,2,1,0,0,0,0},
     {0,0,0,1,2,2,2,2,1,0,0,0},{0,0,0,1,1,1,1,1,1,0,0,0},
 };
+// Directional resize cursors (same 0=transparent / 1=black-outline / 2=white-fill 12x16
+// box as the arrow, so they share draw_cursor's save/restore path). Double-headed arrows
+// generated to be symmetric; picked by pick_cursor_shape when the pointer is on a resize
+// border. H = ↔ (left/right edges), V = ↕ (top/bottom), NWSE = ⤡ (↖/↘ corners),
+// NESW = ⤢ (↗/↙ corners).
+static const uint8_t cursor_resize_h[CURSOR_H][CURSOR_W] = {
+    {0,0,0,0,0,0,0,0,0,0,0,0},{0,0,0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,0,0,0},{0,0,0,0,0,0,0,0,0,0,0,0},
+    {0,0,0,1,1,1,1,1,1,0,0,0},{0,0,1,1,2,1,1,2,1,1,0,0},
+    {0,1,1,2,1,1,1,1,2,1,1,0},{1,1,2,1,1,1,1,1,1,2,1,1},
+    {1,2,2,2,2,2,2,2,2,2,2,1},{1,2,2,2,2,2,2,2,2,2,2,1},
+    {1,1,2,1,1,1,1,1,1,2,1,1},{0,1,1,2,1,1,1,1,2,1,1,0},
+    {0,0,1,1,2,1,1,2,1,1,0,0},{0,0,0,1,1,1,1,1,1,0,0,0},
+    {0,0,0,0,0,0,0,0,0,0,0,0},{0,0,0,0,0,0,0,0,0,0,0,0},
+};
+static const uint8_t cursor_resize_v[CURSOR_H][CURSOR_W] = {
+    {0,0,0,0,0,0,0,0,0,0,0,0},{0,0,0,0,1,1,1,1,0,0,0,0},
+    {0,0,0,1,1,2,2,1,1,0,0,0},{0,0,0,1,2,2,2,2,1,0,0,0},
+    {0,0,1,1,2,2,2,2,1,1,0,0},{0,0,1,2,1,2,2,1,2,1,0,0},
+    {0,0,1,1,1,2,2,1,1,1,0,0},{0,0,0,0,1,2,2,1,0,0,0,0},
+    {0,0,0,0,1,2,2,1,0,0,0,0},{0,0,1,1,1,2,2,1,1,1,0,0},
+    {0,0,1,2,1,2,2,1,2,1,0,0},{0,0,1,1,2,2,2,2,1,1,0,0},
+    {0,0,0,1,2,2,2,2,1,0,0,0},{0,0,0,1,1,2,2,1,1,0,0,0},
+    {0,0,0,0,1,1,1,1,0,0,0,0},{0,0,0,0,0,0,0,0,0,0,0,0},
+};
+static const uint8_t cursor_resize_nwse[CURSOR_H][CURSOR_W] = {
+    {0,0,0,0,0,0,0,0,0,0,0,0},{1,1,1,1,1,0,0,0,0,0,0,0},
+    {1,2,2,2,1,0,0,0,0,0,0,0},{1,2,2,1,1,0,0,0,0,0,0,0},
+    {1,1,2,2,1,1,0,0,0,0,0,0},{0,1,1,1,2,1,1,0,0,0,0,0},
+    {0,0,0,1,1,2,1,1,0,0,0,0},{0,0,0,0,1,1,2,1,1,0,0,0},
+    {0,0,0,0,0,1,1,2,1,1,0,0},{0,0,0,0,0,0,1,1,2,1,1,1},
+    {0,0,0,0,0,0,0,1,1,2,2,1},{0,0,0,0,0,0,0,1,1,2,2,1},
+    {0,0,0,0,0,0,0,1,2,2,2,1},{0,0,0,0,0,0,0,1,1,1,1,1},
+    {0,0,0,0,0,0,0,0,0,0,0,0},{0,0,0,0,0,0,0,0,0,0,0,0},
+};
+static const uint8_t cursor_resize_nesw[CURSOR_H][CURSOR_W] = {
+    {0,0,0,0,0,0,0,0,0,0,0,0},{0,0,0,0,0,0,0,1,1,1,1,1},
+    {0,0,0,0,0,0,0,1,2,2,2,1},{0,0,0,0,0,0,0,1,1,2,2,1},
+    {0,0,0,0,0,0,1,1,2,2,1,1},{0,0,0,0,0,1,1,2,1,1,1,0},
+    {0,0,0,0,1,1,2,1,1,0,0,0},{0,0,0,1,1,2,1,1,0,0,0,0},
+    {0,0,1,1,2,1,1,0,0,0,0,0},{1,1,1,2,1,1,0,0,0,0,0,0},
+    {1,2,2,1,1,0,0,0,0,0,0,0},{1,2,2,1,1,0,0,0,0,0,0,0},
+    {1,2,2,2,1,0,0,0,0,0,0,0},{1,1,1,1,1,0,0,0,0,0,0,0},
+    {0,0,0,0,0,0,0,0,0,0,0,0},{0,0,0,0,0,0,0,0,0,0,0,0},
+};
 static int pick_cursor_shape(int mx, int my);   // defined after window_hit (below)
+static int resize_hit(window_t* win, int mx, int my, int* dir);  // defined below pick
 static uint32_t cursor_bg_buf[CURSOR_H * CURSOR_W];
 static int cursor_saved = 0;
 
@@ -128,10 +174,18 @@ static void draw_cursor(int mx, int my) {
     uint32_t* fb = (uint32_t*)fb_get_addr();
     if (!fb) return;
 
-    // Context cursor: an I-beam over a text window's client area, the arrow otherwise.
-    // The saved/restored 12x16 box is the same for both, so only the bitmap changes.
-    const uint8_t (*glyph)[CURSOR_W] =
-        (pick_cursor_shape(mx, my) == CURSOR_IBEAM) ? ibeam_data : cursor_data;
+    // Context cursor: I-beam over a text window's client area, a directional double-arrow
+    // over a resize border, the arrow otherwise. The saved/restored 12x16 box is the same
+    // for every shape, so only the bitmap changes.
+    const uint8_t (*glyph)[CURSOR_W];
+    switch (pick_cursor_shape(mx, my)) {
+        case CURSOR_IBEAM:        glyph = ibeam_data;         break;
+        case CURSOR_RESIZE_H:     glyph = cursor_resize_h;    break;
+        case CURSOR_RESIZE_V:     glyph = cursor_resize_v;    break;
+        case CURSOR_RESIZE_NWSE:  glyph = cursor_resize_nwse; break;
+        case CURSOR_RESIZE_NESW:  glyph = cursor_resize_nesw; break;
+        default:                  glyph = cursor_data;        break;
+    }
     for (int y = 0; y < CURSOR_H && my + y < (int)fh; y++) {
         for (int x = 0; x < CURSOR_W && mx + x < (int)fw; x++) {
             uint8_t p = glyph[y][x];
@@ -397,9 +451,27 @@ static int window_hit(window_t* win, int mx, int my) {
         && my >= win->y && my < win->y + (int)win_total_h(win);
 }
 
+// The directional double-arrow that signals a resize in `dir` (a RESIZE_* value from
+// resize_hit): left/right -> ↔, top/bottom -> ↕, the two ↖/↘ corners -> \, ↗/↙ -> /.
+static int cursor_for_resize_dir(int dir) {
+    switch (dir) {
+        case RESIZE_LEFT:
+        case RESIZE_RIGHT:        return CURSOR_RESIZE_H;
+        case RESIZE_TOP:
+        case RESIZE_BOTTOM:       return CURSOR_RESIZE_V;
+        case RESIZE_LEFT_TOP:
+        case RESIZE_CORNER:       return CURSOR_RESIZE_NWSE;   // CORNER = right-bottom
+        case RESIZE_RIGHT_TOP:
+        case RESIZE_LEFT_BOTTOM:  return CURSOR_RESIZE_NESW;
+        default:                  return CURSOR_ARROW;
+    }
+}
+
 // Which cursor shape belongs at (mx,my): the topmost window under the pointer decides.
-// Over its CLIENT area (below the title bar) the pointer takes that window's cursor_shape
-// (I-beam for text windows); over the title bar or the bare desktop it stays the arrow.
+// On its resize border the pointer becomes the matching directional double-arrow (exactly
+// where a drag-resize would start — same resize_hit the mouse-down path uses); else over
+// its CLIENT area it takes that window's cursor_shape (I-beam for text windows); over the
+// title bar or the bare desktop it stays the arrow.
 static int pick_cursor_shape(int mx, int my) {
     window_t* top = NULL;
     for (int i = 0; i < MAX_WINDOWS; i++) {
@@ -410,6 +482,12 @@ static int pick_cursor_shape(int mx, int my) {
         if (!top || w->z_order > top->z_order) top = w;
     }
     if (!top) return CURSOR_ARROW;
+    // The title-bar strip is a DRAG zone that the mouse-down path checks before resize_hit,
+    // so a top-edge/top-corner resize is intercepted there — don't promise a resize cursor
+    // the click can't deliver. Below the strip, a resize border wins over the client cursor.
+    int dir;
+    if (!titlebar_hit(top, mx, my) && resize_hit(top, mx, my, &dir))
+        return cursor_for_resize_dir(dir);                 // resize border (left/right/bottom)
     if (my >= top->y + TITLE_H) return top->cursor_shape;   // client area
     return CURSOR_ARROW;                                    // title bar
 }
@@ -436,6 +514,42 @@ int cursor_pick_selftest(void) {
         fake.cursor_shape = CURSOR_ARROW;
         if (pick_cursor_shape(150, 100 + TITLE_H + 30)  != CURSOR_ARROW) rc = 13;
     }
+    windows[slot] = NULL;
+    return rc;
+}
+
+// KAT: over a window's resize border the pointer becomes the matching directional arrow,
+// exactly where a drag-resize would start. Same staged-window trick as cursor_pick_selftest.
+// Window at (100,100) 200x150: rx=300, by=100+150+TITLE_H=272, client_top=122, margin=6.
+int cursor_resize_selftest(void) {
+    static window_t fake;
+    memset_asm(&fake, 0, sizeof fake);
+    fake.x = 100; fake.y = 100; fake.w = 200; fake.h = 150;
+    fake.visible = 1; fake.state = WSTATE_NORMAL; fake.z_order = 7;
+    fake.workspace = current_workspace;
+    fake.cursor_shape = CURSOR_IBEAM;   // a text window, so resize must win over the I-beam
+    int slot = -1;
+    for (int i = 0; i < MAX_WINDOWS; i++) if (!windows[i]) { slot = i; break; }
+    if (slot < 0) return 5;
+    windows[slot] = &fake;
+    int rc = 0;
+    // Reachable resize borders (below the title-bar strip) -> the right directional arrow.
+    if      (pick_cursor_shape(297, 200) != CURSOR_RESIZE_H)    rc = 20; // right edge  -> ↔
+    else if (pick_cursor_shape(103, 200) != CURSOR_RESIZE_H)    rc = 21; // left edge   -> ↔
+    else if (pick_cursor_shape(200, 269) != CURSOR_RESIZE_V)    rc = 22; // bottom edge -> ↕
+    else if (pick_cursor_shape(297, 269) != CURSOR_RESIZE_NWSE) rc = 23; // ↘ corner -> NWSE
+    else if (pick_cursor_shape(103, 269) != CURSOR_RESIZE_NESW) rc = 24; // ↙ corner -> NESW
+    // Resize beats the I-beam at the border but NOT in the deep client area.
+    else if (pick_cursor_shape(200, 200) != CURSOR_IBEAM)       rc = 25; // interior    -> I-beam
+    // The title-bar strip is a drag zone: no resize cursor even on its left edge / top band.
+    else if (pick_cursor_shape(103, 110) != CURSOR_ARROW)       rc = 26; // titlebar L edge -> arrow
+    else if (pick_cursor_shape(200, 102) != CURSOR_ARROW)       rc = 27; // top band (drag) -> arrow
+    else if (pick_cursor_shape(400, 400) != CURSOR_ARROW)       rc = 28; // off-window  -> arrow
+    // The dir->shape mapping is exhaustive and correct.
+    else if (cursor_for_resize_dir(RESIZE_TOP)         != CURSOR_RESIZE_V)    rc = 30;
+    else if (cursor_for_resize_dir(RESIZE_LEFT_TOP)    != CURSOR_RESIZE_NWSE) rc = 31;
+    else if (cursor_for_resize_dir(RESIZE_RIGHT_TOP)   != CURSOR_RESIZE_NESW) rc = 32;
+    else if (cursor_for_resize_dir(RESIZE_NONE)        != CURSOR_ARROW)       rc = 33;
     windows[slot] = NULL;
     return rc;
 }

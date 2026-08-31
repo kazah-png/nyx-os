@@ -55,7 +55,12 @@ enum {
 // Cursor shape the pointer takes over a window's CLIENT area. Default 0 = arrow;
 // text windows (Terminal, Editor) set CURSOR_IBEAM so the pointer becomes an I-beam
 // over their content, the way every desktop signals "you can select/place text here".
-enum { CURSOR_ARROW, CURSOR_IBEAM };
+// The RESIZE_* shapes are picked live by pick_cursor_shape() when the pointer is over a
+// window's resize border (see resize_hit): a directional double-arrow that shows which
+// way a drag would grow the window — H over left/right edges, V over top/bottom,
+// NWSE (\) over the ↖/↘ corners, NESW (/) over the ↗/↙ corners.
+enum { CURSOR_ARROW, CURSOR_IBEAM,
+       CURSOR_RESIZE_H, CURSOR_RESIZE_V, CURSOR_RESIZE_NWSE, CURSOR_RESIZE_NESW };
 
 typedef struct window window_t;
 
@@ -114,6 +119,7 @@ void compositor_quit(void);
 int compositor_is_running(void);
 window_t* compositor_open_editor(const char* path);  // open Text Editor, optionally with a file
 int cursor_pick_selftest(void);   // KAT: pointer shape picked from the window under it (I-beam over text)
+int cursor_resize_selftest(void); // KAT: resize-edge dir -> directional cursor mapping
 extern int compositor_logout_requested;              // user menu "Log out" -> boot loop re-shows login
 
 #endif
