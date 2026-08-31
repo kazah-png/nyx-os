@@ -1826,6 +1826,7 @@ static void draw_background(void) {
 
 static void init_desktop_icons(void);
 static void draw_desktop_icons(void);
+static void draw_desktop_widget(void);   // conky-style live CPU/RAM panel on the wallpaper
 static void settings_draw_fn(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch);
 
 // Drop-shadow geometry. OFFSET is how far down-right the shadow sits; RADIUS is
@@ -1893,6 +1894,7 @@ static void draw_start_menu_shadow(void) {
 
 static void redraw_all(void) {
     draw_background();
+    draw_desktop_widget();   // on the wallpaper, behind windows
     draw_desktop_icons();
 
     window_t* sorted[MAX_WINDOWS];
@@ -3533,6 +3535,74 @@ static void draw_icon_at(int i) {
     font_draw_string(tx, y + ICON_SIZE + 3, desktop_icon_names[i], fb_rgb(230,230,230), fb_rgb(20,25,35));
 }
 
+// --- Live desktop widget (conky-style) --------------------------------------------------
+// An always-on panel on the wallpaper (bottom-right, behind windows) that scrolls a CPU%
+// history graph and shows live CPU/RAM %, from the same honest sources as top / the taskbar
+// module (perf_cpu_percent + mem_pool_kb). The graph scrolls every WGT_SAMPLE_MS (motion),
+// refreshed by a partial present of just its rect when no window covers it. Accent-colored,
+// so it follows the runtime colorscheme (v6.5.28). Toggle with `widget = on|off` in nyx.conf.
+#define WGT_W        180
+#define WGT_H         76
+#define WGT_MARGIN    16
+#define WGT_N        160          // CPU% history samples == graph width in px
+#define WGT_SAMPLE_MS 500u        // sample + scroll cadence
+int g_widget_on = 1;              // set from /etc/nyx.conf (apply_nyx_config); default on
+static uint8_t wgt_cpu[WGT_N];
+
+static void wgt_geom(int* x, int* y) {
+    int fw = (int)fb_get_width(), fh = (int)fb_get_height();
+    *x = fw - WGT_W - WGT_MARGIN;
+    *y = fh - (int)TASKBAR_H - WGT_H - WGT_MARGIN;
+    if (*x < 0) *x = 0;
+    if (*y < 0) *y = 0;
+}
+
+// Push the current CPU% and scroll the history one sample to the left (newest at the right).
+static void wgt_push_sample(void) {
+    uint32_t c = perf_cpu_percent(); if (c > 100) c = 100;
+    for (int i = 1; i < WGT_N; i++) wgt_cpu[i - 1] = wgt_cpu[i];
+    wgt_cpu[WGT_N - 1] = (uint8_t)c;
+}
+
+// Does any visible window overlap the widget's rect? (If so, skip its partial repaint — it
+// is hidden behind the window, and a full recomposite redraws it when the window moves.)
+static int widget_covered(void) {
+    int wx, wy; wgt_geom(&wx, &wy);
+    for (int i = 0; i < MAX_WINDOWS; i++) {
+        window_t* w = windows[i];
+        if (!w || !w->visible || w->state == WSTATE_MINIMIZED || w->workspace != current_workspace) continue;
+        int rx = w->x, ry = w->y, rw = (int)w->w, rh = (int)win_total_h(w);
+        if (rx < wx + WGT_W && rx + rw > wx && ry < wy + WGT_H && ry + rh > wy) return 1;
+    }
+    return 0;
+}
+
+static void draw_desktop_widget(void) {
+    if (!g_widget_on) return;
+    int x, y; wgt_geom(&x, &y);
+    // Opaque panel + accent frame, so a partial repaint over its own rect is self-contained.
+    fb_fill_rect(x, y, WGT_W, WGT_H, fb_rgb(24, 24, 30));
+    fb_fill_rect(x, y, WGT_W, 1, THEME_ACCENT);
+    fb_fill_rect(x, y + WGT_H - 1, WGT_W, 1, col_darken(THEME_ACCENT, 45));
+    fb_fill_rect(x, y, 1, WGT_H, col_darken(THEME_ACCENT, 20));
+    fb_fill_rect(x + WGT_W - 1, y, 1, WGT_H, col_darken(THEME_ACCENT, 45));
+    // Header: live CPU/RAM %.
+    uint32_t cpu = perf_cpu_percent(); if (cpu > 100) cpu = 100;
+    uint32_t mu = 0, mt = 0; mem_pool_kb(&mu, 0, &mt);
+    uint32_t rampct = mt ? (uint32_t)(((uint64_t)mu * 100) / mt) : 0;
+    char hdr[40]; snprintf(hdr, sizeof hdr, "CPU %u%%  RAM %u%%", cpu, rampct);
+    font_draw_string_trans(x + 10, y + 6, hdr, fb_rgb(212, 206, 228));
+    // Graph: WGT_N CPU% samples as accent bars rising from the baseline.
+    int gx = x + 10, gy = y + 22, gw = WGT_N, gh = WGT_H - 22 - 8;
+    fb_fill_rect(gx, gy, gw, gh, fb_rgb(14, 14, 18));
+    fb_fill_rect(gx, gy + gh / 2, gw, 1, fb_rgb(42, 42, 52));   // 50% grid line
+    for (int i = 0; i < WGT_N; i++) {
+        int v = wgt_cpu[i];
+        int bh = v * gh / 100; if (bh < 1 && v > 0) bh = 1; if (bh > gh) bh = gh;
+        if (bh > 0) fb_fill_rect(gx + i, gy + gh - bh, 1, bh, THEME_ACCENT);
+    }
+}
+
 static void draw_desktop_icons(void) {
     if (!g_desktop_icons_visible) return;  // minimal desktop — apps live in the Start menu
     for (int i = 0; i < NUM_DESKTOP_ICONS; i++) {
@@ -3566,6 +3636,11 @@ static void apply_nyx_config(void) {
             wallpaper_set_color(c);                 // the wallpaper base color…
             theme_set_accent(wallpaper_base_color()); // …AND the whole UI chrome, cohesively
         }
+    }
+    if (nyxconf_get(buf, "widget", val, sizeof val)) {
+        // live desktop CPU/RAM widget: any of off/0/false/no disables it (default on)
+        g_widget_on = !(strcmp(val, "off") == 0 || strcmp(val, "0") == 0 ||
+                        strcmp(val, "false") == 0 || strcmp(val, "no") == 0);
     }
 }
 
@@ -4300,6 +4375,7 @@ done_click:
 
         uint32_t now = get_ticks();
         int taskbar_only = 0;
+        int widget_only = 0;
         if (now - clock_tick > 1000) {
             clock_tick = now;
             // The clock + CPU/RAM module tick every second. Don't recomposite the WHOLE
@@ -4351,11 +4427,23 @@ done_click:
         }
         notify_was_active = notify_now_active;
 
+        // Live desktop widget: sample CPU% and scroll the graph every WGT_SAMPLE_MS. If a
+        // full recomposite is already happening (redraw) it repaints with the frame; else,
+        // when the widget isn't covered by a window, flag a widget-only partial repaint (its
+        // ~180x76 rect, not the whole screen) so the graph animates without a full present.
+        static uint32_t wgt_ms = 0;
+        if (g_widget_on && now - wgt_ms >= WGT_SAMPLE_MS) {
+            wgt_ms = now;
+            wgt_push_sample();
+            if (!redraw && !widget_covered()) widget_only = 1;
+        }
+
         if (redraw) {
             redraw_all();
             redraw = 0;
-        } else if (taskbar_only) {
-            draw_taskbar();   // idle clock/module refresh: repaint ONLY the taskbar strip
+        } else {
+            if (taskbar_only) draw_taskbar();   // idle clock/module refresh: taskbar strip only
+            if (widget_only)  draw_desktop_widget();
         }
 
         // A fullscreen userspace app (SYS_FBPRESENT) owns the screen and fb_present()
@@ -4376,10 +4464,11 @@ done_click:
         // ~3.4 ms vs microseconds for the two small rects), so pointer motion is now free.
         if (frame_dirty || (moved && mm_dispatched)) {
             fb_present(); frame_dirty = 0;
-        } else if (taskbar_only) {
-            // publish just the taskbar strip (a ~21x smaller blit than the full screen),
-            // plus the cursor's rects if it also moved this tick
-            fb_present_rect(0, (int)(fh - TASKBAR_H), (int)fw, TASKBAR_H);
+        } else if (taskbar_only || widget_only) {
+            // publish just the taskbar strip and/or the widget rect (each far smaller than
+            // the full screen), plus the cursor's rects if it also moved this tick
+            if (taskbar_only) fb_present_rect(0, (int)(fh - TASKBAR_H), (int)fw, TASKBAR_H);
+            if (widget_only) { int wx, wy; wgt_geom(&wx, &wy); fb_present_rect(wx, wy, WGT_W, WGT_H); }
             if (moved) {
                 fb_present_rect(old_cx, old_cy, CURSOR_W, CURSOR_H);
                 fb_present_rect(mouse_x, mouse_y, CURSOR_W, CURSOR_H);

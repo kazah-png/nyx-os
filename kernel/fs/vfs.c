@@ -684,7 +684,9 @@ void init_vfs(void) {
         "wallpaper = Nightfall\n"
         "# accent tints the wallpaper AND the whole UI (title bars, taskbar, menus, pop-ups)\n"
         "# accent: Morado Azul Turquesa Verde Lima Oro Naranja Rojo Rosa Pizarra Carbon\n"
-        "accent = Morado\n";
+        "accent = Morado\n"
+        "# widget: a live CPU/RAM graph panel on the desktop (on|off)\n"
+        "widget = on\n";
     int cfd = vfs_open("/etc/nyx.conf", 1, 0644);
     vfs_write(cfd, nyxconf, strlen(nyxconf));
     vfs_close(cfd);
