@@ -9422,6 +9422,12 @@ static int snprintf_selftest(void) {
     snprintf(b, sizeof(b), "%s=%d (0x%x)", "n", 255, 255u);  if (strcmp(b, "n=255 (0xff)") != 0) return 18;
     // truncation: a 5-byte buffer holds 4 chars + NUL
     { char s[5]; snprintf(s, sizeof(s), "%d", 123456);       if (strcmp(s, "1234") != 0) return 19; }
+    // %p must print the FULL 64-bit pointer: itoa() truncated to 32 bits, mangling every address
+    // >= 4 GB (all higher-half kernel pointers, e.g. 0xFFFFFFFF80000000 -> 0x80000000).
+    snprintf(b, sizeof(b), "%p", (void*)0xFFFFFFFF80000000ULL); if (strcmp(b, "0xffffffff80000000") != 0) return 20;
+    snprintf(b, sizeof(b), "%p", (void*)0xFFFF800000001234ULL); if (strcmp(b, "0xffff800000001234") != 0) return 21;
+    snprintf(b, sizeof(b), "%p", (void*)0x1234ULL);             if (strcmp(b, "0x1234") != 0) return 22;
+    snprintf(b, sizeof(b), "%p", (void*)0);                     if (strcmp(b, "0x0") != 0) return 23;
     return 0;
 }
 
@@ -10529,12 +10535,20 @@ int vsnprintf(char *buf, size_t size, const char *fmt, va_list args) {
                 while (*t && written < (int)size - 1) { *p++ = *t++; written++; }
                 fmt++;
             } else if (*fmt == 'p') {
-                void *val = va_arg(args, void*);
-                char tmp[24];
-                itoa((unsigned long)val, tmp, 16);
-                char *t = tmp;
+                unsigned long val = (unsigned long)va_arg(args, void*);
+                // 64-bit-safe pointer hex. itoa() takes an int, so `itoa((unsigned long)val,...)`
+                // truncated every pointer >= 4 GB to its low 32 bits — i.e. ALL higher-half kernel
+                // addresses (0xFFFFFFFF8...) printed as e.g. 0x80000000. Build the digits from the
+                // full unsigned long, exactly like the %x path above.
+                char tmp[24]; int ti = 0;
+                if (val == 0) tmp[ti++] = '0';
+                else { char rev[24]; int ri = 0; unsigned long v = val;
+                       while (v) { int d = (int)(v & 0xF); rev[ri++] = d < 10 ? (char)('0'+d) : (char)('a'+d-10); v >>= 4; }
+                       while (ri) tmp[ti++] = rev[--ri]; }
+                tmp[ti] = '\0';
                 if (written < (int)size - 1) { *p++ = '0'; written++; }
                 if (written < (int)size - 1) { *p++ = 'x'; written++; }
+                char *t = tmp;
                 while (*t && written < (int)size - 1) { *p++ = *t++; written++; }
                 fmt++;
             } else {
