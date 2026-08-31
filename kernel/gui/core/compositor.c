@@ -3558,12 +3558,27 @@ static void draw_icon_at(int i) {
 #define WGT_N        160          // history samples == graph width in px
 #define WGT_SAMPLE_MS 500u        // sample + scroll cadence
 int g_widget_on = 1;              // set from /etc/nyx.conf (apply_nyx_config); default on
+int g_widget_pos = 0;             // 0=bottom-right (default) 1=bottom-left 2=top-right 3=top-left — nyx.conf `widget_pos`
 static uint8_t wgt_cpu[WGT_N], wgt_ram[WGT_N];
+
+// nyx.conf name <-> index for the widget corner (rice: place the monitor where you like).
+static const char* widget_pos_name(int p) {
+    switch (p) { case 1: return "bottom-left"; case 2: return "top-right"; case 3: return "top-left"; default: return "bottom-right"; }
+}
+static int widget_pos_from_name(const char* s) {
+    if (strcmp(s, "bottom-left")  == 0) return 1;
+    if (strcmp(s, "top-right")    == 0) return 2;
+    if (strcmp(s, "top-left")     == 0) return 3;
+    if (strcmp(s, "bottom-right") == 0) return 0;
+    return -1;   // unknown -> caller keeps the current value
+}
 
 static void wgt_geom(int* x, int* y) {
     int fw = (int)fb_get_width(), fh = (int)fb_get_height();
-    *x = fw - WGT_W - WGT_MARGIN;
-    *y = fh - (int)TASKBAR_H - WGT_H - WGT_MARGIN;
+    int left = (g_widget_pos == 1 || g_widget_pos == 3);   // BL / TL hug the left edge
+    int top  = (g_widget_pos == 2 || g_widget_pos == 3);   // TR / TL hug the top edge
+    *x = left ? WGT_MARGIN : (fw - WGT_W - WGT_MARGIN);
+    *y = top  ? WGT_MARGIN : (fh - (int)TASKBAR_H - WGT_H - WGT_MARGIN);  // bottom clears the taskbar
     if (*x < 0) *x = 0;
     if (*y < 0) *y = 0;
 }
@@ -3665,6 +3680,10 @@ static void apply_nyx_config(void) {
         g_widget_on = !(strcmp(val, "off") == 0 || strcmp(val, "0") == 0 ||
                         strcmp(val, "false") == 0 || strcmp(val, "no") == 0);
     }
+    if (nyxconf_get(buf, "widget_pos", val, sizeof val)) {
+        int p = widget_pos_from_name(val);          // which corner the monitor widget hugs
+        if (p >= 0) g_widget_pos = p;               // unknown name -> keep the default corner
+    }
 }
 
 // Write the current theme (wallpaper style + accent color + widget state) back to
@@ -3676,10 +3695,12 @@ void save_nyx_config(void) {
         "# NyxOS desktop config -- rice it here (also editable from the Wallpaper picker).\n"
         "wallpaper = %s\n"
         "accent = %s\n"
-        "widget = %s\n",
+        "widget = %s\n"
+        "widget_pos = %s\n",
         wallpaper_style_name(wallpaper_style()),
         wallpaper_color_name(wallpaper_color()),
-        g_widget_on ? "on" : "off");
+        g_widget_on ? "on" : "off",
+        widget_pos_name(g_widget_pos));
     if (n <= 0) return;
     int fd = vfs_open("/etc/nyx.conf", O_CREAT | O_TRUNC, 0644);
     if (fd >= 0) { vfs_write(fd, buf, (size_t)n); vfs_close(fd); }
