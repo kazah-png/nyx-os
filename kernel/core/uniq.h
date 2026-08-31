@@ -27,4 +27,7 @@ typedef void (*uniq_emit_fn)(void* ctx, const char* out, uint32_t len);
 // surviving run in order (GNU uniq semantics).
 void uniq_run(const uniq_opts_t* o, const char* text, uint32_t len, uniq_emit_fn emit, void* ctx);
 
+// Known-answer self-test: pins GNU-uniq parity for the -c/-d/-u/-i/-f/-s/-w flag matrix. Returns 0 on pass.
+int uniq_selftest(void);
+
 #endif

@@ -39,7 +39,7 @@ struct { const char* name; int (*fn)(void); } t[] = {
     {"sha512",  sha512_selftest},   {"aes_gcm", aes_gcm_selftest},
     {"inflate", inflate_selftest},  {"png",     png_selftest},
     {"cut",     cut_selftest},      {"comm",    comm_selftest},
-    /* ... 175 entries and counting ... */
+    /* ... 176 entries and counting ... */
 };
 ```
 
@@ -53,7 +53,7 @@ SELFTEST-BEGIN
 [SELFTEST] aes_gcm      PASS
 ...
 [SELFTEST] join         PASS
-SELFTEST-SUMMARY passed=175 failed=0 total=175
+SELFTEST-SUMMARY passed=176 failed=0 total=176
 SELFTEST-END
 ```
 

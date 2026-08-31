@@ -80,3 +80,48 @@ void uniq_run(const uniq_opts_t* o, const char* text, uint32_t len,
     }
     if (have_run) uniq_flush(o, run_line, run_len, run_count, emit, ctx);
 }
+
+// ---- known-answer self-test (`uniq`) ----------------------------------------------------
+// A recording emit: append the record bytes then a newline into a bounded buffer (like join's).
+typedef struct { char* buf; uint32_t len; uint32_t cap; } uniq_rec_t;
+static void uniq_rec_emit(void* ctx, const char* out, uint32_t len) {
+    uniq_rec_t* r = (uniq_rec_t*)ctx;
+    for (uint32_t i = 0; i < len && r->len < r->cap - 1; i++) r->buf[r->len++] = out[i];
+    if (r->len < r->cap - 1) r->buf[r->len++] = '\n';
+    r->buf[r->len] = '\0';
+}
+// Run uniq over `in` with options `o`; return 1 iff the emitted stream equals `want`.
+static int uniq_expect(const uniq_opts_t* o, const char* in, const char* want) {
+    char out[256]; uniq_rec_t r; r.buf = out; r.cap = (uint32_t)sizeof out; r.len = 0; out[0] = '\0';
+    uniq_run(o, in, (uint32_t)strlen(in), uniq_rec_emit, &r);
+    return strcmp(out, want) == 0;
+}
+// Pins GNU-uniq parity across the whole flag matrix: bare adjacent-fold, -c counts (7-wide),
+// -d / -u run selection, -d -u together (prints nothing), -i case-fold (first line kept),
+// -f field / -s char / -w width key extraction, -w 0 (all lines fold), and a last line with
+// no trailing newline. uniq_run is pure, so a refactor that broke any of these would be caught.
+int uniq_selftest(void) {
+    { uniq_opts_t o = {0};                                                     // 1) bare adjacent-fold
+      if (!uniq_expect(&o, "a\na\nb\nb\nb\nc\n", "a\nb\nc\n")) return 1; }
+    { uniq_opts_t o = {0}; o.count = 1;                                         // 2) -c occurrence count
+      if (!uniq_expect(&o, "a\na\nb\n", "      2 a\n      1 b\n")) return 2; }
+    { uniq_opts_t o = {0}; o.only_dup = 1;                                      // 3) -d only repeated runs
+      if (!uniq_expect(&o, "a\na\nb\nc\nc\n", "a\nc\n")) return 3; }
+    { uniq_opts_t o = {0}; o.only_uniq = 1;                                     // 4) -u only singletons
+      if (!uniq_expect(&o, "a\na\nb\nc\nc\n", "b\n")) return 4; }
+    { uniq_opts_t o = {0}; o.only_dup = 1; o.only_uniq = 1;                     // 5) -d -u -> nothing
+      if (!uniq_expect(&o, "a\na\nb\n", "")) return 5; }
+    { uniq_opts_t o = {0}; o.ignore_case = 1;                                   // 6) -i (first line kept)
+      if (!uniq_expect(&o, "Foo\nfoo\nFOO\nbar\n", "Foo\nbar\n")) return 6; }
+    { uniq_opts_t o = {0}; o.skip_fields = 1;                                   // 7) -f 1 skip a field
+      if (!uniq_expect(&o, "1 apple\n2 apple\n3 pear\n", "1 apple\n3 pear\n")) return 7; }
+    { uniq_opts_t o = {0}; o.skip_chars = 1;                                    // 8) -s 1 skip a char
+      if (!uniq_expect(&o, "Xapple\nYapple\nZpear\n", "Xapple\nZpear\n")) return 8; }
+    { uniq_opts_t o = {0}; o.check_chars = 5; o.check_chars_set = 1;            // 9) -w 5 clamp the key
+      if (!uniq_expect(&o, "apple1\napple2\ngrape1\n", "apple1\ngrape1\n")) return 9; }
+    { uniq_opts_t o = {0}; o.check_chars = 0; o.check_chars_set = 1;            // 10) -w 0 -> every line folds
+      if (!uniq_expect(&o, "ab\ncd\nef\n", "ab\n")) return 10; }
+    { uniq_opts_t o = {0};                                                      // 11) last line, no newline
+      if (!uniq_expect(&o, "a\na\nb", "a\nb\n")) return 11; }
+    return 0;
+}
