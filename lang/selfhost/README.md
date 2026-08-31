@@ -362,14 +362,16 @@ no-return function (the claimed row), the value/return-type
 mismatch, and a bare `return` in a value-returning function — with
 `never` counting as no-type, exactly as ncc's `is_never` does.
 
-**Proven inside NyxOS (batches V45–V49)**: nine families ride the
-on-target ledger now — V49 added the format specs and W^X. That
-last one is worth saying slowly: the W^X refusal, a security
-property of the operating system's own memory model, is verified
-differentially INSIDE that operating system — the in-OS ncc and its
-in-OS-compiled N rewrite agree on the violation to the byte. Eight
-two-sided differentials, zero panics, the census on its exact
-baseline every run.
+**Proven inside NyxOS (batches V45–V50)**: TEN families ride the
+on-target ledger — V50 added ownership. The in-OS ncc and its
+in-OS-compiled N rewrite now agree, byte for byte, on a
+use-after-move and on an ownership leak — the flow analysis that
+tracks a value's whole life runs inside the OS whose resources it
+was designed to guard, and both compilers read the same story off
+the same source. Ten two-sided differentials, zero panics, the
+census on its exact baseline every run. (V49's frame-worthy fence
+still stands beside it: the W^X refusal — a security property of
+NyxOS's own memory model — verified differentially inside NyxOS.)
 
 **Proven inside NyxOS (batches V45–V47)**: V47 added the struct and
 enum/match families to the on-target ledger — four two-sided

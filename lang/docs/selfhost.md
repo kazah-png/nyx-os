@@ -897,6 +897,24 @@ declarations: rung 10c is `#[drop]` validation and the own-nest
 rule, whose FILE-level messages carry the harness's next
 normalization design.
 
+### Batch V50 — ownership proven on target
+
+The tenth family boarded the in-OS ledger. Batch V50 carried
+`bad_own_useafter` and `bad_own_leak` into NyxOS and ran the
+two-sided fence on each: the in-OS ncc names the violation, the
+in-OS-compiled checker names it independently, and the serial log
+shows the two lines byte-identical. There is something fitting
+about this pair in particular — the ownership analysis exists so
+that OS resources (a file handle, a page) provably go somewhere,
+and here it is running inside the OS it guards, twice over, in
+agreement with itself. Ten differentials now stand: capabilities,
+argument types, struct fields, match coverage, result enums,
+method dispatch, format specs, W^X, use-after-move, and the leak.
+The remaining corpus — the `#[drop]` declarations, own-nest, and
+the not-every-path-returns family — is FILE-level territory: the
+next rung designs how a message with no line number rides the
+same byte-exact harness.
+
 And the hardest lexer feature landed: **interpolation**. A toy string
 containing a brace lexes as segments — HEAD before the first hole,
 MID between holes, TAIL after the last (ncc's own
