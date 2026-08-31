@@ -75,6 +75,8 @@ int date_format(char* out, int cap, const char* fmt, const rtc_time_t* t) {
             case 'p': pos = put_s(out, cap, pos, h < 12 ? "AM" : "PM"); break;
             case 'A': pos = put_s(out, cap, pos, WD_FULL[wd]); break;
             case 'a': pos = put_s(out, cap, pos, WD_ABBR[wd]); break;
+            case 'w': pos = put_num(out, cap, pos, wd, 1, '0'); break;              // weekday 0-6, Sunday=0
+            case 'u': pos = put_num(out, cap, pos, wd == 0 ? 7 : wd, 1, '0'); break; // weekday 1-7, Monday=1..Sunday=7 (ISO)
             case 'B': pos = put_s(out, cap, pos, MO_FULL[mo-1]); break;
             case 'b': pos = put_s(out, cap, pos, MO_ABBR[mo-1]); break;
             case 'n': if (pos < cap - 1) out[pos++] = '\n'; break;
@@ -105,6 +107,8 @@ int datefmt_selftest(void) {
         { "%I%p",      "07PM" },
         { "%y",        "26" },
         { "%j",        "224" },
+        { "%w",        "3" },                     // Wednesday: 0=Sun .. 3=Wed
+        { "%u",        "3" },                     // ISO: 1=Mon .. 3=Wed
         { "day %d%%",  "day 12%" },               // literal text + %% -> %
         { "%Q",        "%Q" },                    // unknown specifier kept literal
     };
@@ -118,5 +122,11 @@ int datefmt_selftest(void) {
         int wl = 0; while (w[wl]) wl++;
         if (n != wl) return (int)(100 + i);       // returned length must match
     }
+    // A Sunday exercises the %u Sunday=7 remap (%w stays 0); a leap-year March date
+    // exercises the day-of-year leap branch (m>2 → +1) the August date above does not.
+    rtc_time_t sun = { 0 }; sun.year = 2026; sun.month = 8; sun.day = 9;   // 2026-08-09 is a Sunday
+    if (date_format(buf, sizeof(buf), "%w%u", &sun) != 2 || strcmp(buf, "07")) return 200;
+    rtc_time_t leap = { 0 }; leap.year = 2024; leap.month = 3; leap.day = 1; // 2024 is a leap year
+    if (date_format(buf, sizeof(buf), "%j", &leap) != 3 || strcmp(buf, "061")) return 201;
     return 0;
 }
