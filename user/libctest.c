@@ -163,6 +163,10 @@ int main(int argc, char** argv) {
         char t[5];
         int n2 = snprintf(t, sizeof(t), "abcdefgh");     /* truncates to "abcd", returns 8 */
         if (strcmp(t, "abcd") != 0 || n2 != 8) pf_ok = 0;
+        /* uppercase hex must be UPPERCASE (regression: %X/%lX once aliased %x/%lx). */
+        char x[40];
+        int n3 = snprintf(x, sizeof(x), "%X-%08X-%lX", 0xabcu, 0x1a2bu, 0xDEADBEEFCAFEUL);
+        if (strcmp(x, "ABC-00001A2B-DEADBEEFCAFE") != 0 || n3 != 25) pf_ok = 0;
 
         const char* fp = "/mnt/libctest_fprintf.txt";
         FILE* f = fopen(fp, "w");

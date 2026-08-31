@@ -436,13 +436,14 @@ static void emit_file(char c, void* ctx) {
     s->count++;
 }
 
-static void fmt_u64(emit_fn emit, void* ctx, unsigned long long val, int base, int pad, char padchar, int left) {
+static void fmt_u64(emit_fn emit, void* ctx, unsigned long long val, int base, int pad, char padchar, int left, int upper) {
     char buf[32];
     int n = 0;
+    char alpha = upper ? 'A' : 'a';   /* 'X' wants A-F, 'x'/'p' want a-f */
     if (val == 0) { buf[n++] = '0'; }
     while (val > 0 && n < 31) {
         int d = (int)(val % base);
-        buf[n++] = (d < 10) ? ('0' + d) : ('a' + d - 10);
+        buf[n++] = (d < 10) ? ('0' + d) : (alpha + d - 10);
         val /= base;
     }
     int digits = n;
@@ -457,7 +458,7 @@ static void fmt_u64(emit_fn emit, void* ctx, unsigned long long val, int base, i
 
 static void fmt_int(emit_fn emit, void* ctx, long long val, int pad, char padchar, int left) {
     if (val < 0) { emit('-', ctx); val = -val; }
-    fmt_u64(emit, ctx, (unsigned long long)val, 10, pad, padchar, left);
+    fmt_u64(emit, ctx, (unsigned long long)val, 10, pad, padchar, left, 0);
 }
 
 static void fmt_string(emit_fn emit, void* ctx, const char* s, int pad, char padchar, int left) {
@@ -487,19 +488,20 @@ static void format_core(emit_fn emit, void* ctx, const char* fmt, va_list args) 
         switch (*fmt) {
             case 'd':
             case 'i': { int v = va_arg(args, int); fmt_int(emit, ctx, v, pad, padchar, left); break; }
-            case 'u': { unsigned int v = va_arg(args, unsigned int); fmt_u64(emit, ctx, v, 10, pad, padchar, left); break; }
-            case 'o': { unsigned int v = va_arg(args, unsigned int); fmt_u64(emit, ctx, v, 8, pad, padchar, left); break; }
-            case 'x':
-            case 'X': { unsigned int v = va_arg(args, unsigned int); fmt_u64(emit, ctx, v, 16, pad, padchar, left); break; }
+            case 'u': { unsigned int v = va_arg(args, unsigned int); fmt_u64(emit, ctx, v, 10, pad, padchar, left, 0); break; }
+            case 'o': { unsigned int v = va_arg(args, unsigned int); fmt_u64(emit, ctx, v, 8, pad, padchar, left, 0); break; }
+            case 'x': { unsigned int v = va_arg(args, unsigned int); fmt_u64(emit, ctx, v, 16, pad, padchar, left, 0); break; }
+            case 'X': { unsigned int v = va_arg(args, unsigned int); fmt_u64(emit, ctx, v, 16, pad, padchar, left, 1); break; }
             case 'l': {
                 fmt++;
-                if (*fmt == 'u') { unsigned long v = va_arg(args, unsigned long); fmt_u64(emit, ctx, v, 10, pad, padchar, left); }
-                else if (*fmt == 'x' || *fmt == 'X') { unsigned long v = va_arg(args, unsigned long); fmt_u64(emit, ctx, v, 16, pad, padchar, left); }
-                else if (*fmt == 'o') { unsigned long v = va_arg(args, unsigned long); fmt_u64(emit, ctx, v, 8, pad, padchar, left); }
+                if (*fmt == 'u') { unsigned long v = va_arg(args, unsigned long); fmt_u64(emit, ctx, v, 10, pad, padchar, left, 0); }
+                else if (*fmt == 'x') { unsigned long v = va_arg(args, unsigned long); fmt_u64(emit, ctx, v, 16, pad, padchar, left, 0); }
+                else if (*fmt == 'X') { unsigned long v = va_arg(args, unsigned long); fmt_u64(emit, ctx, v, 16, pad, padchar, left, 1); }
+                else if (*fmt == 'o') { unsigned long v = va_arg(args, unsigned long); fmt_u64(emit, ctx, v, 8, pad, padchar, left, 0); }
                 else if (*fmt == 'd' || *fmt == 'i') { long v = va_arg(args, long); fmt_int(emit, ctx, v, pad, padchar, left); }
                 break;
             }
-            case 'p': { unsigned long v = va_arg(args, unsigned long); emit('0', ctx); emit('x', ctx); fmt_u64(emit, ctx, v, 16, pad - 2, padchar, left); break; }
+            case 'p': { unsigned long v = va_arg(args, unsigned long); emit('0', ctx); emit('x', ctx); fmt_u64(emit, ctx, v, 16, pad - 2, padchar, left, 0); break; }
             case 's': { const char* s = va_arg(args, const char*); fmt_string(emit, ctx, s, pad, padchar, left); break; }
             case 'c': { int c = va_arg(args, int);
                 if (left) { emit((char)c, ctx); for (int i = 1; i < pad; i++) emit(' ', ctx); }
