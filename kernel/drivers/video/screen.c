@@ -224,6 +224,14 @@ int vprintf(const char* fmt, va_list args) {
                     emit_padded(nbuf, width, left, pad, &count);
                     break;
                 }
+                case 'o': {
+                    // Standard C %o: octal, no leading '0' prefix (callers write "0%o" for that).
+                    uint64_t v = (long_count >= 2) ? va_arg(args, uint64_t)
+                                                   : (uint64_t)va_arg(args, unsigned int);
+                    u64_to_str(v, 8, nbuf);
+                    emit_padded(nbuf, width, left, pad, &count);
+                    break;
+                }
                 case 'x':
                 case 'X': {
                     uint64_t v = (long_count >= 1) ? va_arg(args, uint64_t)

@@ -407,7 +407,7 @@ static const command_t commands[] = {
     {"mkdir",     cmd_mkdir,     "Create directory: mkdir <dir>", false},
     {"ln",        cmd_ln,        "Create a symbolic link: ln -s <target> <linkname>", false},
     {"readlink",  cmd_readlink,  "Print a symlink's target: readlink <symlink>", false},
-    {"chmod",     cmd_chmod,     "Change permission bits: chmod <octal> <file>", false},
+    {"chmod",     cmd_chmod,     "Change permission bits: chmod <octal|symbolic> <file>", false},
     {"rm",        cmd_rm,        "Remove file or directory: rm <path>", false},
     {"shred",     cmd_shred,     "Overwrite a file's data, then optionally remove it: shred [-n N] [-u] <file>", false},
     {"cp",        cmd_cp,        "Copy a file (cp <src> <dst>) or a tree (cp -r <srcdir> <dstdir>)", false},
@@ -952,7 +952,7 @@ static const man_page_t man_pages[] = {
     {"mkdir",    "Create a new, empty directory named <dir>."},
     {"ln",       "Create a symbolic link: `ln -s <target> <linkname>` makes <linkname> a symlink pointing at <target>. Opening/`cat`/`cd` through the link transparently reaches the target (resolve_path follows it, bounded to 8 hops so a cyclic link can't loop); `readlink <linkname>` shows the raw target without following. Hard links aren't supported by the ramdisk node model, so `-s` is required."},
     {"readlink", "Print the target path a symbolic link points at, without following it: `readlink <symlink>`."},
-    {"chmod",    "Change a file's permission bits: `chmod <octal> <file>` (e.g. `chmod 644 f`, `chmod 444 f`). Clearing the owner-write bit (e.g. `444`) makes the file read-only — `vfs_write_file`/overwrites are refused until you `chmod` it writable again. Applies to the ramdisk tree; new files default to 644, directories to 755."},
+    {"chmod",    "Change a file's permission bits, octal or symbolic: `chmod <octal|symbolic> <file>` (e.g. `chmod 644 f`, `chmod +x f`, `chmod u+w f`, `chmod go-rwx f`, `chmod a=r f`, `chmod u+w,go-w f`). Symbolic: who `[ugoa]` (default all) + op `+`/`-`/`=` + perms `[rwx]`, comma-separated clauses. Clearing the owner-write bit (`chmod 444 f` or `chmod -w f`) makes the file read-only — `vfs_write_file`/overwrites are refused until you make it writable again. Applies to the ramdisk tree; new files default to 644, directories to 755."},
     {"echo",     "Write the arguments to standard output separated by spaces and followed by a newline. `echo text > file` writes to a file instead of the screen."},
     {"grep",     "Print the lines of <file> that match <pattern>. -i ignores letter case, -n prefixes each match with its line number, -v inverts the search to print the lines that do NOT match, and -c prints only the COUNT of matching lines (honouring -i/-v) instead of the lines themselves."},
     {"sort",     "Sort the lines of <file>. -r reverses the result; -n sorts numerically by the integer at the start of each line instead of alphabetically; -f folds case (compare case-insensitively); -u drops duplicate lines (keep one per equal key, like GNU sort -u). Flags combine, e.g. sort -fu."},
@@ -8198,6 +8198,53 @@ static void mode_to_rwx(int mode, char* buf) {
     buf[9] = '\0';
 }
 
+// Parse a POSIX symbolic mode spec against the current mode, writing the new low-12
+// bits to *out. Grammar: one or more comma-separated clauses, each `[ugoa]* [+-=] [rwx]*`.
+// No 'who' means all classes (ugo); '+' adds, '-' removes, '=' sets exactly for the named
+// classes (setuid/sticky high bits are preserved — who never exceeds 0777). Returns 0 on
+// success, -1 on any syntax error (incl. a leading digit, which is an octal spec, not
+// symbolic). This is what people actually type — `chmod +x s`, `chmod -w f`, `chmod go-rwx f`,
+// `chmod a=r f`, `chmod u+w,go-w f`; `-w`/`+w` drive the existing owner-write enforcement in
+// vfs_write_file directly. Pure — pinned by chmod_selftest.
+static int chmod_parse_symbolic(int cur, const char* s, int* out) {
+    if (!s || !*s) return -1;
+    if (*s >= '0' && *s <= '9') return -1;      // octal spec, not symbolic
+    int mode = cur & 07777;
+    const char* p = s;
+    for (;;) {
+        int who = 0, who_given = 0;
+        while (*p == 'u' || *p == 'g' || *p == 'o' || *p == 'a') {
+            who_given = 1;
+            if      (*p == 'u') who |= 0700;
+            else if (*p == 'g') who |= 0070;
+            else if (*p == 'o') who |= 0007;
+            else                who |= 0777;    // 'a'
+            p++;
+        }
+        if (!who_given) who = 0777;             // no who => all classes
+        char op = *p;
+        if (op != '+' && op != '-' && op != '=') return -1;
+        p++;
+        int perm = 0;
+        while (*p == 'r' || *p == 'w' || *p == 'x') {
+            if      (*p == 'r') perm |= 0444;
+            else if (*p == 'w') perm |= 0222;
+            else                perm |= 0111;   // 'x'
+            p++;
+        }
+        int bits = perm & who;                  // the bits this clause actually touches
+        if      (op == '+') mode |= bits;
+        else if (op == '-') mode &= ~bits;
+        else                mode = (mode & ~who) | bits;   // '=' sets the named classes exactly
+        if (*p == '\0') break;
+        if (*p != ',')  return -1;              // junk between clauses
+        p++;
+        if (*p == '\0') return -1;              // trailing comma
+    }
+    *out = mode;
+    return 0;
+}
+
 int chmod_selftest(void) {
     if (chmod_parse_octal("644")   != 0644) return 1;
     if (chmod_parse_octal("0755")  != 0755) return 2;
@@ -8211,13 +8258,36 @@ int chmod_selftest(void) {
     mode_to_rwx(0755, b); if (strcmp(b, "rwxr-xr-x")) return 9;
     mode_to_rwx(0444, b); if (strcmp(b, "r--r--r--")) return 10;
     mode_to_rwx(0777, b); if (strcmp(b, "rwxrwxrwx")) return 11;
+    // symbolic modes (the daily-use form): add / remove / set, who-classes, comma clauses
+    int nm;
+    if (chmod_parse_symbolic(0644, "+x",       &nm) != 0 || nm != 0755) return 12;  // add x to all
+    if (chmod_parse_symbolic(0644, "-w",       &nm) != 0 || nm != 0444) return 13;  // -> read-only
+    if (chmod_parse_symbolic(0444, "u+w",      &nm) != 0 || nm != 0644) return 14;  // re-enable owner write
+    if (chmod_parse_symbolic(0644, "go-r",     &nm) != 0 || nm != 0600) return 15;  // strip group/other read
+    if (chmod_parse_symbolic(0755, "a=r",      &nm) != 0 || nm != 0444) return 16;  // set exactly r
+    if (chmod_parse_symbolic(0666, "u+w,go-w", &nm) != 0 || nm != 0644) return 17;  // two clauses
+    if (chmod_parse_symbolic(0644, "u=rx",     &nm) != 0 || nm != 0544) return 18;  // owner exactly r-x
+    if (chmod_parse_symbolic(0644, "+",        &nm) != 0 || nm != 0644) return 19;  // empty perms = no-op
+    if (chmod_parse_symbolic(0644, "644",      &nm) != -1)              return 20;  // digit => not symbolic
+    if (chmod_parse_symbolic(0644, "z+x",      &nm) != -1)              return 21;  // bad who
+    if (chmod_parse_symbolic(0644, "u",        &nm) != -1)              return 22;  // missing operator
+    if (chmod_parse_symbolic(0644, "+q",       &nm) != -1)              return 23;  // bad perm char
+    if (chmod_parse_symbolic(0644, "u+w,",     &nm) != -1)              return 24;  // trailing comma
+    if (chmod_parse_symbolic(0644, "",         &nm) != -1)              return 25;  // empty spec
     return 0;
 }
 
 static void cmd_chmod(int argc, char** argv) {
-    if (argc < 3) { printf("Usage: chmod <octal> <file>\n"); return; }
-    int m = chmod_parse_octal(argv[1]);
-    if (m < 0) { printf("chmod: invalid mode '%s'\n", argv[1]); return; }
+    if (argc < 3) { printf("Usage: chmod <octal|symbolic> <file>  (e.g. 644, +x, u+w, go-rwx)\n"); return; }
+    int m;
+    if (argv[1][0] >= '0' && argv[1][0] <= '9') {       // octal: 644, 0755
+        m = chmod_parse_octal(argv[1]);
+        if (m < 0) { printf("chmod: invalid mode '%s'\n", argv[1]); return; }
+    } else {                                            // symbolic: +x, u+w, go-rwx, a=r (needs the current mode)
+        int cur = vfs_getmode(argv[2]);
+        if (cur < 0) { printf("chmod: cannot access '%s'\n", argv[2]); return; }
+        if (chmod_parse_symbolic(cur, argv[1], &m) != 0) { printf("chmod: invalid mode '%s'\n", argv[1]); return; }
+    }
     if (vfs_chmod(argv[2], (uint16_t)m) != 0) { printf("chmod: cannot access '%s'\n", argv[2]); return; }
     char b[10]; mode_to_rwx(m, b);
     printf("mode of '%s' -> %s (%o)\n", argv[2], b, (unsigned)m);
@@ -10662,6 +10732,19 @@ int vsnprintf(char *buf, size_t size, const char *fmt, va_list args) {
                 if (val == 0) tmp[ti++] = '0';
                 else { char rev[24]; int ri = 0; unsigned long v = val;
                        while (v) { rev[ri++] = (char)('0' + (int)(v % 10)); v /= 10; }
+                       while (ri) tmp[ti++] = rev[--ri]; }
+                tmp[ti] = '\0';
+                if (width > ti) { int pad = width - ti; while (pad-- > 0 && written < (int)size - 1) { *p++ = '0'; written++; } }
+                char *t = tmp;
+                while (*t && written < (int)size - 1) { *p++ = *t++; written++; }
+                fmt++;
+            } else if (*fmt == 'o') {
+                unsigned long val = long_flag ? va_arg(args, unsigned long) : (unsigned long)va_arg(args, unsigned int);
+                // 64-bit-safe octal + width zero-padding (mirrors %u; no leading-0 prefix).
+                char tmp[24]; int ti = 0;
+                if (val == 0) tmp[ti++] = '0';
+                else { char rev[24]; int ri = 0; unsigned long v = val;
+                       while (v) { rev[ri++] = (char)('0' + (int)(v & 7)); v >>= 3; }
                        while (ri) tmp[ti++] = rev[--ri]; }
                 tmp[ti] = '\0';
                 if (width > ti) { int pad = width - ti; while (pad-- > 0 && written < (int)size - 1) { *p++ = '0'; written++; } }
