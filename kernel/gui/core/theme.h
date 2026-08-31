@@ -22,9 +22,18 @@
  * {130,90,210}. Keep any new GUI colour as a role here, not a fresh literal.
  * ========================================================================== */
 
-/* --- Brand accent -------------------------------------------------------- */
-#define THEME_ACCENT        fb_rgb(130,  90, 210)  /* brand purple ("Morado") */
-#define THEME_ACCENT_DIM    fb_rgb( 92,  64, 150)  /* pressed / darker accent  */
+/* --- Brand accent (RUNTIME-THEMEABLE) ------------------------------------
+ * The accent is the one colour the desktop rices on: a single /etc/nyx.conf
+ * `accent = <name>` retints every title bar, the taskbar, the Start menu and the
+ * tray pop-ups at once (v6.5.28). So THESE TWO are runtime variables, set by
+ * apply_nyx_config() from the chosen accent colour; the default is the brand
+ * purple "Morado" {130,90,210} — identical to the old constant, so an unconfigured
+ * desktop is byte-for-byte unchanged. Every other role below stays a compile-time
+ * macro; call sites are untouched (THEME_ACCENT still reads as a colour value). */
+extern uint32_t g_theme_accent;      /* runtime UI accent (nyx.conf `accent`)      */
+extern uint32_t g_theme_accent_dim;  /* derived darker shade (pressed / frame lo)  */
+#define THEME_ACCENT        (g_theme_accent)
+#define THEME_ACCENT_DIM    (g_theme_accent_dim)
 #define THEME_ON_ACCENT     fb_rgb(255, 255, 255)  /* text/icons on an accent fill */
 
 /* --- Surfaces ------------------------------------------------------------ */

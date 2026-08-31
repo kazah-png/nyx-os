@@ -682,6 +682,7 @@ void init_vfs(void) {
         "# NyxOS desktop config -- rice it here.\n"
         "# wallpaper: Limpio Nightfall Plano Estrellas Meteoros Aurora Nebula Luces Ondas Astral Lluvia Cordillera\n"
         "wallpaper = Nightfall\n"
+        "# accent tints the wallpaper AND the whole UI (title bars, taskbar, menus, pop-ups)\n"
         "# accent: Morado Azul Turquesa Verde Lima Oro Naranja Rojo Rosa Pizarra Carbon\n"
         "accent = Morado\n";
     int cfd = vfs_open("/etc/nyx.conf", 1, 0644);

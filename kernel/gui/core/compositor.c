@@ -288,6 +288,23 @@ static uint32_t col_darken(uint32_t c, int pct) {
     return fb_rgb(r - r * pct / 100, g - g * pct / 100, b - b * pct / 100);
 }
 
+// The runtime UI accent (declared in theme.h; THEME_ACCENT/THEME_ACCENT_DIM read
+// these). Default = brand purple "Morado" {130,90,210}; apply_nyx_config() sets it
+// from /etc/nyx.conf so a single `accent = <name>` retints the whole desktop chrome.
+uint32_t g_theme_accent     = 0;   // set at desktop start (theme_set_accent); 0 until then
+uint32_t g_theme_accent_dim = 0;
+// Set the UI accent and derive the darker "pressed / frame-lo" shade from it, so every
+// scheme keeps the same light→dark relationship the purple had (28% ≈ the old 130,90,210
+// → 92,64,150 pair). Pure aside from the two globals it writes.
+static void theme_set_accent(uint32_t rgb) {
+    g_theme_accent     = rgb;
+    g_theme_accent_dim = col_darken(rgb, 28);
+    // The focused title-bar fill is cached in title_active (set once at compositor_init,
+    // before the config is read); keep it in sync so the whole bar — not just the accent
+    // frame border, which reads THEME_ACCENT live — follows the runtime accent.
+    title_active = rgb;   // == THEME_TITLE_ACTIVE (THEME_ACCENT); title_inactive stays a fixed grey
+}
+
 // A button filled with the same top-lit vertical gradient the title bars use,
 // centred on `base` (±amt), with a transparent-background label so the text sits
 // directly on the gradient. Used for the taskbar's Menu button and window tabs.
@@ -3530,6 +3547,7 @@ static void draw_desktop_icons(void) {
 // the desktop always comes up. Currently drives the wallpaper style + accent color; future
 // keys (font, taskbar, gaps…) hang off the same parser.
 static void apply_nyx_config(void) {
+    theme_set_accent(fb_rgb(130, 90, 210));     // Morado default UI accent (may be overridden below)
     int fd = vfs_open("/etc/nyx.conf", 0, 0);   // O_RDONLY; -1 if absent
     if (fd < 0) return;
     static char buf[2048];
@@ -3544,7 +3562,10 @@ static void apply_nyx_config(void) {
     }
     if (nyxconf_get(buf, "accent", val, sizeof val)) {
         int c = wallpaper_color_from_name(val);
-        if (c >= 0) wallpaper_set_color(c);
+        if (c >= 0) {
+            wallpaper_set_color(c);                 // the wallpaper base color…
+            theme_set_accent(wallpaper_base_color()); // …AND the whole UI chrome, cohesively
+        }
     }
 }
 
