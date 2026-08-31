@@ -515,6 +515,19 @@ format-spec lowerings (`__nyx_fmt_hex`/`__nyx_fmt_num` — fragment
 records grew to carry the parsed width/zero/hex values), and the
 unary `!` (which had never had a rendering: the operator table was
 built for binary diagnostics). `cmp`-verified by suite stage [8d].
-Rung-3 territory, stated: the match switch lowering (`__mN`),
-defer's braced `__ret` form, `?`'s `gen_try`, method bodies, and
-the own auto-drop calls — the last eight examples.
+
+**Rung 3 holds EIGHTEEN: the match switch and methods landed.**
+Both match forms emit ncc's exact lowering — the statement form's
+subject-once temp (`__mN`), the tag switch with case numbers in
+declared-variant order, binds as typed locals initialized from the
+payload fields; and the expression forms' zero-initialized
+`__mresN` temp (the switch is exhaustive — the store is
+deliberately dead), consumed after the switch so an arm bind may
+shadow the target. Methods came in the same climb: the `static
+Type_m(Type self, ...)` prototypes after the function prototypes,
+the definitions BEFORE the function definitions (ncc's order), and
+the call-site rewrite `recv.m(a)` → `Type_m(recv, a)` on the
+receiver's inferred type. enums, matchexpr, ntokens and methods
+joined the byte-exact list. Rung-4 territory, stated: defer's
+braced `__ret` form, `?`'s `gen_try`, and the own auto-drop calls
+— the last four examples.

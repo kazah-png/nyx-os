@@ -3809,6 +3809,8 @@ fn efsig(p: *u8, st: *i64, fi: i64) {
 
 fn eprotos(p: *u8, st: *i64) {
     ft := st[37] as *i64;
+    ma := st[53] as *i64;
+    al := st[35] as *i64;
     mut i := 0;
     mut anyf := 0;
     while i < st[38] {
@@ -3819,7 +3821,81 @@ fn eprotos(p: *u8, st: *i64) {
         }
         i = i + 1;
     }
+    mut mi := 0;
+    while mi < st[54] {                    // method prototypes (static,
+        emsig(p, st, mi);                  // self leads the params)
+        put(";\n");
+        mi = mi + 1;
+    }
     if anyf == 1 || st[54] > 0 { put("\n"); }
+}
+
+// One method signature: static RET Type_m(Type self, params...).
+fn emsig(p: *u8, st: *i64, mi: i64) {
+    ma := st[53] as *i64;
+    al := st[35] as *i64;
+    rt := mrty(st, mi);
+    nvr := rt.l == 5 && eq5(p, rt.s, 110, 101, 118, 101, 114);
+    put("static ");
+    if rt.l == 0 || nvr { put("void"); }
+    if rt.l > 0 && !nvr { ety(p, st, rt); }
+    put(" ");
+    put_span(p, ma[mi * 8], ma[mi * 8 + 1]);
+    put("_");
+    put_span(p, ma[mi * 8 + 2], ma[mi * 8 + 3]);
+    put("(");
+    put_span(p, ma[mi * 8], ma[mi * 8 + 1]);
+    put(" self");
+    mut q := 0;
+    while q < ma[mi * 8 + 4] {
+        r := ma[mi * 8 + 5] + q * 6;
+        pt2 := T{ pt: al[r + 2], us: al[r + 3], s: al[r + 4], l: al[r + 5] };
+        put(", ");
+        ety(p, st, pt2);
+        put(" ");
+        put_span(p, al[r], al[r + 1]);
+        q = q + 1;
+    }
+    put(")");
+}
+
+// One method definition: self seeded first, then the params, then the
+// body (a returning tail behaves as in a function).
+fn gmeth(p: *u8, st: *i64, mi: i64) {
+    ma := st[53] as *i64;
+    al := st[35] as *i64;
+    st[40] = 0;
+    st[57] = 0;                            // ncc: IID = 0 per method
+    crt := mrty(st, mi);
+    st[45] = crt.pt;
+    st[46] = crt.us;
+    st[47] = crt.s;
+    st[48] = crt.l;
+    selfty := T{ pt: 0, us: 0, s: ma[mi * 8], l: ma[mi * 8 + 1] };
+    vadd(st, st[44] + 24, 4, 0, selfty);   // self, the interned span
+    mut q := 0;
+    while q < ma[mi * 8 + 4] {
+        r := ma[mi * 8 + 5] + q * 6;
+        pt2 := T{ pt: al[r + 2], us: al[r + 3], s: al[r + 4], l: al[r + 5] };
+        vadd(st, al[r], al[r + 1], 0, pt2);
+        q = q + 1;
+    }
+    emsig(p, st, mi);
+    put(" ");
+    gblock(p, st, ma[mi * 8 + 6], 0, 1);
+    put("\n\n");
+}
+
+// A zero value for a type (ncc's emit_zero): aggregates and str get
+// the C compound zero, everything else a plain 0. Dead stores only —
+// the switches that follow are exhaustive.
+fn ezero(p: *u8, st: *i64, t: T) {
+    if t.pt == 0 && t.l > 0 {
+        if span_is(p, t, st[44] + 7, 3) { put("\{0\}"); return; }
+        if sfind(p, st, t.s, t.l) >= 0 { put("\{0\}"); return; }
+        if efind(p, st, t.s, t.l) >= 0 { put("\{0\}"); return; }
+    }
+    put("0");
 }
 
 // Interpolation preludes (ncc's gen_preludes): hoisted buffer +
@@ -3941,6 +4017,28 @@ fn gexpr(p: *u8, st: *i64, i: i64) {
         return;
     }
     if k == 6 {
+        cal := nd[i * 8 + 1];              // recv.m(a) -> Type_m(recv, a)
+        if nd[cal * 8] == 7 {              // (static dispatch on the
+            rt9 := cinfer(p, st, nd[cal * 8 + 1]);     // receiver's type)
+            if rt9.pt == 0 && rt9.l > 0 {
+                mi9 := mfind(p, st, rt9.s, rt9.l, nd[cal * 8 + 5], nd[cal * 8 + 6]);
+                if mi9 >= 0 {
+                    put_span(p, rt9.s, rt9.l);
+                    put("_");
+                    put_span(p, nd[cal * 8 + 5], nd[cal * 8 + 6]);
+                    put("(");
+                    gexpr(p, st, nd[cal * 8 + 1]);
+                    mut q9 := 0;
+                    while q9 < nd[i * 8 + 3] {
+                        put(", ");
+                        gexpr(p, st, al[nd[i * 8 + 2] + q9]);
+                        q9 = q9 + 1;
+                    }
+                    put(")");
+                    return;
+                }
+            }
+        }
         gexpr(p, st, nd[i * 8 + 1]);
         put("(");
         mut q := 0;
@@ -4174,6 +4272,162 @@ fn gstmt(p: *u8, st: *i64, i: i64, d: i64) {
         put("\}\n");
         return;
     }
+    if k == 29 {                           // match: subject once into a
+        al := st[35] as *i64;              // temp, switch on the tag,
+        ea := st[51] as *i64;              // binds become typed locals
+        mid := st[57];
+        st[57] = st[57] + 1;
+        sty := cinfer(p, st, nd[i * 8 + 1]);
+        ei := efind(p, st, sty.s, sty.l);
+        hd := nd[i * 8 + 2];
+        na := nd[i * 8 + 3];
+        armb := al[hd + 6];
+        vbase := ea[ei * 4 + 3];
+        mt := al[hd];
+        if mt == 0 {                       // the statement form
+            eind(d);
+            put("\{\n");
+            gpre(p, st, nd[i * 8 + 1], d + 1);
+            eind(d + 1);
+            put_span(p, ea[ei * 4], ea[ei * 4 + 1]);
+            put(" __m{mid} = ");
+            gexpr(p, st, nd[i * 8 + 1]);
+            put(";\n");
+            eind(d + 1);
+            put("switch (__m{mid}.tag) \{\n");
+            mut a := 0;
+            while a < na {
+                vi := vfindx(p, st, ei, al[armb + a * 6], al[armb + a * 6 + 1]);
+                eind(d + 1);
+                put("case {vi}: \{\n");
+                vsave := st[40];
+                fst := al[vbase + vi * 4 + 3];
+                bst := al[armb + a * 6 + 3];
+                mut b := 0;
+                while b < al[armb + a * 6 + 2] {
+                    r := fst + b * 6;
+                    bt := T{ pt: al[r + 2], us: al[r + 3], s: al[r + 4], l: al[r + 5] };
+                    eind(d + 2);
+                    ety(p, st, bt);
+                    put(" ");
+                    put_span(p, al[bst + b * 2], al[bst + b * 2 + 1]);
+                    put(" = __m{mid}.u.");
+                    put_span(p, al[armb + a * 6], al[armb + a * 6 + 1]);
+                    put(".");
+                    put_span(p, al[r], al[r + 1]);
+                    put(";\n");
+                    vadd(st, al[bst + b * 2], al[bst + b * 2 + 1], 0, bt);
+                    b = b + 1;
+                }
+                eind(d + 2);
+                gblock(p, st, al[armb + a * 6 + 4], d + 2, 0);
+                put("\n");
+                eind(d + 2);
+                put("break;\n");
+                eind(d + 1);
+                put("\}\n");
+                st[40] = vsave;
+                a = a + 1;
+            }
+            eind(d + 1);
+            put("\}\n");
+            eind(d);
+            put("\}\n");
+            return;
+        }
+        vs0 := st[40];                     // the expression forms: infer
+        vi0 := vfindx(p, st, ei, al[armb], al[armb + 1]);   // res from
+        mseed(p, st, ei, vi0, al[armb + 3], al[armb + 2]);  // arm 0 with
+        mut res := cinfer(p, st, al[armb + 4]);             // its binds
+        st[40] = vs0;
+        mut rty := res;
+        if mt == 3 { rty = T{ pt: st[45], us: st[46], s: st[47], l: st[48] }; }
+        if mt == 1 {                       // x := match: the zero-init
+            eind(d);                       // dead store (the Err... the
+            ety(p, st, res);               // switch is exhaustive)
+            put(" ");
+            put_span(p, al[hd + 3], al[hd + 4]);
+            put(" = ");
+            ezero(p, st, res);
+            put(";\n");
+        }
+        eind(d);
+        put("\{\n");
+        gpre(p, st, nd[i * 8 + 1], d + 1);
+        eind(d + 1);
+        put_span(p, ea[ei * 4], ea[ei * 4 + 1]);
+        put(" __m{mid} = ");
+        gexpr(p, st, nd[i * 8 + 1]);
+        put(";\n");
+        eind(d + 1);
+        ety(p, st, rty);
+        put(" __mres{mid} = ");
+        ezero(p, st, rty);
+        put(";\n");
+        eind(d + 1);
+        put("switch (__m{mid}.tag) \{\n");
+        mut a2 := 0;
+        while a2 < na {
+            vi2 := vfindx(p, st, ei, al[armb + a2 * 6], al[armb + a2 * 6 + 1]);
+            eind(d + 1);
+            put("case {vi2}: \{\n");
+            vsave3 := st[40];
+            fst2 := al[vbase + vi2 * 4 + 3];
+            bst2 := al[armb + a2 * 6 + 3];
+            mut b2 := 0;
+            while b2 < al[armb + a2 * 6 + 2] {
+                r2 := fst2 + b2 * 6;
+                bt2 := T{ pt: al[r2 + 2], us: al[r2 + 3], s: al[r2 + 4], l: al[r2 + 5] };
+                eind(d + 2);
+                ety(p, st, bt2);
+                put(" ");
+                put_span(p, al[bst2 + b2 * 2], al[bst2 + b2 * 2 + 1]);
+                put(" = __m{mid}.u.");
+                put_span(p, al[armb + a2 * 6], al[armb + a2 * 6 + 1]);
+                put(".");
+                put_span(p, al[r2], al[r2 + 1]);
+                put(";\n");
+                vadd(st, al[bst2 + b2 * 2], al[bst2 + b2 * 2 + 1], 0, bt2);
+                b2 = b2 + 1;
+            }
+            gpre(p, st, al[armb + a2 * 6 + 4], d + 2);
+            eind(d + 2);
+            put("__mres{mid} = ");
+            gexpr(p, st, al[armb + a2 * 6 + 4]);
+            put(";\n");
+            eind(d + 2);
+            put("break;\n");
+            eind(d + 1);
+            put("\}\n");
+            st[40] = vsave3;
+            a2 = a2 + 1;
+        }
+        eind(d + 1);
+        put("\}\n");
+        if mt == 1 {
+            eind(d + 1);
+            put_span(p, al[hd + 3], al[hd + 4]);
+            put(" = __mres{mid};\n");
+        }
+        if mt == 2 {                       // lhs = match (S_ASSIGN's shape)
+            eind(d + 1);
+            gexpr(p, st, al[hd + 1]);
+            if al[hd + 2] == 1 { put(" = "); }
+            if al[hd + 2] == 2 { put(" += "); }
+            if al[hd + 2] == 3 { put(" -= "); }
+            put("__mres{mid};\n");
+        }
+        if mt == 3 {                       // return match: the value is
+            eind(d + 1);                   // computed before any defers
+            put("return __mres{mid};\n");  // (none registered yet —
+        }                                  // defer emission is rung 4)
+        eind(d);
+        put("\}\n");
+        if mt == 1 {
+            vadd(st, al[hd + 3], al[hd + 4], al[hd + 5], res);
+        }
+        return;
+    }
 }
 
 // One block (ncc's gen_block, the rung-1 shape: no defers/drops yet).
@@ -4315,6 +4569,11 @@ fn egen(p: *u8, st: *i64) {
     eenums(p, st);
     exfns(p, st);
     eprotos(p, st);
+    mut mi := 0;
+    while mi < st[54] {                    // method bodies first (ncc's
+        gmeth(p, st, mi);                  // gen_program order)
+        mi = mi + 1;
+    }
     ft := st[37] as *i64;
     mut i := 0;
     while i < st[38] {

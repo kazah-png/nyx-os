@@ -1118,6 +1118,34 @@ generator compiled inside NyxOS minutes earlier by the compiler it
 mirrors, identical to that compiler's output for the same source.
 The generator now emits inside the OS it was written for — and
 the batch that proved it also filed a kernel bug on the way.
+(The main line fixed it within hours: `>` and `>>` redirect an
+exec'd binary's stdout as of v6.5.29.)
+
+### gen.n rung 3 — the match switch, and methods with it
+
+The heaviest lowering the language owns went down in one climb.
+A match statement becomes ncc's exact shape: the subject evaluated
+once into `__mN`, a switch on its tag with the case numbers in
+declared-variant order regardless of arm order, and each arm's
+binds materialized as typed locals read from the payload fields.
+The expression forms add the second temp: `__mresN`, declared with
+a deliberately dead zero-store (the switch is exhaustive — C's
+flow analysis just can't know it), assigned in every arm, and
+consumed only after the switch closes, which is precisely why an
+arm bind may shadow the very name being bound. `return match`
+computes the value first and returns it after the (still
+unregistered) defers — the three match examples carry none, so
+the emitted shape is ncc's to the byte.
+
+Methods rode the same hour: prototypes after the function
+prototypes, definitions before the function definitions, `self`
+seeded first into the emitter's own name table — the interned
+span trick from the checker serving emission now — and every
+`recv.m(a)` call site rewritten to `Type_m(recv, a)` on the
+receiver's inferred type. Eighteen of twenty-two byte-exact; what
+remains is defer's braced `__ret`, try's propagation form, and
+the own auto-drops — four examples, three lowerings, and then
+the generator holds the directory.
 
 And the hardest lexer feature landed: **interpolation**. A toy string
 containing a brace lexes as segments — HEAD before the first hole,
