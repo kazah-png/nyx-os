@@ -24,6 +24,9 @@ typedef struct {
     int  repl_find_len;
     char repl_with[64];        // the replacement text
     int  repl_with_len;
+    int  goto_active;          // Ctrl+G goto-line mode: capturing a target line number
+    char goto_buf[12];         // the digits typed in goto mode
+    int  goto_len;
 } editor_win_t;
 
 editor_win_t* editor_create_ctx(void);
@@ -33,5 +36,9 @@ void editor_win_key(window_t* win, int key);
 void editor_load_file(editor_win_t* ed, const char* path);  // load `path` into this editor
 int  editor_find_selftest(void);                            // KAT for the Ctrl+F search core (editor_win.c)
 int  editor_replace_selftest(void);                         // KAT for the Ctrl+R replace core (editor_win.c)
+// Resolve a Ctrl+G goto-line entry to a 0-based line index, clamped to [0, line_count-1];
+// returns -1 for an empty/non-numeric entry (no jump). Pure; pinned by editor_goto_selftest.
+int  editor_goto_target(const char* buf, int line_count);
+int  editor_goto_selftest(void);                            // KAT for the Ctrl+G goto-line core (editor_win.c)
 
 #endif

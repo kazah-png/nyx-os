@@ -420,6 +420,35 @@ int editor_replace_selftest(void) {
     return 0;
 }
 
+// Ctrl+G goto-line core: parse a decimal (1-based) line number and clamp it to a valid 0-based
+// cursor row. Empty or non-numeric -> -1 (no jump). Saturates so a huge entry can't overflow.
+int editor_goto_target(const char* buf, int line_count) {
+    if (!buf || !buf[0] || line_count < 1) return -1;
+    long n = 0;
+    for (const char* p = buf; *p; p++) {
+        if (*p < '0' || *p > '9') return -1;             // any non-digit cancels the jump
+        n = n * 10 + (*p - '0');
+        if (n > 1000000000L) n = 1000000000L;            // saturate well below overflow
+    }
+    if (n < 1) n = 1;                                    // "0" -> first line
+    if (n > line_count) n = line_count;                  // past EOF -> last line
+    return (int)(n - 1);                                 // 1-based entry -> 0-based row
+}
+
+// KAT for the goto-line core: in-range, both clamps, and the empty/non-numeric cancels.
+int editor_goto_selftest(void) {
+    if (editor_goto_target("50", 100)         != 49) return 1;
+    if (editor_goto_target("1", 100)          != 0)  return 2;
+    if (editor_goto_target("100", 100)        != 99) return 3;
+    if (editor_goto_target("999", 100)        != 99) return 4;   // past EOF -> last line
+    if (editor_goto_target("0", 100)          != 0)  return 5;   // 0 -> first line
+    if (editor_goto_target("", 100)           != -1) return 6;   // empty -> no jump
+    if (editor_goto_target("12x", 100)        != -1) return 7;   // non-numeric -> no jump
+    if (editor_goto_target("3", 1)            != 0)  return 8;   // single-line file
+    if (editor_goto_target("2000000000", 100) != 99) return 9;   // saturating huge -> last line
+    return 0;
+}
+
 void editor_win_key(window_t* win, int key) {
     editor_win_t* ed = (editor_win_t*)win->reserved;
     if (!ed) return;
@@ -428,7 +457,7 @@ void editor_win_key(window_t* win, int key) {
 
     // Ctrl+F — enter incremental find mode (type a pattern, Enter = jump to next match,
     // Enter again = keep advancing, Esc = back to editing).
-    if (key == 0x06 && !ed->repl_active) {
+    if (key == 0x06 && !ed->repl_active && !ed->goto_active) {
         ed->find_active = 1; ed->find_len = 0; ed->find_pat[0] = '\0';
         snprintf(ed->status, sizeof(ed->status), "Find: ");
         return;
@@ -463,6 +492,42 @@ void editor_win_key(window_t* win, int key) {
             snprintf(ed->status, sizeof(ed->status), "Find: %s", ed->find_pat);
         }
         return;                                     // swallow every other key while finding
+    }
+
+    // Ctrl+G — go to a line number. Pairs with the line-number gutter: type digits, Enter jumps
+    // (clamped to the file), Esc cancels. Handy for a long file instead of scrolling by hand.
+    if (key == 0x07 && !ed->repl_active) {
+        ed->goto_active = 1; ed->goto_len = 0; ed->goto_buf[0] = '\0';
+        snprintf(ed->status, sizeof(ed->status), "Go to line: ");
+        return;
+    }
+    if (ed->goto_active) {
+        if (key == 0x1B) {                          // Esc — cancel
+            ed->goto_active = 0; ed->status[0] = 0;
+            return;
+        }
+        if (key == '\r' || key == '\n') {           // Enter — jump
+            int row = editor_goto_target(ed->goto_buf, ed->line_count);
+            ed->goto_active = 0;
+            if (row < 0) { snprintf(ed->status, sizeof(ed->status), "Go to line: cancelled"); return; }
+            ed->cursor_y = row;
+            int llen = strlen(ed->lines[row]);
+            if (ed->cursor_x > llen) ed->cursor_x = llen;
+            editor_adjust_scroll(ed, win);
+            snprintf(ed->status, sizeof(ed->status), "Ln %d", row + 1);
+            return;
+        }
+        if (key == '\b') {                          // edit the number
+            if (ed->goto_len > 0) ed->goto_buf[--ed->goto_len] = '\0';
+            snprintf(ed->status, sizeof(ed->status), "Go to line: %s", ed->goto_buf);
+            return;
+        }
+        if (key >= '0' && key <= '9' && ed->goto_len < (int)sizeof(ed->goto_buf) - 1) {
+            ed->goto_buf[ed->goto_len++] = (char)key;
+            ed->goto_buf[ed->goto_len] = '\0';
+            snprintf(ed->status, sizeof(ed->status), "Go to line: %s", ed->goto_buf);
+        }
+        return;                                     // swallow every other key while in goto mode
     }
 
     // Ctrl+R — find-and-replace. Phase 1: type the text to find, Enter. Phase 2: type the
