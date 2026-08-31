@@ -9376,6 +9376,29 @@ static void strings_emit_kat(const char* s, void* ctx) {
         strings_kat_out[strings_kat_n][i] = 0; strings_kat_n++;
     }
 }
+// KAT (`kstr`): the kernel's inline libc string primitives (kernel.h), previously unpinned.
+// Nails the strchr NUL-terminator case that used to deviate from the C standard + user/libc.c,
+// plus memmove overlap (both directions), strncpy padding/no-terminate, and strncmp ordering.
+static int kstr_selftest(void) {
+    const char* s = "hello";
+    if (strchr(s, 'e') != s + 1) return 1;                 // found mid-string
+    if (strchr(s, 'z') != NULL)  return 2;                 // absent -> NULL
+    if (strchr(s, '\0') != s + 5) return 3;                // NUL matches the terminator (the fix)
+    { char e[1] = {0}; if (strchr(e, '\0') != e) return 4; }  // empty string: terminator at [0]
+    // memmove must handle overlap: shift a buffer up (dest>src) and down (dest<src).
+    { char b[8] = "abcdef"; memmove(b + 1, b, 5); if (strncmp(b, "aabcde", 6) != 0) return 5; }
+    { char b[8] = "abcdef"; memmove(b, b + 1, 5); b[5] = 0; if (strncmp(b, "bcdef", 6) != 0) return 6; }
+    // strncpy pads with NUL when src is short, and does NOT terminate when src fills n.
+    { char d[6]; memset_asm(d, 'X', 6); strncpy(d, "ab", 5); if (d[0]!='a'||d[1]!='b'||d[2]||d[3]||d[4]) return 7; }
+    { char d[3]; strncpy(d, "abcdef", 3); if (d[0]!='a'||d[1]!='b'||d[2]!='c') return 8; }  // no NUL when full
+    // strncmp ordering + the n==0 short-circuit.
+    if (strncmp("abc", "abd", 2) != 0) return 9;
+    if (strncmp("abc", "abd", 3) >= 0) return 10;
+    if (strncmp("abd", "abc", 3) <= 0) return 11;
+    if (strncmp("abc", "abc", 0) != 0) return 12;
+    return 0;
+}
+
 static int strings_selftest(void) {
     static const uint8_t in[] = {
         0x00,0x01,'H','e','l','l','o',0x00,          // "Hello" (5>=4) -> emit
@@ -9578,6 +9601,7 @@ static void run_selftests(void) {
         {"factor",       factor_selftest},
         {"gcdlcm",       gcdlcm_selftest},
         {"strings",      strings_selftest},
+        {"kstr",         kstr_selftest},
         {"sha256sum",    sha256sum_selftest},
         {"hmac",         hmac_selftest},          {"encfile",       enc_selftest},
         {"shellvar",     shell_expand_selftest},

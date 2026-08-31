@@ -18,7 +18,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.5.14"
+#define KERNEL_VERSION "6.5.15"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -673,8 +673,11 @@ static inline int atoi(const char *s) {
     return sign * result;
 }
 static inline char *strchr(const char *s, int c) {
-    while (*s) { if (*s == (char)c) return (char*)s; s++; }
-    return NULL;
+    char ch = (char)c;
+    for (;; s++) {
+        if (*s == ch) return (char*)s;   // c == '\0' matches the terminating NUL (C standard);
+        if (!*s) return NULL;            // the old `while (*s)` returned NULL for c=='\0' — a
+    }                                    // deviation from strchr(3) and from user/libc.c's version.
 }
 char *strstr(const char *haystack, const char *needle);
 static inline char *strtok(char *str, const char *delim) {
