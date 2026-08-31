@@ -544,8 +544,24 @@ arm returns at once — the same value when the enums match, the
 payload rewrapped through `__eN` when they differ — defers before
 the return, and the Ok payload binds, assigns, or discards per the
 statement form. defer.n, results.n and fsio.n all byte-exact.
-What remains is ONE example: own.n — the auto-drop calls, which
-need the ownership state machine replayed on the emission walk.
+
+**Rung 5 closes it: ALL TWENTY-TWO — THE GENERATOR HOLDS THE
+WHOLE DIRECTORY.** The last construct was the own auto-drops, and
+they asked for something no earlier rung had needed: the emission
+walk REPLAYS the ownership state machine — parameters arrive HELD,
+births go LIVE, every consume point transfers (through a silent
+mover: the checker already proved every move legal, so the emit
+phase's transfers carry no diagnostics), and the `if`/`else`
+branch discipline is replayed too — snapshot, restore between
+arms, merge with the returning-arm exemption — because a drop's
+placement depends on which arm's exit state flows on. With the
+states correct, `gdrops` emits each destructor call exactly where
+ncc's `own_drops_emit` does: reverse birth order, after the defers
+at returns, at the scope's close otherwise, and a pending drop
+forces the braced `__ret` form just as a live defer does. Every
+example the language ships now emits byte-identical C — and the
+generator crossed ncc's function ceiling doing it (FNS 128→256,
+the second capacity the selfhost ladder has outgrown).
 
 Batch V53 carried the match switch to the target the same hour:
 matchexpr.n's 111 lines — the full `__mN`/`__mresN` lowering —

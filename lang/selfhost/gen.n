@@ -4033,6 +4033,7 @@ fn gexpr(p: *u8, st: *i64, i: i64) {
                     while q9 < nd[i * 8 + 3] {
                         put(", ");
                         gexpr(p, st, al[nd[i * 8 + 2] + q9]);
+                        gmove(p, st, al[nd[i * 8 + 2] + q9]);
                         q9 = q9 + 1;
                     }
                     put(")");
@@ -4046,7 +4047,8 @@ fn gexpr(p: *u8, st: *i64, i: i64) {
         while q < nd[i * 8 + 3] {
             if q > 0 { put(", "); }
             gexpr(p, st, al[nd[i * 8 + 2] + q]);
-            q = q + 1;
+            gmove(p, st, al[nd[i * 8 + 2] + q]);      // v0.17: passing
+            q = q + 1;                                // consumes
         }
         put(")");
         return;
@@ -4260,6 +4262,65 @@ fn gtry(p: *u8, st: *i64, i: i64, d: i64, form: i64) {
     }
 }
 
+// The emit walk's move point: state only, never a diagnostic — the
+// check phase already proved every consume legal, so this simply
+// mirrors own_move_expr's transfer (LIVE or HELD becomes MOVED).
+fn gmove(p: *u8, st: *i64, i: i64) {
+    if i == 0 { return; }
+    nd := st[33] as *i64;
+    if nd[i * 8] != 5 { return; }
+    v := vfind(p, st, nd[i * 8 + 5], nd[i * 8 + 6]);
+    if v < 0 { return; }
+    va := st[39] as *i64;
+    if va[v * 10 + 8] != 0 { va[v * 10 + 8] = 2; }
+}
+
+// Is any live binding waiting on an auto-drop? (ncc's
+// own_drops_pending — decides whether an exit needs the braced form.)
+fn gpend(p: *u8, st: *i64, from: i64) -> i64 {
+    va := st[39] as *i64;
+    sa := st[49] as *i64;
+    mut j := from;
+    while j < st[40] {
+        if va[j * 10 + 8] == 1 {
+            t := vty(st, j);
+            if t.pt == 0 && t.l > 0 {
+                si := sfind(p, st, t.s, t.l);
+                if si >= 0 && sa[si * 8 + 4] == 1 && sa[si * 8 + 6] > 0 { return 1; }
+            }
+        }
+        j = j + 1;
+    }
+    return 0;
+}
+
+// The auto-drop calls (ncc's own_drops_emit): every LIVE binding at
+// index >= from whose type carries a #[drop] destructor gets the call
+// emitted — reverse birth order, mirroring defer's LIFO — and becomes
+// MOVED, so a later drain never drops it twice.
+fn gdrops(p: *u8, st: *i64, from: i64, d: i64) {
+    va := st[39] as *i64;
+    sa := st[49] as *i64;
+    mut j := st[40] - 1;
+    while j >= from {
+        if va[j * 10 + 8] == 1 {
+            t := vty(st, j);
+            if t.pt == 0 && t.l > 0 {
+                si := sfind(p, st, t.s, t.l);
+                if si >= 0 && sa[si * 8 + 4] == 1 && sa[si * 8 + 6] > 0 {
+                    eind(d);
+                    put_span(p, sa[si * 8 + 5], sa[si * 8 + 6]);
+                    put("(");
+                    put_span(p, va[j * 10], va[j * 10 + 1]);
+                    put(");\n");
+                    va[j * 10 + 8] = 2;
+                }
+            }
+        }
+        j = j - 1;
+    }
+}
+
 // Deferred expressions, LIFO (ncc's gen_defers). The preludes run
 // at EMISSION time, so an interpolation inside a defer numbers its
 // temporaries at every exit it is emitted at — exactly ncc's
@@ -4277,6 +4338,7 @@ fn gdefs(p: *u8, st: *i64, d: i64) {
 }
 
 // One statement (ncc's gen_stmt, the rung-1 arms).
+#[caps(syscall)]
 fn gstmt(p: *u8, st: *i64, i: i64, d: i64) {
     nd := st[33] as *i64;
     k := nd[i * 8];
@@ -4293,7 +4355,12 @@ fn gstmt(p: *u8, st: *i64, i: i64, d: i64) {
         put(" = ");
         gexpr(p, st, nd[i * 8 + 1]);
         put(";\n");
+        gmove(p, st, nd[i * 8 + 1]);       // the init consumes its source
         vadd(st, nd[i * 8 + 5], nd[i * 8 + 6], nd[i * 8 + 3], rt);
+        if tyown(p, st, rt) {              // birth: LIVE until consumed
+            va6 := st[39] as *i64;         // or auto-dropped
+            va6[(st[40] - 1) * 10 + 8] = 1;
+        }
         return;
     }
     if k == 21 {
@@ -4305,6 +4372,7 @@ fn gstmt(p: *u8, st: *i64, i: i64, d: i64) {
         if nd[i * 8 + 3] == 2 { put(" -= "); }
         gexpr(p, st, nd[i * 8 + 2]);
         put(";\n");
+        gmove(p, st, nd[i * 8 + 2]);       // the assignment consumes
         return;
     }
     if k == 28 {                           // defer: register only — the
@@ -4314,25 +4382,29 @@ fn gstmt(p: *u8, st: *i64, i: i64, d: i64) {
         return;
     }
     if k == 22 {
-        if st[59] > 0 && nd[i * 8 + 1] > 0 {   // braced: the value is
-            eind(d);                       // computed BEFORE the defers
-            put("\{\n");                   // run (a defer cannot change
-            gpre(p, st, nd[i * 8 + 1], d + 1); // what gets returned)
-            eind(d + 1);
-            rt8 := cinfer(p, st, nd[i * 8 + 1]);
+        gmove(p, st, nd[i * 8 + 1]);       // returning consumes — a
+        pnd := gpend(p, st, 0);            // returned own must not drop
+        if (st[59] > 0 || pnd == 1) && nd[i * 8 + 1] > 0 {
+            eind(d);                       // braced: the value computes
+            put("\{\n");                   // BEFORE the defers run, and
+            gpre(p, st, nd[i * 8 + 1], d + 1);  // the drops run after
+            eind(d + 1);                   // the defers (v0.19 keeps
+            rt8 := cinfer(p, st, nd[i * 8 + 1]);   // defer's timing)
             ety(p, st, rt8);
             put(" __ret = ");
             gexpr(p, st, nd[i * 8 + 1]);
             put(";\n");
             gdefs(p, st, d + 1);
+            gdrops(p, st, 0, d + 1);
             eind(d + 1);
             put("return __ret;\n");
             eind(d);
             put("\}\n");
             return;
         }
-        if st[59] > 0 {                    // void return with defers
-            gdefs(p, st, d);
+        if st[59] > 0 || pnd == 1 {        // void return with defers
+            gdefs(p, st, d);               // and/or pending drops
+            gdrops(p, st, 0, d);
             eind(d);
             put("return;\n");
             return;
@@ -4366,23 +4438,47 @@ fn gstmt(p: *u8, st: *i64, i: i64, d: i64) {
         put("\n");
         return;
     }
-    if k == 25 {                           // if / else (an else-if CHAIN
-        gpre(p, st, nd[i * 8 + 1], d);     // is rung-3 territory)
+    if k == 25 {                           // if / else — the emit walk
+        gpre(p, st, nd[i * 8 + 1], d);     // replays the checker's v0.18
+        n0 := st[40];                      // branch-aware states (each
+        sb := sys_sbrk((n0 * 2 + 1) * 8) as *i64;   // arm from pre-if;
+        va7 := st[39] as *i64;             // a returning arm never
+        mut j := 0;                        // reaches the merge)
+        while j < n0 {
+            sb[j] = va7[j * 10 + 8];
+            j = j + 1;
+        }
         eind(d);
         put("if (");
         gexpr(p, st, nd[i * 8 + 1]);
         put(") ");
         gblock(p, st, nd[i * 8 + 2], d, 0);
+        mut j2 := 0;
+        while j2 < n0 {
+            sb[n0 + j2] = va7[j2 * 10 + 8];
+            va7[j2 * 10 + 8] = sb[j2];
+            j2 = j2 + 1;
+        }
         els := nd[i * 8 + 3];
+        mut er := 0;
         if els > 0 && nd[els * 8] == 40 {
             put(" else ");
             gblock(p, st, els, d, 0);
+            er = brret(st, els);
         }
         if els > 0 && nd[els * 8] == 25 {  // else-if: ncc's parser wraps
             put(" else \{\n");             // the chained if in a BLOCK,
             gstmt(p, st, els, d + 1);      // so the emitter synthesizes
             eind(d);                       // those braces
             put("\}");
+        }
+        tr := brret(st, nd[i * 8 + 2]);
+        mut j3 := 0;
+        while j3 < n0 {                    // the merge, states only: a
+            tv := sb[n0 + j3];             // returning arm's exit never
+            if tr == 1 && er == 1 { va7[j3 * 10 + 8] = tv; }   // flows on
+            if tr == 0 && er == 1 { va7[j3 * 10 + 8] = tv; }
+            j3 = j3 + 1;
         }
         put("\n");
         return;
@@ -4593,19 +4689,22 @@ fn gblock(p: *u8, st: *i64, b: i64, d: i64, ftail: i64) {
         nvr := rt.l == 5 && eq5(p, rt.s, 110, 101, 118, 101, 114);
         mut rets := 0;
         if ftail == 1 && rt.l > 0 && !nvr { rets = 1; }
-        if rets == 1 && st[59] > 0 {       // tail value, then defers,
-            gpre(p, st, t, d + 1);         // then return (ncc's braced
-            eind(d + 1);                   // tail — the block's own
-            tt := cinfer(p, st, t);        // braces serve)
-            ety(p, st, tt);
+        gmove(p, st, t);                   // ncc: the tail consumes, at
+        pnd2 := gpend(p, st, 0);           // line 0 — BEFORE pending is
+        if rets == 1 && (st[59] > 0 || pnd2 == 1) {   // judged
+            gpre(p, st, t, d + 1);         // tail value, then defers,
+            eind(d + 1);                   // then drops, then return
+            tt := cinfer(p, st, t);        // (the block's own braces
+            ety(p, st, tt);                // serve)
             put(" __ret = ");
             gexpr(p, st, t);
             put(";\n");
             gdefs(p, st, d + 1);
+            gdrops(p, st, 0, d + 1);
             eind(d + 1);
             put("return __ret;\n");
         }
-        if rets == 1 && st[59] == 0 {
+        if rets == 1 && st[59] == 0 && pnd2 == 0 {
             gpre(p, st, t, d + 1);
             eind(d + 1);
             put("return ");
@@ -4625,7 +4724,10 @@ fn gblock(p: *u8, st: *i64, b: i64, d: i64, ftail: i64) {
         nvr2 := rt2.l == 5 && eq5(p, rt2.s, 110, 101, 118, 101, 114);
         if rt2.l == 0 || nvr2 { gdefs(p, st, d + 1); }   // void fall-off
     }
-    eind(d);
+    mut fr0 := vsave;                      // v0.19 auto-drops close the
+    if ftail == 1 { fr0 = 0; }             // scope: the whole frame at a
+    gdrops(p, st, fr0, d + 1);             // function end, this block's
+    eind(d);                               // own births otherwise
     put("\}");
     st[40] = vsave;
 }
@@ -4647,6 +4749,10 @@ fn gfn(p: *u8, st: *i64, fi: i64) {
         r := ft[fi * 8 + 5] + q * 6;
         pt2 := T{ pt: al[r + 2], us: al[r + 3], s: al[r + 4], l: al[r + 5] };
         vadd(st, al[r], al[r + 1], 0, pt2);
+        if tyown(p, st, pt2) {             // the emit walk replays the
+            vh := st[39] as *i64;          // ownership states: params
+            vh[(st[40] - 1) * 10 + 8] = 3; // arrive HELD
+        }
         q = q + 1;
     }
     efsig(p, st, fi);

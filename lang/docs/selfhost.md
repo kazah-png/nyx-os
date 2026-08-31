@@ -1181,6 +1181,40 @@ asks for something new: the ownership state machine, replayed on
 the emission walk, so the auto-drop calls land where the checker
 proved they belong.
 
+### gen.n rung 5 — the generator holds the directory
+
+The replay taught its lesson the honest way. The first attempt
+reused the checker's own mover at the emission sites — and the
+checker's mover PRINTS when it sees an illegal move. The emit walk
+diverged from the checked states in exactly one place (the
+`if`/`else` arms were not being restarted from the pre-branch
+states), the mover mistook the divergence for a use-after-move,
+printed its diagnostic INTO the generated C, and — the deeper
+wound — set the error flag, which silently froze every state
+transition after it: a later binding stayed LIVE and collected a
+destructor call ncc never emits. Two programs diverged; the
+byte-diff pointed at both within a minute.
+
+The fix is a clean split of roles. The emit phase gets a silent
+mover — state transfer only, no judgment, because judgment already
+happened — and the full S_IF discipline from the checker: snapshot
+the pre-branch states, restore between the arms, merge with the
+returning-arm exemption. With the states faithful, the drops fall
+out: `gdrops` walks the frame in reverse birth order emitting
+`destructor(binding);` wherever a LIVE droppable stands — after
+the defers at a return, at the scope close otherwise — and
+`own_drops_pending` joins the defers in deciding when a return
+needs its braced `__ret` form.
+
+All twenty-two examples now emit byte-identical C. The module
+crossed ncc's function-count ceiling on the way (128 → 256 — the
+checker forced 64 → 128; each module outgrows the reference's
+capacities in turn, which is its own kind of progress report).
+What stands above is the summit ladder: gen.n emitting the four
+selfhost sources themselves — lex.n, parse.n, check.n, and its
+own — first on the host, then inside NyxOS: the self-hosting
+sentence with every word load-bearing.
+
 And the hardest lexer feature landed: **interpolation**. A toy string
 containing a brace lexes as segments — HEAD before the first hole,
 MID between holes, TAIL after the last (ncc's own
