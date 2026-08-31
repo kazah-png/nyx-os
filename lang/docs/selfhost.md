@@ -943,6 +943,25 @@ with own.n silent above them the whole way. What remains of the
 manifest is one family: not-every-path-returns, FILE-level itself,
 riding the contract this rung just built.
 
+### The stragglers — the last line-level rows
+
+Five rows never belonged to a family: indexing a value with no
+elements, indexing by a non-integer, a counted `for` over
+non-integer bounds, `#[user]` on a non-pointer, and `#[user]`
+beside `raw`. Each transliterated from its own site — the two
+index judgments into the E_INDEX arm in ncc's base-then-index
+order, the bounds rule into the for statement before its loop
+variable seeds, and the two pointer-attribute refusals into the
+type parser itself, stamped at the type's first token exactly as
+ncc's parse_type stamps them. The rung's one discovery was an
+honest kind of gap: the index node had existed for eight versions
+without ever printing an error, and its line slot had quietly held
+zero the whole time — the first refusal to speak from it said
+`0:` and the differential caught it within the minute. Sixty-three
+rows byte-exact, twenty-two silences, and the corpus now divides
+cleanly in two: every line-bearing error held, and one FILE-level
+family — not-every-path-returns — left to close it.
+
 And the hardest lexer feature landed: **interpolation**. A toy string
 containing a brace lexes as segments — HEAD before the first hole,
 MID between holes, TAIL after the last (ncc's own

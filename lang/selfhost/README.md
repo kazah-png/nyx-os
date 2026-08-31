@@ -171,6 +171,11 @@ stripped (the normalization rule lives in
    bad_drop_sig        drop function 'free_it' must take exactly one Page parameter
    bad_drop_ret        drop function 'free_it' must not return a value — ...
    bad_own_nest        own type in field 'Holder.f' — own values cannot nest ...
+   bad_for_range    2: for range bounds must be integers (got str .. str)
+   bad_index_ty     3: cannot index a i64 value (only pointers and str)
+   bad_index_idx    4: index must be an integer (got str)
+   bad_user_nonptr  1: #[user] applies only to pointer types (got i64)
+   bad_user_raw     1: #[user] and raw are mutually exclusive — ...
 
 plus ALL TWENTY-TWO examples as POSITIVE targets — the complete
 directory checks clean, silence enforced, nparse.n's 150K included. Coverage, stated honestly: extern
@@ -222,6 +227,19 @@ the checker became the biggest N program yet written. Struct
 fields, enum semantics and method returns still fall back softly
 (their tables are the next rungs); the claimed rows never reach
 them.
+
+**The stragglers (landed): EVERY LINE-LEVEL ROW IS NOW HELD.**
+Five rows scattered outside the big families — the E_INDEX read
+judgments (only pointers and str have elements; the index counts in
+integers), the counted-for's bounds rule (both ends integers, both
+types rendered), and parse_type's two `#[user]` refusals (pointer
+types only; never together with `raw`), each at ncc's site and in
+ncc's order. One find rode along: the index node had never printed
+before, so nothing had noticed it carried no line — it does now,
+stamped at its `[`. Sixty-three rows; every error in the corpus
+that carries a line number is byte-exact, and the three
+not-every-path-returns rows — FILE-level, on the contract the
+declarations rung built — are all that stand before completeness.
 
 **Rung 10c — the declarations (landed): THE OWN FAMILY IS
 COMPLETE, and FILE-level messages joined the contract.** The item

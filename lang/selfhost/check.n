@@ -1004,9 +1004,16 @@ struct T { pt: i64, us: i64, s: i64, l: i64 }
 // ncc's parse_type: [#[user]] [raw] *... name. Rung 1 checks no
 // types; the tokens still have to be consumed correctly.
 fn pty(p: *u8, n: i64, st: *i64) -> T {
-    mut us := 0;
-    if acc(p, n, st, 31) { us = 1; }       // #[user]
-    if ck(st, 19) { adv(p, n, st); }       // raw (lowers identically)
+    tln := st[25];                         // ncc's parse_type stamps both
+    mut us := 0;                           // refusals at the type's FIRST
+    if acc(p, n, st, 31) { us = 1; }       // token (#[user], v0.12)
+    mut rw := 0;
+    if ck(st, 19) { adv(p, n, st); rw = 1; }   // raw (lowers identically)
+    if us == 1 && rw == 1 {
+        put("{tln}: #[user] and raw are mutually exclusive — raw is the explicit opt-out\n");
+        st[41] = 1;
+        return T{ pt: 0, us: 0, s: 0, l: 0 };
+    }
     mut pt := 0;
     mut going := true;
     while going {
@@ -1017,6 +1024,13 @@ fn pty(p: *u8, n: i64, st: *i64) -> T {
     s := st[26];
     l := st[27];
     adv(p, n, st);
+    if us == 1 && pt == 0 {                // a checked pointer needs the
+        put("{tln}: #[user] applies only to pointer types (got ");
+        put_span(p, s, l);                 // pointer (ncc prints the bare
+        put(")\n");                        // type name here)
+        st[41] = 1;
+        return T{ pt: 0, us: 0, s: 0, l: 0 };
+    }
     T{ pt: pt, us: us, s: s, l: l }
 }
 
@@ -1241,11 +1255,12 @@ fn ppostfix_tail(p: *u8, n: i64, st: *i64, h0: i64) -> i64 {
             continue;
         }
         if ck(st, 34) {                    // '[' index ']'
+            iln := st[25];                 // the judgments print here
             adv(p, n, st);
             ix := pexpr(p, n, st);
             if !ck(st, 35) { perr(st); return 0; }
             adv(p, n, st);
-            h = nnew(st, 13, h, ix, 0, 0, 0, 0);
+            h = nnew(st, 13, h, ix, 0, iln, 0, 0);
             going = true;
             continue;
         }
@@ -2372,9 +2387,27 @@ fn cexpr(p: *u8, st: *i64, i: i64) {
         }
         return;
     }
-    if k == 13 {                           // index: base, then index
-        cexpr(p, st, nd[i * 8 + 1]);
-        cexpr(p, st, nd[i * 8 + 2]);
+    if k == 13 {                           // index: base, then index,
+        cexpr(p, st, nd[i * 8 + 1]);       // then ncc's two judgments —
+        cexpr(p, st, nd[i * 8 + 2]);       // only pointers and str have
+        if st[41] == 1 { return; }         // elements, and the index is
+        bt := cinfer(p, st, nd[i * 8 + 1]);            // an integer
+        if bt.pt == 0 && !span_is(p, bt, st[44] + 7, 3) {
+            ln := nd[i * 8 + 4];
+            put("{ln}: cannot index a ");
+            ty_put(p, st, bt);
+            put(" value (only pointers and str)\n");
+            st[41] = 1;
+            return;
+        }
+        it := cinfer(p, st, nd[i * 8 + 2]);
+        if !is_int_ty(p, it) {
+            ln2 := nd[i * 8 + 4];
+            put("{ln2}: index must be an integer (got ");
+            ty_put(p, st, it);
+            put(")\n");
+            st[41] = 1;
+        }
         return;
     }
     if k == 4 {                            // interp: every hole resolves
@@ -2932,6 +2965,18 @@ fn cstmt(p: *u8, st: *i64, i: i64) {
         cexpr(p, st, nd[i * 8 + 1]);       // with the loop var seeded
         cexpr(p, st, nd[i * 8 + 2]);       // (immutable) in its scope
         if st[41] == 1 { return; }
+        at2 := cinfer(p, st, nd[i * 8 + 1]);   // both bounds count in
+        bt2 := cinfer(p, st, nd[i * 8 + 2]);   // integers (ncc renders
+        if !is_int_ty(p, at2) || !is_int_ty(p, bt2) {  // BOTH types)
+            ln5 := nd[i * 8 + 4];
+            put("{ln5}: for range bounds must be integers (got ");
+            ty_put(p, st, at2);
+            put(" .. ");
+            ty_put(p, st, bt2);
+            put(")\n");
+            st[41] = 1;
+            return;
+        }
         vsave := st[40];
         vadd(st, nd[i * 8 + 5], nd[i * 8 + 6], 0, t_i64(st));
         st[55] = st[55] + 1;               // the body may run 0..N times;
