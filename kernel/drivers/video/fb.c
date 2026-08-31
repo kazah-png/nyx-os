@@ -179,6 +179,28 @@ void fb_query(uint32_t* w, uint32_t* h, uint32_t* bpp) {
     if (bpp) *bpp = fb_bpp;
 }
 
+// Publish ONLY a sub-rectangle of the back buffer to hardware. The compositor uses this to
+// move the cursor without blitting the whole ~3 MB screen every pointer step (a full
+// fb_present was the single biggest per-frame cost). Clamps to the framebuffer; the rare
+// rotated path falls back to a full present (correctness over speed).
+void fb_present_rect(int x, int y, int w, int h) {
+    if (fb_fullscreen_active()) return;
+    if (!fb_back || !fb_hw) return;
+    if (fb_addr != fb_back) return;
+    if (fb_rot != 0) { fb_present(); return; }
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (w <= 0 || h <= 0 || x >= (int)fb_width || y >= (int)fb_height) return;
+    if (x + w > (int)fb_width)  w = (int)fb_width  - x;
+    if (y + h > (int)fb_height) h = (int)fb_height - y;
+    for (int row = 0; row < h; row++) {
+        uint32_t fy = (uint32_t)(y + row);
+        memcpy_asm((uint8_t*)fb_hw + ((size_t)fy * fb_hw_stride + (uint32_t)x) * 4,
+                   (const uint32_t*)fb_back + (size_t)fy * fb_width + (uint32_t)x,
+                   (size_t)w * 4);
+    }
+}
+
 // SYS_FBPRESENT: blit a 32bpp source buffer (sw x sh) straight to the hardware
 // framebuffer, nearest-neighbour scaled to the full screen, and take fullscreen
 // ownership so the compositor yields. `src` is a KERNEL buffer — the syscall handler

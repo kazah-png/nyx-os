@@ -38,6 +38,7 @@ void fb_blit(const void* src, uint32_t sx, uint32_t sy, uint32_t w, uint32_t h, 
 void fb_clear(uint32_t color);
 int  fb_enable_backbuffer(void);   // opt-in double buffering (compositor)
 void fb_present(void);             // blit the back buffer to the LFB (one frame)
+void fb_present_rect(int x, int y, int w, int h);  // publish only a sub-rect (e.g. cursor move)
 int  fb_fullscreen_active(void);   // a userspace app is driving the whole screen right now
 void fb_query(uint32_t* w, uint32_t* h, uint32_t* bpp);              // SYS_FBINFO
 void fb_present_kbuf(const uint32_t* src, uint32_t sw, uint32_t sh); // scale+blit a KERNEL buffer
