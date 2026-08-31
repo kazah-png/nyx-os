@@ -1093,6 +1093,32 @@ match's switch, defer's braced `__ret`, try's propagation form,
 method bodies, and the own auto-drops — eight examples between
 here and a generator that holds the whole directory.
 
+### Batch V52 — the generator emits inside the OS
+
+The fence went through three designs, and the OS taught something
+each time. Design one redirected `ngen`'s output to a file and
+hashed both sides with the in-OS `sha256sum` — two sums, one
+fence, a three-character verdict. The run returned one hash and
+one `cannot open`: the shell's `>` captures BUILTIN output but not
+an exec'd user binary's — the generator's C had gone straight to
+the console. That is a real kernel-shell gap, reported upstream
+(issue #88), and it pointed at design two: fence the program
+itself and `cat` the reference's file beside it. The `cat` side
+then came back truncated mid-line — a burst-sized write loses
+bytes on the serial console where `ngen`'s line-paced output
+survives intact. So the final fence keeps what the OS delivers
+reliably — the generator's own output, line by line over serial —
+and diffs it against the reference compiler run by the harness,
+with exactly one declared normalization: the provenance comment's
+path is rewritten on the reference side, because the host cannot
+create a file at the OS's `/mnt` root.
+
+The verdict: hello.n's 24 lines and structs.n's 40, emitted by a
+generator compiled inside NyxOS minutes earlier by the compiler it
+mirrors, identical to that compiler's output for the same source.
+The generator now emits inside the OS it was written for — and
+the batch that proved it also filed a kernel bug on the way.
+
 And the hardest lexer feature landed: **interpolation**. A toy string
 containing a brace lexes as segments — HEAD before the first hole,
 MID between holes, TAIL after the last (ncc's own

@@ -426,17 +426,20 @@ no-return function (the claimed row), the value/return-type
 mismatch, and a bare `return` in a value-returning function — with
 `never` counting as no-type, exactly as ncc's `is_never` does.
 
-**Proven inside NyxOS (batches V45–V51)**: TWELVE two-sided
-differentials ride the on-target ledger — V51 added the own
-declarations and the index rules, and with them the FILE-level
-shape made its on-target debut: the in-OS ncc printed
-`/mnt/bad_own_nest.n: own type in field ...`, the harness stripped
-the filename, and the in-OS-compiled checker's own leading-space
-line matched it to the byte across the serial port. Zero panics,
-the census on its exact baseline every run. (The frame-worthy
-fences still stand beside it: W^X — a security property of
-NyxOS's own memory model — and the ownership flow analysis, both
-verified differentially inside NyxOS.)
+**Proven inside NyxOS (batches V45–V52)**: the on-target ledger
+now holds the GENERATOR too. V52 built gen.n inside NyxOS (the
+in-OS ncc compiled its ~4400 lines, tcc compiled the C) and ran it
+on hello.n and structs.n; the generator's emitted C crossed the
+serial port line by line and matched the reference compiler's
+output for the same fixed source path — every line of both
+programs, 24 and 40 lines, identical (the single normalization:
+the provenance comment's path is rewritten on the reference side,
+since the harness host cannot park a file at the OS's `/mnt`).
+Twelve first-error differentials stand alongside the two generator
+fences, zero panics. The fence's design history is itself a
+finding: the shell's `>` turned out to redirect builtin output
+only — an exec'd binary's stdout goes to the console — reported
+upstream as issue #88.
 
 **Proven inside NyxOS (batches V45–V47)**: V47 added the struct and
 enum/match families to the on-target ledger — four two-sided
