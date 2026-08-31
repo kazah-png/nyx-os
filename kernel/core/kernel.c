@@ -1395,51 +1395,82 @@ static void cmd_echo(int argc, char** argv) {
     vfs_close(fd);
 }
 
-// basename PATH [SUFFIX] — POSIX: strip the directory prefix (and an optional
-// trailing SUFFIX) from PATH. Matches GNU: "/usr/lib"->"lib", "/usr/"->"usr",
-// "/"->"/", ""->"" (empty line), "/a/b.txt" ".txt"->"b". The suffix is only
-// removed when it is a proper (shorter) suffix, so `basename .txt .txt` keeps
-// ".txt". Works on a bounded local copy — the argv strings come from the fixed
-// command-line buffer, but the copy makes the length cap explicit.
-static void cmd_basename(int argc, char** argv) {
-    if (argc < 2) { printf("usage: basename <path> [suffix]\n"); return; }
-    const char* src = argv[1];
-    if (src[0] == '\0') { printf("\n"); return; }        // GNU basename "" -> empty line
+// POSIX basename into out[cap]: strip the directory prefix and, if `suffix` is a PROPER
+// (shorter) trailing match, that suffix too. "" -> "" (empty), all-slashes -> "/". Pure,
+// bounded — pinned by pathsplit_selftest.
+void path_basename(char* out, int cap, const char* src, const char* suffix) {
+    if (!out || cap <= 0) return;
+    if (!src || src[0] == '\0') { out[0] = '\0'; return; }   // GNU basename "" -> empty
     char buf[256];
-    size_t n = strlen(src);
-    if (n >= sizeof(buf)) n = sizeof(buf) - 1;
+    int n = (int)strlen(src); if (n >= (int)sizeof(buf)) n = (int)sizeof(buf) - 1;
     memcpy(buf, src, n); buf[n] = '\0';
-    int len = (int)n;
+    int len = n;
     while (len > 0 && buf[len - 1] == '/') buf[--len] = '\0';   // drop trailing slashes
-    if (len == 0) { printf("/\n"); return; }             // input was all slashes
+    if (len == 0) { strncpy(out, "/", cap - 1); out[cap - 1] = '\0'; return; }  // all slashes
     char* base = buf;
     for (int i = 0; i < len; i++) if (buf[i] == '/') base = &buf[i + 1];
-    if (argc >= 3 && argv[2][0]) {                       // optional suffix removal
-        int bl = (int)strlen(base), sl = (int)strlen(argv[2]);
-        if (sl < bl && strcmp(base + bl - sl, argv[2]) == 0) base[bl - sl] = '\0';
+    if (suffix && suffix[0]) {
+        int bl = (int)strlen(base), sl = (int)strlen(suffix);
+        if (sl < bl && strcmp(base + bl - sl, suffix) == 0) base[bl - sl] = '\0';
     }
-    printf("%s\n", base);
+    strncpy(out, base, cap - 1); out[cap - 1] = '\0';
+}
+
+// POSIX dirname into out[cap]: the directory portion of PATH. "" -> ".", no-slash -> ".",
+// root/all-slashes -> "/". Pure, bounded — pinned by pathsplit_selftest.
+void path_dirname(char* out, int cap, const char* src) {
+    if (!out || cap <= 0) return;
+    if (!src || src[0] == '\0') { strncpy(out, ".", cap - 1); out[cap - 1] = '\0'; return; }
+    char buf[256];
+    int n = (int)strlen(src); if (n >= (int)sizeof(buf)) n = (int)sizeof(buf) - 1;
+    memcpy(buf, src, n); buf[n] = '\0';
+    int len = n;
+    while (len > 1 && buf[len - 1] == '/') buf[--len] = '\0';   // trailing slashes (keep a lone '/')
+    int last = -1;
+    for (int i = 0; i < len; i++) if (buf[i] == '/') last = i;
+    if (last < 0)  { strncpy(out, ".", cap - 1); out[cap - 1] = '\0'; return; }  // no slash
+    if (last == 0) { strncpy(out, "/", cap - 1); out[cap - 1] = '\0'; return; }  // root
+    buf[last] = '\0';
+    while (last > 1 && buf[last - 1] == '/') buf[--last] = '\0';   // collapse the result's trailing slashes
+    strncpy(out, buf, cap - 1); out[cap - 1] = '\0';
+}
+
+int pathsplit_selftest(void) {
+    char o[64];
+    struct { const char* p; const char* base; const char* dir; } t[] = {
+        { "/usr/lib", "lib",  "/usr" }, { "/usr/", "usr", "/" },  { "/",   "/",   "/"   },
+        { "usr",      "usr",  "."    }, { "a/b/c", "c",   "a/b" }, { "a/b/","b",   "a"   },
+        { "a//b",     "b",    "a"    }, { "///a",  "a",   "/"   }, { "",    "",    "."   },
+        { ".",        ".",    "."    }, { "..",    "..",  "."   },
+    };
+    for (unsigned i = 0; i < sizeof(t) / sizeof(t[0]); i++) {
+        path_basename(o, sizeof(o), t[i].p, (const char*)0);
+        if (strcmp(o, t[i].base)) return (int)(i + 1);
+        path_dirname(o, sizeof(o), t[i].p);
+        if (strcmp(o, t[i].dir)) return (int)(100 + i);
+    }
+    path_basename(o, sizeof(o), "/a/b.txt",  ".txt"); if (strcmp(o, "b"))      return 200;
+    path_basename(o, sizeof(o), ".txt",      ".txt"); if (strcmp(o, ".txt"))   return 201;  // not a proper suffix
+    path_basename(o, sizeof(o), "readme.md", ".md");  if (strcmp(o, "readme")) return 202;
+    return 0;
+}
+
+// basename PATH [SUFFIX] — POSIX: strip the directory prefix (and an optional proper
+// trailing SUFFIX). "/usr/lib"->"lib", "/usr/"->"usr", "/"->"/", ""->"" (empty line).
+static void cmd_basename(int argc, char** argv) {
+    if (argc < 2) { printf("usage: basename <path> [suffix]\n"); return; }
+    char out[256];
+    path_basename(out, sizeof(out), argv[1], (argc >= 3) ? argv[2] : (const char*)0);
+    printf("%s\n", out);
 }
 
 // dirname PATH — POSIX: strip the last component from PATH. Matches GNU:
 // "/usr/lib"->"/usr", "/usr/"->"/", "usr"->".", "/"->"/", ""->".", "a/b/c"->"a/b".
 static void cmd_dirname(int argc, char** argv) {
     if (argc < 2) { printf("usage: dirname <path>\n"); return; }
-    const char* src = argv[1];
-    if (src[0] == '\0') { printf(".\n"); return; }
-    char buf[256];
-    size_t n = strlen(src);
-    if (n >= sizeof(buf)) n = sizeof(buf) - 1;
-    memcpy(buf, src, n); buf[n] = '\0';
-    int len = (int)n;
-    while (len > 1 && buf[len - 1] == '/') buf[--len] = '\0';   // trailing slashes (keep a lone '/')
-    int last = -1;
-    for (int i = 0; i < len; i++) if (buf[i] == '/') last = i;
-    if (last < 0)  { printf(".\n"); return; }            // no slash -> current dir
-    if (last == 0) { printf("/\n"); return; }            // slash only at root
-    buf[last] = '\0';
-    while (last > 1 && buf[last - 1] == '/') buf[--last] = '\0';  // collapse trailing slashes of the result
-    printf("%s\n", buf);
+    char out[256];
+    path_dirname(out, sizeof(out), argv[1]);
+    printf("%s\n", out);
 }
 
 // realpath [-e] <path>... — print each path's canonical absolute form (relative
@@ -9882,6 +9913,7 @@ static void run_selftests(void) {
         {"trunc",        trunc_selftest},         {"pstree",        pstree_selftest},
         {"mktemp",       mktemp_selftest},        {"tri",           tri_selftest},
         {"chmod",        chmod_selftest},         {"pr",            pr_selftest},
+        {"pathsplit",    pathsplit_selftest},
         {"userwin",      uwin_selftest},          {"dns_parse",     dns_parse_selftest},
         {"triz",         triz_selftest},          {"trigou",        trigou_selftest},
         {"tritex",       tritex_selftest},        {"mat4",          mat4_selftest},
