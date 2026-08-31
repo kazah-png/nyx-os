@@ -1147,6 +1147,40 @@ remains is defer's braced `__ret`, try's propagation form, and
 the own auto-drops — four examples, three lowerings, and then
 the generator holds the directory.
 
+### gen.n rung 4 — defer and `?`, and batch V53 between them
+
+Batch V53 went first: matchexpr.n — 111 lines, the complete match
+lowering with both temps — emitted inside NyxOS by the in-OS-built
+generator, line-identical to the in-OS reference beside it. Three
+generator fences on target now, and the census steady.
+
+Then the two lowerings that share an exit discipline landed as one
+rung. The defer registry is ncc's: sixteen slots, per-function
+reset, LIFO at every exit — and the subtle part is WHERE the
+deferred expression's preludes run: at the exit, not the
+registration, so a defer carrying an interpolation numbers its
+buffer at every return it is copied to, interleaving with the
+surrounding temps exactly as the reference interleaves. The braced
+forms follow from one sentence of semantics — the return value is
+computed before the defers run — which becomes `{ TYPE __ret = v;
+defers...; return __ret; }` at a valued return, the same shape
+inside the block's own braces at a returning tail, and a bare
+defer drain at a void fall-off.
+
+`?` reuses all of it. The operand evaluates once into `__tN`; if
+the tag says Err, the defers drain and the function returns — the
+value itself when the operand and return enums are the same type,
+or an `__eN` rewrap that copies the Err payload across field names
+when they differ — and if the tag says Ok, the payload binds,
+assigns, or is discarded, per form. The Ok and Err variant numbers
+come off the interned spans the checker has carried since its own
+try rung: the accretion pattern paying for itself one module
+later. defer.n, results.n, fsio.n — all byte-exact, first probe
+run each. Twenty-one of twenty-two; own.n alone remains, and it
+asks for something new: the ownership state machine, replayed on
+the emission walk, so the auto-drop calls land where the checker
+proved they belong.
+
 And the hardest lexer feature landed: **interpolation**. A toy string
 containing a brace lexes as segments — HEAD before the first hole,
 MID between holes, TAIL after the last (ncc's own

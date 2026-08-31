@@ -528,6 +528,25 @@ Type_m(Type self, ...)` prototypes after the function prototypes,
 the definitions BEFORE the function definitions (ncc's order), and
 the call-site rewrite `recv.m(a)` → `Type_m(recv, a)` on the
 receiver's inferred type. enums, matchexpr, ntokens and methods
-joined the byte-exact list. Rung-4 territory, stated: defer's
-braced `__ret` form, `?`'s `gen_try`, and the own auto-drop calls
-— the last four examples.
+joined the byte-exact list.
+
+**Rung 4 holds TWENTY-ONE: defer and `?` landed together.** The
+defer registry mirrors ncc's — sixteen expression slots, reset per
+function, LIFO at every exit, with each deferred expression's
+PRELUDES emitted at the exit itself so the temporary numbering
+interleaves exactly as the reference's does. The braced forms came
+with it: a valued `return` under live defers computes into `__ret`
+first (a defer cannot change what gets returned), a returning tail
+does the same inside the block's own braces, and a void function
+falling off its end runs the defers last. The `?` lowering is
+`gen_try` transliterated: the operand lands in `__tN` once, the Err
+arm returns at once — the same value when the enums match, the
+payload rewrapped through `__eN` when they differ — defers before
+the return, and the Ok payload binds, assigns, or discards per the
+statement form. defer.n, results.n and fsio.n all byte-exact.
+What remains is ONE example: own.n — the auto-drop calls, which
+need the ownership state machine replayed on the emission walk.
+
+Batch V53 carried the match switch to the target the same hour:
+matchexpr.n's 111 lines — the full `__mN`/`__mresN` lowering —
+emitted inside NyxOS, identical to the reference beside it.

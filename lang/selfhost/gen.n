@@ -3866,6 +3866,7 @@ fn gmeth(p: *u8, st: *i64, mi: i64) {
     al := st[35] as *i64;
     st[40] = 0;
     st[57] = 0;                            // ncc: IID = 0 per method
+    st[59] = 0;                            // ... and NDEFERS = 0
     crt := mrty(st, mi);
     st[45] = crt.pt;
     st[46] = crt.us;
@@ -4161,10 +4162,127 @@ fn gexpr(p: *u8, st: *i64, i: i64) {
     }
 }
 
+// The `?` lowering (ncc's gen_try): the operand lands in __tN once;
+// on Err the function returns at once — the same value when operand
+// and return enums are identical, otherwise the Err payload rewrapped
+// through __eN — with the defers running before the return; on Ok the
+// statement binds or assigns the payload, or discards it (`e?;`).
+// form: 1 = let, 2 = assign, 0 = expression statement.
+fn gtry(p: *u8, st: *i64, i: i64, d: i64, form: i64) {
+    nd := st[33] as *i64;
+    al := st[35] as *i64;
+    ea := st[51] as *i64;
+    mut e := nd[i * 8 + 1];
+    if form == 2 { e = nd[i * 8 + 2]; }
+    ot := cinfer(p, st, e);
+    oe := efind(p, st, ot.s, ot.l);
+    re := efind(p, st, st[47], st[48]);
+    same := span_eq(p, ea[oe * 4], ea[oe * 4 + 1], ea[re * 4], ea[re * 4 + 1]);
+    erv := vfindx(p, st, oe, st[44] + 21, 3);
+    erv2 := vfindx(p, st, re, st[44] + 21, 3);
+    okv := vfindx(p, st, oe, st[44] + 19, 2);
+    ovb := ea[oe * 4 + 3];
+    rvb := ea[re * 4 + 3];
+    okr := al[ovb + okv * 4 + 3];          // the Ok payload's field rec
+    mut okty := t_void();
+    if al[ovb + okv * 4 + 2] == 1 {
+        okty = T{ pt: al[okr + 2], us: al[okr + 3], s: al[okr + 4], l: al[okr + 5] };
+    }
+    tid := st[57];
+    st[57] = st[57] + 1;
+    if form == 1 {                         // zero init: dead store — the
+        eind(d);                           // Err branch always returns
+        ety(p, st, okty);
+        put(" ");
+        put_span(p, nd[i * 8 + 5], nd[i * 8 + 6]);
+        put(" = ");
+        ezero(p, st, okty);
+        put(";\n");
+    }
+    eind(d);
+    put("\{\n");
+    gpre(p, st, e, d + 1);
+    eind(d + 1);
+    put_span(p, ea[oe * 4], ea[oe * 4 + 1]);
+    put(" __t{tid} = ");
+    gexpr(p, st, e);
+    put(";\n");
+    eind(d + 1);
+    put("if (__t{tid}.tag == {erv}) \{\n");
+    if same {
+        gdefs(p, st, d + 2);
+        eind(d + 2);
+        put("return __t{tid};\n");
+    }
+    if !same {
+        eind(d + 2);
+        put_span(p, ea[re * 4], ea[re * 4 + 1]);
+        put(" __e{tid} = \{0\};\n");
+        eind(d + 2);
+        put("__e{tid}.tag = {erv2};\n");
+        if al[rvb + erv2 * 4 + 2] == 1 {   // the Err payload crosses by
+            orr := al[ovb + erv * 4 + 3];  // field name on each side
+            rrr := al[rvb + erv2 * 4 + 3];
+            eind(d + 2);
+            put("__e{tid}.u.Err.");
+            put_span(p, al[rrr], al[rrr + 1]);
+            put(" = __t{tid}.u.Err.");
+            put_span(p, al[orr], al[orr + 1]);
+            put(";\n");
+        }
+        gdefs(p, st, d + 2);
+        eind(d + 2);
+        put("return __e{tid};\n");
+    }
+    eind(d + 1);
+    put("\}\n");
+    if form == 1 {
+        eind(d + 1);
+        put_span(p, nd[i * 8 + 5], nd[i * 8 + 6]);
+        put(" = __t{tid}.u.Ok.");
+        put_span(p, al[okr], al[okr + 1]);
+        put(";\n");
+    }
+    if form == 2 {
+        eind(d + 1);
+        gexpr(p, st, nd[i * 8 + 1]);
+        if nd[i * 8 + 3] == 0 { put(" = "); }
+        if nd[i * 8 + 3] == 1 { put(" += "); }
+        if nd[i * 8 + 3] == 2 { put(" -= "); }
+        put("__t{tid}.u.Ok.");
+        put_span(p, al[okr], al[okr + 1]);
+        put(";\n");
+    }
+    eind(d);
+    put("\}\n");
+    if form == 1 {
+        vadd(st, nd[i * 8 + 5], nd[i * 8 + 6], nd[i * 8 + 3], okty);
+    }
+}
+
+// Deferred expressions, LIFO (ncc's gen_defers). The preludes run
+// at EMISSION time, so an interpolation inside a defer numbers its
+// temporaries at every exit it is emitted at — exactly ncc's
+// interleaving.
+fn gdefs(p: *u8, st: *i64, d: i64) {
+    da := st[58] as *i64;
+    mut i := st[59] - 1;
+    while i >= 0 {
+        gpre(p, st, da[i], d);
+        eind(d);
+        gexpr(p, st, da[i]);
+        put(";\n");
+        i = i - 1;
+    }
+}
+
 // One statement (ncc's gen_stmt, the rung-1 arms).
 fn gstmt(p: *u8, st: *i64, i: i64, d: i64) {
     nd := st[33] as *i64;
     k := nd[i * 8];
+    if k == 20 && nd[i * 8 + 2] == 1 { gtry(p, st, i, d, 1); return; }
+    if k == 21 && nd[i * 8 + 5] == 1 { gtry(p, st, i, d, 2); return; }
+    if k == 23 && nd[i * 8 + 3] == 1 { gtry(p, st, i, d, 0); return; }
     if k == 20 {
         gpre(p, st, nd[i * 8 + 1], d);
         rt := cinfer(p, st, nd[i * 8 + 1]);
@@ -4189,7 +4307,36 @@ fn gstmt(p: *u8, st: *i64, i: i64, d: i64) {
         put(";\n");
         return;
     }
+    if k == 28 {                           // defer: register only — the
+        da := st[58] as *i64;              // expression emits at exits
+        da[st[59]] = nd[i * 8 + 1];
+        st[59] = st[59] + 1;
+        return;
+    }
     if k == 22 {
+        if st[59] > 0 && nd[i * 8 + 1] > 0 {   // braced: the value is
+            eind(d);                       // computed BEFORE the defers
+            put("\{\n");                   // run (a defer cannot change
+            gpre(p, st, nd[i * 8 + 1], d + 1); // what gets returned)
+            eind(d + 1);
+            rt8 := cinfer(p, st, nd[i * 8 + 1]);
+            ety(p, st, rt8);
+            put(" __ret = ");
+            gexpr(p, st, nd[i * 8 + 1]);
+            put(";\n");
+            gdefs(p, st, d + 1);
+            eind(d + 1);
+            put("return __ret;\n");
+            eind(d);
+            put("\}\n");
+            return;
+        }
+        if st[59] > 0 {                    // void return with defers
+            gdefs(p, st, d);
+            eind(d);
+            put("return;\n");
+            return;
+        }
         gpre(p, st, nd[i * 8 + 1], d);
         eind(d);
         if nd[i * 8 + 1] > 0 {
@@ -4446,11 +4593,37 @@ fn gblock(p: *u8, st: *i64, b: i64, d: i64, ftail: i64) {
         nvr := rt.l == 5 && eq5(p, rt.s, 110, 101, 118, 101, 114);
         mut rets := 0;
         if ftail == 1 && rt.l > 0 && !nvr { rets = 1; }
-        gpre(p, st, t, d + 1);
-        eind(d + 1);
-        if rets == 1 { put("return "); }
-        gexpr(p, st, t);
-        put(";\n");
+        if rets == 1 && st[59] > 0 {       // tail value, then defers,
+            gpre(p, st, t, d + 1);         // then return (ncc's braced
+            eind(d + 1);                   // tail — the block's own
+            tt := cinfer(p, st, t);        // braces serve)
+            ety(p, st, tt);
+            put(" __ret = ");
+            gexpr(p, st, t);
+            put(";\n");
+            gdefs(p, st, d + 1);
+            eind(d + 1);
+            put("return __ret;\n");
+        }
+        if rets == 1 && st[59] == 0 {
+            gpre(p, st, t, d + 1);
+            eind(d + 1);
+            put("return ");
+            gexpr(p, st, t);
+            put(";\n");
+        }
+        if rets == 0 {
+            gpre(p, st, t, d + 1);
+            eind(d + 1);
+            gexpr(p, st, t);
+            put(";\n");
+            if ftail == 1 && st[59] > 0 { gdefs(p, st, d + 1); }
+        }
+    }
+    if t == 0 && ftail == 1 && st[59] > 0 {
+        rt2 := T{ pt: st[45], us: st[46], s: st[47], l: st[48] };
+        nvr2 := rt2.l == 5 && eq5(p, rt2.s, 110, 101, 118, 101, 114);
+        if rt2.l == 0 || nvr2 { gdefs(p, st, d + 1); }   // void fall-off
     }
     eind(d);
     put("\}");
@@ -4463,6 +4636,7 @@ fn gfn(p: *u8, st: *i64, fi: i64) {
     al := st[35] as *i64;
     st[40] = 0;
     st[57] = 0;                            // ncc: IID = 0 per function
+    st[59] = 0;                            // ... and NDEFERS = 0
     crt := frty(st, fi);
     st[45] = crt.pt;
     st[46] = crt.us;
@@ -4620,6 +4794,8 @@ fn main() -> i64 {
     st[43] = 0;                            // block depth
     st[44] = total;                        // the intern base
     st[49] = sys_sbrk(8192);               // the struct table
+    st[58] = sys_sbrk(256);                // the defer registry (16 max,
+    st[59] = 0;                            // ncc's FN_DEFERS/NDEFERS)
     st[50] = 0;
     st[51] = sys_sbrk(8192);               // the enum table
     st[52] = 0;
