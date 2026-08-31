@@ -289,6 +289,7 @@ extern int trigou_selftest(void);           // gui/core/tri.c — RGB pack + Gou
 extern int tritex_selftest(void);           // gui/core/tri.c — perspective-correct interp KAT
 extern int mat4_selftest(void);             // gui/core/mat4.c — 4x4 matrix/vector math KAT
 extern int uwin_selftest(void);             // gui/core/userwin.c — user-window registry + event ring KAT
+extern int fileman_nav_selftest(void);      // gui/apps/fileman_win.c — file-manager nav real-index/position mapping (#76) KAT
 extern int dns_parse_selftest(void);        // net/dns.c — DNS A-record response parser (hostile packets) KAT
 extern int ext2_format_selftest(void);      // fs/ext2.c — mkfs.ext2 layout KAT
 extern int ext2_format_mg_selftest(void);   // fs/ext2.c — multi-group mkfs KAT
@@ -9535,6 +9536,7 @@ static void run_selftests(void) {
         {"leb128",       leb128_selftest},        {"crc16",         crc16_selftest},
         {"tgfd",         tg_fdhandoff_selftest},
         {"curpick",      cursor_pick_selftest},
+        {"fmnav",        fileman_nav_selftest},
     };
     int n = (int)(sizeof(t) / sizeof(t[0])), passed = 0, failed = 0;
     serial_puts("SELFTEST-BEGIN\n");

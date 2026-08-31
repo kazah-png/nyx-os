@@ -67,6 +67,49 @@ static void fileman_apply_search(fileman_win_t* fm) {
     }
 }
 
+// The list is shown either straight or filtered; `search_indices[i]` is the real entries[]
+// index at DISPLAY position i (identity when no filter is active). `sel_index` and
+// `drag_file_idx` are ALWAYS real entries[] indices; these map between a real index and the
+// display position (row) that keyboard navigation + scrolling operate in. Keeping those two
+// conventions from colliding is issue #76: the nav code used to compare sel_index (a real
+// index) against a position bound and then re-index search_indices[] with it as a position.
+static int fm_disp_count(fileman_win_t* fm) {
+    return fm->search_active ? fm->search_count : fm->entry_count;
+}
+static int fm_pos_to_real(fileman_win_t* fm, int pos) {   // display row -> entries[] index
+    if (pos < 0) return -1;
+    return fm->search_active ? fm->search_indices[pos] : pos;
+}
+static int fm_sel_to_pos(fileman_win_t* fm) {             // sel_index (real) -> display row, or -1
+    if (fm->sel_index < 0) return -1;
+    if (!fm->search_active) return fm->sel_index;
+    for (int i = 0; i < fm->search_count; i++)
+        if (fm->search_indices[i] == fm->sel_index) return i;
+    return -1;
+}
+
+// KAT (issue #76): the real-index <-> display-position mapping stays consistent under a
+// search filter, so arrow-key navigation lands on the right entry (not a real index reused
+// as a position). Uses a throwaway fileman state; no windows / VFS touched.
+int fileman_nav_selftest(void) {
+    static fileman_win_t fm;
+    memset_asm(&fm, 0, sizeof fm);
+    fm.entry_count = 8;
+    fm.search_active = 1; fm.search_count = 3;       // filtered view shows entries 2,5,7
+    fm.search_indices[0] = 2; fm.search_indices[1] = 5; fm.search_indices[2] = 7;
+    if (fm_pos_to_real(&fm, 0) != 2) return 10;
+    if (fm_pos_to_real(&fm, 2) != 7) return 11;
+    fm.sel_index = 5; if (fm_sel_to_pos(&fm) != 1) return 12;   // real 5 -> pos 1
+    fm.sel_index = 7; if (fm_sel_to_pos(&fm) != 2) return 13;
+    fm.sel_index = 4; if (fm_sel_to_pos(&fm) != -1) return 14;  // 4 not in the filter
+    fm.sel_index = 5;                                            // DOWN: pos 1 -> 2 -> real 7
+    { int pos = fm_sel_to_pos(&fm); if (pos < fm_disp_count(&fm) - 1) pos++; if (fm_pos_to_real(&fm, pos) != 7) return 15; }
+    { int pos = fm_sel_to_pos(&fm); if (pos > 0) pos--; if (fm_pos_to_real(&fm, pos) != 2) return 16; } // UP: pos 1 -> 0 -> real 2
+    fm.search_active = 0; fm.sel_index = 3;                     // no filter: identity mapping
+    if (fm_sel_to_pos(&fm) != 3 || fm_pos_to_real(&fm, 4) != 4) return 17;
+    return 0;
+}
+
 // Case-insensitive name compare: <0 if x<y, 0 if equal, >0 if x>y. Shorter name
 // first on a common prefix.
 static int fm_namecmp(const char* x, const char* y) {
@@ -607,8 +650,8 @@ void fileman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
             font_draw_string(sx, status_y + (HEADER_H - char_h) / 2, summ, fb_rgb(150,170,200), THEME_PANEL_HEADER);
     }
 
-    // Drag ghost
-    if (fm->drag_active && fm->drag_file_idx >= 0 && fm->drag_file_idx < disp_count) {
+    // Drag ghost (drag_file_idx is a real entries[] index — set + consumed as one; #76)
+    if (fm->drag_active && fm->drag_file_idx >= 0 && fm->drag_file_idx < fm->entry_count) {
         int gx = fm->drag_cur_x + 8;
         int gy = fm->drag_cur_y + 8;
         int gw = 180, gh = FONT_HEIGHT + 6;
@@ -620,7 +663,7 @@ void fileman_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
         fb_fill_rect(gx, gy, 1, (uint32_t)gh, fb_rgb(140,180,255));
         fb_fill_rect(gx + gw - 1, gy, 1, (uint32_t)gh, fb_rgb(140,180,255));
         char label[72];
-        int drag_ei = fm->search_active ? fm->search_indices[fm->drag_file_idx] : fm->drag_file_idx;
+        int drag_ei = fm->drag_file_idx;   // already a real entries[] index (#76)
         snprintf(label, sizeof(label), "%c %s  [%s]",
             (drag_ei >= 0 && drag_ei < fm->entry_count && fm->entry_types[drag_ei]) ? '/' : ' ',
             drag_ei >= 0 && drag_ei < fm->entry_count ? fm->entries[drag_ei] : "?",
@@ -1089,23 +1132,21 @@ void fileman_win_key(window_t* win, int key) {
         if (max_rows < 1) max_rows = 1;
 
         if (key == KEY_DOWN) {
-            if (fm->sel_index < 0) fm->sel_index = 0;
-            else if (fm->sel_index < disp_count - 1) {
-                int real_next = fm->search_active ? fm->search_indices[fm->sel_index + 1] : fm->sel_index + 1;
-                fm->sel_index = real_next;
-            }
-            if (fm->sel_index >= fm->scroll_offset + max_rows)
-                fm->scroll_offset = fm->sel_index - max_rows + 1;
+            int pos = fm_sel_to_pos(fm);
+            if (pos < 0) pos = 0;                       // no selection yet -> first row
+            else if (pos < disp_count - 1) pos++;
+            fm->sel_index = fm_pos_to_real(fm, pos);
+            if (pos >= fm->scroll_offset + max_rows)    // scroll_offset is a POSITION, so compare with pos
+                fm->scroll_offset = pos - max_rows + 1;
             return;
         }
         if (key == KEY_UP) {
-            if (fm->sel_index < 0) fm->sel_index = 0;
-            else if (fm->sel_index > 0) {
-                int real_prev = fm->search_active ? fm->search_indices[fm->sel_index - 1] : fm->sel_index - 1;
-                fm->sel_index = real_prev;
-            }
-            if (fm->sel_index < fm->scroll_offset)
-                fm->scroll_offset = fm->sel_index;
+            int pos = fm_sel_to_pos(fm);
+            if (pos < 0) pos = 0;
+            else if (pos > 0) pos--;
+            fm->sel_index = fm_pos_to_real(fm, pos);
+            if (pos < fm->scroll_offset)
+                fm->scroll_offset = pos;
             return;
         }
         if (key == KEY_PGDN) {
@@ -1113,23 +1154,24 @@ void fileman_win_key(window_t* win, int key) {
             if (fm->scroll_offset >= disp_count)
                 fm->scroll_offset = disp_count - 1;
             if (fm->scroll_offset < 0) fm->scroll_offset = 0;
-            fm->sel_index = fm->search_active ? fm->search_indices[fm->scroll_offset] : fm->scroll_offset;
+            fm->sel_index = fm_pos_to_real(fm, fm->scroll_offset);
             return;
         }
         if (key == KEY_PGUP) {
             fm->scroll_offset -= max_rows;
             if (fm->scroll_offset < 0) fm->scroll_offset = 0;
-            fm->sel_index = fm->search_active ? fm->search_indices[fm->scroll_offset] : fm->scroll_offset;
+            fm->sel_index = fm_pos_to_real(fm, fm->scroll_offset);
             return;
         }
         if (key == KEY_HOME) {
             fm->scroll_offset = 0;
-            fm->sel_index = fm->search_active ? fm->search_indices[0] : 0;
+            fm->sel_index = fm_pos_to_real(fm, 0);
             return;
         }
         if (key == KEY_END) {
-            fm->sel_index = fm->search_active ? fm->search_indices[disp_count - 1] : disp_count - 1;
-            fm->scroll_offset = fm->sel_index - max_rows + 1;
+            int pos = disp_count - 1;
+            fm->sel_index = fm_pos_to_real(fm, pos);
+            fm->scroll_offset = pos - max_rows + 1;      // scroll by POSITION, not the real index
             if (fm->scroll_offset < 0) fm->scroll_offset = 0;
             return;
         }

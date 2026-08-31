@@ -71,5 +71,6 @@ void fileman_win_mousemove(window_t* win, int mx, int my, int btns);
 void fileman_refresh(fileman_win_t* fm);
 void fileman_new_folder(fileman_win_t* fm);
 void fileman_new_file(fileman_win_t* fm);
+int  fileman_nav_selftest(void);   // KAT (#76): sel_index real-index <-> display-position mapping under a search filter
 
 #endif
