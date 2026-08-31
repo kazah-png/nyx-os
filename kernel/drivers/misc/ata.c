@@ -1,6 +1,15 @@
 #include "../../core/kernel.h"
 #include "ata.h"
 
+// A 28-bit-LBA PIO request is valid iff the LBA fits 28 bits (bits 24-27 ride in the drive/head
+// byte) and the sector count is 1..255. A wire count of 0 means "256 sectors", which this
+// one-sector-at-a-time PIO loop cannot service; a too-large LBA would have its high bits masked
+// and silently alias to a WRONG sector. Reject both up front so callers get a clean -1 instead
+// of corrupt/desynced I/O (the on-disk block layer already clamps, but direct callers exist).
+int ata_lba28_valid(uint32_t lba, uint8_t count) {
+    return count != 0 && lba <= 0x0FFFFFFFu;
+}
+
 static int ata_busy_wait(uint16_t ctrl, int timeout_ms) {
     uint16_t cmd_port = ctrl - ATA_PRIMARY_CTRL + ATA_PRIMARY_CMD;
     while (timeout_ms--) {
@@ -29,6 +38,8 @@ int ata_init(void) {
 }
 
 int ata_read_sectors(uint8_t drive, uint32_t lba, uint8_t count, void* buf) {
+    if (!ata_lba28_valid(lba, count))
+        return -1;
     if (ata_busy_wait(ATA_PRIMARY_CTRL, 30000) < 0)
         return -1;
 
@@ -54,6 +65,8 @@ int ata_read_sectors(uint8_t drive, uint32_t lba, uint8_t count, void* buf) {
 }
 
 int ata_write_sectors(uint8_t drive, uint32_t lba, uint8_t count, const void* buf) {
+    if (!ata_lba28_valid(lba, count))
+        return -1;
     if (ata_busy_wait(ATA_PRIMARY_CTRL, 30000) < 0)
         return -1;
 
@@ -114,5 +127,19 @@ int ata_identify(uint8_t drive, uint16_t* buf) {
 
     for (int i = 0; i < 256; i++)
         buf[i] = inw(ATA_PRIMARY_DATA);
+    return 0;
+}
+
+// KAT (`ata`): pins the LBA28 request validation that guards ata_read/write_sectors — the
+// count==0 ("256 sectors" on the wire) and >28-bit-LBA cases the PIO path must reject, plus the
+// valid boundaries it must accept. Pure, so it runs with no disk attached.
+int ata_lba28_selftest(void) {
+    if (!ata_lba28_valid(0, 1))          return 1;   // smallest valid request
+    if (!ata_lba28_valid(5, 128))        return 2;   // a typical multi-sector burst
+    if (!ata_lba28_valid(0x0FFFFFFF, 1)) return 3;   // the largest LBA 28 bits can hold
+    if (!ata_lba28_valid(0x0FFFFFFF, 255)) return 4; // max LBA + max count
+    if (ata_lba28_valid(0, 0))           return 5;   // count 0 = 256 sectors -> rejected
+    if (ata_lba28_valid(0x10000000, 1))  return 6;   // first LBA that overflows 28 bits
+    if (ata_lba28_valid(0xFFFFFFFF, 200)) return 7;  // far past the 28-bit range
     return 0;
 }

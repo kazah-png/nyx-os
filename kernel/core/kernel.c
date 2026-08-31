@@ -290,6 +290,7 @@ extern int term_rsearch_selftest(void);     // gui/apps/terminal_win.c — Ctrl+
 extern int editor_find_selftest(void);      // gui/apps/editor_win.c — Ctrl+F find-search KAT
 extern int editor_replace_selftest(void);   // gui/apps/editor_win.c — Ctrl+R find-and-replace KAT
 extern int heap_selftest(void);             // mm/heap.c — kernel-heap usage-accounting KAT
+extern int ata_lba28_selftest(void);        // drivers/misc/ata.c — LBA28 request-validation KAT
 extern int tri_selftest(void);              // gui/core/tri.c — software triangle rasterizer KAT
 extern int triz_selftest(void);             // gui/core/tri.c — barycentric-Z + z-buffer KAT
 extern int trigou_selftest(void);           // gui/core/tri.c — RGB pack + Gouraud colour KAT
@@ -9601,6 +9602,7 @@ static void run_selftests(void) {
         {"slab",         slab_selftest},
         {"pagealloc",    page_alloc_selftest},
         {"heap",         heap_selftest},
+        {"ata",          ata_lba28_selftest},
         {"wx",           wx_selftest},
         {"elf",          elf_selftest},
         {"dynlink",      dynlink_load_selftest},

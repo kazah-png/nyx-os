@@ -27,4 +27,10 @@ int ata_write_sectors(uint8_t drive, uint32_t lba, uint8_t count, const void* bu
 int ata_identify(uint8_t drive, uint16_t* buf);
 int ata_flush(void);   // flush the drive write cache (batch once per operation)
 
+// True iff (lba, count) is a valid 28-bit-LBA PIO request: LBA fits 28 bits and count is 1..255
+// (an on-the-wire count of 0 means 256 sectors, which the one-sector-at-a-time PIO loop cannot
+// service). The read/write paths reject anything else up front. Pure; pinned by the `ata` KAT.
+int ata_lba28_valid(uint32_t lba, uint8_t count);
+int ata_lba28_selftest(void);
+
 #endif
