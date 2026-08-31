@@ -582,16 +582,14 @@ static int start_hit(int mx, int my) {
 }
 
 static int systray_x(void);   // defined below; the hit-test needs draw_taskbar()'s exact right edge
+static int taskbar_mod_x(void); // left edge of the CPU/RAM module — the button strip stops here
 
 static int taskbar_win_hit(int mx, int my, int* id) {
     uint32_t fh = fb_get_height();
-    // Clamp buttons at the SAME right edge draw_taskbar() uses — systray_x() - 4, which
-    // reserves the system tray + user badge + clock. The old limit here was fw - CLOCK_W - 8,
-    // which reserved only the clock and so sat a tray+badge width further right than the
-    // drawn limit: once a button was clamped the two loops computed different bw, bx drifted,
-    // and clicks in the tray/badge strip (or on undrawn-but-clickable buttons) landed on the
-    // wrong window — exactly the drift the note below says must not happen.
-    int right_limit = systray_x() - 4;
+    // Clamp buttons at the SAME right edge draw_taskbar() uses — taskbar_mod_x() - 4, which
+    // reserves the CPU/RAM module + system tray + user badge + clock. Keeping this identical
+    // to the drawn limit is what stops bx/bw drift (clicks landing on the wrong window).
+    int right_limit = taskbar_mod_x() - 4;
     if (right_limit < 90) right_limit = 90;
     int bx = 90;
     for (int i = 0; i < MAX_WINDOWS; i++) {
@@ -710,6 +708,7 @@ static int systray_online(void) {
 // sits just left of the user badge. The network icon is LIVE — four accent signal bars
 // when an interface holds an IP, dim bars with a small red mark when offline.
 #define SYSTRAY_W 48
+#define TASKBAR_MOD_W 148   // live CPU%/RAM% status module, just left of the tray
 static void draw_systray(int x, int tb_y) {
     int cy = tb_y + TASKBAR_H / 2;
     fb_fill_rect(x, tb_y + 4, SYSTRAY_W, TASKBAR_H - 8, col_darken(taskbar_bg, 14));  // inset panel
@@ -743,6 +742,10 @@ static int systray_x(void) {
     int ublock_w = av_s + 6 + (int)strlen(g_login_user) * FONT_WIDTH + 10;
     return (int)(fw - CLOCK_W - 8) - ublock_w - SYSTRAY_W;
 }
+
+// Left edge of the live CPU/RAM status module (it sits just left of the system tray). The
+// window-button strip stops here, so draw + hit-test both derive their right edge from it.
+static int taskbar_mod_x(void) { return systray_x() - TASKBAR_MOD_W; }
 
 // Is (mx,my) on the tray's network icon (its left ~half, the four signal bars)?
 static int systray_net_hit(int mx, int my) {
@@ -787,7 +790,7 @@ static void draw_taskbar(void) {
     int av_s = TASKBAR_H - 14;
     int ublock_w = av_s + 6 + (int)strlen(g_login_user) * FONT_WIDTH + 10;
     int tray_x = systray_x();
-    int right_limit = tray_x - 4;
+    int right_limit = taskbar_mod_x() - 4;   // stop the window buttons before the CPU/RAM module
     if (right_limit < 90) right_limit = 90;
 
     int bx = 90;
@@ -819,6 +822,22 @@ static void draw_taskbar(void) {
             fb_fill_rect(bx + (bw - ind_w) / 2, tb_y + TASKBAR_H - 6, ind_w, 2, ind_c);
         }
         bx += bw + 2;
+    }
+
+    // Live CPU%/RAM% status module — a rice-style bar readout, refreshed each second with
+    // the clock. Same honest sources as `top` / Nyx Monitor (perf_cpu_percent + mem_pool_kb).
+    {
+        int modx = taskbar_mod_x();
+        uint32_t cpu = perf_cpu_percent();
+        uint32_t mu = 0, mt = 0; mem_pool_kb(&mu, 0, &mt);
+        uint32_t rampct = mt ? (uint32_t)(((uint64_t)mu * 100) / mt) : 0;
+        if (cpu > 100) cpu = 100;
+        if (rampct > 100) rampct = 100;
+        char modbuf[40];
+        snprintf(modbuf, sizeof(modbuf), "CPU %u%% RAM %u%%", cpu, rampct);
+        fb_fill_rect(modx, tb_y + 4, TASKBAR_MOD_W - 4, TASKBAR_H - 8, fb_rgb(30, 30, 35));
+        font_draw_string(modx + 8, tb_y + (TASKBAR_H - FONT_HEIGHT) / 2, modbuf,
+                         fb_rgb(170, 150, 225), fb_rgb(30, 30, 35));   // accent-tinted gauge text
     }
 
     // System tray (network + speaker status), just left of the user badge.
