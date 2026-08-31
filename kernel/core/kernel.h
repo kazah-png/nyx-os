@@ -18,7 +18,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.5.28"
+#define KERNEL_VERSION "6.5.29"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -958,6 +958,8 @@ void preempt_enable(void);
 // scheduler (non-blocking), and reap the ones that have exited.
 int  spawn_user_path(const char* path);
 int  spawn_user_path_args(const char* path, char* const* argv, int argc); // spawn + forward argv
+int  spawn_user_path_args_redir(const char* path, char* const* argv, int argc,
+                                const char* redir_path, int redir_append);  // + stdout `>`/`>>` redirect (issue #88)
 void gui_launch_elf(const char* path);  // desktop-icon launch: foreground-run an ELF (kernel.c)
 int  doom_window_present(const uint32_t* src, uint32_t w, uint32_t h); // reroute DOOM's frame into its window (compositor.c)
 // Desktop window launchers (games / apps / P4 perf-demos, all in compositor.c) live in

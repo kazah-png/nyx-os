@@ -672,8 +672,9 @@ void command_complete(const char* partial, char* out, int out_size, int* match_c
 // Run a userspace ELF as a foreground job: spawn it (forwarding argv), block —
 // repainting the desktop so it stays live — until it exits, then reap it and print
 // the exit code. Shared by `exec` and the shell's auto-exec fallback.
-static int run_foreground_elf(const char* path, char* const* argv, int argc) {
-    int pid = spawn_user_path_args(path, argv, argc);
+static int run_foreground_elf_redir(const char* path, char* const* argv, int argc,
+                                    const char* redir_path, int redir_append) {
+    int pid = spawn_user_path_args_redir(path, argv, argc, redir_path, redir_append);
     if (pid < 0) {
         printf("exec: could not load %s (err %d)\n", path, pid);
         return pid;
@@ -693,6 +694,10 @@ static int run_foreground_elf(const char* path, char* const* argv, int argc) {
     compositor_redraw_now();
     printf("[exec] PID %d exited (code %d)\n", pid, code);
     return code;
+}
+
+static int run_foreground_elf(const char* path, char* const* argv, int argc) {
+    return run_foreground_elf_redir(path, argv, argc, (const char*)0, 0);
 }
 
 // GUI entry point: launch a userspace ELF from a desktop icon EXACTLY the way the shell
@@ -845,7 +850,20 @@ void execute_command(const char* cmd_line) {
     // name; the child gets the full argv.
     char path[128];
     if (resolve_user_elf(argv[0], path, sizeof(path))) {
-        run_foreground_elf(path, argv, argc);
+        // Strip a trailing `> file` / `>> file` and route the child's stdout there
+        // (issue #88 — the exec path used to pass ">"/"file" as args and print to the
+        // console). Builtins keep self-handling their own `>` (e.g. echo), so only the
+        // user-ELF path is touched here.
+        const char* redir = (const char*)0; int redir_append = 0; int rargc = argc;
+        for (int i = 1; i + 1 < argc; i++) {
+            if (strcmp(argv[i], ">") == 0 || strcmp(argv[i], ">>") == 0) {
+                redir = argv[i + 1];
+                redir_append = (argv[i][1] == '>');
+                rargc = i;                     // real command + args end before the operator
+                break;
+            }
+        }
+        run_foreground_elf_redir(path, argv, rargc, redir, redir_append);
         if (argbuf) kfree(argbuf);
         return;
     }
@@ -6657,7 +6675,16 @@ static void cmd_taskset(int argc, char** argv) {
 // process exits). Marked sched_managed so irq_scheduler_tick round-robins it; it
 // leaves via the SYS_EXIT zombie path and reap_zombies() frees it. Returns the new
 // PID, or a negative error code.
-int spawn_user_path_args(const char* path, char* const* argv, int argc) {
+// Spawn a ring-3 ELF, optionally with its stdout (fd 1) redirected to `redir_path`
+// (shell `prog > file` / `>> file` — issue #88). A fresh process has empty fd 0/1/2
+// (SYS_WRITE 1/2 falls back to the console), so installing a VFS handle at the child's
+// fd 1 makes write(1,…) route through vfs_pwrite to the file instead — the same table-
+// wins-over-console path dup2'd pipes already use. Installed BEFORE sched_enable(), so
+// the child cannot run (and write) until its stdout is wired. The handle is closed
+// (and the mount file flushed) when the process is reaped, which the foreground caller
+// waits for. redir_path == NULL keeps the console.
+int spawn_user_path_args_redir(const char* path, char* const* argv, int argc,
+                               const char* redir_path, int redir_append) {
     int fd = vfs_open(path, 0, 0);
     if (fd < 0) return -1;
     uint32_t size = vfs_fsize(fd);
@@ -6691,8 +6718,23 @@ int spawn_user_path_args(const char* path, char* const* argv, int argc) {
     extern process_t* get_current_process(void);
     process_t* parent = get_current_process();
     proc->ppid = parent ? parent->pid : 0;   // so kwait() can find/wake the parent
+    // stdout redirect (`> file` / `>> file`): open the target and pin it at the child's
+    // fd 1 before it can run. On failure, leave fd 1 empty (writes go to the console).
+    if (redir_path && *redir_path) {
+        int h = vfs_open(redir_path, redir_append ? O_CREAT : (O_CREAT | O_TRUNC), 0644);
+        if (h >= 0) {
+            proc->ufd_inuse[1]  = 1;
+            proc->ufd_handle[1] = h;
+            proc->ufd_offset[1] = 0;
+            if (redir_append) { int sz = vfs_fsize(h); proc->ufd_offset[1] = (sz > 0) ? (uint32_t)sz : 0; }
+        }
+    }
     sched_enable();
     return (int)proc->pid;
+}
+
+int spawn_user_path_args(const char* path, char* const* argv, int argc) {
+    return spawn_user_path_args_redir(path, argv, argc, (const char*)0, 0);
 }
 
 int spawn_user_path(const char* path) {
