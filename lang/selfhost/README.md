@@ -155,6 +155,15 @@ stripped (the normalization rule lives in
    bad_pf_param     2: compose pageflags from the PROT_* constants — ...
    bad_binop_str    3: operator '+' cannot be applied to str values ...
    bad_ptr_arith    3: operator '+': pointers only support comparison ...
+   bad_own_useafter 6: use of 'f' after move
+   bad_own_mut      4: own bindings are immutable — ownership transfers by move (v0.17)
+   bad_own_discard  5: own result discarded — bind it so someone owns it
+   bad_own_loop     7: own value 'f' cannot move inside a loop — ...
+   bad_own_while_cond 5: own value 'f' cannot move inside a loop — ...
+   bad_own_match_move 8: own value 'f' cannot move inside a match arm — ...
+   bad_own_branch   6: own value 'f' is consumed in only one branch of this if — ...
+   bad_own_branch_noelse 6: own value 'f' is consumed in only one branch ...
+   bad_drop_branch  7: own value 'p' is consumed in only one branch ...
 
 plus ALL TWENTY-TWO examples as POSITIVE targets — the complete
 directory checks clean, silence enforced, nparse.n's 150K included. Coverage, stated honestly: extern
@@ -206,6 +215,30 @@ the checker became the biggest N program yet written. Struct
 fields, enum semantics and method returns still fall back softly
 (their tables are the next rungs); the claimed rows never reach
 them.
+
+**Rung 10a — own states and consume points (landed): NINE ROWS,
+AND THE BRANCH MERGE CAME EARLY.** The deepest family opened: the
+struct table records `own` (and holds the `#[drop]` span for the
+declarations rung), every binding carries an ownership state —
+NONE, LIVE at an own birth (a consumption obligation), HELD for an
+own parameter (the callee is the owner of record), MOVED after a
+consume — and ncc's `own_move_expr` transliterates as `cmove` at
+the five consume points: call arguments (each after its type
+check), a `let` init, an assignment's rhs, a `return`, and the
+block tail (at line 0, ncc's own oddity). The v0.18 gates ride
+LOOP_DEPTH — covering while BODIES and while CONDITIONS, which
+re-evaluate — and MATCH_DEPTH; moved values refuse further use at
+the path itself, `own` + `mut` refuses at the binding, and an own
+result nobody binds is refused at the statement (whose line ncc
+stamps AFTER the semicolon — the parser now does too). Then own.n
+itself forced the ladder's hand: its legal flows use v0.18
+branch-aware consumption (both arms move, or a returning arm is
+exempt), so the S_IF machinery came forward from the flow rung —
+pre-if states snapshot, each arm checks from the same start, and
+the exits must agree at the merge unless an arm returns. That
+carried the branch-agreement rows with it: nine rows this rung,
+fifty-one total, and own.n stays the silence that proves the legal
+side of every one of them.
 
 **Rung 9 — pageflags and the operator rules (landed): THE EXAMPLES
 LEDGER CLOSES.** The four PROT_* constants predeclare (checked

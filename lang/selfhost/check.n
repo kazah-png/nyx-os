@@ -65,8 +65,10 @@
 //   st[33] node arena   st[34] node count   st[35] list arena
 //   st[36] list count   st[37] fn table (externs + fns, 8 words:
 //     span, np, caps, body, param-list start, kind 0=extern 1=fn)
-//   st[38] fn count     st[39] vars (span + mut, 3 words)
+//   st[38] fn count     st[39] vars (10 words: span, mut, T,
+//     pmask, own_state 0 none/1 live/2 moved/3 held, spare)
 //   st[40] var count    st[41] the error flag (first error wins)
+//   st[55] LOOP_DEPTH   st[56] MATCH_DEPTH (the v0.18 move gates)
 //
 // The target path is fixed: /tmp/n_check_target.n — the harness
 // copies each source there before a run.
@@ -554,16 +556,22 @@ fn ffind(p: *u8, st: *i64, ss: i64, sl: i64) -> i64 {
     return -1;
 }
 
-// The struct table (ncc's STRUCTS/struct_lookup): 4-word records —
+// The struct table (ncc's STRUCTS/struct_lookup): 8-word records —
 // name span, field count, field-record start (6-word span+T records
-// in the flat list arena, the same shape params use).
-fn sadd(st: *i64, ss: i64, sl: i64, nf: i64, fst: i64) {
+// in the flat list arena, the same shape params use), the own flag
+// (ncc's is_own, v0.17) and the #[drop(...)] attribute span (0,0 =
+// none — validated at rung 10c), one spare.
+fn sadd(st: *i64, ss: i64, sl: i64, nf: i64, fst: i64, ow: i64, ds: i64, dl: i64) {
     sa := st[49] as *i64;
     i := st[50];
-    sa[i * 4] = ss;
-    sa[i * 4 + 1] = sl;
-    sa[i * 4 + 2] = nf;
-    sa[i * 4 + 3] = fst;
+    sa[i * 8] = ss;
+    sa[i * 8 + 1] = sl;
+    sa[i * 8 + 2] = nf;
+    sa[i * 8 + 3] = fst;
+    sa[i * 8 + 4] = ow;
+    sa[i * 8 + 5] = ds;
+    sa[i * 8 + 6] = dl;
+    sa[i * 8 + 7] = 0;
     st[50] = i + 1;
 }
 
@@ -571,7 +579,7 @@ fn sfind(p: *u8, st: *i64, ss: i64, sl: i64) -> i64 {
     sa := st[49] as *i64;
     mut i := 0;
     while i < st[50] {
-        if span_eq(p, sa[i * 4], sa[i * 4 + 1], ss, sl) { return i; }
+        if span_eq(p, sa[i * 8], sa[i * 8 + 1], ss, sl) { return i; }
         i = i + 1;
     }
     return -1;
@@ -581,8 +589,17 @@ fn sfind(p: *u8, st: *i64, ss: i64, sl: i64) -> i64 {
 fn sfty(st: *i64, si: i64, q: i64) -> T {
     sa := st[49] as *i64;
     al := st[35] as *i64;
-    r := sa[si * 4 + 3] + q * 6;
+    r := sa[si * 8 + 3] + q * 6;
     T{ pt: al[r + 2], us: al[r + 3], s: al[r + 4], l: al[r + 5] }
+}
+
+// Is t a value of an `own struct` type? (ncc's ty_is_own, v0.17)
+fn tyown(p: *u8, st: *i64, t: T) -> bool {
+    if t.l == 0 || t.pt != 0 { return false; }
+    si := sfind(p, st, t.s, t.l);
+    if si < 0 { return false; }
+    sa := st[49] as *i64;
+    return sa[si * 8 + 4] == 1;
 }
 
 // The enum table (ncc's ENUMS/enum_lookup): 4-word records — name
@@ -700,30 +717,92 @@ fn mseed(p: *u8, st: *i64, ei: i64, vi: i64, bst: i64, nb: i64) {
 fn vadd(st: *i64, ss: i64, sl: i64, m: i64, t: T) {
     va := st[39] as *i64;
     i := st[40];
-    va[i * 8] = ss;
-    va[i * 8 + 1] = sl;
-    va[i * 8 + 2] = m;
-    va[i * 8 + 3] = t.pt;
-    va[i * 8 + 4] = t.us;
-    va[i * 8 + 5] = t.s;
-    va[i * 8 + 6] = t.l;
-    va[i * 8 + 7] = -1;                    // pmask: -1 = unknown flags
-    st[40] = i + 1;                        // (ncc's parameter default)
+    va[i * 10] = ss;
+    va[i * 10 + 1] = sl;
+    va[i * 10 + 2] = m;
+    va[i * 10 + 3] = t.pt;
+    va[i * 10 + 4] = t.us;
+    va[i * 10 + 5] = t.s;
+    va[i * 10 + 6] = t.l;
+    va[i * 10 + 7] = -1;                   // pmask: -1 = unknown flags
+    va[i * 10 + 8] = 0;                    // own_state: ncc's OWN_NONE —
+    va[i * 10 + 9] = 0;                    // births/params set it; spare
+    st[40] = i + 1;
 }
 
 fn vty(st: *i64, v: i64) -> T {
     va := st[39] as *i64;
-    T{ pt: va[v * 8 + 3], us: va[v * 8 + 4], s: va[v * 8 + 5], l: va[v * 8 + 6] }
+    T{ pt: va[v * 10 + 3], us: va[v * 10 + 4], s: va[v * 10 + 5], l: va[v * 10 + 6] }
 }
 
 fn vfind(p: *u8, st: *i64, ss: i64, sl: i64) -> i64 {
     va := st[39] as *i64;
     mut i := st[40] - 1;
     while i >= 0 {
-        if span_eq(p, va[i * 8], va[i * 8 + 1], ss, sl) { return i; }
+        if span_eq(p, va[i * 10], va[i * 10 + 1], ss, sl) { return i; }
         i = i - 1;
     }
     return -1;
+}
+
+// v0.17 move point (ncc's own_move_expr): expression i is consumed
+// as a VALUE (bound, passed, returned, assigned, or a block tail).
+// A bare path naming an own binding transfers ownership here — the
+// binding becomes MOVED. Field reads are NOT moves: `f.fd` peeks,
+// `f` transfers. The v0.18 gates refuse moves where the statement
+// may run zero or many times — loop bodies AND while conditions
+// (the condition re-evaluates every iteration) — and inside match
+// arms (consume conditionally with if/else instead).
+fn cmove(p: *u8, st: *i64, i: i64, ln: i64) {
+    if st[41] == 1 { return; }
+    if i == 0 { return; }
+    nd := st[33] as *i64;
+    if nd[i * 8] != 5 { return; }
+    v := vfind(p, st, nd[i * 8 + 5], nd[i * 8 + 6]);
+    if v < 0 { return; }
+    va := st[39] as *i64;
+    o := va[v * 10 + 8];
+    if o == 0 { return; }
+    if o == 2 {
+        put("{ln}: use of '");
+        put_span(p, nd[i * 8 + 5], nd[i * 8 + 6]);
+        put("' after move\n");
+        st[41] = 1;
+        return;
+    }
+    if st[55] > 0 {
+        put("{ln}: own value '");
+        put_span(p, nd[i * 8 + 5], nd[i * 8 + 6]);
+        put("' cannot move inside a loop — the move could run zero or many times (v0.18)\n");
+        st[41] = 1;
+        return;
+    }
+    if st[56] > 0 {
+        put("{ln}: own value '");
+        put_span(p, nd[i * 8 + 5], nd[i * 8 + 6]);
+        put("' cannot move inside a match arm — consume it with if/else instead (v0.18)\n");
+        st[41] = 1;
+        return;
+    }
+    va[v * 10 + 8] = 2;
+}
+
+// Does this block's LAST statement `return`? (ncc's block_returns.)
+// A returning if-arm never reaches the merge point below, so it is
+// exempt from the branch-agreement rule — the return's own path was
+// already policed there.
+fn brret(st: *i64, b: i64) -> i64 {
+    nd := st[33] as *i64;
+    if b == 0 { return 0; }
+    if nd[b * 8 + 3] == 0 { return 0; }
+    mut s := nd[b * 8 + 1];
+    mut lst := 0;
+    while s > 0 {
+        lst = s;
+        s = nd[s * 8 + 7];
+    }
+    if nd[lst * 8] == 22 { return 1; }
+    return 0;
 }
 
 // ---------------------------------------------------------------- //
@@ -774,7 +853,7 @@ fn cpfmask(p: *u8, st: *i64, i: i64) -> i64 {
         v := vfind(p, st, nd[i * 8 + 5], nd[i * 8 + 6]);
         if v >= 0 {
             va := st[39] as *i64;
-            return va[v * 8 + 7];
+            return va[v * 10 + 7];
         }
         return -1;
     }
@@ -1548,10 +1627,10 @@ fn pblock(p: *u8, n: i64, st: *i64) -> i64 {
                 sn = nnew(st, 23, h, 0, 1, ln, 0, 0);
                 done = 1;
             }
-            if done == 0 && acc(p, n, st, 42) {     // e ;
-                sn = nnew(st, 23, h, 0, 0, ln, 0, 0);
-                done = 1;
-            }
+            if done == 0 && acc(p, n, st, 42) {     // e ; — ncc's news()
+                sn = nnew(st, 23, h, 0, 0, st[25], 0, 0);   // runs AFTER
+                done = 1;                  // the ';', so the stmt carries
+            }                              // the NEXT token's line
             if done == 0 {                 // the block tail
                 if !ck(st, 40) { perr(st); return 0; }
                 adv(p, n, st);
@@ -1626,9 +1705,9 @@ fn skip_item(p: *u8, n: i64, st: *i64) {
 
 // struct Name { f: ty, ... } — parse.n's pstruct accreted back,
 // transformed: fields land in the struct table instead of a D line.
-// The #[drop]/own attributes were consumed by the item loop; their
-// semantics (destructors, ownership) are later rungs.
-fn pstruct(p: *u8, n: i64, st: *i64, ps: *i64) {
+// The own flag and the #[drop] span arrive from the item loop and
+// land in the table: ownership is live (rung 10a), drop is 10c.
+fn pstruct(p: *u8, n: i64, st: *i64, ow: i64, ds: i64, dl: i64, ps: *i64) {
     if !ck(st, 7) { perr(st); return; }
     ns := st[26];
     nl := st[27];
@@ -1664,7 +1743,7 @@ fn pstruct(p: *u8, n: i64, st: *i64, ps: *i64) {
         while w < 6 { ladd(st, ps[q * 6 + w]); w = w + 1; }
         q = q + 1;
     }
-    sadd(st, ns, nl, nf, fst);
+    sadd(st, ns, nl, nf, fst, ow, ds, dl);
 }
 
 // enum Name { V, W(f: ty, ...), ... } — parse.n's penum accreted
@@ -1873,12 +1952,19 @@ fn pitems(p: *u8, n: i64, st: *i64, ps: *i64) {
         if st[41] == 1 { going = false; continue; }   // a parse-time
         if ck(st, 0) { going = false; continue; }     // error already won
         mut caps := 0;
-        if ck(st, 33) { adv(p, n, st); }   // #[drop(fn)] rides a struct
+        mut ds := 0;
+        mut dl := 0;
+        if ck(st, 33) {                    // #[drop(fn)] rides a struct;
+            ds = st[26];                   // its span goes to the table
+            dl = st[27];                   // (the 10c rung validates it)
+            adv(p, n, st);
+        }
         if acc(p, n, st, 32) { caps = 1; } // #[caps(syscall)]
-        ow := acc(p, n, st, 36);           // 'own' — its struct skips
+        mut owi := 0;                      // 'own' — the table records it
+        if acc(p, n, st, 36) { owi = 1; }
         if ck(st, 22) {                    // struct: a real parse now —
             adv(p, n, st);                 // the table rung landed
-            pstruct(p, n, st, ps);
+            pstruct(p, n, st, owi, ds, dl, ps);
             continue;
         }
         if ck(st, 24) {                    // enum: a real parse now —
@@ -1929,6 +2015,16 @@ fn cexpr(p: *u8, st: *i64, i: i64) {
             put("'\n");
             st[41] = 1;
         }
+        if v >= 0 {                        // v0.17: no life after move
+            va := st[39] as *i64;
+            if va[v * 10 + 8] == 2 {
+                ln2 := nd[i * 8 + 4];
+                put("{ln2}: use of '");
+                put_span(p, nd[i * 8 + 5], nd[i * 8 + 6]);
+                put("' after move\n");
+                st[41] = 1;
+            }
+        }
         return;
     }
     if k == 6 {                            // call
@@ -1978,6 +2074,8 @@ fn cexpr(p: *u8, st: *i64, i: i64) {
                     st[41] = 1;
                     return;
                 }
+                cmove(p, st, al[nd[i * 8 + 2] + q], ln);   // v0.17
+                if st[41] == 1 { return; }
                 q = q + 1;
             }
             return;
@@ -2030,6 +2128,8 @@ fn cexpr(p: *u8, st: *i64, i: i64) {
                     st[41] = 1;
                     return;
                 }
+                cmove(p, st, al[nd[i * 8 + 2] + q3], ln);  // v0.17
+                if st[41] == 1 { return; }
                 q3 = q3 + 1;
             }
             return;
@@ -2095,8 +2195,8 @@ fn cexpr(p: *u8, st: *i64, i: i64) {
                 sa := st[49] as *i64;
                 mut ok := 0;
                 mut q5 := 0;
-                while q5 < sa[si * 4 + 2] {
-                    r := sa[si * 4 + 3] + q5 * 6;
+                while q5 < sa[si * 8 + 2] {
+                    r := sa[si * 8 + 3] + q5 * 6;
                     if span_eq(p, al[r], al[r + 1], nd[i * 8 + 5], nd[i * 8 + 6]) { ok = 1; }
                     q5 = q5 + 1;
                 }
@@ -2251,11 +2351,11 @@ fn cexpr(p: *u8, st: *i64, i: i64) {
             return;
         }
         sa2 := st[49] as *i64;
-        nf := sa2[si2 * 4 + 2];
+        nf := sa2[si2 * 8 + 2];
         lst := nd[i * 8 + 1];
         mut q4 := 0;
         while q4 < nf {
-            r2 := sa2[si2 * 4 + 3] + q4 * 6;
+            r2 := sa2[si2 * 8 + 3] + q4 * 6;
             mut seen := 0;
             mut j := 0;
             while j < na2 {
@@ -2289,7 +2389,7 @@ fn cexpr(p: *u8, st: *i64, i: i64) {
             mut dt := t_i64(st);
             mut q6 := 0;
             while q6 < nf {
-                r3 := sa2[si2 * 4 + 3] + q6 * 6;
+                r3 := sa2[si2 * 8 + 3] + q6 * 6;
                 if span_eq(p, al[r3], al[r3 + 1], al[lst + j2 * 3], al[lst + j2 * 3 + 1]) { dt = sfty(st, si2, q6); }
                 q6 = q6 + 1;
             }
@@ -2509,7 +2609,7 @@ fn ctry(p: *u8, st: *i64, i: i64, form: i64) {
         if nd[r7 * 8] == 5 {
             v8 := vfind(p, st, nd[r7 * 8 + 5], nd[r7 * 8 + 6]);
             va3 := st[39] as *i64;
-            if v8 >= 0 && va3[v8 * 8 + 2] == 0 {
+            if v8 >= 0 && va3[v8 * 10 + 2] == 0 {
                 put("{ln}: cannot assign to immutable '");
                 put_span(p, nd[r7 * 8 + 5], nd[r7 * 8 + 6]);
                 put("' (declare it with 'mut')\n");
@@ -2574,10 +2674,22 @@ fn cstmt(p: *u8, st: *i64, i: i64) {
             st[41] = 1;
             return;
         }
+        cmove(p, st, nd[i * 8 + 1], nd[i * 8 + 4]);   // the init
+        if st[41] == 1 { return; }         // consumes its source (ncc's
+        if tyown(p, st, rt2) && nd[i * 8 + 3] == 1 {  // order: move first,
+            ln6 := nd[i * 8 + 4];                     // then the refusal)
+            put("{ln6}: own bindings are immutable — ownership transfers by move (v0.17)\n");
+            st[41] = 1;
+            return;
+        }
         vadd(st, nd[i * 8 + 5], nd[i * 8 + 6], nd[i * 8 + 3], rt2);
         if span_is(p, rt2, st[44] + 28, 9) {   // a pageflags bind tracks
             va2 := st[39] as *i64;             // its static flag set
-            va2[(st[40] - 1) * 8 + 7] = cpfmask(p, st, nd[i * 8 + 1]);
+            va2[(st[40] - 1) * 10 + 7] = cpfmask(p, st, nd[i * 8 + 1]);
+        }
+        if tyown(p, st, rt2) {             // v0.17 birth: an own value
+            va6 := st[39] as *i64;         // MUST be consumed
+            va6[(st[40] - 1) * 10 + 8] = 1;
         }
         return;
     }
@@ -2599,7 +2711,7 @@ fn cstmt(p: *u8, st: *i64, i: i64) {
         if nd[r * 8] == 5 {
             v := vfind(p, st, nd[r * 8 + 5], nd[r * 8 + 6]);
             va := st[39] as *i64;
-            if v >= 0 && va[v * 8 + 2] == 0 {
+            if v >= 0 && va[v * 10 + 2] == 0 {
                 ln := nd[i * 8 + 4];
                 put("{ln}: cannot assign to immutable '");
                 put_span(p, nd[r * 8 + 5], nd[r * 8 + 6]);
@@ -2631,11 +2743,13 @@ fn cstmt(p: *u8, st: *i64, i: i64) {
             st[41] = 1;
             return;
         }
+        cmove(p, st, nd[i * 8 + 2], nd[i * 8 + 4]);   // v0.17: the
+        if st[41] == 1 { return; }                    // assignment consumes
         if nd[r * 8] == 5 {                // a reassigned pageflags bind
             v9 := vfind(p, st, nd[r * 8 + 5], nd[r * 8 + 6]);
             if v9 >= 0 && span_is(p, vty(st, v9), st[44] + 28, 9) {
                 va9 := st[39] as *i64;     // keeps its flag set current
-                va9[v9 * 8 + 7] = cpfmask(p, st, nd[i * 8 + 2]);
+                va9[v9 * 10 + 7] = cpfmask(p, st, nd[i * 8 + 2]);
             }
         }
         return;
@@ -2662,8 +2776,9 @@ fn cstmt(p: *u8, st: *i64, i: i64) {
                 put("\n");
                 st[41] = 1;
             }
-            return;
-        }
+            cmove(p, st, nd[i * 8 + 1], nd[i * 8 + 4]);   // v0.17:
+            return;                                       // returning
+        }                                                 // consumes
         if rt4.l > 0 && !nvr {
             ln3 := nd[i * 8 + 4];
             put("{ln3}: 'return' without a value in a function returning ");
@@ -2673,19 +2788,65 @@ fn cstmt(p: *u8, st: *i64, i: i64) {
         }
         return;
     }
-    if k == 23 { cexpr(p, st, nd[i * 8 + 1]); return; }   // expr stmt
-    if k == 24 {                           // while
-        cexpr(p, st, nd[i * 8 + 1]);
-        cblock(p, st, nd[i * 8 + 2]);
+    if k == 23 {                           // expr stmt: an own result
+        cexpr(p, st, nd[i * 8 + 1]);       // nobody binds is refused
+        if st[41] == 1 { return; }
+        if tyown(p, st, cinfer(p, st, nd[i * 8 + 1])) {
+            ln7 := nd[i * 8 + 4];
+            put("{ln7}: own result discarded — bind it so someone owns it\n");
+            st[41] = 1;
+        }
         return;
     }
-    if k == 25 {                           // if: cond, then, else (the
-        cexpr(p, st, nd[i * 8 + 1]);       // else slot may hold an if)
+    if k == 24 {                           // while: LOOP_DEPTH covers
+        st[55] = st[55] + 1;               // the CONDITION too — it re-
+        cexpr(p, st, nd[i * 8 + 1]);       // evaluates every iteration
+        cblock(p, st, nd[i * 8 + 2]);      // (ncc v0.18)
+        st[55] = st[55] - 1;
+        return;
+    }
+    if k == 25 {                           // if: cond, then, else — and
+        cexpr(p, st, nd[i * 8 + 1]);       // ncc's v0.18 branch-aware own
+        n0 := st[40];                      // tracking: BOTH arms check
+        sb := sys_sbrk((n0 * 2 + 1) * 8) as *i64;   // from the same pre-if
+        va7 := st[39] as *i64;             // states, and the two exits
+        mut j := 0;                        // must AGREE at the merge
+        while j < n0 {                     // point below
+            sb[j] = va7[j * 10 + 8];       // pre[] = the pre-if states
+            j = j + 1;
+        }
         cblock(p, st, nd[i * 8 + 2]);
+        mut j2 := 0;
+        while j2 < n0 {
+            sb[n0 + j2] = va7[j2 * 10 + 8];    // thn[] = the then exit;
+            va7[j2 * 10 + 8] = sb[j2];         // the else arm starts from
+            j2 = j2 + 1;                       // pre again
+        }
         els := nd[i * 8 + 3];
+        mut er := 0;
         if els > 0 {
             if nd[els * 8] == 25 { cstmt(p, st, els); }
-            if nd[els * 8] == 40 { cblock(p, st, els); }
+            if nd[els * 8] == 40 {         // (an else-if chain merges in
+                cblock(p, st, els);        // its own nested k==25 pass —
+                er = brret(st, els);       // ncc wraps it in a block, so
+            }                              // its e_ret is 0 there too)
+        }
+        if st[41] == 1 { return; }
+        tr := brret(st, nd[i * 8 + 2]);
+        mut j3 := 0;
+        while j3 < n0 {                    // the merge (ncc's loop): a
+            tv := sb[n0 + j3];             // returning arm never reaches
+            if tr == 1 && er == 1 { va7[j3 * 10 + 8] = tv; }   // it; with
+            if tr == 0 && er == 1 { va7[j3 * 10 + 8] = tv; }   // both live
+            if tr == 0 && er == 0 && tv != va7[j3 * 10 + 8] {  // they must
+                ln8 := nd[i * 8 + 4];                          // agree
+                put("{ln8}: own value '");
+                put_span(p, va7[j3 * 10], va7[j3 * 10 + 1]);
+                put("' is consumed in only one branch of this if — both branches must agree (v0.18)\n");
+                st[41] = 1;
+                return;
+            }
+            j3 = j3 + 1;
         }
         return;
     }
@@ -2705,7 +2866,9 @@ fn cstmt(p: *u8, st: *i64, i: i64) {
         if st[41] == 1 { return; }
         vsave := st[40];
         vadd(st, nd[i * 8 + 5], nd[i * 8 + 6], 0, t_i64(st));
-        cblock(p, st, nd[i * 8 + 3]);
+        st[55] = st[55] + 1;               // the body may run 0..N times;
+        cblock(p, st, nd[i * 8 + 3]);      // the hoisted bounds stay out
+        st[55] = st[55] - 1;               // of the guard (ncc v0.18)
         st[40] = vsave;
         return;
     }
@@ -2771,7 +2934,8 @@ fn cstmt(p: *u8, st: *i64, i: i64) {
         }
         mt2 := al[hd];
         if mt2 == 0 {                      // statement form: arm bodies
-            mut a4 := 0;                   // check with binds in scope
+            st[56] = st[56] + 1;           // check with binds in scope —
+            mut a4 := 0;                   // own moves stay out (v0.18)
             while a4 < na3 {
                 vi6 := vfindx(p, st, ei, al[armb + a4 * 6], al[armb + a4 * 6 + 1]);
                 vsave2 := st[40];
@@ -2781,6 +2945,7 @@ fn cstmt(p: *u8, st: *i64, i: i64) {
                 if st[41] == 1 { return; }
                 a4 = a4 + 1;
             }
+            st[56] = st[56] - 1;
             return;
         }
         mut res := t_void();               // expression forms: every arm
@@ -2816,6 +2981,11 @@ fn cstmt(p: *u8, st: *i64, i: i64) {
             }
             a5 = a5 + 1;
         }
+        if tyown(p, st, res) {             // v0.17: only one arm runs —
+            put("{ln4}: own values cannot flow through a match expression (v0.17)\n");
+            st[41] = 1;                    // the flat tracker cannot
+            return;                        // follow that
+        }
         if mt2 == 2 {                      // lhs = match: S_ASSIGN's own
             lhs2 := al[hd + 1];            // checks against the result
             cexpr(p, st, lhs2);
@@ -2833,7 +3003,7 @@ fn cstmt(p: *u8, st: *i64, i: i64) {
             if nd[r6 * 8] == 5 {
                 v6 := vfind(p, st, nd[r6 * 8 + 5], nd[r6 * 8 + 6]);
                 va2 := st[39] as *i64;
-                if v6 >= 0 && va2[v6 * 8 + 2] == 0 {
+                if v6 >= 0 && va2[v6 * 10 + 2] == 0 {
                     put("{ln4}: cannot assign to immutable '");
                     put_span(p, nd[r6 * 8 + 5], nd[r6 * 8 + 6]);
                     put("' (declare it with 'mut')\n");
@@ -2904,7 +3074,10 @@ fn cblock(p: *u8, st: *i64, i: i64) {
         s = nd[s * 8 + 7];
     }
     t := nd[i * 8 + 2];
-    if t > 0 { cexpr(p, st, t); }
+    if t > 0 {
+        cexpr(p, st, t);
+        cmove(p, st, t, 0);                // ncc: own_move_expr(tail, 0)
+    }
     st[43] = st[43] - 1;
     st[40] = vsave;
 }
@@ -2919,6 +3092,8 @@ fn cmeth(p: *u8, st: *i64, mi: i64) {
     st[40] = 0;
     st[42] = 0;                            // CUR_FN_CAPS: none
     st[43] = 0;
+    st[55] = 0;                            // LOOP/MATCH depth (ncc resets
+    st[56] = 0;                            // them per method too)
     crt2 := mrty(st, mi);                  // CUR_RET = the method's
     st[45] = crt2.pt;
     st[46] = crt2.us;
@@ -2945,6 +3120,8 @@ fn cfn(p: *u8, st: *i64, fi: i64) {
     st[40] = 0;
     st[42] = ft[fi * 8 + 3];               // CUR_FN_CAPS, ncc's reset
     st[43] = 0;                            // BLOCK_DEPTH, per function
+    st[55] = 0;                            // LOOP_DEPTH and MATCH_DEPTH
+    st[56] = 0;                            // reset per function (ncc)
     crt := frty(st, fi);                   // CUR_RET at st[45..48]
     st[45] = crt.pt;
     st[46] = crt.us;
@@ -2955,6 +3132,10 @@ fn cfn(p: *u8, st: *i64, fi: i64) {
         r := ft[fi * 8 + 5] + q * 6;
         pt2 := T{ pt: al[r + 2], us: al[r + 3], s: al[r + 4], l: al[r + 5] };
         vadd(st, al[r], al[r + 1], 0, pt2);
+        if tyown(p, st, pt2) {             // v0.17: this fn is the owner
+            vh := st[39] as *i64;          // now — HELD, no obligation
+            vh[(st[40] - 1) * 10 + 8] = 3;
+        }
         q = q + 1;
     }
     cblock(p, st, ft[fi * 8 + 4]);
@@ -3033,8 +3214,8 @@ fn cinfer(p: *u8, st: *i64, i: i64) -> T {
                 sa := st[49] as *i64;
                 al := st[35] as *i64;
                 mut q := 0;
-                while q < sa[si * 4 + 2] {
-                    r := sa[si * 4 + 3] + q * 6;
+                while q < sa[si * 8 + 2] {
+                    r := sa[si * 8 + 3] + q * 6;
                     if span_eq(p, al[r], al[r + 1], nd[i * 8 + 5], nd[i * 8 + 6]) {
                         return sfty(st, si, q);
                     }

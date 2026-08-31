@@ -838,6 +838,40 @@ are FILE-level — no line number — which will need one more
 normalization design in the harness. The ladder's shape is
 familiar by now; the semantics are the deepest yet.
 
+### Rung 10a — own states, and the branch merge that came early
+
+The mechanical half went exactly as scouted: VARS grew from eight
+words a record to ten (slot 8 is the ownership state), the struct
+table from four to eight (the own flag, and the `#[drop]` span
+parked for the declarations rung), and every reader was swept in
+one asserted pass. The semantic half is ncc's `own_move_expr` as
+`cmove`: a bare path naming an own binding, consumed as a value at
+a call argument, a `let` init, an assignment, a `return` or a
+block tail, transfers ownership — MOVED values refuse further use,
+`own` bindings refuse `mut`, an own result nobody binds refuses
+the discard, and the v0.18 gates refuse moves under LOOP_DEPTH
+(while bodies AND while conditions — the condition re-evaluates)
+or MATCH_DEPTH. One parser fidelity find rode along: ncc stamps an
+expression statement AFTER its semicolon, so `make();` discarded
+on line 4 reports line 5 — the rewrite now stamps the same token.
+
+The scout drew rung 10a at states and consume points, six rows.
+own.n redrew it. The language's own showcase example uses v0.18
+branch-aware consumption throughout — both arms of an `if` moving
+the value, a returning arm consuming and exiting — and the rung's
+first probe run refused it. Keeping own.n silent (the standing
+bar: every example an enforced silence) meant pulling the S_IF
+machinery forward from the flow rung: snapshot the pre-if states,
+check both arms from the same start, restore between them, and
+reconcile at the merge — a returning arm never reaches it, and
+two live exits must agree on every binding. With the machinery in,
+the agreement judgment is three more rows for free (`bad_own_branch`,
+its else-less twin, and the `#[drop]` variant). Nine rows, then:
+fifty-one of the corpus byte-exact, twenty-two silences held, and
+what remains of own/move is exactly the leak scan — rung 10b is
+now just that — before the declarations and their FILE-level
+normalization question.
+
 And the hardest lexer feature landed: **interpolation**. A toy string
 containing a brace lexes as segments — HEAD before the first hole,
 MID between holes, TAIL after the last (ncc's own
