@@ -585,5 +585,13 @@ is for. With the arenas sized for self-hosting (64K nodes, and the
 source buffer at 512K), all four fell on the first re-run. The
 suite's [8e] stage now holds the whole claim: the checker is
 silent on its own sources, and the generator reproduces ncc's C
-for the entire ladder, itself included. What remains is the same
-sentence spoken inside NyxOS.
+for the entire ladder, itself included.
+
+**Batch V55 speaks that sentence inside NyxOS.** The in-OS `cc`
+(TinyCC) compiles ncc, ncc compiles gen.n, and the resulting
+`ngen` -- running as a NyxOS user process -- emits the C of its own
+source: all 6,624 lines over the serial line, byte-identical to
+what ncc emits for gen.n on the host. Self-hosting's full circle,
+closed where the language lives: the compiler that compiles the
+compiler is itself compiled inside the operating system it was
+built for, and can reproduce itself there exactly.

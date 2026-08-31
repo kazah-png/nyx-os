@@ -1251,6 +1251,32 @@ the replayed ownership machine — identical over serial. One
 sentence remains, and it is the milestone's own: the generator,
 compiled inside NyxOS, emitting the C of its own source there.
 
+### V55 — the sentence, spoken inside NyxOS
+
+Batch V55 says it. The boot re-proves the ladder first — the lex
+and AST fences, all twelve check differentials, the four example
+emissions — and then points the in-OS generator at its own source:
+`cp /mnt/gen.n /mnt/n_gen_target.n`, and `ngen` writes 6,624 lines
+of C down the serial line. The harness compares them against what
+the reference ncc emits on the host for the same source — the one
+declared normalization is the injection's own /tmp→/mnt path
+rewrite, applied to the reference's input too, so both compilers
+see identical bytes. (The first run compared against the pristine
+source and diverged on exactly two lines: gen.n's own path string
+literals, faithfully reproduced from the rewritten on-image copy —
+the generator was right and the harness was comparing two
+different programs.) They are
+byte-identical.
+
+Read the chain in full: TinyCC — itself compiled inside NyxOS —
+compiles ncc; ncc compiles gen.n, a 5,000-line N program that
+carries the whole front half of the language (lexer, parser,
+checker) and the code generator; and that program, running as an
+ordinary user process, reproduces exactly the C that defines it.
+Every stage of the loop runs inside the operating system the
+language was built for. That is M5's sentence with every word
+load-bearing, and the batch fence is its proof.
+
 And the hardest lexer feature landed: **interpolation**. A toy string
 containing a brace lexes as segments — HEAD before the first hole,
 MID between holes, TAIL after the last (ncc's own
