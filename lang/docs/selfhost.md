@@ -1032,6 +1032,43 @@ the N compiler, written in N, compiling itself inside NyxOS. That
 is milestone M5's original sentence, and for the first time every
 word of it is load-bearing.
 
+### gen.n rung 1 — first C, byte for byte
+
+The fourth module opened the way the verdict predicted, and faster.
+gen.n is check.n accreted whole plus the emitters, and its first
+probe run held hello.n's generated C byte-identical to ncc's — the
+syscall wrappers, the prototypes, the interpolation lowering with
+its numbered temporaries, the escaped strings, the provenance
+comment. inference.n rode along free; countdown.n needed one more
+statement arm (`if`/`else`) and then matched too. Three programs,
+three `cmp`s, zero bytes of difference.
+
+The accretion cost three honest changes. The lexer had thrown raw
+string bodies away once it counted them — the emitters need to
+re-walk them, so string tokens now carry the body's start beside
+the count, and a decoder-reencoder translates N's escape spellings
+to C's (they are the same spellings, which is not a coincidence:
+ncc chose them). The interpolation parser had kept only the holes —
+the emitters need the text between them, so fragments became
+4-word records, text and holes alike. And the extern parser had
+discarded the syscall numbers the wrappers embed. None of these
+touched check.n: the third module is complete and frozen; the
+fourth carries its own copy forward, the way parse.n carried
+lex.n's.
+
+What makes this rung different from every rung before it is the
+comparison. The checker was held to ncc's first-error lines — a
+contract about wording. The generator is held to ncc's OUTPUT — a
+contract about everything: every space, every cast, every numbered
+temporary, the order of every prototype. Suite stage [8d] runs
+`cmp`, not `diff` with a normalization; there is nothing to
+normalize. The remaining distance to the summit is enumerable:
+else-if chains, struct and enum layouts, methods, defer's `__ret`
+form, match's switch lowering, try, own drops — the same corpus of
+constructs the checker climbed, now climbed again on the emission
+side, with the four self-host sources themselves waiting at the
+top as the final byte-exact targets.
+
 And the hardest lexer feature landed: **interpolation**. A toy string
 containing a brace lexes as segments — HEAD before the first hole,
 MID between holes, TAIL after the last (ncc's own

@@ -474,3 +474,34 @@ the in-OS run matched hello.n's 73 enriched lines and countdown.n's
 against a valid source means the lexer is wrong, and the differential
 would already have caught it. Sources are capped at 256K (nparse.n,
 the largest, is 150K).
+
+## gen.n — the generator (rung 1: first C, byte for byte)
+
+The fourth and final module. `gen.n` accretes `check.n` whole —
+generation assumes checked input, exactly as ncc's single pass does —
+and adds the emitters. Its differential needs NO normalization at
+all: copy the source to the fixed path (`/tmp/n_gen_target.n`), run
+`ncc` and `gen.n`'s hosted build over the same file, and `cmp` the
+two C outputs. Byte-identical, provenance comment included.
+
+Three accretion changes feed the emitters: the lexer keeps each
+string's RAW body start beside its decoded count (the emitter
+re-walks the body, translating N's escapes to C's — the same
+spellings, brace escapes decoding to bare braces), `pinterp` keeps
+EVERY fragment (text and holes, 4-word records) instead of holes
+only, and `pextern` keeps the syscall number the wrappers embed.
+The emitters then reproduce ncc's discipline: the header comment,
+the `static inline` syscall wrappers over `__nyx_syscall6`, the
+forward prototypes, `base_ctype`'s primitive map, and per function
+the numbered interpolation preludes (`__b0`/`__s0`, ncc's IID
+counter, assigned post-order), the statement forms, and the
+tail-return. Emission runs only after the whole check phase ends
+clean, over the same trees and tables, re-inferring with `cinfer`.
+
+**Rung 1 holds THREE examples byte-exact: hello.n, countdown.n and
+inference.n** — externs, bindings, interpolation, calls, casts,
+`.ptr`/`.len` lowering, arithmetic, `while`, `if`/`else` and both
+return forms, `cmp`-verified by suite stage [8d]. The checker half
+still refuses the corpus by spot-check through the same binary.
+Known rung-2 territory: `else if` chains (ncc wraps them in a
+block), struct/enum layouts, methods, and the defer/`__ret` forms.
