@@ -18,7 +18,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.5.8"
+#define KERNEL_VERSION "6.5.9"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -843,6 +843,9 @@ void slab_init_all(void);
 void init_heap(void);
 void* heap_alloc(size_t size);
 void heap_free(void* ptr);
+// Live kernel-heap stats (bytes; any out-arg may be NULL): used = committed to live allocations,
+// total = fixed heap size, hiwater = peak used, fails = allocations that found no fit. See heap.c.
+void heap_stats(size_t* used, size_t* total, size_t* hiwater, uint32_t* fails);
 
 void init_process(void);
 process_t* create_process(const char* name, void* entry, uint64_t flags);

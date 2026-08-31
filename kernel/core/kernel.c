@@ -289,6 +289,7 @@ extern int term_hist_selftest(void);        // gui/apps/terminal_win.c — Up/Do
 extern int term_rsearch_selftest(void);     // gui/apps/terminal_win.c — Ctrl+R reverse-i-search KAT
 extern int editor_find_selftest(void);      // gui/apps/editor_win.c — Ctrl+F find-search KAT
 extern int editor_replace_selftest(void);   // gui/apps/editor_win.c — Ctrl+R find-and-replace KAT
+extern int heap_selftest(void);             // mm/heap.c — kernel-heap usage-accounting KAT
 extern int tri_selftest(void);              // gui/core/tri.c — software triangle rasterizer KAT
 extern int triz_selftest(void);             // gui/core/tri.c — barycentric-Z + z-buffer KAT
 extern int trigou_selftest(void);           // gui/core/tri.c — RGB pack + Gouraud colour KAT
@@ -7461,7 +7462,12 @@ static void cmd_mem(int argc, char** argv) {
            used_kb / 1024, total_kb / 1024, pct, free_kb / 1024);
     printf("Physical RAM: %u MB installed (allocator manages up to %u MB)\n",
            (uint32_t)(memory_total / (1024*1024)), total_kb / 1024);
-    printf("Heap size: %d KB\n", KERNEL_HEAP_SIZE / 1024);
+    size_t h_used, h_total, h_hi; uint32_t h_fails;
+    heap_stats(&h_used, &h_total, &h_hi, &h_fails);
+    uint32_t hpct = h_total ? (uint32_t)(((uint64_t)h_used * 100) / h_total) : 0;
+    printf("Kernel heap: %u / %u KB used (%u%%), peak %u KB, %u alloc failure(s)\n",
+           (uint32_t)(h_used / 1024), (uint32_t)(h_total / 1024), hpct,
+           (uint32_t)(h_hi / 1024), h_fails);
 }
 
 static void cmd_cpus(int argc, char** argv) {
@@ -9594,6 +9600,7 @@ static void run_selftests(void) {
         {"kfree",        kfree_selftest},
         {"slab",         slab_selftest},
         {"pagealloc",    page_alloc_selftest},
+        {"heap",         heap_selftest},
         {"wx",           wx_selftest},
         {"elf",          elf_selftest},
         {"dynlink",      dynlink_load_selftest},
