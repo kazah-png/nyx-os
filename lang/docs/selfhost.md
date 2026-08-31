@@ -1069,6 +1069,30 @@ constructs the checker climbed, now climbed again on the emission
 side, with the four self-host sources themselves waiting at the
 top as the final byte-exact targets.
 
+### gen.n rung 2 — fourteen of twenty-two
+
+The scout ran all twenty-two examples through the `cmp` harness and
+bucketed the diffs; the widest bucket by far was the type layouts
+— twelve programs whose first divergence was a missing typedef —
+so the rung took layouts, the literal forms, and the counted `for`,
+and collected the small change the diffs pointed at along the way:
+`break` and `continue` had no arms, the `else if` chain needed
+ncc's synthesized block braces, the format specs needed their
+parsed width/zero/hex values carried through the fragment records
+to reach `__nyx_fmt_num` and `__nyx_fmt_hex`, and the unary `!`
+had simply never been rendered — the operator table was built for
+binary diagnostics, where `!` cannot appear, and the byte-diff
+found the gap inside a minute.
+
+Fourteen programs now emit byte-identical C, and one of them is
+nparse.n — the 150K-character toy compiler, the largest N program
+in the tree, its thousands of expressions, statements and
+interpolations all numbered and spaced exactly as ncc numbers and
+spaces them. What remains is the heavy lowerings, one rung each:
+match's switch, defer's braced `__ret`, try's propagation form,
+method bodies, and the own auto-drops — eight examples between
+here and a generator that holds the whole directory.
+
 And the hardest lexer feature landed: **interpolation**. A toy string
 containing a brace lexes as segments — HEAD before the first hole,
 MID between holes, TAIL after the last (ncc's own

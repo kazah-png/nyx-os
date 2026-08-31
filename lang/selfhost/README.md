@@ -498,10 +498,20 @@ counter, assigned post-order), the statement forms, and the
 tail-return. Emission runs only after the whole check phase ends
 clean, over the same trees and tables, re-inferring with `cinfer`.
 
-**Rung 1 holds THREE examples byte-exact: hello.n, countdown.n and
-inference.n** — externs, bindings, interpolation, calls, casts,
-`.ptr`/`.len` lowering, arithmetic, `while`, `if`/`else` and both
-return forms, `cmp`-verified by suite stage [8d]. The checker half
-still refuses the corpus by spot-check through the same binary.
-Known rung-2 territory: `else if` chains (ncc wraps them in a
-block), struct/enum layouts, methods, and the defer/`__ret` forms.
+**Rung 2 holds FOURTEEN examples byte-exact** — rung 1's three plus
+structs, forloop, caps, bytes, userptr, ncalc, nemit, nstack, nwin,
+pageflags and **nparse.n, the 150K toy compiler, byte-identical C
+end to end**. The rung added the struct and enum layout walks
+(C-typedef structs; tagged unions with the numbered tag comment),
+the three literal forms (compound-literal structs, tagged enum
+values, tag-only variant references), the counted `for` with its
+hoisted `__fsN`/`__feN` bounds on the shared IID counter,
+`break`/`continue`, the `else if` wrap (ncc's parser puts a chained
+`if` inside a synthesized block — the emitter now does too), the
+format-spec lowerings (`__nyx_fmt_hex`/`__nyx_fmt_num` — fragment
+records grew to carry the parsed width/zero/hex values), and the
+unary `!` (which had never had a rendering: the operator table was
+built for binary diagnostics). `cmp`-verified by suite stage [8d].
+Rung-3 territory, stated: the match switch lowering (`__mN`),
+defer's braced `__ret` form, `?`'s `gen_try`, method bodies, and
+the own auto-drop calls — the last eight examples.

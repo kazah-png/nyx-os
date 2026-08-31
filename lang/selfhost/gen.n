@@ -989,6 +989,8 @@ fn cpfmask(p: *u8, st: *i64, i: i64) -> i64 {
 fn op_put(c: i64) {
     if c == 47 { put("+"); }
     if c == 48 { put("-"); }
+    if c == 60 { put("!"); }               // unary-only: the emitter
+                                           // renders it too (E_UN)
     if c == 49 { put("*"); }
     if c == 50 { put("/"); }
     if c == 51 { put("%"); }
@@ -1114,21 +1116,24 @@ fn pexpr(p: *u8, n: i64, st: *i64) -> i64 {
 // needs the holes, not the text).
 #[caps(syscall)]
 fn pinterp(p: *u8, n: i64, st: *i64) -> i64 {
-    hx := sys_sbrk(1024) as *i64;          // frag scratch: 4-word records
+    hx := sys_sbrk(2048) as *i64;          // frag scratch: 8-word records
     mut nh := 0;                           // (count, raw start, node,
-    ln := st[25];                          // has-spec) — node 0 = a text
-    hx[0] = st[26];                        // fragment. The HEAD text is
-    hx[1] = st[27];                        // the first fragment.
-    hx[2] = 0;
+    ln := st[25];                          // has-spec, fmtk 0 dec/1 x/2 X,
+    hx[0] = st[26];                        // width, zero, spare) — node 0
+    hx[1] = st[27];                        // = a text fragment. The HEAD
+    hx[2] = 0;                             // text is the first fragment.
     hx[3] = 0;
+    hx[4] = 0;
+    hx[5] = 0;
+    hx[6] = 0;
+    hx[7] = 0;
     nh = 1;
     adv(p, n, st);                         // past the HEAD text
     mut going := true;
     while going {
-        hx[nh * 4] = 0;
-        hx[nh * 4 + 1] = 0;
-        hx[nh * 4 + 2] = pexpr(p, n, st);  // the hole, as a node
-        hx[nh * 4 + 3] = 0;
+        mut w2 := 0;
+        while w2 < 8 { hx[nh * 8 + w2] = 0; w2 = w2 + 1; }
+        hx[nh * 8 + 2] = pexpr(p, n, st);  // the hole, as a node
         if acc(p, n, st, 43) {             // ':' format spec — validated
             if !ck(st, 7) { perr(st); return 0; }   // AT PARSE TIME, ncc's
             fss := st[26];                 // exact grammar walk:
@@ -1136,19 +1141,21 @@ fn pinterp(p: *u8, n: i64, st: *i64) -> i64 {
             adv(p, n, st);
             mut fi := 0;
             mut bad := 0;
+            mut wd := 0;
+            mut zr := 0;
             c0 := p[fss] as i64;
             if c0 == 119 || c0 == 122 {    // w / z
                 fi = 1;
-                mut wd := 0;
+                if c0 == 122 { zr = 1; }
                 while fi < fsl && is_dg(p[fss + fi] as i64) {
                     wd = wd * 10 + (p[fss + fi] as i64 - 48);
                     fi = fi + 1;
                 }
                 if fi == 1 || wd <= 0 || wd > 128 { bad = 1; }
             }
-            mut hexdone := 0;
-            if fi < fsl && p[fss + fi] as i64 == 120 { fi = fi + 1; hexdone = 1; }
-            if hexdone == 0 && fi < fsl && p[fss + fi] as i64 == 88 { fi = fi + 1; }
+            mut fk := 0;
+            if fi < fsl && p[fss + fi] as i64 == 120 { fi = fi + 1; fk = 1; }
+            if fk == 0 && fi < fsl && p[fss + fi] as i64 == 88 { fi = fi + 1; fk = 2; }
             if fi != fsl || bad == 1 {
                 put("{ln}: unknown format spec ':");
                 put_span(p, fss, fsl);
@@ -1156,25 +1163,28 @@ fn pinterp(p: *u8, n: i64, st: *i64) -> i64 {
                 st[41] = 1;
                 return 0;
             }
-            hx[nh * 4 + 3] = 1;            // a valid spec always demands
-        }                                  // an integer hole downstream
+            hx[nh * 8 + 3] = 1;            // a valid spec always demands
+            hx[nh * 8 + 4] = fk;           // an integer hole downstream;
+            hx[nh * 8 + 5] = wd;           // the parsed values ride to
+            hx[nh * 8 + 6] = zr;           // the emitter
+        }
         nh = nh + 1;
         if !ck(st, 6) { perr(st); return 0; }    // T_INTERP_R
         adv(p, n, st);
         if ck(st, 4) {                     // MID: a text fragment
-            hx[nh * 4] = st[26];
-            hx[nh * 4 + 1] = st[27];
-            hx[nh * 4 + 2] = 0;
-            hx[nh * 4 + 3] = 0;
+            mut w3 := 0;
+            while w3 < 8 { hx[nh * 8 + w3] = 0; w3 = w3 + 1; }
+            hx[nh * 8] = st[26];
+            hx[nh * 8 + 1] = st[27];
             nh = nh + 1;
             adv(p, n, st);
             continue;
         }
         if ck(st, 5) {                     // TAIL: the last text fragment
-            hx[nh * 4] = st[26];
-            hx[nh * 4 + 1] = st[27];
-            hx[nh * 4 + 2] = 0;
-            hx[nh * 4 + 3] = 0;
+            mut w4 := 0;
+            while w4 < 8 { hx[nh * 8 + w4] = 0; w4 = w4 + 1; }
+            hx[nh * 8] = st[26];
+            hx[nh * 8 + 1] = st[27];
             nh = nh + 1;
             adv(p, n, st);
             going = false;
@@ -1185,7 +1195,7 @@ fn pinterp(p: *u8, n: i64, st: *i64) -> i64 {
     }
     ast := st[36];
     mut q := 0;
-    while q < nh * 4 { ladd(st, hx[q]); q = q + 1; }
+    while q < nh * 8 { ladd(st, hx[q]); q = q + 1; }
     return nnew(st, 4, ast, nh, 0, ln, 0, 0);
 }
 
@@ -2509,7 +2519,7 @@ fn cexpr(p: *u8, st: *i64, i: i64) {
         ln7 := nd[i * 8 + 4];              // and must interpolate (str or
         mut q3 := 0;                       // integer); a spec'd hole must
         while q3 < nd[i * 8 + 2] {         // be an integer — ncc's order
-            hh := al[nd[i * 8 + 1] + q3 * 4 + 2];
+            hh := al[nd[i * 8 + 1] + q3 * 8 + 2];
             if hh == 0 { q3 = q3 + 1; continue; }   // a text fragment
             cexpr(p, st, hh);
             if st[41] == 1 { return; }
@@ -2523,7 +2533,7 @@ fn cexpr(p: *u8, st: *i64, i: i64) {
                 st[41] = 1;
                 return;
             }
-            if al[nd[i * 8 + 1] + q3 * 4 + 3] == 1 && !hint {
+            if al[nd[i * 8 + 1] + q3 * 8 + 3] == 1 && !hint {
                 put("{ln7}: format specs apply to integers — a str interpolates as text\n");
                 st[41] = 1;
                 return;
@@ -3822,7 +3832,7 @@ fn gpre(p: *u8, st: *i64, i: i64, d: i64) {
     if k == 4 {
         mut q0 := 0;
         while q0 < nd[i * 8 + 2] {
-            hn := al[nd[i * 8 + 1] + q0 * 4 + 2];
+            hn := al[nd[i * 8 + 1] + q0 * 8 + 2];
             if hn > 0 { gpre(p, st, hn, d); }
             q0 = q0 + 1;
         }
@@ -3835,17 +3845,40 @@ fn gpre(p: *u8, st: *i64, i: i64, d: i64) {
         put("nyx_str __s{id} = __nyx_fmt_begin(__b{id}, 256);\n");
         mut q := 0;
         while q < nd[i * 8 + 2] {
-            fr := nd[i * 8 + 1] + q * 4;
+            fr := nd[i * 8 + 1] + q * 8;
             hn2 := al[fr + 2];
             if hn2 > 0 {
                 eind(d);
                 ht := cinfer(p, st, hn2);
+                fk := al[fr + 4];
+                wd := al[fr + 5];
+                zr := al[fr + 6];
+                mut done := 0;
                 if span_is(p, ht, st[44] + 7, 3) {
                     put("__nyx_fmt_str(&__s{id}, __b{id}, 256, ");
                     gexpr(p, st, hn2);
                     put(");\n");
+                    done = 1;
                 }
-                if !span_is(p, ht, st[44] + 7, 3) {
+                if done == 0 && wd > 0 {   // v0.21 width/zero-pad,
+                    mut ih := 0;           // decimal or hex
+                    if fk > 0 { ih = 1; }
+                    mut iu := 0;
+                    if fk == 2 { iu = 1; }
+                    put("__nyx_fmt_num(&__s{id}, __b{id}, 256, (nyx_i64)(");
+                    gexpr(p, st, hn2);
+                    put("), {ih}, {iu}, {wd}, {zr});\n");
+                    done = 1;
+                }
+                if done == 0 && fk > 0 {   // v0.20 :x/:X — the bit
+                    mut iu2 := 0;          // pattern crosses as u64
+                    if fk == 2 { iu2 = 1; }
+                    put("__nyx_fmt_hex(&__s{id}, __b{id}, 256, (nyx_u64)(");
+                    gexpr(p, st, hn2);
+                    put("), {iu2});\n");
+                    done = 1;
+                }
+                if done == 0 {
                     put("__nyx_fmt_i64(&__s{id}, __b{id}, 256, (nyx_i64)(");
                     gexpr(p, st, hn2);
                     put("));\n");
@@ -3920,6 +3953,17 @@ fn gexpr(p: *u8, st: *i64, i: i64) {
         return;
     }
     if k == 7 {
+        b1 := nd[i * 8 + 1];               // Shape.Empty: a tag-only value
+        if nd[b1 * 8] == 5 {               // (ncc's variant_ref arm first)
+            ei := efind(p, st, nd[b1 * 8 + 5], nd[b1 * 8 + 6]);
+            if ei >= 0 {
+                vi := vfindx(p, st, ei, nd[i * 8 + 5], nd[i * 8 + 6]);
+                put("((");
+                put_span(p, nd[b1 * 8 + 5], nd[b1 * 8 + 6]);
+                put(")\{ .tag = {vi} \})");
+                return;
+            }
+        }
         bt := cinfer(p, st, nd[i * 8 + 1]);
         isp := nd[i * 8 + 6] == 3 && eq3(p, nd[i * 8 + 5], 112, 116, 114);
         if isp && span_is(p, bt, st[44] + 7, 3) {
@@ -3957,6 +4001,48 @@ fn gexpr(p: *u8, st: *i64, i: i64) {
         put(")(");
         gexpr(p, st, nd[i * 8 + 1]);
         put(")");
+        return;
+    }
+    if k == 11 {                           // C99 compound literal,
+        put("((");                         // designated (ncc's E_SLIT)
+        put_span(p, nd[i * 8 + 5], nd[i * 8 + 6]);
+        put(")\{");
+        mut q4 := 0;
+        while q4 < nd[i * 8 + 3] {
+            if q4 > 0 { put(", "); }
+            r4 := nd[i * 8 + 1] + q4 * 3;
+            put(".");
+            put_span(p, al[r4], al[r4 + 1]);
+            put(" = ");
+            gexpr(p, st, al[r4 + 2]);
+            q4 = q4 + 1;
+        }
+        put("\})");
+        return;
+    }
+    if k == 12 {                           // Shape.Circle{ r: 5 } (the
+        ei2 := efind(p, st, nd[i * 8 + 5], nd[i * 8 + 6]);   // variant
+        vi2 := vfindx(p, st, ei2, nd[i * 8 + 2], nd[i * 8 + 7]);
+        put("((");
+        put_span(p, nd[i * 8 + 5], nd[i * 8 + 6]);
+        put(")\{ .tag = {vi2}");
+        if nd[i * 8 + 3] > 0 {
+            put(", .u = \{ .");
+            put_span(p, nd[i * 8 + 2], nd[i * 8 + 7]);
+            put(" = \{ ");
+            mut q5 := 0;
+            while q5 < nd[i * 8 + 3] {
+                if q5 > 0 { put(", "); }
+                r5 := nd[i * 8 + 1] + q5 * 3;
+                put(".");
+                put_span(p, al[r5], al[r5 + 1]);
+                put(" = ");
+                gexpr(p, st, al[r5 + 2]);
+                q5 = q5 + 1;
+            }
+            put(" \} \}");
+        }
+        put(" \})");
         return;
     }
     if k == 13 {
@@ -4023,6 +4109,8 @@ fn gstmt(p: *u8, st: *i64, i: i64, d: i64) {
         put(";\n");
         return;
     }
+    if k == 26 { eind(d); put("break;\n"); return; }
+    if k == 27 { eind(d); put("continue;\n"); return; }
     if k == 24 {
         gpre(p, st, nd[i * 8 + 1], d);
         eind(d);
@@ -4034,7 +4122,7 @@ fn gstmt(p: *u8, st: *i64, i: i64, d: i64) {
         return;
     }
     if k == 25 {                           // if / else (an else-if CHAIN
-        gpre(p, st, nd[i * 8 + 1], d);     // is rung-2 territory)
+        gpre(p, st, nd[i * 8 + 1], d);     // is rung-3 territory)
         eind(d);
         put("if (");
         gexpr(p, st, nd[i * 8 + 1]);
@@ -4045,7 +4133,45 @@ fn gstmt(p: *u8, st: *i64, i: i64, d: i64) {
             put(" else ");
             gblock(p, st, els, d, 0);
         }
+        if els > 0 && nd[els * 8] == 25 {  // else-if: ncc's parser wraps
+            put(" else \{\n");             // the chained if in a BLOCK,
+            gstmt(p, st, els, d + 1);      // so the emitter synthesizes
+            eind(d);                       // those braces
+            put("\}");
+        }
         put("\n");
+        return;
+    }
+    if k == 30 {                           // counted for: both bounds
+        fid := st[57];                     // hoisted, evaluated once
+        st[57] = st[57] + 1;               // (ncc takes the id FIRST —
+        eind(d);                           // preludes inside the bounds
+        put("\{\n");                       // number after it)
+        gpre(p, st, nd[i * 8 + 1], d + 1);
+        gpre(p, st, nd[i * 8 + 2], d + 1);
+        eind(d + 1);
+        put("nyx_i64 __fs{fid} = ");
+        gexpr(p, st, nd[i * 8 + 1]);
+        put(";\n");
+        eind(d + 1);
+        put("nyx_i64 __fe{fid} = ");
+        gexpr(p, st, nd[i * 8 + 2]);
+        put(";\n");
+        eind(d + 1);
+        put("for (nyx_i64 ");
+        put_span(p, nd[i * 8 + 5], nd[i * 8 + 6]);
+        put(" = __fs{fid}; ");
+        put_span(p, nd[i * 8 + 5], nd[i * 8 + 6]);
+        put(" < __fe{fid}; ");
+        put_span(p, nd[i * 8 + 5], nd[i * 8 + 6]);
+        put("++) ");
+        vsave2 := st[40];
+        vadd(st, nd[i * 8 + 5], nd[i * 8 + 6], 0, t_i64(st));
+        gblock(p, st, nd[i * 8 + 3], d + 1, 0);
+        st[40] = vsave2;
+        put("\n");
+        eind(d);
+        put("\}\n");
         return;
     }
 }
@@ -4101,10 +4227,92 @@ fn gfn(p: *u8, st: *i64, fi: i64) {
     put("\n\n");
 }
 
-// The program (ncc's gen_program emission half, rung-1 subset:
-// no struct/enum layouts, no method bodies yet).
+// Struct layouts (ncc: C-layout typedefs, fields in order).
+fn estructs(p: *u8, st: *i64) {
+    sa := st[49] as *i64;
+    al := st[35] as *i64;
+    mut i := 0;
+    while i < st[50] {
+        put("typedef struct \{\n");
+        mut q := 0;
+        while q < sa[i * 8 + 2] {
+            r := sa[i * 8 + 3] + q * 6;
+            t := T{ pt: al[r + 2], us: al[r + 3], s: al[r + 4], l: al[r + 5] };
+            put("    ");
+            ety(p, st, t);
+            put(" ");
+            put_span(p, al[r], al[r + 1]);
+            put(";\n");
+            q = q + 1;
+        }
+        put("\} ");
+        put_span(p, sa[i * 8], sa[i * 8 + 1]);
+        put(";\n\n");
+        i = i + 1;
+    }
+}
+
+// Enum layouts (ncc: tagged unions — int tag + a union of payload
+// structs; an empty union is not valid C, so payload-less enums get
+// the tag alone. The tag comment names every variant's number).
+fn eenums(p: *u8, st: *i64) {
+    ea := st[51] as *i64;
+    al := st[35] as *i64;
+    mut i := 0;
+    while i < st[52] {
+        nv := ea[i * 4 + 2];
+        vb := ea[i * 4 + 3];
+        mut hasp := 0;
+        mut v := 0;
+        while v < nv {
+            if al[vb + v * 4 + 2] > 0 { hasp = 1; }
+            v = v + 1;
+        }
+        put("typedef struct \{\n    int tag;    /*");
+        mut v2 := 0;
+        while v2 < nv {
+            put(" {v2}=");
+            put_span(p, al[vb + v2 * 4], al[vb + v2 * 4 + 1]);
+            v2 = v2 + 1;
+        }
+        put(" */\n");
+        if hasp == 1 {
+            put("    union \{\n");
+            mut v3 := 0;
+            while v3 < nv {
+                if al[vb + v3 * 4 + 2] > 0 {
+                    put("        struct \{ ");
+                    mut q := 0;
+                    while q < al[vb + v3 * 4 + 2] {
+                        r := al[vb + v3 * 4 + 3] + q * 6;
+                        t := T{ pt: al[r + 2], us: al[r + 3], s: al[r + 4], l: al[r + 5] };
+                        ety(p, st, t);
+                        put(" ");
+                        put_span(p, al[r], al[r + 1]);
+                        put("; ");
+                        q = q + 1;
+                    }
+                    put("\} ");
+                    put_span(p, al[vb + v3 * 4], al[vb + v3 * 4 + 1]);
+                    put(";\n");
+                }
+                v3 = v3 + 1;
+            }
+            put("    \} u;\n");
+        }
+        put("\} ");
+        put_span(p, ea[i * 4], ea[i * 4 + 1]);
+        put(";\n\n");
+        i = i + 1;
+    }
+}
+
+// The program (ncc's gen_program emission half: layouts, wrappers,
+// prototypes, then the function bodies; methods are rung-3).
 fn egen(p: *u8, st: *i64) {
     put("/* Generated by ncc from /tmp/n_gen_target.n */\n#include \"nyxrt.h\"\n\n");
+    estructs(p, st);
+    eenums(p, st);
     exfns(p, st);
     eprotos(p, st);
     ft := st[37] as *i64;
