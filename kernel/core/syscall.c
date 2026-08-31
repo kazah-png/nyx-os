@@ -587,10 +587,15 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
             process_t* cur = get_cur_proc();
             if (cur) {
                 cur->exit_code = (int)a1;
-                // Close fds now (not just at reap) so pipe write ends drop and any
-                // parent reading this process's output gets EOF — e.g. the shell's
-                // `$(cmd)` capture, which reads the pipe before it reaps the subshell.
-                close_proc_fds(cur);
+                // Release this thread's shared state. If it is a thread-group owner with a
+                // still-running member, hand the shared fd table (+ heap/mmap) to that heir
+                // instead of closing — the group's descriptors must outlive any one thread
+                // (exit_group semantics, issue #73); closing here would yank a shared pipe/
+                // socket/file out from under a live worker. Only a LAST/single-threaded exit
+                // actually closes — so a pipe write end still drops at exit and a parent
+                // reading this process's output gets EOF, e.g. the shell's `$(cmd)` capture,
+                // which reads the pipe before it reaps the subshell.
+                if (!tg_reassign_leader(cur)) close_proc_fds(cur);
                 cur->state = PROC_ZOMBIE;
                 wake_waiters(cur);
             }

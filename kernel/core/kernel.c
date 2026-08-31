@@ -9366,6 +9366,49 @@ static int history_expand_selftest(void) {
     return 0;
 }
 
+// KAT (issue #73): a thread group's SHARED fd table must move to a LIVE surviving member
+// when the owner leaves, and be closed only when the LAST member exits (exit_group). We
+// stage a throwaway group at the tail of the process table, drive tg_reassign_leader(),
+// and restore the count — no real fds are needed (the handoff moves handle values, it does
+// not touch their backing, and never closes here). Safe during the boot selftest: it runs
+// synchronously, the scheduler skips the transient zombie, and no reaper is active yet.
+// Distinct return codes pinpoint the failing case.
+static int tg_fdhandoff_selftest(void) {
+    if (process_count + 3 > MAX_PROCESSES) return 5;             // no room to stage fakes
+    int saved = process_count;
+    static process_t L, W, Z;                                   // static storage: never kfree'd
+    memset_asm(&L, 0, sizeof L); memset_asm(&W, 0, sizeof W); memset_asm(&Z, 0, sizeof Z);
+    L.pid = 90001; L.tgid = 0;     L.state = PROC_RUN;          // L owns the group's fd table
+    W.pid = 90002; W.tgid = L.pid; W.state = PROC_RUN;          // W: a LIVE worker in L's group
+    L.ufd_inuse[3] = 1; L.ufd_handle[3] = 0x111; L.ufd_offset[3] = 7;
+    L.ufd_inuse[5] = 1; L.ufd_handle[5] = 0x222; L.ufd_offset[5] = 0;
+    process_table[process_count++] = &L;
+    process_table[process_count++] = &W;
+
+    // Case 1: owner L "exits" with a live worker -> hand off (return 1); the fds move to W,
+    // L's table clears, W becomes the group leader. Nothing is closed.
+    int handed = tg_reassign_leader(&L);
+    if (handed != 1)                                                  { process_count = saved; return 10; }
+    if (!(W.ufd_inuse[3] && W.ufd_handle[3] == 0x111 && W.ufd_offset[3] == 7)) { process_count = saved; return 11; }
+    if (!(W.ufd_inuse[5] && W.ufd_handle[5] == 0x222))               { process_count = saved; return 12; }
+    if (L.ufd_inuse[3] || L.ufd_inuse[5])                            { process_count = saved; return 13; } // cleared in the dead owner
+    if (W.tgid != 0)                                                 { process_count = saved; return 14; } // W leads now
+
+    // Case 2: W is now the sole member -> no heir -> return 0 (caller closes: last one out).
+    if (tg_reassign_leader(&W) != 0)                                { process_count = saved; return 20; }
+
+    // Case 3: a ZOMBIE sibling is not a valid heir. Owner L2 + a zombie-only member -> no
+    // LIVE survivor -> return 0, so the fds are closed (never handed to a dying thread).
+    memset_asm(&L, 0, sizeof L);
+    L.pid = 90003; L.tgid = 0;     L.state = PROC_RUN;
+    Z.pid = 90004; Z.tgid = L.pid; Z.state = PROC_ZOMBIE;
+    process_table[process_count++] = &Z;                            // (&L still parked at process_table[saved])
+    if (tg_reassign_leader(&L) != 0)                               { process_count = saved; return 30; }
+
+    process_count = saved;                                           // drop the fakes
+    return 0;
+}
+
 // Run the whole offline self-test battery, print a machine-readable summary, and
 // halt. Triggered ONLY by the "selftest" multiboot command line (used by CI); a
 // normal boot never calls this, so ordinary startup is unaffected. Each test is a
@@ -9490,6 +9533,7 @@ static void run_selftests(void) {
         {"aeskw",        aes_kw_selftest},
         {"glob",         glob_selftest},
         {"leb128",       leb128_selftest},        {"crc16",         crc16_selftest},
+        {"tgfd",         tg_fdhandoff_selftest},
     };
     int n = (int)(sizeof(t) / sizeof(t[0])), passed = 0, failed = 0;
     serial_puts("SELFTEST-BEGIN\n");

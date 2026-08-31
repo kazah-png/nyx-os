@@ -426,18 +426,28 @@ process_t* tg_leader(process_t* p) {
     return l ? l : p;
 }
 
-// Called just before a task is freed. If it led a thread group, hand the shared heap +
-// mmap state (including file_buf OWNERSHIP, so the dying leader won't free it out from
-// under them) to a surviving member and re-point the rest at that heir — the group stays
-// coherent even when the main thread exits first.
-static void tg_reassign_leader(process_t* dying) {
-    if (!dying) return;
+// Hand a dying task's SHARED thread-group state (heap + mmap, including file_buf
+// OWNERSHIP so the dying leader won't free it out from under them, AND the shared fd
+// table) to a surviving member, re-pointing the rest at that heir — the group stays
+// coherent even when the main thread exits first. Returns 1 if it handed off to a live
+// heir (the caller must then NOT close the fds — they belong to the group now), or 0 if
+// there was no live survivor (this was the LAST member out, so the caller closes the fds
+// normally: `if (!tg_reassign_leader(x)) close_proc_fds(x);`). This is what gives the
+// group exit_group semantics — the shared descriptors are torn down only when the final
+// member leaves, never yanked out from under a still-running worker (issue #73). Must run
+// BEFORE close_proc_fds at every exit/reap site, else close clears the table first and
+// the heir inherits nothing.
+int tg_reassign_leader(process_t* dying) {
+    if (!dying) return 0;
     process_t* heir = NULL;
     for (int i = 0; i < process_count; i++) {
         process_t* p = process_table[i];
-        if (p && p != dying && p->tgid == dying->pid) { heir = p; break; }
+        // A LIVE sibling only: never hand the group to a thread that is itself a zombie
+        // (also on its way out). If every other member is already dead, there is no heir
+        // — return 0 so the caller closes the shared fds (the group is fully exiting).
+        if (p && p != dying && p->tgid == dying->pid && p->state != PROC_ZOMBIE) { heir = p; break; }
     }
-    if (!heir) return;                       // no surviving threads: nothing to hand over
+    if (!heir) return 0;                     // no live survivor: caller closes the fds
     // heap_start FIRST — same reason as elf.c, and this is the worst site for it:
     // the heir is a LIVE thread, already running and already resolvable through
     // tg_leader(), and this runs precisely while a thread group is churning. The
@@ -466,6 +476,7 @@ static void tg_reassign_leader(process_t* dying) {
         if (p && p != dying && p->tgid == dying->pid) p->tgid = heir->pid;
     }
     heir->tgid = 0;                          // the heir leads the group now
+    return 1;                                // handed off — caller must NOT close the fds
 }
 
 // clone(fn, stack, arg, CLONE_VM) — create a THREAD: a scheduled ring-3 task that
@@ -805,14 +816,18 @@ void close_proc_fds(process_t* proc) {
 void reap_user_process(process_t* proc) {
     if (!proc) return;
     extern void free_page_directory(uint64_t* pml4);
-    close_proc_fds(proc);
     for (int i = 0; i < process_count; i++) {
         if (process_table[i] == proc) {
             process_table[i] = process_table[--process_count];
             break;
         }
     }
-    tg_reassign_leader(proc);      // hand shared heap/VMA state to a surviving thread first
+    // Hand the shared thread-group state (heap/mmap AND the fd table) to a surviving
+    // member FIRST; only if this was the last member out (no live heir) do we actually
+    // close the fds — otherwise the close would tear shared pipe/socket/file descriptors
+    // out from under a still-running worker, and clear the table before the handoff could
+    // copy it (issue #73).
+    if (!tg_reassign_leader(proc)) close_proc_fds(proc);
     mmap_free_bufs(proc);
     if (proc->page_directory && !addr_space_shared(proc->page_directory, proc))
         free_page_directory((uint64_t*)proc->page_directory);
@@ -1189,8 +1204,7 @@ void reap_zombies(void) {
         // page_directory==NULL — the shell's `spawn`) are auto-reaped here.
         process_t* par = find_process(p->ppid);
         if (par && par->page_directory && par->state != PROC_ZOMBIE) continue;
-        close_proc_fds(p);                              // close any fds it left open
-        tg_reassign_leader(p);
+        if (!tg_reassign_leader(p)) close_proc_fds(p);  // hand shared fds to a live thread first; close only if last member (#73)
         mmap_free_bufs(p);
         if (p->page_directory && !addr_space_shared(p->page_directory, p))
             free_page_directory((uint64_t*)p->page_directory);
@@ -1258,8 +1272,7 @@ int do_waitpid(int wpid, int* out_code, int options) {
             process_t* child = process_table[zi];
             if (out_code) *out_code = child->exit_code;
             result = (int)child->pid;
-            close_proc_fds(child);
-            tg_reassign_leader(child);
+            if (!tg_reassign_leader(child)) close_proc_fds(child);  // hand shared fds to a live thread first; close only if last member (#73)
             mmap_free_bufs(child);
             if (child->page_directory && !addr_space_shared(child->page_directory, child))
                 free_page_directory((uint64_t*)child->page_directory);
