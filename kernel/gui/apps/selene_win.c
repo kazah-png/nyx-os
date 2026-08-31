@@ -2509,6 +2509,14 @@ static void selene_forward(selene_ctx_t* s) {
     selene_set_url(s, u);
     selene_load(s);
 }
+// Reload: re-fetch the page currently shown WITHOUT touching either history stack (unlike
+// selene_go, a fresh navigation that pushes Back + clears Forward). Bound to the toolbar
+// reload button, F5, and Ctrl+R.
+static void selene_reload(selene_ctx_t* s) {
+    if (!s->cur_url[0]) return;              // nothing loaded yet -> nothing to reload
+    selene_set_url(s, s->cur_url);           // make the URL bar match the page, then re-fetch
+    selene_load(s);
+}
 
 // KAT (`selenenav`): Back/Forward across a visit sequence, both empty edges, and the rule that a
 // fresh navigation discards the Forward stack. Drives the pure nav helpers with no network (cur_url
@@ -2829,7 +2837,25 @@ static void sel_disc(int ccx, int ccy, int r, uint32_t col) {
 #define SEL_BACK_W   18
 #define SEL_FWD_X    (SEL_BACK_X + SEL_BACK_W + 2)   // ">" forward button, just right of Back
 #define SEL_FWD_W    18
-#define SEL_URL_X    (SEL_FWD_X + SEL_FWD_W + 4)
+#define SEL_RELOAD_X (SEL_FWD_X + SEL_FWD_W + 2)     // reload button, just right of Forward
+#define SEL_RELOAD_W 18
+#define SEL_URL_X    (SEL_RELOAD_X + SEL_RELOAD_W + 4)
+
+// A 12x12 reload glyph: a circular arrow (ring with a top gap + arrowhead). 1 = draw a pixel.
+static const uint8_t sel_reload_icon[12][12] = {
+    {0,0,0,0,0,0,0,1,0,0,0,0},
+    {0,0,0,1,0,0,1,1,1,0,0,0},
+    {0,0,1,1,0,0,0,1,1,1,0,0},
+    {0,1,1,0,0,0,0,0,1,1,1,0},
+    {0,1,0,0,0,0,0,0,0,0,1,0},
+    {0,1,0,0,0,0,0,0,0,0,1,0},
+    {0,1,0,0,0,0,0,0,0,0,1,0},
+    {0,1,0,0,0,0,0,0,0,0,1,0},
+    {0,1,1,0,0,0,0,0,0,1,1,0},
+    {0,0,1,1,0,0,0,0,1,1,0,0},
+    {0,0,0,1,1,1,1,1,1,0,0,0},
+    {0,0,0,0,0,0,0,0,0,0,0,0},
+};
 
 void selene_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     (void)cw; (void)ch;
@@ -2850,6 +2876,16 @@ void selene_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     uint32_t fcol = s->fwd_len > 0 ? fb_rgb(220, 215, 240) : fb_rgb(96, 90, 120);
     fb_fill_rect(cx + SEL_FWD_X, cy + 7, SEL_FWD_W, SEL_BAR - 14, fb_rgb(30, 26, 46));
     font_draw_string(cx + SEL_FWD_X + 5, cy + (SEL_BAR - FONT_HEIGHT)/2, ">", fcol, fb_rgb(30, 26, 46));
+
+    // Reload button — bright once a page is loaded; re-fetches the current URL (F5 / Ctrl+R too).
+    uint32_t rcol = s->cur_url[0] ? fb_rgb(220, 215, 240) : fb_rgb(96, 90, 120);
+    fb_fill_rect(cx + SEL_RELOAD_X, cy + 7, SEL_RELOAD_W, SEL_BAR - 14, fb_rgb(30, 26, 46));
+    {
+        int ix = cx + SEL_RELOAD_X + (SEL_RELOAD_W - 12) / 2, iy = cy + (SEL_BAR - 12) / 2;
+        for (int yy = 0; yy < 12; yy++)
+            for (int xx = 0; xx < 12; xx++)
+                if (sel_reload_icon[yy][xx]) fb_put_pixel(ix + xx, iy + yy, rcol);
+    }
 
     int ux = cx + SEL_URL_X, uw = SELENE_W - SEL_URL_X - SEL_PAD, uy = cy + 6, uh = SEL_BAR - 12;
     fb_fill_rect(ux, uy, uw, uh, fb_rgb(22, 22, 30));         // URL box
@@ -3163,6 +3199,7 @@ void selene_win_key(window_t* win, int key) {
     if (!s) return;
     int rows = visible_rows();
 
+    if (key == KEY_F5 || key == 0x12) { selene_reload(s); return; }    // F5 / Ctrl+R: reload the page
     if (key == 0x06) { s->find_active = 1; find_recount(s); return; }   // Ctrl+F: open/refresh find
     if (s->find_active) {                                    // the find bar captures keystrokes
         if (key == 0x1B) { s->find_active = 0; return; }                 // Esc: close find
@@ -3239,6 +3276,7 @@ void selene_win_click(window_t* win, int mx, int my, int btn) {
     if (my >= cy && my < cy + SEL_BAR) {                      // toolbar
         if (mx >= cx + SEL_BACK_X && mx < cx + SEL_BACK_X + SEL_BACK_W) { selene_back(s); return; }
         if (mx >= cx + SEL_FWD_X  && mx < cx + SEL_FWD_X  + SEL_FWD_W)  { selene_forward(s); return; }
+        if (mx >= cx + SEL_RELOAD_X && mx < cx + SEL_RELOAD_X + SEL_RELOAD_W) { selene_reload(s); return; }
         s->sel_link = -1;                                    // clicking the URL bar edits it
         return;
     }
