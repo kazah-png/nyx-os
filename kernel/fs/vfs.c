@@ -890,6 +890,54 @@ int vfs_pwrite(int fd, const void* buf, uint32_t count, uint32_t offset) {
     return (int)count;
 }
 
+// KAT: vfs_pwrite is the offset-aware write behind SYS_PWRITE, the shell `>>` append, and
+// the chunked in-OS `cc`/tcc object writes. It grows the buffer geometrically and — the
+// security-critical part — a write PAST EOF must ZERO the skipped gap so a file can never
+// read back stale kernel-heap bytes. It was unpinned until now. Drives a throwaway pool
+// node directly (an fd is just the node's 1-based index in nodes[], see node_to_handle),
+// so nothing touches the directory tree or disk.
+int vfs_pwrite_selftest(void) {
+    vfs_node_t* n = alloc_node();
+    if (!n) return 1;
+    n->type = 0;                       // a regular file (alloc_node zeroed data/size/dev_type)
+    int fd = node_to_handle(n);
+    uint8_t rb[4];
+    int rc = 0;
+    // 1) plain write at offset 0
+    if (vfs_pwrite(fd, "hello", 5, 0) != 5 || n->size != 5) rc = 10;
+    else if (vfs_pread(fd, rb, 4, 0) != 4 || rb[0]!='h'||rb[1]!='e'||rb[2]!='l'||rb[3]!='l') rc = 11;
+    // 2) append exactly at EOF
+    else if (vfs_pwrite(fd, "!!", 2, 5) != 2 || n->size != 7) rc = 12;
+    else if (vfs_pread(fd, rb, 2, 5) != 2 || rb[0]!='!' || rb[1]!='!') rc = 13;
+    // 3) overwrite inside the file: size unchanged, only those bytes change
+    else if (vfs_pwrite(fd, "H", 1, 0) != 1 || n->size != 7) rc = 14;
+    else if (vfs_pread(fd, rb, 1, 0) != 1 || rb[0] != 'H') rc = 15;
+    // 4) SPARSE write past EOF, in place (within the current allocation): the gap MUST be zero
+    else if (vfs_pwrite(fd, "XY", 2, 20) != 2 || n->size != 22) rc = 16;
+    else {
+        for (int i = 7; i < 20 && !rc; i++)
+            if (vfs_pread(fd, rb, 1, (uint32_t)i) != 1 || rb[0] != 0) rc = 17;   // stale-data leak
+        if (!rc && (vfs_pread(fd, rb, 2, 20) != 2 || rb[0]!='X' || rb[1]!='Y')) rc = 18;
+    }
+    // 5) a big sparse write that FORCES a realloc-grow: old data preserved, new gap still zero
+    if (!rc) {
+        if (vfs_pwrite(fd, "PQ", 2, 8000) != 2 || n->size != 8002) rc = 20;
+        else if (vfs_pread(fd, rb, 1, 0)    != 1 || rb[0] != 'H') rc = 21;   // preserved across realloc
+        else if (vfs_pread(fd, rb, 1, 4000) != 1 || rb[0] != 0)   rc = 22;   // gap zeroed
+        else if (vfs_pread(fd, rb, 2, 8000) != 2 || rb[0]!='P' || rb[1]!='Q') rc = 23;
+    }
+    // 6) offset+count overflow is rejected without disturbing the file
+    if (!rc) {
+        uint32_t before = n->size;
+        if (vfs_pwrite(fd, "z", 2, 0xFFFFFFFFu) != -1 || n->size != before) rc = 24;
+    }
+    // 7) a bad fd is refused
+    if (!rc && vfs_pwrite(0, "z", 1, 0) != -1) rc = 25;
+    if (n->data) { kfree(n->data); n->data = NULL; }
+    free_node(n);
+    return rc;
+}
+
 /* dup(oldfd) aliases a handle, and for a VFS handle "the handle" is literally
  * this node pointer. That was documented as safe because vfs_close is a no-op
  * for the ramdisk nodes ring 3 normally opens — true, but NOT for a

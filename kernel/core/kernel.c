@@ -9272,6 +9272,7 @@ extern int dynlink_load_selftest(void);     // proc/shared_libc.c — dlopen ELF
 extern int dns_response_selftest(void);
 extern int vfs_pathnorm_selftest(void);
 extern int vfs_poolkind_selftest(void);
+extern int vfs_pwrite_selftest(void);    // fs/vfs.c: offset-aware write — sparse-gap zeroing + geometric grow
 extern int proc_expose_selftest(void);   // fs/vfs.c: /proc excludes zombies (#66 node-pool leak)
 extern int user_ptr_ok_selftest(void);   // syscall.c: validates the ring-3 pointer/length boundary
 extern int path_resolve_selftest(void);  // syscall.c: cwd-relative path normalizer (.. can't escape root)
@@ -9629,7 +9630,7 @@ static void run_selftests(void) {
         {"httpparse",    http_parse_selftest},    {"ext2dir",       ext2_dir_selftest},
         {"pathnorm",     vfs_pathnorm_selftest},
         {"poolkind",     vfs_poolkind_selftest},
-        {"proc-expose",  proc_expose_selftest},
+        {"proc-expose",  proc_expose_selftest},    {"vfspwrite",     vfs_pwrite_selftest},
         {"userptr",      user_ptr_ok_selftest},   {"pathres",       path_resolve_selftest},
         {"rtc",          rtc_selftest},
         {"pipe",         pipe_selftest},
