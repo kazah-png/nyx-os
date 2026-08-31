@@ -290,6 +290,7 @@ extern int term_rsearch_selftest(void);     // gui/apps/terminal_win.c — Ctrl+
 extern int editor_find_selftest(void);      // gui/apps/editor_win.c — Ctrl+F find-search KAT
 extern int editor_replace_selftest(void);   // gui/apps/editor_win.c — Ctrl+R find-and-replace KAT
 extern int editor_goto_selftest(void);      // gui/apps/editor_win.c — Ctrl+G goto-line KAT
+extern int selene_nav_selftest(void);       // gui/apps/selene_win.c — Back/Forward history KAT
 extern int heap_selftest(void);             // mm/heap.c — kernel-heap usage-accounting KAT
 extern int ata_lba28_selftest(void);        // drivers/misc/ata.c — LBA28 request-validation KAT
 extern int tri_selftest(void);              // gui/core/tri.c — software triangle rasterizer KAT
@@ -9617,7 +9618,7 @@ static void run_selftests(void) {
         {"imgident",     image_identify_selftest},
         {"uuid",         uuid_selftest},
         {"edfind",       editor_find_selftest},   {"edreplace",     editor_replace_selftest},
-        {"edgoto",       editor_goto_selftest},
+        {"edgoto",       editor_goto_selftest},   {"selenenav",     selene_nav_selftest},
         {"cut",          cut_selftest},           {"xargs",         xargs_selftest},
         {"trunc",        trunc_selftest},         {"pstree",        pstree_selftest},
         {"mktemp",       mktemp_selftest},        {"tri",           tri_selftest},

@@ -122,9 +122,11 @@ typedef struct {
     uint16_t base_port;
     int      base_https;         // the loaded page's scheme (for resolving relative links)
     char     base_path[256];
-    // Back history (stack of URLs left behind)
+    // Back history (stack of URLs left behind) + Forward stack (pages left by going Back).
     char hist[SEL_HIST][256];
     int  hist_len;
+    char fwd[SEL_HIST][256];
+    int  fwd_len;
     // Find-in-page (Ctrl+F): a query, whether the find bar is capturing input, and match tracking.
     char find_q[64];
     int  find_len;
@@ -2454,25 +2456,88 @@ static void push_hist(selene_ctx_t* s, const char* u) {
     strncpy(s->hist[s->hist_len], u, 255); s->hist[s->hist_len][255] = '\0';
     s->hist_len++;
 }
+// Same, for the Forward stack (pages left behind by going Back).
+static void push_fwd(selene_ctx_t* s, const char* u) {
+    if (!u[0]) return;
+    if (s->fwd_len >= SEL_HIST) {
+        for (int i = 1; i < SEL_HIST; i++) strcpy(s->fwd[i-1], s->fwd[i]);
+        s->fwd_len = SEL_HIST - 1;
+    }
+    strncpy(s->fwd[s->fwd_len], u, 255); s->fwd[s->fwd_len][255] = '\0';
+    s->fwd_len++;
+}
 static void selene_set_url(selene_ctx_t* s, const char* u) {
     strncpy(s->url, u, sizeof(s->url)-1); s->url[sizeof(s->url)-1] = '\0';
     s->url_len = (int)strlen(s->url);
 }
 static void selene_go(selene_ctx_t* s) {              // load the URL bar (a new navigation)
     if (s->cur_url[0] && strcmp(s->cur_url, s->url) != 0) push_hist(s, s->cur_url);
+    s->fwd_len = 0;                                   // a fresh navigation discards the Forward stack
     selene_load(s);
 }
 static void selene_follow(selene_ctx_t* s, const char* url) {
     if (!url[0]) return;
     push_hist(s, s->cur_url);
+    s->fwd_len = 0;                                   // a fresh navigation discards the Forward stack
     selene_set_url(s, url);
     selene_load(s);
 }
-static void selene_back(selene_ctx_t* s) {
-    if (s->hist_len <= 0) return;
+// Pure Back/Forward stack steps (no network): move the current page across the two stacks and
+// return the URL to load next, or NULL if that direction is empty. selene_back/forward set it and
+// call selene_load; pinned directly (no fetch) by selene_nav_selftest.
+static const char* nav_back(selene_ctx_t* s) {
+    if (s->hist_len <= 0) return 0;
+    if (s->cur_url[0]) push_fwd(s, s->cur_url);       // remember the current page for Forward
     s->hist_len--;
-    selene_set_url(s, s->hist[s->hist_len]);
+    return s->hist[s->hist_len];
+}
+static const char* nav_forward(selene_ctx_t* s) {
+    if (s->fwd_len <= 0) return 0;
+    if (s->cur_url[0]) push_hist(s, s->cur_url);      // the current page goes back onto the Back stack
+    s->fwd_len--;
+    return s->fwd[s->fwd_len];
+}
+static void selene_back(selene_ctx_t* s) {
+    const char* u = nav_back(s);
+    if (!u) return;
+    selene_set_url(s, u);
     selene_load(s);
+}
+static void selene_forward(selene_ctx_t* s) {
+    const char* u = nav_forward(s);
+    if (!u) return;
+    selene_set_url(s, u);
+    selene_load(s);
+}
+
+// KAT (`selenenav`): Back/Forward across a visit sequence, both empty edges, and the rule that a
+// fresh navigation discards the Forward stack. Drives the pure nav helpers with no network (cur_url
+// is set by hand to stand in for a completed load).
+int selene_nav_selftest(void) {
+    static selene_ctx_t s;                            // static: the ctx is far larger than a KAT stack
+    memset_asm(&s, 0, sizeof(s));
+    strcpy(s.cur_url, "A");
+    push_hist(&s, s.cur_url); s.fwd_len = 0; strcpy(s.cur_url, "B");   // A -> B (new nav)
+    push_hist(&s, s.cur_url); s.fwd_len = 0; strcpy(s.cur_url, "C");   // B -> C
+    const char* u = nav_back(&s);                     // C -> B
+    if (!u || strcmp(u, "B")) return 1;
+    strcpy(s.cur_url, u);
+    u = nav_back(&s);                                 // B -> A
+    if (!u || strcmp(u, "A")) return 2;
+    strcpy(s.cur_url, u);
+    if (nav_back(&s) != 0) return 3;                  // at the start: Back is a no-op
+    u = nav_forward(&s);                              // A -> B
+    if (!u || strcmp(u, "B")) return 4;
+    strcpy(s.cur_url, u);
+    u = nav_forward(&s);                              // B -> C
+    if (!u || strcmp(u, "C")) return 5;
+    strcpy(s.cur_url, u);
+    if (nav_forward(&s) != 0) return 6;               // at the tip: Forward is a no-op
+    u = nav_back(&s); strcpy(s.cur_url, u);           // C -> B, Forward stack now holds C
+    push_hist(&s, s.cur_url); s.fwd_len = 0; strcpy(s.cur_url, "D");   // B -> D (new nav clears Forward)
+    if (s.fwd_len != 0) return 7;
+    if (nav_forward(&s) != 0) return 8;               // Forward was discarded by the new navigation
+    return 0;
 }
 
 // Percent-encode a form value for a URL query (space -> '+', unreserved kept, else %XX).
@@ -2762,7 +2827,9 @@ static void sel_disc(int ccx, int ccy, int r, uint32_t col) {
 // Toolbar geometry, shared by draw + hit-testing.
 #define SEL_BACK_X   30
 #define SEL_BACK_W   18
-#define SEL_URL_X    (SEL_BACK_X + SEL_BACK_W + 4)
+#define SEL_FWD_X    (SEL_BACK_X + SEL_BACK_W + 2)   // ">" forward button, just right of Back
+#define SEL_FWD_W    18
+#define SEL_URL_X    (SEL_FWD_X + SEL_FWD_W + 4)
 
 void selene_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     (void)cw; (void)ch;
@@ -2776,10 +2843,13 @@ void selene_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
     sel_disc(cx + 15, cy + SEL_BAR/2, 8, fb_rgb(232, 230, 245));  // moon
     sel_disc(cx + 19, cy + SEL_BAR/2 - 1, 7, bar);               // carve crescent
 
-    // Back button "<" — bright when there's history, dim otherwise.
+    // Back "<" and Forward ">" buttons — each bright when its stack has somewhere to go, dim otherwise.
     uint32_t bcol = s->hist_len > 0 ? fb_rgb(220, 215, 240) : fb_rgb(96, 90, 120);
     fb_fill_rect(cx + SEL_BACK_X, cy + 7, SEL_BACK_W, SEL_BAR - 14, fb_rgb(30, 26, 46));
     font_draw_string(cx + SEL_BACK_X + 5, cy + (SEL_BAR - FONT_HEIGHT)/2, "<", bcol, fb_rgb(30, 26, 46));
+    uint32_t fcol = s->fwd_len > 0 ? fb_rgb(220, 215, 240) : fb_rgb(96, 90, 120);
+    fb_fill_rect(cx + SEL_FWD_X, cy + 7, SEL_FWD_W, SEL_BAR - 14, fb_rgb(30, 26, 46));
+    font_draw_string(cx + SEL_FWD_X + 5, cy + (SEL_BAR - FONT_HEIGHT)/2, ">", fcol, fb_rgb(30, 26, 46));
 
     int ux = cx + SEL_URL_X, uw = SELENE_W - SEL_URL_X - SEL_PAD, uy = cy + 6, uh = SEL_BAR - 12;
     fb_fill_rect(ux, uy, uw, uh, fb_rgb(22, 22, 30));         // URL box
@@ -3168,6 +3238,7 @@ void selene_win_click(window_t* win, int mx, int my, int btn) {
 
     if (my >= cy && my < cy + SEL_BAR) {                      // toolbar
         if (mx >= cx + SEL_BACK_X && mx < cx + SEL_BACK_X + SEL_BACK_W) { selene_back(s); return; }
+        if (mx >= cx + SEL_FWD_X  && mx < cx + SEL_FWD_X  + SEL_FWD_W)  { selene_forward(s); return; }
         s->sel_link = -1;                                    // clicking the URL bar edits it
         return;
     }

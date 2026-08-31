@@ -20,4 +20,7 @@ void  selene_first_load(window_t* win);   // fetch the default page right after 
 // HTML-forms self-test: parse a known form + build its GET submission URL. 0 if all pass.
 int   selene_form_selftest(void);
 
+// Back/Forward history-stack self-test (no network): 0 if all pass.
+int   selene_nav_selftest(void);
+
 #endif

@@ -18,7 +18,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.5.11"
+#define KERNEL_VERSION "6.5.12"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -31,7 +31,7 @@
 #define TERMINAL_NAME      "Erebus"
 #define TERMINAL_VERSION   "1.2"      // Erebus: the terminal emulator
 #define SELENE_NAME        "Selene"
-#define SELENE_VERSION     "1.1"      // Selene: the web browser
+#define SELENE_VERSION     "1.2"      // Selene: the web browser
 #define EDITOR_NAME        "Mnemosyne"
 #define EDITOR_VERSION     "1.2"      // Mnemosyne: the text editor (goddess of memory)
 // LOOP POLICY (user 2026-08-21): a loop increment that CHANGES a component's code bumps
