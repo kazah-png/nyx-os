@@ -3993,6 +3993,8 @@ void compositor_run(void) {
             } else if (resize_id) {
                 window_t* win = find_window(resize_id);
                 if (win) {
+                    // Footprint BEFORE this step (for the partial-present damage rect below).
+                    int oax = win->x, oay = win->y, oaw = (int)win->w, oah = (int)win_total_h(win);
                     int dx = mx - win->resize_start_x;
                     int dy = my - win->resize_start_y;
                     int nx = win->x, ny = win->y;
@@ -4025,6 +4027,16 @@ void compositor_run(void) {
                     if ((int)nh < MIN_WIN_H) { nh = MIN_WIN_H; ny = win->y; }
                     win->x = nx; win->y = ny;
                     window_resize(resize_id, nw, nh);
+                    // Damage = old ∪ new footprint (+ shadow margin). The union covers both a
+                    // grow (new bigger) and a shrink (old bigger → the vacated area repaints),
+                    // so the present publishes just this rect instead of the whole screen.
+                    int nbx = win->x, nby = win->y, nbw = (int)win->w, nbh = (int)win_total_h(win);
+                    const int M = SHADOW_OFFSET + SHADOW_RADIUS + 2;
+                    int x0 = (oax < nbx ? oax : nbx) - M;
+                    int y0 = (oay < nby ? oay : nby) - M;
+                    int x1 = ((oax + oaw) > (nbx + nbw) ? (oax + oaw) : (nbx + nbw)) + M;
+                    int y1 = ((oay + oah) > (nby + nbh) ? (oay + oah) : (nby + nbh)) + M;
+                    ddx = x0; ddy = y0; ddw = x1 - x0; ddh = y1 - y0; drag_dmg_valid = 1;
                     redraw = 1;
                 }
             } else {
@@ -4498,13 +4510,16 @@ done_click:
         // to move the cursor one step was the single biggest per-frame cost (measured
         // ~3.4 ms vs microseconds for the two small rects), so pointer motion is now free.
         if (frame_dirty || (moved && mm_dispatched)) {
-            // Window drag: publish just the dragged window's damaged region (old ∪ new
-            // footprint) instead of a full ~3 MB blit. Fall back to a full present whenever
-            // something OUTSIDE that rect could also have changed — a snap-hint at the screen
-            // edge, an animated wallpaper, a live toast, or an open menu — so nothing is left
-            // stale. redraw_all still rebuilt the whole back buffer; only the PUBLISH shrinks.
-            int drag_partial = drag_dmg_valid && drag_id && frame_dirty && !fb_fullscreen_active()
-                && snap_zone_for_cursor(mouse_x, mouse_y, (int)fw, (int)fh) == WSTATE_NORMAL
+            // Window drag OR resize: publish just the affected window's damaged region (old ∪
+            // new footprint) instead of a full ~3 MB blit. Fall back to a full present whenever
+            // something OUTSIDE that rect could also have changed — a drop-snap hint at the
+            // screen edge (drags only; a resize never shows one), an animated wallpaper, a live
+            // toast, or an open menu — so nothing is left stale. redraw_all still rebuilt the
+            // whole back buffer; only the PUBLISH shrinks.
+            int snap_showing = drag_id &&
+                snap_zone_for_cursor(mouse_x, mouse_y, (int)fw, (int)fh) != WSTATE_NORMAL;
+            int drag_partial = drag_dmg_valid && (drag_id || resize_id) && frame_dirty
+                && !fb_fullscreen_active() && !snap_showing
                 && !wallpaper_animated() && notify_active_count(now) == 0
                 && !start_menu_open && !ctx_menu_open && !user_menu_open;
             if (drag_partial) {
