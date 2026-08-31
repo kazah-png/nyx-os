@@ -985,6 +985,53 @@ fence's debut among them, byte-identical through the serial port.
 The checking module of the self-host ladder has nothing left to
 climb in this corpus; what stands above it is generation.
 
+### What stands above — the gen.n verdict
+
+The judgment, weighed with the corpus behind us. **GO.** gen.n —
+ncc's code generator rewritten in N — is the fourth and final
+module: lex, parse, check, gen, and the self-host ladder has no
+fifth word. Three things decide it.
+
+First, the differential mode is the strongest the ladder has ever
+had, and it needs NO normalization at all. The harness pattern
+stays what it has always been — copy the source to a fixed path,
+run both compilers over the same file — but the comparison drops
+from "the same first error, filename column stripped" to `diff`:
+ncc's generated C against gen.n's generated C, byte for byte,
+comment header included (both read the same fixed path, so even
+the provenance line matches). A 24-line hello.c already shows the
+whole discipline in miniature: the syscall wrappers, the forward
+prototypes, the interpolation lowering with its numbered `__b0`
+and `__s0` temporaries, the escaped strings. Deterministic output,
+deterministically compared.
+
+Second, the accretion pattern is proven three times over — parse.n
+grew out of lex.n, check.n out of parse.n, and gen.n grows out of
+check.n the same way: the checker stays (generation assumes checked
+input, exactly as ncc's single pass does), and emitters join it.
+
+Third, the honest risks are known and priced: gen.n will be the
+ladder's largest file; ncc's function-count cap (128, with check.n
+at 105) will be crossed early, so the cap bump and the package-copy
+refresh are planned work, not a surprise; and byte-equality is
+merciless about ncc's emission order — the prototype walk, the
+temp-counter numbering, the indentation — which is not a risk so
+much as the point: the reference's every habit becomes a held
+invariant.
+
+The rungs, sketched: **rung 1**, hello.n byte-exact — header,
+extern wrappers, prototypes, one function with a binding, an
+interpolation and a call. **Rung 2**, the expression ladder and
+statements — countdown and inference join. **Then** one rung per
+construct family, retracing the corpus in emission order: structs,
+enums and match, defer and the `__ret` form, `?`, counted for,
+indexing, own drops — each rung measured the same way, more
+examples' generated C held to the byte. **The summit above them
+all**: gen.n emitting lex.n, parse.n, check.n and gen.n itself —
+the N compiler, written in N, compiling itself inside NyxOS. That
+is milestone M5's original sentence, and for the first time every
+word of it is load-bearing.
+
 And the hardest lexer feature landed: **interpolation**. A toy string
 containing a brace lexes as segments — HEAD before the first hole,
 MID between holes, TAIL after the last (ncc's own
