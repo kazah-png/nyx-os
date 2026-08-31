@@ -134,6 +134,9 @@ static void cmd_layout(int argc, char** argv);
 static void cmd_ls(int argc, char** argv);
 static void cmd_cd(int argc, char** argv);
 static void cmd_pwd(int argc, char** argv);
+static void cmd_dirs(int argc, char** argv);
+static void cmd_pushd(int argc, char** argv);
+static void cmd_popd(int argc, char** argv);
 static void cmd_cat(int argc, char** argv);
 static void cmd_touch(int argc, char** argv);
 static void cmd_truncate(int argc, char** argv);
@@ -391,6 +394,9 @@ static const command_t commands[] = {
     {"ls",        cmd_ls,        "List directory contents: ls [-la] [path]", false},
     {"cd",        cmd_cd,        "Change directory: cd <path>", false},
     {"pwd",       cmd_pwd,       "Print working directory", false},
+    {"pushd",     cmd_pushd,     "Push the current dir and cd to another: pushd <path>", false},
+    {"popd",      cmd_popd,      "Pop the directory stack and cd back", false},
+    {"dirs",      cmd_dirs,      "List the directory stack (current dir first)", false},
     {"cat",       cmd_cat,       "Display file contents: cat <file>", false},
     {"open",      cmd_open,      "Open a file in the GUI Text Editor: open <file>", false},
     {"touch",     cmd_touch,     "Create empty file: touch <file>", false},
@@ -855,7 +861,7 @@ void execute_command(const char* cmd_line) {
 // ever dropped even if a new command isn't categorised here yet.
 typedef struct { const char* title; const char* const* names; } help_cat_t;
 static const char* const HC_shell[] = {"help","man","version","clear","history","alias","unalias","exec","spawn","jobs","wait","nice","renice","taskset",0};
-static const char* const HC_files[] = {"ls","cd","pwd","cat","file","identify","tar","iniget","open","touch","mkdir","rm","shred","cp","mv","tree","find","which","basename","dirname","realpath","files","df","du","disks","lsblk","lspci","nvme","nyxpart","mkfs","nyxinstall","nyxgrub","mount","ext2ls","ext2cat",0};
+static const char* const HC_files[] = {"ls","cd","pwd","pushd","popd","dirs","cat","file","identify","tar","iniget","open","touch","mkdir","rm","shred","cp","mv","tree","find","which","basename","dirname","realpath","files","df","du","disks","lsblk","lspci","nvme","nyxpart","mkfs","nyxinstall","nyxgrub","mount","ext2ls","ext2cat",0};
 static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","sed","patch","fold","fmt","nl","expand","unexpand","factor","isprime","strings","sha256sum","sha512sum","sha1sum","md5sum","seq","paste","clip","cut","uniq","join","comm","printf","wc","write","hexdump",0};
 static const char* const HC_sys[]   = {"ps","top","time","kill","pgrep","pkill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","aeronyx","vfsstat","screenshot","stackcheck",0};
 static const char* const HC_user[]  = {"useradd","users",0};
@@ -928,6 +934,9 @@ static const man_page_t man_pages[] = {
     {"ls",       "List the contents of a directory. With no path the current directory is listed. -a also shows entries whose name begins with a dot; -l gives a long listing with each entry's type, size and name."},
     {"cd",       "Change the shell's current working directory to <path>."},
     {"pwd",      "Print the full path of the current working directory."},
+    {"pushd",    "Save the current directory on a stack and change to <path>: `pushd <path>`. With no argument, swap the current directory with the top of the stack. Echoes the stack (current directory first), like bash. Use `popd` to return and `dirs` to view the stack."},
+    {"popd",     "Return to the directory on top of the stack (the last one `pushd` saved) and drop it from the stack. Prints the remaining stack."},
+    {"dirs",     "List the directory stack: the current directory first, then the entries saved by `pushd`, newest first."},
     {"cat",      "Write the contents of <file> to standard output. The usual way to view a text file."},
     {"file",     "Identify the type of each <file> from its leading bytes (magic numbers: ELF, PNG, GIF, JPEG, PDF, Zip, gzip, WAV, BMP, tar, #! scripts) and, for text, whether it is ASCII or UTF-8 (with a source-extension hint like `C source`). Prints `<file>: <type>`."},
     {"convert",  "Convert an image from one format to another: `convert <in> <out.png|out.ppm>`. The input may be PNG, BMP, GIF or JPEG (the format is detected from the file's header, not its name); the output format is chosen by the output extension — `.png` writes a real DEFLATE-compressed PNG, `.ppm`/`.pnm` writes an uncompressed Netpbm P6. It decodes the input to RGBA, then re-encodes with the same codecs the screenshot tool uses. Images up to 1280x720 are supported (larger inputs are rejected rather than risk exhausting the kernel heap). Example: `convert /mnt/photo.jpg /mnt/photo.png`."},
@@ -7932,6 +7941,46 @@ static void cmd_cd(int argc, char** argv) {
 static void cmd_pwd(int argc, char** argv) {
     (void)argc; (void)argv;
     printf("%s\n", vfs_getcwd());
+}
+
+// Directory stack (bash-style pushd/popd/dirs): pushd remembers the current dir and cd's to a new
+// one; popd cd's back to (and drops) the top; dirs lists the stack with the current dir first.
+#define DIRSTACK_MAX 16
+static char g_dirstack[DIRSTACK_MAX][256];
+static int  g_dirstack_len = 0;
+
+static void cmd_dirs(int argc, char** argv) {
+    (void)argc; (void)argv;
+    printf("%s", vfs_getcwd());                          // the current dir heads the listing
+    for (int i = g_dirstack_len - 1; i >= 0; i--) printf(" %s", g_dirstack[i]);
+    printf("\n");
+}
+
+static void cmd_pushd(int argc, char** argv) {
+    char cur[256];
+    strncpy(cur, vfs_getcwd(), sizeof(cur) - 1); cur[sizeof(cur) - 1] = '\0';
+    if (argc < 2) {                                      // no arg: swap the current dir with the top of the stack
+        if (g_dirstack_len < 1) { printf("pushd: no other directory\n"); return; }
+        if (vfs_chdir(g_dirstack[g_dirstack_len - 1]) < 0) {
+            printf("pushd: %s: No such directory\n", g_dirstack[g_dirstack_len - 1]); return;
+        }
+        strncpy(g_dirstack[g_dirstack_len - 1], cur, 255); g_dirstack[g_dirstack_len - 1][255] = '\0';
+    } else {
+        if (g_dirstack_len >= DIRSTACK_MAX) { printf("pushd: directory stack full (max %d)\n", DIRSTACK_MAX); return; }
+        if (vfs_chdir(argv[1]) < 0) { printf("pushd: %s: No such directory\n", argv[1]); return; }
+        strncpy(g_dirstack[g_dirstack_len], cur, 255); g_dirstack[g_dirstack_len][255] = '\0';
+        g_dirstack_len++;
+    }
+    cmd_dirs(0, 0);                                      // echo the new stack, like bash
+}
+
+static void cmd_popd(int argc, char** argv) {
+    (void)argc; (void)argv;
+    if (g_dirstack_len < 1) { printf("popd: directory stack empty\n"); return; }
+    g_dirstack_len--;
+    if (vfs_chdir(g_dirstack[g_dirstack_len]) < 0)
+        printf("popd: %s: No such directory\n", g_dirstack[g_dirstack_len]);
+    cmd_dirs(0, 0);
 }
 
 static void cmd_cat(int argc, char** argv) {
