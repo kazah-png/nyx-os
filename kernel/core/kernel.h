@@ -18,7 +18,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.5.20"
+#define KERNEL_VERSION "6.5.21"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -29,7 +29,7 @@
 #define COMPOSITOR_NAME    "Hemera"
 #define COMPOSITOR_VERSION "2.5"      // Hemera: the windowing compositor (2nd-gen daedalOS-style desktop)
 #define TERMINAL_NAME      "Erebus"
-#define TERMINAL_VERSION   "1.2"      // Erebus: the terminal emulator
+#define TERMINAL_VERSION   "1.3"      // Erebus: the terminal emulator
 #define SELENE_NAME        "Selene"
 #define SELENE_VERSION     "1.3"      // Selene: the web browser
 #define EDITOR_NAME        "Mnemosyne"

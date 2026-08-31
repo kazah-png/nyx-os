@@ -476,6 +476,58 @@ int term_paste_selftest(void) {
     return 0;
 }
 
+// Readline-style line kills (v6.5.21): Ctrl+U cuts the text BEFORE the cursor, Ctrl+K the text
+// AFTER it, each to the system clipboard. Pure + bounded so the term-kill KAT drives them:
+// they copy the removed run into `cut` (NUL-terminated, capped at cap-1), update the line, and
+// return how many chars were removed. Ctrl+U slides the surviving tail down to index 0 and
+// homes the cursor; Ctrl+K just truncates at the cursor.
+int term_kill_to_start(char* input, int* input_len, int* cursor_pos, char* cut, int cap) {
+    int span = *cursor_pos;                          // chars before the cursor -> removed
+    int n = (span < cap) ? span : cap - 1;           // chars copied into cut (clamped)
+    for (int i = 0; i < n; i++) cut[i] = input[i];
+    cut[n] = '\0';
+    int tail = *input_len - span;                    // slide [cursor,len) down to the start
+    for (int i = 0; i < tail; i++) input[i] = input[span + i];
+    *input_len = tail;
+    *cursor_pos = 0;
+    return span;
+}
+int term_kill_to_end(char* input, int* input_len, int cursor_pos, char* cut, int cap) {
+    int span = *input_len - cursor_pos;              // chars from the cursor to EOL -> removed
+    if (span < 0) span = 0;
+    int n = (span < cap) ? span : cap - 1;
+    for (int i = 0; i < n; i++) cut[i] = input[cursor_pos + i];
+    cut[n] = '\0';
+    *input_len = cursor_pos;
+    return span;
+}
+
+int term_kill_selftest(void) {
+    char buf[TERM_INPUT_MAX], cut[TERM_INPUT_MAX];
+    int len, cur, n;
+    // Ctrl+K: kill from mid-line to EOL -> line keeps the prefix, cut holds the suffix
+    strcpy(buf, "hello world"); len = 11; cur = 6;
+    n = term_kill_to_end(buf, &len, cur, cut, sizeof cut); buf[len] = '\0';
+    if (n != 5 || len != 6 || strcmp(cut, "world") || strcmp(buf, "hello ")) return 1;
+    // Ctrl+U: kill from mid-line to start -> tail slides down, cursor homes, cut holds the prefix
+    strcpy(buf, "hello world"); len = 11; cur = 6;
+    n = term_kill_to_start(buf, &len, &cur, cut, sizeof cut); buf[len] = '\0';
+    if (n != 6 || len != 5 || cur != 0 || strcmp(cut, "hello ") || strcmp(buf, "world")) return 2;
+    // Ctrl+U at column 0 -> no-op, empty cut
+    strcpy(buf, "abc"); len = 3; cur = 0;
+    n = term_kill_to_start(buf, &len, &cur, cut, sizeof cut); buf[len] = '\0';
+    if (n != 0 || len != 3 || cur != 0 || cut[0] || strcmp(buf, "abc")) return 3;
+    // Ctrl+K at EOL -> no-op, empty cut
+    strcpy(buf, "abc"); len = 3; cur = 3;
+    n = term_kill_to_end(buf, &len, cur, cut, sizeof cut);
+    if (n != 0 || len != 3 || cut[0]) return 4;
+    // Ctrl+U with the cursor at EOL kills the whole line
+    strcpy(buf, "full"); len = 4; cur = 4;
+    n = term_kill_to_start(buf, &len, &cur, cut, sizeof cut);
+    if (n != 4 || len != 0 || cur != 0 || strcmp(cut, "full")) return 5;
+    return 0;
+}
+
 // Replace the input line with `s` (bounded) and park the cursor at its end.
 static void term_load_input(terminal_win_t* t, const char* s, int len) {
     if (len > TERM_INPUT_MAX - 1) len = TERM_INPUT_MAX - 1;
@@ -642,6 +694,22 @@ void terminal_win_key(window_t* win, int key) {
         uint32_t n = clipboard_get(cb, sizeof(cb));
         term_input_paste(term->input, &term->input_len, &term->cursor_pos,
                          TERM_INPUT_MAX, cb, (int)n);
+        return;
+    }
+
+    // Readline line-editing chords: motion (Ctrl+A/E) + kill-to-clipboard (Ctrl+U/K).
+    if (c == 0x01) { term->cursor_pos = 0; return; }                  // Ctrl+A — start of line
+    if (c == 0x05) { term->cursor_pos = term->input_len; return; }    // Ctrl+E — end of line
+    if (c == 0x15) {                                                  // Ctrl+U — kill to line start
+        char cut[TERM_INPUT_MAX];
+        int n = term_kill_to_start(term->input, &term->input_len, &term->cursor_pos, cut, sizeof cut);
+        if (n > 0) clipboard_set(cut, (uint32_t)n);
+        return;
+    }
+    if (c == 0x0B) {                                                  // Ctrl+K — kill to line end
+        char cut[TERM_INPUT_MAX];
+        int n = term_kill_to_end(term->input, &term->input_len, term->cursor_pos, cut, sizeof cut);
+        if (n > 0) clipboard_set(cut, (uint32_t)n);
         return;
     }
 

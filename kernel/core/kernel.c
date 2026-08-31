@@ -288,6 +288,7 @@ extern int stack_canary_sweep(void);      // process.c — scan task-stack canar
 extern int stack_canary_selftest(void);   // process.c — canary KAT
 extern int signal_selftest(void);          // proc/signal.c — signal post/mask/SIGCONT-resume KAT
 extern int term_paste_selftest(void);      // gui/apps/terminal_win.c — Ctrl+V paste KAT
+extern int term_kill_selftest(void);        // gui/apps/terminal_win.c — Ctrl+U/K line-kill KAT
 extern int term_hist_selftest(void);        // gui/apps/terminal_win.c — Up/Down history-ring KAT
 extern int term_rsearch_selftest(void);     // gui/apps/terminal_win.c — Ctrl+R reverse-i-search KAT
 extern int editor_find_selftest(void);      // gui/apps/editor_win.c — Ctrl+F find-search KAT
@@ -9657,7 +9658,7 @@ static void run_selftests(void) {
         {"xbm-deps",     xbm_deps_selftest},
         {"clipboard",    clipboard_selftest},
         {"term-paste",   term_paste_selftest},   {"term-hist",     term_hist_selftest},
-        {"term-rsearch", term_rsearch_selftest},
+        {"term-rsearch", term_rsearch_selftest},  {"term-kill",     term_kill_selftest},
         {"du",           du_selftest},
         {"pci",          pci_selftest},
         {"nvme",         nvme_selftest},
