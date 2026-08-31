@@ -1215,6 +1215,42 @@ selfhost sources themselves — lex.n, parse.n, check.n, and its
 own — first on the host, then inside NyxOS: the self-hosting
 sentence with every word load-bearing.
 
+### the summit — the generator emits its own sources
+
+The survey ran the same hour the whole directory closed, and its
+first pass split the ladder cleanly in two. lex.n and parse.n
+emitted byte-identically at once — 578 and 2220 lines of C. check.n
+and gen.n were refused, both with the same strange diagnostic:
+`undeclared variable 'st'` at the first statement of `efind`, a
+variable that is plainly a parameter of the function it sits in.
+
+The isolation took three steps. The standalone parser was fed
+check.n and its AST dump compared against ncc's: 21,811 lines,
+byte-identical — the parser was innocent. That number was also the
+verdict. The accreted parser inside check.n and gen.n builds a real
+tree into a node arena sized at 16K nodes — a size chosen in the
+lex.n era, when the biggest input was an example. check.n parses to
+~22K nodes; the overflow wrote past the arena into the tables
+behind it, and the first casualty was a parameter list. The
+standalone parser never noticed because it streams — five passes,
+no tree. Only the selfhost sources are big enough to find the edge,
+and finding such edges is what the survey is for.
+
+The fix is capacity, not logic: the node arena grows to 64K nodes,
+the flat list arena to 128K words, the source buffer to 512K
+(gen.n's own source is ~190K), and the host shim's brk pool to 32M
+to hold it all. On the re-run, all four sources emit byte-identical
+C — including gen.n reproducing the 6,624 lines ncc emits for
+gen.n itself. The suite's [8e] stage pins the claim both ways: the
+self-hosted checker is silent on check.n and gen.n, and the
+generator's C matches ncc's for every rung of its own ladder.
+
+Batch V54 ran beside the survey and put rung 5 on target inside
+NyxOS: own.n's 142 generated lines — destructor calls placed by
+the replayed ownership machine — identical over serial. One
+sentence remains, and it is the milestone's own: the generator,
+compiled inside NyxOS, emitting the C of its own source there.
+
 And the hardest lexer feature landed: **interpolation**. A toy string
 containing a brace lexes as segments — HEAD before the first hole,
 MID between holes, TAIL after the last (ncc's own

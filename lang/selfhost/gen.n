@@ -4870,7 +4870,9 @@ fn main() -> i64 {
         put("(no check target - skipped)\n");
         return 0;
     }
-    buf := sys_sbrk(262144) as *u8;        // 256K, parse.n's size
+    buf := sys_sbrk(524288) as *u8;        // 512K: the selfhost sources
+                                           // themselves are the biggest
+                                           // targets (gen.n is ~190K)
     mut total := 0;
     mut r := 1;
     while r > 0 {
@@ -4887,9 +4889,10 @@ fn main() -> i64 {
     }                                      // +21 Err +24 self +28 pf/9)
     st := sys_sbrk(512) as *i64;
     ps := sys_sbrk(1024) as *i64;          // the params arena
-    st[33] = sys_sbrk(1048576);            // nodes: 16K x 8 words
+    st[33] = sys_sbrk(4194304);            // nodes: 64K x 8 words (check.n
+                                           // alone parses to ~22K nodes)
     st[34] = 1;                            // node 0 is nil
-    st[35] = sys_sbrk(131072);             // the flat list arena
+    st[35] = sys_sbrk(1048576);            // the flat list arena
     st[36] = 0;
     st[37] = sys_sbrk(16384);              // fn table: 256 records
     st[38] = 0;

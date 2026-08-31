@@ -46,9 +46,9 @@ static inline nyx_i64 __nyx_syscall6(nyx_i64 no, nyx_i64 a1, nyx_i64 a2,
                                      nyx_i64 a3, nyx_i64 a4, nyx_i64 a5, nyx_i64 a6) {
     if (no == 7) {                /* NyxOS sbrk(incr) -> old break: Linux brk
                                    * has different semantics, so serve it from
-                                   * a static arena (8M: the selfhost checker's
-                                   * node arenas outgrew the original 1M) */
-        static char __shim_heap[8 << 20];
+                                   * a static arena (32M: the selfhost sources
+                                   * as compile targets sbrk past the old 8M) */
+        static char __shim_heap[32 << 20];
         static nyx_u64 __shim_brk;
         if (a1 < 0 || (nyx_u64)a1 > sizeof(__shim_heap) - __shim_brk) return -1;
         nyx_i64 old = (nyx_i64)(nyx_addr)&__shim_heap[__shim_brk];

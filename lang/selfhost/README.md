@@ -566,3 +566,24 @@ the second capacity the selfhost ladder has outgrown).
 Batch V53 carried the match switch to the target the same hour:
 matchexpr.n's 111 lines — the full `__mN`/`__mresN` lowering —
 emitted inside NyxOS, identical to the reference beside it.
+
+Batch V54 put the own replay itself on target: own.n's 142
+generated lines — auto-drops placed by the replayed state machine —
+emitted inside NyxOS, identical to the reference beside it.
+
+**And then the summit. Pointed at the four selfhost sources
+themselves, the generator emits every one of them byte-identically
+to ncc — lex.n (578 lines of C), parse.n (2220), check.n (4913),
+and its OWN source, gen.n (6624).** The survey's first run told an
+honest story: lex and parse passed immediately, but check.n was
+refused with a bogus `undeclared variable` — not a logic gap but a
+capacity one. The accreted parser's node arena held 16K nodes and
+check.n alone parses to ~22K; the overflow quietly stomped the
+arenas behind it. The selfhost sources are the first inputs big
+enough to find that edge — which is precisely what a summit survey
+is for. With the arenas sized for self-hosting (64K nodes, and the
+source buffer at 512K), all four fell on the first re-run. The
+suite's [8e] stage now holds the whole claim: the checker is
+silent on its own sources, and the generator reproduces ncc's C
+for the entire ladder, itself included. What remains is the same
+sentence spoken inside NyxOS.
