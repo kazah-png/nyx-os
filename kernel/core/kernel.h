@@ -18,7 +18,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.5.13"
+#define KERNEL_VERSION "6.5.14"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -218,6 +218,12 @@
 #define MMAP_BASE  0x100000000ULL
 #define MMAP_MAX   0x0000700000000000ULL
 #define PROC_MAX_VMAS 16
+/* ASLR: each process's mmap area starts at MMAP_BASE + a random page-aligned slide in
+ * [0, MMAP_ASLR_PAGES*4KiB) = [0, 4 GiB) — 20 bits of entropy, tiny against the 112 TiB
+ * mmap window, so mmap'd regions (shared libc, big allocations) land unpredictably. */
+#define MMAP_ASLR_PAGES (1u << 20)
+uint64_t mmap_aslr_slide(uint32_t rnd);   /* pure page-aligned bounded slide; see mm/mmap.c */
+int      mmap_aslr_selftest(void);
 
 /* Shared libc (v5.8.28). One copy of libc's code is loaded at boot and mapped
  * read-only into every user process at this fixed VA, so programs link against

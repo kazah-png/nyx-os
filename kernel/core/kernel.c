@@ -295,6 +295,7 @@ extern int editor_replace_selftest(void);   // gui/apps/editor_win.c — Ctrl+R 
 extern int editor_goto_selftest(void);      // gui/apps/editor_win.c — Ctrl+G goto-line KAT
 extern int selene_nav_selftest(void);       // gui/apps/selene_win.c — Back/Forward history KAT
 extern int heap_selftest(void);             // mm/heap.c — kernel-heap usage-accounting KAT
+extern int mmap_aslr_selftest(void);        // mm/mmap.c — mmap-base ASLR slide KAT
 extern int ata_lba28_selftest(void);        // drivers/misc/ata.c — LBA28 request-validation KAT
 extern int tri_selftest(void);              // gui/core/tri.c — software triangle rasterizer KAT
 extern int triz_selftest(void);             // gui/core/tri.c — barycentric-Z + z-buffer KAT
@@ -9655,6 +9656,7 @@ static void run_selftests(void) {
         {"heap",         heap_selftest},
         {"ata",          ata_lba28_selftest},
         {"wx",           wx_selftest},
+        {"mmapaslr",     mmap_aslr_selftest},
         {"elf",          elf_selftest},
         {"dynlink",      dynlink_load_selftest},
         {"numparse",     numparse_selftest},        {"hkdf",          hkdf_selftest},

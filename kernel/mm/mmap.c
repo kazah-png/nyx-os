@@ -37,6 +37,26 @@ int wx_selftest(void) {
     return 0;
 }
 
+// ASLR: turn 32 bits of CSPRNG into a page-aligned slide in [0, MMAP_ASLR_PAGES*4KiB), used to
+// randomise where a process's mmap area begins (MMAP_BASE + slide). Pure so a KAT can pin the
+// alignment and bound; MMAP_ASLR_PAGES is a power of two so the mask keeps it in range.
+uint64_t mmap_aslr_slide(uint32_t rnd) {
+    return (uint64_t)(rnd & (MMAP_ASLR_PAGES - 1)) << 12;   // page-aligned, < 4 GiB
+}
+
+// KAT (`mmapaslr`): every slide is page-aligned and inside the window; distinct inputs give
+// distinct slides; the extremes map as expected.
+int mmap_aslr_selftest(void) {
+    if (mmap_aslr_slide(0) != 0) return 1;                                  // 0 -> no slide
+    if (mmap_aslr_slide(0x12345) & 0xFFF) return 2;                         // always page-aligned
+    if (mmap_aslr_slide(0xFFFFFFFFu) >= ((uint64_t)MMAP_ASLR_PAGES << 12)) return 3;  // inside the window
+    if (mmap_aslr_slide(0xFFFFFFFFu) != (((uint64_t)MMAP_ASLR_PAGES - 1) << 12)) return 4;  // max slide
+    if (mmap_aslr_slide(1) == mmap_aslr_slide(2)) return 5;                 // entropy actually varies it
+    // only the low log2(PAGES) bits matter: high bits of rnd are masked away
+    if (mmap_aslr_slide(0x5) != mmap_aslr_slide(0x5 | (7u << 25))) return 6;
+    return 0;
+}
+
 /* Release a process's file-backed VMA snapshot buffers. Called when an address
  * space is torn down (reap), since those buffers are kernel-heap allocations that
  * live outside the page directory free_page_directory() releases. */
@@ -83,7 +103,11 @@ uint64_t do_mmap(uint64_t addr, uint64_t length, int prot, int flags,
     // do_mmap needs its own. Rounding up never shrinks a valid length, so this only fires
     // on the overflow.
     if (length < req_length) return (uint64_t)-1;
-    if (p->mmap_next < MMAP_BASE) p->mmap_next = MMAP_BASE;   /* lazy first-use init */
+    if (p->mmap_next < MMAP_BASE) {                           /* lazy first-use init + ASLR slide */
+        extern void csprng_bytes(uint8_t*, uint32_t);
+        uint32_t r = 0; csprng_bytes((uint8_t*)&r, sizeof(r));
+        p->mmap_next = MMAP_BASE + mmap_aslr_slide(r);        /* random page-aligned start per process */
+    }
 
     int slot = -1;
     for (int i = 0; i < PROC_MAX_VMAS; i++)
