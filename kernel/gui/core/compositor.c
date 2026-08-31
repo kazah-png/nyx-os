@@ -4458,11 +4458,17 @@ done_click:
         // animation, Selene's cooperative image loader). Each handler returns 1 only when it
         // changed something, so an idle Selene window doesn't force a 30fps recomposite.
         static uint32_t game_tick_ms = 0;
+        // Snapshot whether anything EARLIER this frame (a click, key, drag, resize) already asked
+        // for a full redraw, and count how many windows the tick actually changes. When the SOLE
+        // dirty source turns out to be exactly one animating window, the present below publishes
+        // just that window's rect (see tick_partial) instead of the whole ~3 MB screen.
+        int redraw_pre_tick = redraw;
+        int tick_changed = 0, tick_win_idx = -1;
         if (now - game_tick_ms >= 33) {
             game_tick_ms = now;
             for (int gi = 0; gi < MAX_WINDOWS; gi++)
                 if (windows[gi] && windows[gi]->on_tick && windows[gi]->visible) {
-                    if (windows[gi]->on_tick(windows[gi])) redraw = 1;
+                    if (windows[gi]->on_tick(windows[gi])) { redraw = 1; tick_changed++; tick_win_idx = gi; }
                 }
         }
 
@@ -4485,6 +4491,7 @@ done_click:
         static uint32_t notify_anim_ms = 0;
         static int notify_was_active = 0;
         int notify_now_active = notify_active_count(now) > 0;
+        int toast_just_expired = (!notify_now_active && notify_was_active);  // this frame erases a toast → area outside a window changes → force a full present
         if ((notify_now_active && now - notify_anim_ms >= 100u) ||
             (!notify_now_active && notify_was_active)) {
             notify_anim_ms = now;
@@ -4540,9 +4547,45 @@ done_click:
                 && !fb_fullscreen_active() && !snap_showing
                 && !wallpaper_animated() && notify_active_count(now) == 0
                 && !start_menu_open && !ctx_menu_open && !user_menu_open;
+
+            // Single-window animation partial present: when the ONLY dirty source this frame is
+            // exactly one window's on_tick — a game, an animated GIF, the live CPU/RAM graph — and
+            // nothing else could have changed outside it (no earlier click/key/drag/resize, no
+            // animated wallpaper, no live-or-expiring toast, no open menu), publish just that
+            // window's footprint (frame + drop shadow) rather than the whole ~3 MB screen.
+            // redraw_all still rebuilt the whole back buffer; only the PUBLISH shrinks — the same
+            // lever as the drag (.32) / resize (.35) paths, now covering the last frequent full
+            // present. on_tick handlers animate CONTENT inside a fixed window (never move/resize
+            // it), so the current footprint IS the whole damage region — no old∪new union needed.
+            int tick_partial = 0, tpx = 0, tpy = 0, tpw = 0, tph = 0;
+            if (!drag_partial && frame_dirty && redraw_pre_tick == 0 && tick_changed == 1
+                && tick_win_idx >= 0 && !drag_id && !resize_id && !taskbar_only && !widget_only
+                && !fb_fullscreen_active() && !wallpaper_animated()
+                && notify_active_count(now) == 0 && !toast_just_expired
+                && !start_menu_open && !ctx_menu_open && !user_menu_open) {
+                window_t* tw = windows[tick_win_idx];
+                if (tw && tw->visible && tw->state != WSTATE_MINIMIZED) {
+                    const int M = SHADOW_OFFSET + SHADOW_RADIUS + 2;
+                    int x0 = tw->x - M, y0 = tw->y - M;
+                    int x1 = tw->x + (int)tw->w + M, y1 = tw->y + (int)win_total_h(tw) + M;
+                    if (x0 < 0) x0 = 0;
+                    if (y0 < 0) y0 = 0;
+                    if (x1 > (int)fw) x1 = (int)fw;
+                    if (y1 > (int)fh) y1 = (int)fh;
+                    tpx = x0; tpy = y0; tpw = x1 - x0; tph = y1 - y0;
+                    if (tpw > 0 && tph > 0) tick_partial = 1;
+                }
+            }
+
             if (drag_partial) {
                 fb_present_rect(ddx, ddy, ddw, ddh);
                 if (moved) {   // cursor may sit outside the window rect near a clamped edge
+                    fb_present_rect(old_cx, old_cy, CURSOR_W, CURSOR_H);
+                    fb_present_rect(mouse_x, mouse_y, CURSOR_W, CURSOR_H);
+                }
+            } else if (tick_partial) {
+                fb_present_rect(tpx, tpy, tpw, tph);
+                if (moved) {   // the pointer may have moved this frame too — publish its rects
                     fb_present_rect(old_cx, old_cy, CURSOR_W, CURSOR_H);
                     fb_present_rect(mouse_x, mouse_y, CURSOR_W, CURSOR_H);
                 }
