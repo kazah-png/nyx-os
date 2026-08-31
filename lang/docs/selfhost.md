@@ -915,6 +915,34 @@ the not-every-path-returns family — is FILE-level territory: the
 next rung designs how a message with no line number rides the
 same byte-exact harness.
 
+### Rung 10c — the declarations, and the two-shape contract
+
+The design question resolved itself with pleasing economy. A
+FILE-level manifest row reads `file.n: message`; the harness strips
+the filename column with one `cut`, which leaves ` message` — a
+leading space. So check.n simply prints that: its FILE-level
+refusals are a leading space, the message, no line. One cut, two
+shapes, zero special cases — the contract grew a second form
+without the harness learning anything new.
+
+The machinery under it is ncc's declaration battery in ncc's exact
+order. The item loop was reshaped to the reference's sequence —
+caps, fn/extern, the caps-on-anything-else refusal, then `#[drop]`
+demanding `own` — which claimed two parse-time rows on the way,
+one of them (`bad_caps_item`) a straggler from outside the own
+family entirely. Then a `cdecls` pass runs where ncc's main runs
+it, between parsing and the body checks: `validate_drops`
+(destructor exists — the lexer had already isolated the bare name
+inside `#[drop(...)]`, so the check was a table lookup — takes
+exactly one value of the struct's type, returns nothing), then the
+containment walks: no own in struct fields, none in enum variants,
+none across the syscall boundary, no impl on an own receiver. Six
+rows, fifty-eight held, and the own dialect — the deepest thing
+the corpus speaks — is complete: seventeen rows across four rungs,
+with own.n silent above them the whole way. What remains of the
+manifest is one family: not-every-path-returns, FILE-level itself,
+riding the contract this rung just built.
+
 And the hardest lexer feature landed: **interpolation**. A toy string
 containing a brace lexes as segments — HEAD before the first hole,
 MID between holes, TAIL after the last (ncc's own

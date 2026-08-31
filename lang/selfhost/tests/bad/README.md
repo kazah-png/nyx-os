@@ -26,3 +26,12 @@ differential harness strips the manifest's filename column from the
 want side (`cut -d: -f2-`, plus `tr -d '\r'` for autocrlf
 checkouts). Location and wording still match to the byte — only the
 file's name, which only the harness knows, is normalized away.
+
+The contract has two shapes. Most errors carry a line number, and
+the stripped want row reads `line: message`. Declaration errors are
+FILE-level — ncc prints them with no line (`file.n: message`) — and
+stripping the filename column from one of those leaves the message
+with its original **leading space** (` message`). check.n prints
+exactly that shape for its FILE-level refusals: a leading space, the
+message, no line. One `cut`, two shapes, zero special cases in the
+harness.

@@ -165,6 +165,12 @@ stripped (the normalization rule lives in
    bad_own_branch_noelse 6: own value 'f' is consumed in only one branch ...
    bad_drop_branch  7: own value 'p' is consumed in only one branch ...
    bad_own_leak     3: unconsumed own value 'f' at the end of the function — ...
+   bad_caps_item    2: #[caps(syscall)] applies to a fn or an extern syscall block
+   bad_drop_nonown  2: expected 'own' after #[drop(...)] — ...
+   bad_drop_unknown    #[drop(nosuch)] on 'Page': unknown function 'nosuch'
+   bad_drop_sig        drop function 'free_it' must take exactly one Page parameter
+   bad_drop_ret        drop function 'free_it' must not return a value — ...
+   bad_own_nest        own type in field 'Holder.f' — own values cannot nest ...
 
 plus ALL TWENTY-TWO examples as POSITIVE targets — the complete
 directory checks clean, silence enforced, nparse.n's 150K included. Coverage, stated honestly: extern
@@ -216,6 +222,28 @@ the checker became the biggest N program yet written. Struct
 fields, enum semantics and method returns still fall back softly
 (their tables are the next rungs); the claimed rows never reach
 them.
+
+**Rung 10c — the declarations (landed): THE OWN FAMILY IS
+COMPLETE, and FILE-level messages joined the contract.** The item
+loop now walks ncc's exact order — caps, then fn/extern, then the
+caps-on-anything-else refusal (a row of its own), then `#[drop]`,
+which DEMANDS `own` next (another row) — and a new declaration pass
+runs between the parse and the body checks, where ncc runs it:
+`validate_drops` first (the destructor must exist, take exactly one
+value of the struct's own type, and return nothing — the lexer had
+already isolated the function name inside `#[drop(...)]`, so the
+table lookup was a span away), then the v0.17 containment walks
+(no own type may hide in a struct field, an enum variant, or cross
+a syscall; no impl on an own type). Four of the six new rows have
+NO line number — ncc prints them FILE-level — and the manifest
+contract absorbed them without touching the harness: stripping the
+filename column from such a row leaves the message with a leading
+space, so check.n prints exactly that shape (the two-shape contract
+is documented in [tests/bad/README.md](tests/bad/README.md)).
+Fifty-eight rows; the whole own/move/drop dialect — seventeen rows
+across four rungs — is now held byte-exact, and only the
+not-every-path-returns family stands between the corpus and
+completeness.
 
 **Rung 10b — the leak scan (landed): OWNERSHIP IS NOW A CLOSED
 LEDGER.** The other half of must-consume: at every `return` (drops

@@ -1999,40 +1999,56 @@ fn pitems(p: *u8, n: i64, st: *i64, ps: *i64) {
     while going {
         if st[41] == 1 { going = false; continue; }   // a parse-time
         if ck(st, 0) { going = false; continue; }     // error already won
-        mut caps := 0;
-        mut ds := 0;
-        mut dl := 0;
-        if ck(st, 33) {                    // #[drop(fn)] rides a struct;
-            ds = st[26];                   // its span goes to the table
-            dl = st[27];                   // (the 10c rung validates it)
-            adv(p, n, st);
-        }
-        if acc(p, n, st, 32) { caps = 1; } // #[caps(syscall)]
-        mut owi := 0;                      // 'own' — the table records it
-        if acc(p, n, st, 36) { owi = 1; }
-        if ck(st, 22) {                    // struct: a real parse now —
-            adv(p, n, st);                 // the table rung landed
-            pstruct(p, n, st, owi, ds, dl, ps);
-            continue;
-        }
-        if ck(st, 24) {                    // enum: a real parse now —
-            adv(p, n, st);                 // the table rung landed
-            penum(p, n, st, ps);
-            continue;
-        }
-        if ck(st, 27) {                    // impl: a real parse now —
-            adv(p, n, st);                 // the method rung landed
-            pimpl(p, n, st, ps);
-            continue;
-        }
-        if ck(st, 8) {                     // extern
-            adv(p, n, st);
+        mut caps := 0;                     // ncc's item order: caps,
+        if acc(p, n, st, 32) { caps = 1; } // then fn/extern, then the
+        if ck(st, 8) {                     // caps-on-anything-else
+            adv(p, n, st);                 // refusal, then #[drop]/own
             pextern(p, n, st, caps, ps);
             continue;
         }
-        if ck(st, 10) {                    // fn
+        if ck(st, 10) {
             adv(p, n, st);
             pfn(p, n, st, caps, ps);
+            continue;
+        }
+        if caps == 1 {
+            ln := st[25];
+            put("{ln}: #[caps(syscall)] applies to a fn or an extern syscall block\n");
+            st[41] = 1;
+            going = false;
+            continue;
+        }
+        mut ds := 0;
+        mut dl := 0;
+        mut hd := 0;
+        if ck(st, 33) {                    // #[drop(fn)] — the lexer kept
+            ds = st[26];                   // just the NAME's span; it
+            dl = st[27];                   // goes to the struct table
+            adv(p, n, st);
+            hd = 1;
+        }
+        if hd == 1 && !ck(st, 36) {        // ncc's pexp(T_KW_OWN, ...):
+            ln2 := st[25];                 // a destructor demands own
+            put("{ln2}: expected 'own' after #[drop(...)] — only an own struct has a destructor\n");
+            st[41] = 1;
+            going = false;
+            continue;
+        }
+        mut owi := 0;                      // 'own' — the table records it
+        if acc(p, n, st, 36) { owi = 1; }
+        if ck(st, 22) {                    // struct: a real parse
+            adv(p, n, st);
+            pstruct(p, n, st, owi, ds, dl, ps);
+            continue;
+        }
+        if ck(st, 24) {                    // enum
+            adv(p, n, st);
+            penum(p, n, st, ps);
+            continue;
+        }
+        if ck(st, 27) {                    // impl
+            adv(p, n, st);
+            pimpl(p, n, st, ps);
             continue;
         }
         perr(st);
@@ -3203,6 +3219,146 @@ fn cfn(p: *u8, st: *i64, fi: i64) {
     cblock(p, st, ft[fi * 8 + 4]);
 }
 
+// The declaration battery, in ncc's exact order: validate_drops runs
+// FIRST (ncc's main calls it before gen_program), then gen_program's
+// v0.17 containment preamble — struct fields, syscall params, enum
+// variants, impl receivers. These messages are FILE-level: ncc prints
+// them with no line number, and the harness's want-side normalization
+// (strip the filename column) leaves a LEADING SPACE — so a FILE-level
+// refusal prints " message" with that exact space, and both shapes
+// ride one byte-exact contract (tests/bad/README.md).
+fn cdecls(p: *u8, st: *i64) {
+    sa := st[49] as *i64;
+    al := st[35] as *i64;
+    mut si := 0;
+    while si < st[50] {                    // v0.19 destructor wiring
+        if sa[si * 8 + 6] > 0 {
+            ds := sa[si * 8 + 5];
+            dl := sa[si * 8 + 6];
+            fi := ffind(p, st, ds, dl);
+            if fi < 0 {
+                put(" #[drop(");
+                put_span(p, ds, dl);
+                put(")] on '");
+                put_span(p, sa[si * 8], sa[si * 8 + 1]);
+                put("': unknown function '");
+                put_span(p, ds, dl);
+                put("'\n");
+                st[41] = 1;
+                return;
+            }
+            ft := st[37] as *i64;
+            pt0 := fpty(st, fi, 0);
+            mut sok := 0;                  // exactly one by-value param
+            if ft[fi * 8 + 2] == 1 && pt0.pt == 0 && pt0.l > 0 {
+                if span_eq(p, pt0.s, pt0.l, sa[si * 8], sa[si * 8 + 1]) { sok = 1; }
+            }
+            if sok == 0 {
+                put(" drop function '");
+                put_span(p, ds, dl);
+                put("' must take exactly one ");
+                put_span(p, sa[si * 8], sa[si * 8 + 1]);
+                put(" parameter\n");
+                st[41] = 1;
+                return;
+            }
+            rt := frty(st, fi);
+            nvr := rt.l == 5 && eq5(p, rt.s, 110, 101, 118, 101, 114);
+            if rt.l > 0 && !nvr {
+                put(" drop function '");
+                put_span(p, ds, dl);
+                put("' must not return a value — the value ends there\n");
+                st[41] = 1;
+                return;
+            }
+        }
+        si = si + 1;
+    }
+    mut si2 := 0;
+    while si2 < st[50] {                   // own cannot nest in fields
+        mut q := 0;
+        while q < sa[si2 * 8 + 2] {
+            if tyown(p, st, sfty(st, si2, q)) {
+                r := sa[si2 * 8 + 3] + q * 6;
+                put(" own type in field '");
+                put_span(p, sa[si2 * 8], sa[si2 * 8 + 1]);
+                put(".");
+                put_span(p, al[r], al[r + 1]);
+                put("' — own values cannot nest in other types (v0.17)\n");
+                st[41] = 1;
+                return;
+            }
+            q = q + 1;
+        }
+        si2 = si2 + 1;
+    }
+    ft2 := st[37] as *i64;
+    mut fi2 := 0;
+    while fi2 < st[38] {                   // the kernel is not an owner
+        if ft2[fi2 * 8 + 6] == 0 {
+            mut q2 := 0;
+            while q2 < ft2[fi2 * 8 + 2] {
+                if tyown(p, st, fpty(st, fi2, q2)) {
+                    put(" own type in syscall '");
+                    put_span(p, ft2[fi2 * 8], ft2[fi2 * 8 + 1]);
+                    put("' — the kernel is not an owner (v0.17)\n");
+                    st[41] = 1;
+                    return;
+                }
+                q2 = q2 + 1;
+            }
+        }
+        fi2 = fi2 + 1;
+    }
+    ea := st[51] as *i64;
+    mut ei := 0;
+    while ei < st[52] {                    // nor an enum variant
+        mut v := 0;
+        while v < ea[ei * 4 + 2] {
+            vb := ea[ei * 4 + 3] + v * 4;
+            mut f2 := 0;
+            while f2 < al[vb + 2] {
+                r2 := al[vb + 3] + f2 * 6;
+                t2 := T{ pt: al[r2 + 2], us: al[r2 + 3], s: al[r2 + 4], l: al[r2 + 5] };
+                if tyown(p, st, t2) {
+                    put(" own type in variant '");
+                    put_span(p, ea[ei * 4], ea[ei * 4 + 1]);
+                    put(".");
+                    put_span(p, al[vb], al[vb + 1]);
+                    put("' — own values cannot nest in other types (v0.17)\n");
+                    st[41] = 1;
+                    return;
+                }
+                f2 = f2 + 1;
+            }
+            v = v + 1;
+        }
+        ei = ei + 1;
+    }
+    ma := st[53] as *i64;
+    mut mi := 0;
+    while mi < st[54] {                    // impl receivers: known, and
+        ts := ma[mi * 8];                  // never own (by-value self
+        tl := ma[mi * 8 + 1];              // would move the receiver)
+        si3 := sfind(p, st, ts, tl);
+        if si3 < 0 && efind(p, st, ts, tl) < 0 {
+            put(" impl for unknown type '");
+            put_span(p, ts, tl);
+            put("'\n");
+            st[41] = 1;
+            return;
+        }
+        if si3 >= 0 && sa[si3 * 8 + 4] == 1 {
+            put(" impl for own type '");
+            put_span(p, ts, tl);
+            put("' — by-value self would move the receiver (v0.17)\n");
+            st[41] = 1;
+            return;
+        }
+        mi = mi + 1;
+    }
+}
+
 // The recorded param type / return type of one fn-table record.
 fn fpty(st: *i64, fi: i64, q: i64) -> T {
     ft := st[37] as *i64;
@@ -3345,7 +3501,7 @@ fn main() -> i64 {
     st[36] = 0;
     st[37] = sys_sbrk(16384);              // fn table: 256 records
     st[38] = 0;
-    st[39] = sys_sbrk(8192);               // vars: 256 x 3 words
+    st[39] = sys_sbrk(32768);              // vars: 10-word records
     st[40] = 0;
     st[41] = 0;                            // the error flag
     st[42] = 0;                            // CUR_FN_CAPS
@@ -3370,6 +3526,8 @@ fn main() -> i64 {
     adv(buf, total, st);                   // ... and CUR
     pitems(buf, total, st, ps);            // ONE pass: tables + trees
     if st[41] == 1 { return 1; }           // a parse-time refusal (cname)
+    cdecls(buf, st);                       // ncc: validate_drops + the
+    if st[41] == 1 { return 1; }           // containment preamble
     mut m2 := 0;                           // METHOD bodies first — ncc's
     while m2 < st[54] {                    // gen_program checks methods
         cmeth(buf, st, m2);                // before functions
