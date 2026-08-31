@@ -5,6 +5,7 @@
 #include "theme.h"
 #include "../../drivers/video/font.h"
 #include "../apps/terminal_win.h"
+#include "../apps/aeronyx_win.h"
 #include "../games/pong_win.h"
 #include "../games/voxel_win.h"
 #include "../games/fire_win.h"
@@ -2122,6 +2123,16 @@ void launch_rotor(void) {
     if (!w->reserved) { window_destroy(w->id); return; }
     w->on_tick = rotor_win_tick;
     w->on_key  = rotor_win_key;
+}
+
+void launch_aeronyx(void) {
+    int px = ((int)fb_get_width()  - AERONYX_WIN_W) / 2;              if (px < 0) px = 0;
+    int py = ((int)fb_get_height() - AERONYX_WIN_H - TITLE_H) / 2;    if (py < 0) py = 0;
+    window_t* w = window_create(px, py, AERONYX_WIN_W, AERONYX_WIN_H, "Aeronyx", aeronyx_win_draw);
+    if (!w) return;
+    w->reserved = aeronyx_create_ctx();
+    if (!w->reserved) { window_destroy(w->id); return; }
+    w->on_tick = aeronyx_win_tick;
 }
 
 void launch_fill(void) {
