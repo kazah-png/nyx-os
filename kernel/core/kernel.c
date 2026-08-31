@@ -64,6 +64,8 @@
 #include "../gui/apps/selene_win.h"
 #include "../crypto/rsa.h"
 #include "../crypto/sha512.h"
+#include "../crypto/sha1.h"
+#include "../crypto/md5.h"
 #include "../crypto/fnv.h"
 #include "smp.h"
 #include "../fs/initramfs.h"
@@ -172,6 +174,9 @@ static void cmd_size(int argc, char** argv);
 static void cmd_isprime(int argc, char** argv);
 static void cmd_strings(int argc, char** argv);
 static void cmd_sha256sum(int argc, char** argv);
+static void cmd_sha512sum(int argc, char** argv);
+static void cmd_sha1sum(int argc, char** argv);
+static void cmd_md5sum(int argc, char** argv);
 static void cmd_hmac(int argc, char** argv);
 static void cmd_totp(int argc, char** argv);
 static void cmd_encrypt(int argc, char** argv);
@@ -453,6 +458,9 @@ static const command_t commands[] = {
     {"strings",   cmd_strings,   "Print printable-character runs in a file: strings [-n MIN] <file>", false},
     {"size",      cmd_size,      "ELF section footprint (text/data/bss): size <file>...", false},
     {"sha256sum", cmd_sha256sum, "Print the SHA-256 digest of each file: sha256sum <file>...", false},
+    {"sha512sum", cmd_sha512sum, "Print the SHA-512 digest of each file: sha512sum <file>...", false},
+    {"sha1sum",   cmd_sha1sum,   "Print the SHA-1 digest of each file: sha1sum <file>...", false},
+    {"md5sum",    cmd_md5sum,    "Print the MD5 digest of each file: md5sum <file>...", false},
     {"hmac",      cmd_hmac,      "HMAC-SHA256 of a message under a key: hmac <key> <message>", false},
     {"totp",      cmd_totp,      "RFC 6238 auth code: totp <base32-secret> [unix-time]", false},
     {"encrypt",   cmd_encrypt,   "Encrypt a file with a password: encrypt <in> <out> <password>", false},
@@ -842,7 +850,7 @@ void execute_command(const char* cmd_line) {
 typedef struct { const char* title; const char* const* names; } help_cat_t;
 static const char* const HC_shell[] = {"help","man","version","clear","history","alias","unalias","exec","spawn","jobs","wait","nice","renice","taskset",0};
 static const char* const HC_files[] = {"ls","cd","pwd","cat","file","identify","tar","iniget","open","touch","mkdir","rm","shred","cp","mv","tree","find","which","basename","dirname","realpath","files","df","du","disks","lsblk","lspci","nvme","nyxpart","mkfs","nyxinstall","nyxgrub","mount","ext2ls","ext2cat",0};
-static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","sed","patch","fold","fmt","nl","expand","unexpand","factor","isprime","strings","sha256sum","seq","paste","clip","cut","uniq","join","comm","printf","wc","write","hexdump",0};
+static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","sed","patch","fold","fmt","nl","expand","unexpand","factor","isprime","strings","sha256sum","sha512sum","sha1sum","md5sum","seq","paste","clip","cut","uniq","join","comm","printf","wc","write","hexdump",0};
 static const char* const HC_sys[]   = {"ps","top","time","kill","pgrep","pkill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat","screenshot","stackcheck",0};
 static const char* const HC_user[]  = {"useradd","users",0};
 static const char* const HC_net[]   = {"ifconfig","route","arp","netstat","dhcp","dns","ping","setip","httpget","httpd","tls","ipcalc",0};
@@ -952,6 +960,9 @@ static const man_page_t man_pages[] = {
     {"totp",     "Generate a time-based one-time password (RFC 6238) — the 6-digit authenticator code used for two-factor login: `totp <base32-secret> [unix-time]`. The shared secret is decoded from strict, padded, upper-case Base32 (A-Z, 2-7); the code is HMAC-SHA1 over a 30-second counter, the Google Authenticator default. With no time it uses the RTC clock (so it matches a phone authenticator when the clock is correct); pass a Unix time to reproduce a specific code — e.g. `totp GEZDGNBVGY3TQOJQGEZDGNBVGY3TQOJQ 59` prints 287082, the RFC 6238 test vector. Backed by the KAT'd totp_sha1/hmac_sha1 primitives."},
     {"uuid",     "Generate random RFC-4122 version-4 UUIDs: `uuid` prints one, `uuid <count>` prints up to 100. Each is 16 bytes drawn from the CSPRNG with the version (4) and variant bits set, formatted as the canonical 8-4-4-4-12 lower-case hex (e.g. `550e8400-e29b-41d4-a716-446655440000`). Useful for unique identifiers in scripts, configs and test data. The formatting/bit-setting is pinned by the `uuid` self-test; the randomness comes from the same HMAC-DRBG the crypto stack uses."},
     {"sha256sum","Print the SHA-256 digest of each file argument as `<64-hex-digits>  <name>` (two spaces between, the GNU sha256sum format), the standard way to check a file's integrity — e.g. that a downloaded package matches a published hash. Each file is streamed through the hash in fixed chunks, so a large binary needs no whole-file buffer, and the total is capped so an endless special like /dev/zero cannot spin forever. A file that cannot be opened is reported and skipped."},
+    {"sha512sum","Like sha256sum but SHA-512: prints `<128-hex-digits>  <name>` for each file, streamed in chunks. The stronger digest of the SHA-2 family."},
+    {"sha1sum",  "Like sha256sum but SHA-1: prints `<40-hex-digits>  <name>` for each file. SHA-1 is broken for collision resistance — use it only to match a legacy published hash, not for security."},
+    {"md5sum",   "Like sha256sum but MD5: prints `<32-hex-digits>  <name>` for each file. MD5 is cryptographically broken — use it only for a non-security integrity check or to match a legacy published hash."},
     {"vfsstat",  "Report VFS node-pool usage: how many of the fixed node slots are live, free, and the linear high-water mark, then a by-kind breakdown of the live nodes -- mount-backed (ext2 /mnt mirror) held (open fd) vs idle, and the non-mount nodes split into /proc generated, /dev special, ramdisk dirs, and ramdisk files. A diagnostic for node-pool exhaustion under sustained in-OS file I/O (issue #66): watch it before/after `cc`/`xbm` runs -- if `mount held` climbs and never falls an fd is leaking, and the per-kind counts now show exactly which category (e.g. ramdisk files) grows rather than lumping /proc and ramdisk together."},
     {"comm",     "Compare two files that are each already sorted, line by line, in three columns: lines only in <file1> (column 1), lines only in <file2> (column 2, indented one tab), and lines common to both (column 3, indented two tabs). `-1`/`-2`/`-3` suppress the respective column (and drop its indentation from the later columns), so e.g. `comm -12 a b` prints just the lines common to both. Input is assumed sorted in byte order."},
     {"semver",   "Parse and compare Semantic Versioning 2.0.0 strings (MAJOR.MINOR.PATCH[-prerelease][+build]). With one argument, validate it and print the parsed fields. With two, print their precedence relation (`A < B`, `A = B`, or `A > B`) per the semver spec: core numbers compared numerically, a prerelease ranks below the same version without one, and build metadata is ignored. Useful for comparing package versions."},
@@ -1863,6 +1874,63 @@ static void cmd_sha256sum(int argc, char** argv) {
         uint8_t dg[SHA256_DIGEST_SIZE]; sha256_final(&ctx, dg);
         char hex[SHA256_DIGEST_SIZE * 2 + 1]; sha256_to_hex(dg, hex);
         printf("%s  %s\n", hex, argv[a]);
+    }
+}
+
+// The rest of the `*sum` family — sha512sum / sha1sum / md5sum — beside sha256sum above, all
+// in the GNU `<lowercase-hex>  <name>` format for checking file integrity. They stream the
+// file through the (KAT'd) hash in fixed chunks like sha256sum, so a large file needs no
+// whole-file buffer, and the same 256 MB cap stops an endless special from spinning forever.
+enum { HS_SHA1, HS_SHA512, HS_MD5 };
+static int hashsum_file(const char* path, int algo, char* hexout) {   // -> hex length, or 0 if unopenable
+    int fd = vfs_open(path, 0, 0);
+    if (fd < 0) return 0;
+    static uint8_t buf[512];
+    uint8_t dg[64]; int dglen = 0;
+    uint32_t off = 0; const uint32_t cap = 256u * 1024u * 1024u;
+    int n;
+    if (algo == HS_SHA1) {
+        sha1_ctx_t c; sha1_init(&c);
+        while (off < cap && (n = vfs_pread(fd, buf, sizeof(buf), off)) > 0) { sha1_update(&c, buf, (uint32_t)n); off += (uint32_t)n; }
+        sha1_final(&c, dg); dglen = SHA1_DIGEST_SIZE;
+    } else if (algo == HS_SHA512) {
+        sha512_ctx_t c; sha512_init(&c);
+        while (off < cap && (n = vfs_pread(fd, buf, sizeof(buf), off)) > 0) { sha512_update(&c, buf, (uint32_t)n); off += (uint32_t)n; }
+        sha512_final(&c, dg); dglen = 64;
+    } else {   /* HS_MD5 */
+        md5_ctx_t c; md5_init(&c);
+        while (off < cap && (n = vfs_pread(fd, buf, sizeof(buf), off)) > 0) { md5_update(&c, buf, (uint32_t)n); off += (uint32_t)n; }
+        md5_final(&c, dg); dglen = MD5_DIGEST_SIZE;
+    }
+    vfs_close(fd);
+    static const char hx[] = "0123456789abcdef";
+    for (int i = 0; i < dglen; i++) { hexout[i * 2] = hx[dg[i] >> 4]; hexout[i * 2 + 1] = hx[dg[i] & 0xF]; }
+    hexout[dglen * 2] = '\0';
+    return dglen * 2;
+}
+
+static void cmd_sha512sum(int argc, char** argv) {
+    if (argc < 2) { printf("Usage: sha512sum <file>...\n"); return; }
+    for (int a = 1; a < argc; a++) {
+        char hex[129];
+        if (hashsum_file(argv[a], HS_SHA512, hex)) printf("%s  %s\n", hex, argv[a]);
+        else printf("sha512sum: %s: cannot open\n", argv[a]);
+    }
+}
+static void cmd_sha1sum(int argc, char** argv) {
+    if (argc < 2) { printf("Usage: sha1sum <file>...\n"); return; }
+    for (int a = 1; a < argc; a++) {
+        char hex[41];
+        if (hashsum_file(argv[a], HS_SHA1, hex)) printf("%s  %s\n", hex, argv[a]);
+        else printf("sha1sum: %s: cannot open\n", argv[a]);
+    }
+}
+static void cmd_md5sum(int argc, char** argv) {
+    if (argc < 2) { printf("Usage: md5sum <file>...\n"); return; }
+    for (int a = 1; a < argc; a++) {
+        char hex[33];
+        if (hashsum_file(argv[a], HS_MD5, hex)) printf("%s  %s\n", hex, argv[a]);
+        else printf("md5sum: %s: cannot open\n", argv[a]);
     }
 }
 
