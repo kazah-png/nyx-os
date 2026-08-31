@@ -3546,18 +3546,19 @@ static void draw_icon_at(int i) {
 }
 
 // --- Live desktop widget (conky-style) --------------------------------------------------
-// An always-on panel on the wallpaper (bottom-right, behind windows) that scrolls a CPU%
-// history graph and shows live CPU/RAM %, from the same honest sources as top / the taskbar
-// module (perf_cpu_percent + mem_pool_kb). The graph scrolls every WGT_SAMPLE_MS (motion),
-// refreshed by a partial present of just its rect when no window covers it. Accent-colored,
-// so it follows the runtime colorscheme (v6.5.28). Toggle with `widget = on|off` in nyx.conf.
+// An always-on panel on the wallpaper (bottom-right, behind windows) with two stacked live
+// history graphs — CPU% and RAM% — from the same honest sources as top / the taskbar module
+// (perf_cpu_percent + mem_pool_kb). Both scroll every WGT_SAMPLE_MS (motion), refreshed by a
+// partial present of just its rect when no window covers it. CPU uses THEME_ACCENT and RAM a
+// lighter shade, so the widget follows the runtime colorscheme (v6.5.28). Toggle with
+// `widget = on|off` in nyx.conf.
 #define WGT_W        180
-#define WGT_H         76
+#define WGT_H        124          // two stacked graphs (CPU + RAM)
 #define WGT_MARGIN    16
-#define WGT_N        160          // CPU% history samples == graph width in px
+#define WGT_N        160          // history samples == graph width in px
 #define WGT_SAMPLE_MS 500u        // sample + scroll cadence
 int g_widget_on = 1;              // set from /etc/nyx.conf (apply_nyx_config); default on
-static uint8_t wgt_cpu[WGT_N];
+static uint8_t wgt_cpu[WGT_N], wgt_ram[WGT_N];
 
 static void wgt_geom(int* x, int* y) {
     int fw = (int)fb_get_width(), fh = (int)fb_get_height();
@@ -3567,11 +3568,18 @@ static void wgt_geom(int* x, int* y) {
     if (*y < 0) *y = 0;
 }
 
-// Push the current CPU% and scroll the history one sample to the left (newest at the right).
+static uint32_t wgt_ram_pct(void) {
+    uint32_t mu = 0, mt = 0; mem_pool_kb(&mu, 0, &mt);
+    return mt ? (uint32_t)(((uint64_t)mu * 100) / mt) : 0;
+}
+
+// Push the current CPU% + RAM% and scroll both histories one sample left (newest at right).
 static void wgt_push_sample(void) {
     uint32_t c = perf_cpu_percent(); if (c > 100) c = 100;
-    for (int i = 1; i < WGT_N; i++) wgt_cpu[i - 1] = wgt_cpu[i];
+    uint32_t r = wgt_ram_pct();      if (r > 100) r = 100;
+    for (int i = 1; i < WGT_N; i++) { wgt_cpu[i - 1] = wgt_cpu[i]; wgt_ram[i - 1] = wgt_ram[i]; }
     wgt_cpu[WGT_N - 1] = (uint8_t)c;
+    wgt_ram[WGT_N - 1] = (uint8_t)r;
 }
 
 // Does any visible window overlap the widget's rect? (If so, skip its partial repaint — it
@@ -3587,6 +3595,21 @@ static int widget_covered(void) {
     return 0;
 }
 
+// Draw one labelled history graph: a dark inset, a 50% grid line, and WGT_N bars rising from
+// the baseline in `color`, with a "LABEL nn%" caption above it.
+static void wgt_draw_graph(int x, int y, const char* label, uint32_t pct, const uint8_t* series, uint32_t color) {
+    char cap[24]; snprintf(cap, sizeof cap, "%s %u%%", label, pct);
+    font_draw_string_trans(x, y, cap, fb_rgb(212, 206, 228));
+    int gx = x, gy = y + 14, gw = WGT_N, gh = 38;
+    fb_fill_rect(gx, gy, gw, gh, fb_rgb(14, 14, 18));
+    fb_fill_rect(gx, gy + gh / 2, gw, 1, fb_rgb(42, 42, 52));   // 50% grid line
+    for (int i = 0; i < WGT_N; i++) {
+        int v = series[i];
+        int bh = v * gh / 100; if (bh < 1 && v > 0) bh = 1; if (bh > gh) bh = gh;
+        if (bh > 0) fb_fill_rect(gx + i, gy + gh - bh, 1, bh, color);
+    }
+}
+
 static void draw_desktop_widget(void) {
     if (!g_widget_on) return;
     int x, y; wgt_geom(&x, &y);
@@ -3596,21 +3619,11 @@ static void draw_desktop_widget(void) {
     fb_fill_rect(x, y + WGT_H - 1, WGT_W, 1, col_darken(THEME_ACCENT, 45));
     fb_fill_rect(x, y, 1, WGT_H, col_darken(THEME_ACCENT, 20));
     fb_fill_rect(x + WGT_W - 1, y, 1, WGT_H, col_darken(THEME_ACCENT, 45));
-    // Header: live CPU/RAM %.
     uint32_t cpu = perf_cpu_percent(); if (cpu > 100) cpu = 100;
-    uint32_t mu = 0, mt = 0; mem_pool_kb(&mu, 0, &mt);
-    uint32_t rampct = mt ? (uint32_t)(((uint64_t)mu * 100) / mt) : 0;
-    char hdr[40]; snprintf(hdr, sizeof hdr, "CPU %u%%  RAM %u%%", cpu, rampct);
-    font_draw_string_trans(x + 10, y + 6, hdr, fb_rgb(212, 206, 228));
-    // Graph: WGT_N CPU% samples as accent bars rising from the baseline.
-    int gx = x + 10, gy = y + 22, gw = WGT_N, gh = WGT_H - 22 - 8;
-    fb_fill_rect(gx, gy, gw, gh, fb_rgb(14, 14, 18));
-    fb_fill_rect(gx, gy + gh / 2, gw, 1, fb_rgb(42, 42, 52));   // 50% grid line
-    for (int i = 0; i < WGT_N; i++) {
-        int v = wgt_cpu[i];
-        int bh = v * gh / 100; if (bh < 1 && v > 0) bh = 1; if (bh > gh) bh = gh;
-        if (bh > 0) fb_fill_rect(gx + i, gy + gh - bh, 1, bh, THEME_ACCENT);
-    }
+    // Two stacked live graphs: CPU in the accent, RAM in a lighter shade of it (both follow
+    // the runtime colorscheme). Each scrolls every WGT_SAMPLE_MS → the motion the rice wants.
+    wgt_draw_graph(x + 10, y + 6,  "CPU", cpu,           wgt_cpu, THEME_ACCENT);
+    wgt_draw_graph(x + 10, y + 64, "RAM", wgt_ram_pct(), wgt_ram, col_lighten(THEME_ACCENT, 35));
 }
 
 static void draw_desktop_icons(void) {
