@@ -673,8 +673,9 @@ void command_complete(const char* partial, char* out, int out_size, int* match_c
 // repainting the desktop so it stays live — until it exits, then reap it and print
 // the exit code. Shared by `exec` and the shell's auto-exec fallback.
 static int run_foreground_elf_redir(const char* path, char* const* argv, int argc,
-                                    const char* redir_path, int redir_append) {
-    int pid = spawn_user_path_args_redir(path, argv, argc, redir_path, redir_append);
+                                    const char* out_path, int out_append,
+                                    const char* err_path, int err_append) {
+    int pid = spawn_user_path_args_redir(path, argv, argc, out_path, out_append, err_path, err_append);
     if (pid < 0) {
         printf("exec: could not load %s (err %d)\n", path, pid);
         return pid;
@@ -697,7 +698,7 @@ static int run_foreground_elf_redir(const char* path, char* const* argv, int arg
 }
 
 static int run_foreground_elf(const char* path, char* const* argv, int argc) {
-    return run_foreground_elf_redir(path, argv, argc, (const char*)0, 0);
+    return run_foreground_elf_redir(path, argv, argc, (const char*)0, 0, (const char*)0, 0);
 }
 
 // GUI entry point: launch a userspace ELF from a desktop icon EXACTLY the way the shell
@@ -850,20 +851,25 @@ void execute_command(const char* cmd_line) {
     // name; the child gets the full argv.
     char path[128];
     if (resolve_user_elf(argv[0], path, sizeof(path))) {
-        // Strip a trailing `> file` / `>> file` and route the child's stdout there
-        // (issue #88 — the exec path used to pass ">"/"file" as args and print to the
-        // console). Builtins keep self-handling their own `>` (e.g. echo), so only the
-        // user-ELF path is touched here.
-        const char* redir = (const char*)0; int redir_append = 0; int rargc = argc;
+        // Strip trailing redirects and route the child's stdout (`>`/`>>`) and/or stderr
+        // (`2>`/`2>>`) to files (issue #88 + stderr follow-up — the exec path used to pass
+        // the operator + filename as args and print to the console). Builtins keep self-
+        // handling their own `>` (e.g. echo), so only the user-ELF path is touched here.
+        // Real args end at the FIRST operator; each `op file` pair is consumed (both may
+        // appear, e.g. `cc x.c > out 2> errs`).
+        const char *out_p = (const char*)0, *err_p = (const char*)0;
+        int out_ap = 0, err_ap = 0, rargc = argc;
         for (int i = 1; i + 1 < argc; i++) {
-            if (strcmp(argv[i], ">") == 0 || strcmp(argv[i], ">>") == 0) {
-                redir = argv[i + 1];
-                redir_append = (argv[i][1] == '>');
-                rargc = i;                     // real command + args end before the operator
-                break;
-            }
+            const char* a = argv[i];
+            int is_out = (strcmp(a, ">") == 0 || strcmp(a, ">>") == 0);
+            int is_err = (strcmp(a, "2>") == 0 || strcmp(a, "2>>") == 0);
+            if (!is_out && !is_err) continue;
+            if (rargc == argc) rargc = i;                 // real args end at the first operator
+            if (is_out) { out_p = argv[i + 1]; out_ap = (a[1] == '>'); }
+            else        { err_p = argv[i + 1]; err_ap = (a[2] == '>'); }  // "2>>" -> a[2]
+            i++;                                          // consume the filename argument
         }
-        run_foreground_elf_redir(path, argv, rargc, redir, redir_append);
+        run_foreground_elf_redir(path, argv, rargc, out_p, out_ap, err_p, err_ap);
         if (argbuf) kfree(argbuf);
         return;
     }
@@ -6683,8 +6689,22 @@ static void cmd_taskset(int argc, char** argv) {
 // the child cannot run (and write) until its stdout is wired. The handle is closed
 // (and the mount file flushed) when the process is reaped, which the foreground caller
 // waits for. redir_path == NULL keeps the console.
+// Pin a redirect target file at the child's fd `slot` (1=stdout, 2=stderr). Opened
+// O_TRUNC (`>`) or O_CREAT+seek-to-EOF (`>>`); on any failure the slot is left empty so
+// that stream falls back to the console. Shared by the stdout and stderr redirect paths.
+static void install_child_fd_redirect(process_t* proc, int slot, const char* path, int append) {
+    if (!proc || !path || !*path || slot < 0 || slot >= PROC_MAX_FDS) return;
+    int h = vfs_open(path, append ? O_CREAT : (O_CREAT | O_TRUNC), 0644);
+    if (h < 0) return;
+    proc->ufd_inuse[slot]  = 1;
+    proc->ufd_handle[slot] = h;
+    proc->ufd_offset[slot] = 0;
+    if (append) { int sz = vfs_fsize(h); proc->ufd_offset[slot] = (sz > 0) ? (uint32_t)sz : 0; }
+}
+
 int spawn_user_path_args_redir(const char* path, char* const* argv, int argc,
-                               const char* redir_path, int redir_append) {
+                               const char* out_path, int out_append,
+                               const char* err_path, int err_append) {
     int fd = vfs_open(path, 0, 0);
     if (fd < 0) return -1;
     uint32_t size = vfs_fsize(fd);
@@ -6718,23 +6738,17 @@ int spawn_user_path_args_redir(const char* path, char* const* argv, int argc,
     extern process_t* get_current_process(void);
     process_t* parent = get_current_process();
     proc->ppid = parent ? parent->pid : 0;   // so kwait() can find/wake the parent
-    // stdout redirect (`> file` / `>> file`): open the target and pin it at the child's
-    // fd 1 before it can run. On failure, leave fd 1 empty (writes go to the console).
-    if (redir_path && *redir_path) {
-        int h = vfs_open(redir_path, redir_append ? O_CREAT : (O_CREAT | O_TRUNC), 0644);
-        if (h >= 0) {
-            proc->ufd_inuse[1]  = 1;
-            proc->ufd_handle[1] = h;
-            proc->ufd_offset[1] = 0;
-            if (redir_append) { int sz = vfs_fsize(h); proc->ufd_offset[1] = (sz > 0) ? (uint32_t)sz : 0; }
-        }
-    }
+    // stdout `>`/`>>` and stderr `2>`/`2>>` redirects: open the targets and pin them at the
+    // child's fd 1 / fd 2 before it can run, so write(1|2,…) routes to the file. On failure
+    // the slot stays empty and that stream falls back to the console.
+    install_child_fd_redirect(proc, 1, out_path, out_append);
+    install_child_fd_redirect(proc, 2, err_path, err_append);
     sched_enable();
     return (int)proc->pid;
 }
 
 int spawn_user_path_args(const char* path, char* const* argv, int argc) {
-    return spawn_user_path_args_redir(path, argv, argc, (const char*)0, 0);
+    return spawn_user_path_args_redir(path, argv, argc, (const char*)0, 0, (const char*)0, 0);
 }
 
 int spawn_user_path(const char* path) {
