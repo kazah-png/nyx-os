@@ -4278,9 +4278,14 @@ done_click:
         if (moved && (start_menu_open || ctx_menu_open || user_menu_open)) redraw = 1;
 
         uint32_t now = get_ticks();
+        int taskbar_only = 0;
         if (now - clock_tick > 1000) {
             clock_tick = now;
-            redraw = 1;
+            // The clock + CPU/RAM module tick every second. Don't recomposite the WHOLE
+            // screen for that — flag a taskbar-only refresh (repaint just the strip +
+            // fb_present_rect it below). If a full frame is already happening this
+            // iteration, frame_dirty wins and the taskbar refreshes with it.
+            taskbar_only = 1;
         }
 
         // Periodic tick (~30 fps): drive any window that registered an on_tick (the games'
@@ -4328,6 +4333,8 @@ done_click:
         if (redraw) {
             redraw_all();
             redraw = 0;
+        } else if (taskbar_only) {
+            draw_taskbar();   // idle clock/module refresh: repaint ONLY the taskbar strip
         }
 
         // A fullscreen userspace app (SYS_FBPRESENT) owns the screen and fb_present()
@@ -4348,6 +4355,14 @@ done_click:
         // ~3.4 ms vs microseconds for the two small rects), so pointer motion is now free.
         if (frame_dirty || (moved && mm_dispatched)) {
             fb_present(); frame_dirty = 0;
+        } else if (taskbar_only) {
+            // publish just the taskbar strip (a ~21x smaller blit than the full screen),
+            // plus the cursor's rects if it also moved this tick
+            fb_present_rect(0, (int)(fh - TASKBAR_H), (int)fw, TASKBAR_H);
+            if (moved) {
+                fb_present_rect(old_cx, old_cy, CURSOR_W, CURSOR_H);
+                fb_present_rect(mouse_x, mouse_y, CURSOR_W, CURSOR_H);
+            }
         } else if (moved) {
             fb_present_rect(old_cx, old_cy, CURSOR_W, CURSOR_H);   // erase the old cursor
             fb_present_rect(mouse_x, mouse_y, CURSOR_W, CURSOR_H); // draw the new one
