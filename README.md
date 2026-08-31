@@ -7,7 +7,7 @@
 <p align="center">
   <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.9.0-LTS"><img src="https://img.shields.io/badge/release-v5.9.0--LTS-825AD2?style=flat" /></a>
   &nbsp;
-  <img src="https://img.shields.io/badge/version-v6.5.7-825AD2?style=flat" />
+  <img src="https://img.shields.io/badge/version-v6.5.8-825AD2?style=flat" />
   &nbsp;
   <img src="https://img.shields.io/badge/arch-x86__64-825AD2?style=flat" />
   &nbsp;
@@ -69,7 +69,7 @@ nyx:root$ nyxfetch
     .:oo.. :o.               ---------
   :oo:.oo.o:                 OS:         NyxOS x86_64
  .#o:.   :.                  Host:       QEMU Standard PC
- #:::....:                   Kernel:     NyxOS 6.5.7 (GUI Suite)
+ #:::....:                   Kernel:     NyxOS 6.5.8 (GUI Suite)
 o#::. . o.                   Uptime:     00:00:12
 o#.o:   :o                   Shell:      nyxsh
 o###o   o#                   Resolution: 1024 x 768
@@ -192,7 +192,9 @@ nyx-os/
 
 For a deeper tour — the boot flow, every subsystem, and recipes for adding a coreutil, a
 command, a render demo, a wallpaper, or a CI self-test — see
-[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The security model — privilege separation,
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). The boot chain itself — the Multiboot2 headers,
+the 32-bit → long-mode trampoline in `boot.asm`, the GRUB config, and how the bootable ISO is
+built — is detailed in [docs/BOOT.md](docs/BOOT.md). The security model — privilege separation,
 memory protection, safe program loading, and how untrusted input is handled — is in
 [docs/SECURITY.md](docs/SECURITY.md). How processes are represented, scheduled, and
 retired — the process table, states, the weighted round-robin scheduler, threads,
