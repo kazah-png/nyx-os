@@ -805,6 +805,67 @@ fn brret(st: *i64, b: i64) -> i64 {
     return 0;
 }
 
+// v0.22 missing-return analysis (ncc's block_guarantees): does this
+// block GUARANTEE a value on every path? A path is covered by a tail
+// expression, a `return` (or a `return match`), an `if` whose BOTH
+// arms guarantee, an exhaustive match STATEMENT whose every arm
+// guarantees, or a call to a `never` function (the path diverges).
+// Loops never guarantee: a while may run zero times, and `while true`
+// is not special-cased.
+fn sguar(p: *u8, st: *i64, i: i64) -> i64 {
+    nd := st[33] as *i64;
+    al := st[35] as *i64;
+    k := nd[i * 8];
+    if k == 22 { return 1; }
+    if k == 29 {
+        hd := nd[i * 8 + 2];
+        if al[hd] == 3 { return 1; }       // return match
+        if al[hd] == 0 && nd[i * 8 + 3] > 0 {
+            armb := al[hd + 6];            // an exhaustive match whose
+            mut all := 1;                  // every arm guarantees
+            mut a := 0;
+            while a < nd[i * 8 + 3] {
+                if bguar(p, st, al[armb + a * 6 + 4]) == 0 { all = 0; }
+                a = a + 1;
+            }
+            if all == 1 { return 1; }
+        }
+    }
+    if k == 25 {
+        els := nd[i * 8 + 3];
+        if els > 0 && bguar(p, st, nd[i * 8 + 2]) == 1 {
+            if nd[els * 8] == 40 && bguar(p, st, els) == 1 { return 1; }
+            if nd[els * 8] == 25 && sguar(p, st, els) == 1 { return 1; }
+        }
+    }
+    if k == 23 && nd[i * 8 + 3] == 0 {     // a call to a never fn:
+        e := nd[i * 8 + 1];                // the path diverges
+        if nd[e * 8] == 6 {
+            cal := nd[e * 8 + 1];
+            if nd[cal * 8] == 5 {
+                fi := ffind(p, st, nd[cal * 8 + 5], nd[cal * 8 + 6]);
+                if fi >= 0 {
+                    rt := frty(st, fi);
+                    if rt.l == 5 && eq5(p, rt.s, 110, 101, 118, 101, 114) { return 1; }
+                }
+            }
+        }
+    }
+    return 0;
+}
+
+fn bguar(p: *u8, st: *i64, b: i64) -> i64 {
+    nd := st[33] as *i64;
+    if b == 0 { return 0; }
+    if nd[b * 8 + 2] > 0 { return 1; }     // a tail expression
+    mut s := nd[b * 8 + 1];
+    while s > 0 {
+        if sguar(p, st, s) == 1 { return 1; }
+        s = nd[s * 8 + 7];
+    }
+    return 0;
+}
+
 // v0.19 auto-drops (ncc's own_drops_emit): at scope ends and returns,
 // every LIVE binding at index >= from whose TYPE carries a #[drop]
 // destructor drops (reverse birth order) — it becomes MOVED, so the
@@ -3231,6 +3292,20 @@ fn cmeth(p: *u8, st: *i64, mi: i64) {
         vadd(st, al[r], al[r + 1], 0, pt4);
         q = q + 1;
     }
+    nvr6 := crt2.l == 5 && eq5(p, crt2.s, 110, 101, 118, 101, 114);
+    if crt2.l > 0 && !nvr6 {               // v0.22, the method twin
+        if bguar(p, st, ma[mi * 8 + 6]) == 0 {
+            put(" not every path through method '");
+            put_span(p, ma[mi * 8], ma[mi * 8 + 1]);
+            put(".");
+            put_span(p, ma[mi * 8 + 2], ma[mi * 8 + 3]);
+            put("' returns a ");
+            ty_put(p, st, crt2);
+            put(" — add a tail expression or a return\n");
+            st[41] = 1;
+            return;
+        }
+    }
     cblock(p, st, ma[mi * 8 + 6]);
 }
 
@@ -3260,6 +3335,18 @@ fn cfn(p: *u8, st: *i64, fi: i64) {
             vh[(st[40] - 1) * 10 + 8] = 3;
         }
         q = q + 1;
+    }
+    nvr5 := crt.l == 5 && eq5(p, crt.s, 110, 101, 118, 101, 114);
+    if crt.l > 0 && !nvr5 {                // v0.22: every path must
+        if bguar(p, st, ft[fi * 8 + 4]) == 0 {   // return (FILE-level)
+            put(" not every path through '");
+            put_span(p, ft[fi * 8], ft[fi * 8 + 1]);
+            put("' returns a ");
+            ty_put(p, st, crt);
+            put(" — add a tail expression or a return\n");
+            st[41] = 1;
+            return;
+        }
     }
     cblock(p, st, ft[fi * 8 + 4]);
 }

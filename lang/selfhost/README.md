@@ -176,6 +176,9 @@ stripped (the normalization rule lives in
    bad_index_idx    4: index must be an integer (got str)
    bad_user_nonptr  1: #[user] applies only to pointer types (got i64)
    bad_user_raw     1: #[user] and raw are mutually exclusive — ...
+   bad_noreturn        not every path through 'pick' returns a i64 — ...
+   bad_noreturn_loop   not every path through 'spin' returns a i64 — ...
+   bad_noreturn_method not every path through method 'Rect.area' returns a i64 — ...
 
 plus ALL TWENTY-TWO examples as POSITIVE targets — the complete
 directory checks clean, silence enforced, nparse.n's 150K included. Coverage, stated honestly: extern
@@ -227,6 +230,21 @@ the checker became the biggest N program yet written. Struct
 fields, enum semantics and method returns still fall back softly
 (their tables are the next rungs); the claimed rows never reach
 them.
+
+**THE CORPUS IS COMPLETE: ALL 66 MANIFEST ROWS BYTE-EXACT, ALL 22
+EXAMPLES SILENT.** The last family was the missing-return analysis
+— ncc's `block_guarantees`, transliterated whole: a path is covered
+by a tail expression, a `return` (or a `return match`), an `if`
+whose BOTH arms guarantee, an exhaustive match statement whose
+every arm guarantees, or a call to a `never` function; loops never
+guarantee, and `while true` is deliberately not special-cased. The
+check runs where ncc runs it — per function and per method, after
+the parameters seed and before the body walks — and speaks in the
+FILE-level shape the declarations rung built. With those three
+rows, every wrong program in the corpus is refused with ncc's
+exact first error, and every example the language ships checks in
+enforced silence. The negative corpus and the checker now hold
+each other completely.
 
 **The stragglers (landed): EVERY LINE-LEVEL ROW IS NOW HELD.**
 Five rows scattered outside the big families — the E_INDEX read
@@ -408,16 +426,17 @@ no-return function (the claimed row), the value/return-type
 mismatch, and a bare `return` in a value-returning function — with
 `never` counting as no-type, exactly as ncc's `is_never` does.
 
-**Proven inside NyxOS (batches V45–V50)**: TEN families ride the
-on-target ledger — V50 added ownership. The in-OS ncc and its
-in-OS-compiled N rewrite now agree, byte for byte, on a
-use-after-move and on an ownership leak — the flow analysis that
-tracks a value's whole life runs inside the OS whose resources it
-was designed to guard, and both compilers read the same story off
-the same source. Ten two-sided differentials, zero panics, the
-census on its exact baseline every run. (V49's frame-worthy fence
-still stands beside it: the W^X refusal — a security property of
-NyxOS's own memory model — verified differentially inside NyxOS.)
+**Proven inside NyxOS (batches V45–V51)**: TWELVE two-sided
+differentials ride the on-target ledger — V51 added the own
+declarations and the index rules, and with them the FILE-level
+shape made its on-target debut: the in-OS ncc printed
+`/mnt/bad_own_nest.n: own type in field ...`, the harness stripped
+the filename, and the in-OS-compiled checker's own leading-space
+line matched it to the byte across the serial port. Zero panics,
+the census on its exact baseline every run. (The frame-worthy
+fences still stand beside it: W^X — a security property of
+NyxOS's own memory model — and the ownership flow analysis, both
+verified differentially inside NyxOS.)
 
 **Proven inside NyxOS (batches V45–V47)**: V47 added the struct and
 enum/match families to the on-target ledger — four two-sided

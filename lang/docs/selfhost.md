@@ -962,6 +962,29 @@ rows byte-exact, twenty-two silences, and the corpus now divides
 cleanly in two: every line-bearing error held, and one FILE-level
 family — not-every-path-returns — left to close it.
 
+### The corpus completes — 66 of 66
+
+The missing-return analysis went last because it is the only check
+that reasons about ABSENCE: not "this expression is wrong" but "no
+path through this function produces the value it promised".
+`block_guarantees` transliterated cleanly — tail, return, both-arm
+ifs, exhaustive matches, `never` calls, and the deliberate refusal
+to special-case `while true` — and its three rows landed in the
+FILE-level shape on the first probe run, with all twenty-two
+examples still silent above it (the real stress: every function
+the language ships had to genuinely guarantee its return).
+
+So the anchor holds the whole ledger now: sixty-six wrong programs,
+each refused with ncc's exact first error — location and wording,
+line-bearing and FILE-level alike — and twenty-two right ones held
+to enforced silence, by a checker written in the language it
+checks, compiled by the compiler it mirrors, verified inside the
+operating system both belong to. Batch V51 carried the new shapes
+to the target the same hour: twelve differentials, the FILE-level
+fence's debut among them, byte-identical through the serial port.
+The checking module of the self-host ladder has nothing left to
+climb in this corpus; what stands above it is generation.
+
 And the hardest lexer feature landed: **interpolation**. A toy string
 containing a brace lexes as segments — HEAD before the first hole,
 MID between holes, TAIL after the last (ncc's own
