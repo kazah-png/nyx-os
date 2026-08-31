@@ -54,6 +54,25 @@ const char* pci_class_name(uint8_t cls, uint8_t sub, uint8_t prog) {
     }
 }
 
+// Friendly name for a few well-known Wi-Fi radios, so `lspci` shows e.g. "Intel Wi-Fi 6
+// AX200" instead of the bare class label. This is the FIRST rung of the Wi-Fi arc (identify
+// the target radio; see docs/WIFI.md) — NyxOS has no 802.11 driver yet, but naming the chip
+// is what a driver would key off. Returns NULL if the (vendor, device) pair isn't a radio we
+// recognise, so the caller falls back to the generic class name.
+const char* pci_wifi_name(uint16_t vendor, uint16_t device) {
+    if (vendor == 0x8086) {                                 // Intel — the iwlwifi family
+        switch (device) {
+            case 0x2723: return "Intel Wi-Fi 6 AX200";      // the real-hardware target (docs/WIFI.md)
+            case 0x2725: return "Intel Wi-Fi 6E AX210";
+            case 0x02f0: case 0x4df0: case 0xa0f0: return "Intel Wi-Fi 6 AX201";
+            case 0x2526: return "Intel Wireless-AC 9260";
+            case 0x24fd: return "Intel Wireless-AC 8265";
+            case 0x095a: case 0x095b: return "Intel Wireless-AC 7265";
+        }
+    }
+    return 0;
+}
+
 // --- bus scan -----------------------------------------------------------------
 
 int pci_enumerate(pci_dev_t* out, int max) {
@@ -118,5 +137,18 @@ int pci_selftest(void) {
     };
     for (int i = 0; i < (int)(sizeof(cv) / sizeof(cv[0])); i++)
         if (strcmp(pci_class_name(cv[i].c, cv[i].s, cv[i].p), cv[i].want) != 0) return 40 + i;
+
+    // pci_wifi_name: a known Wi-Fi radio gets a specific name; anything else -> NULL, so the
+    // caller falls back to the class label (the first rung of the Wi-Fi arc — docs/WIFI.md).
+    struct { uint16_t v, d; const char* want; } wv[] = {
+        {0x8086, 0x2723, "Intel Wi-Fi 6 AX200"},
+        {0x8086, 0x2725, "Intel Wi-Fi 6E AX210"},
+        {0x8086, 0x4df0, "Intel Wi-Fi 6 AX201"},
+        {0x8086, 0x24fd, "Intel Wireless-AC 8265"},
+    };
+    for (int i = 0; i < (int)(sizeof(wv) / sizeof(wv[0])); i++)
+        if (strcmp(pci_wifi_name(wv[i].v, wv[i].d), wv[i].want) != 0) return 60 + i;
+    if (pci_wifi_name(0x8086, 0x1234) != 0) return 70;    // unknown Intel device -> NULL
+    if (pci_wifi_name(0x10ec, 0x2723) != 0) return 71;    // AX200 device id but wrong vendor -> NULL
     return 0;
 }

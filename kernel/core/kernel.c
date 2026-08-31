@@ -4372,8 +4372,9 @@ static void cmd_lspci(int argc, char** argv) {
     printf("PCI devices (%d):\n", n);
     for (int i = 0; i < n; i++) {
         pci_dev_t* d = &devs[i];
+        const char* wifi = pci_wifi_name(d->vendor, d->device);   // name a known Wi-Fi radio specifically
         printf("  %02x:%02x.%u  %04x:%04x  %s", d->bus, d->slot, d->func,
-               d->vendor, d->device, pci_class_name(d->class_code, d->subclass, d->prog_if));
+               d->vendor, d->device, wifi ? wifi : pci_class_name(d->class_code, d->subclass, d->prog_if));
         if (d->class_code == 0x01)                          // storage: dump the recon detail
             printf("  [class %02x:%02x:%02x rev %02x BAR0=%08x]",
                    d->class_code, d->subclass, d->prog_if, d->revision, d->bar0);

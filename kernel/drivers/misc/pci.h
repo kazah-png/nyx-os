@@ -23,6 +23,7 @@ void        pci_cfg_write32(uint8_t bus, uint8_t slot, uint8_t func, uint8_t off
 // controllers an installer cares about (NVMe / SATA AHCI / IDE) plus the common
 // device classes, falling back to the base-class name.
 const char* pci_class_name(uint8_t cls, uint8_t sub, uint8_t prog);
+const char* pci_wifi_name(uint16_t vendor, uint16_t device);  // friendly name for known Wi-Fi radios, else NULL (docs/WIFI.md)
 // Brute-force scan bus 0..255 x slot 0..31 (+ multifunction), collecting up to
 // `max` present devices into `out`. Bounded (no recursion). Returns the count.
 int         pci_enumerate(pci_dev_t* out, int max);
