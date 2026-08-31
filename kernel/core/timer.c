@@ -23,8 +23,10 @@ static uint64_t boot_epoch_sec = 0;
 static int      boot_epoch_set = 0;
 
 // Seconds since 1970-01-01 for a civil date/time (days-from-civil, Hinnant's algorithm;
-// proleptic Gregorian, UTC). PURE so a KAT can pin it against known Unix-epoch vectors.
-static uint64_t civil_to_epoch(int y, int m, int d, int h, int mi, int s) {
+// proleptic Gregorian, UTC). PURE so a KAT can pin it against known Unix-epoch vectors. Public
+// (declared in kernel.h): the single epoch-conversion helper shared by uptime, SYS_GETTIMEOFDAY
+// and `totp`, so the civil-days maths lives in exactly one place. Pinned by uptime_epoch_selftest.
+uint64_t civil_to_epoch(int y, int m, int d, int h, int mi, int s) {
     if (m < 1) m = 1;
     if (m > 12) m = 12;
     int yy = y - (m <= 2);
@@ -52,6 +54,12 @@ int uptime_epoch_selftest(void) {
     if (civil_to_epoch(2021, 1, 1, 0, 0, 0)  != 1609459200ULL) return 5;
     if (civil_to_epoch(2038, 1, 19, 3, 14, 7) != 2147483647ULL) return 6;  // Y2038 boundary
     if (civil_to_epoch(2000, 1, 1, 1, 1, 1) - civil_to_epoch(2000, 1, 1, 0, 0, 0) != 3661ULL) return 7;
+    // Leap-rule edges (this helper now also backs SYS_GETTIMEOFDAY + `totp`, so pin them here):
+    // 2100 is a century, NOT /400 -> no 29 Feb, so 28 Feb -> 1 Mar is one day...
+    if (civil_to_epoch(2100, 3, 1, 0, 0, 0) - civil_to_epoch(2100, 2, 28, 0, 0, 0) != 86400ULL)  return 8;
+    // ...but 2000 IS /400 -> 29 Feb exists, so the same span is two days.
+    if (civil_to_epoch(2000, 3, 1, 0, 0, 0) - civil_to_epoch(2000, 2, 28, 0, 0, 0) != 172800ULL) return 9;
+    if (civil_to_epoch(2026, 8, 31, 0, 0, 0) != 1788134400ULL) return 10;   // a present-day wall-clock date
     return 0;
 }
 

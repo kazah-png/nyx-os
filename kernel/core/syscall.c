@@ -550,18 +550,13 @@ static int copy_path_from_user(char* out, int outsz, uint64_t uptr) {
     return 0;
 }
 
-// Broken-down RTC time -> Unix epoch seconds. Civil-days algorithm (valid for any
-// Gregorian date); the RTC carries no timezone, so it is treated as UTC. Backs
-// SYS_GETTIMEOFDAY.
+// Broken-down RTC time -> Unix epoch seconds. The RTC carries no timezone, so it is
+// treated as UTC. Backs SYS_GETTIMEOFDAY and the `totp` command. Delegates to the shared
+// civil_to_epoch() (timer.c, pinned by the `uptime` KAT) so the civil-days conversion is
+// not duplicated here — previously this held a second, independent copy of that algorithm.
 static int64_t rtc_to_epoch(const rtc_time_t* t) {
-    int y = (int)t->year, m = (int)t->month, d = (int)t->day;
-    y -= (m <= 2);
-    int64_t era = (y >= 0 ? y : y - 399) / 400;
-    int yoe = (int)(y - era * 400);                      // [0, 399]
-    int doy = (153 * (m + (m > 2 ? -3 : 9)) + 2) / 5 + d - 1;   // [0, 365]
-    int doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;     // [0, 146096]
-    int64_t days = era * 146097 + (int64_t)doe - 719468; // days since 1970-01-01
-    return days * 86400 + (int64_t)t->hour * 3600 + (int64_t)t->minute * 60 + (int64_t)t->second;
+    return (int64_t)civil_to_epoch((int)t->year, (int)t->month, (int)t->day,
+                                   (int)t->hour, (int)t->minute, (int)t->second);
 }
 
 // Current Unix epoch seconds from the RTC (UTC). Public wrapper so kernel.c (e.g. the

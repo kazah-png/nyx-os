@@ -18,7 +18,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.5.5"
+#define KERNEL_VERSION "6.5.6"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -973,6 +973,10 @@ void init_timer(uint32_t frequency);
 uint32_t get_ticks(void);
 void uptime_mark_boot(void);        // capture the boot wall-clock (call once, early in kernel_main)
 uint32_t get_uptime_seconds(void);  // honest uptime: real wall-clock seconds since boot (RTC, not ticks)
+// Civil (proleptic-Gregorian, UTC) date/time -> Unix epoch seconds (Hinnant days-from-civil).
+// The ONE epoch-conversion helper: uptime, SYS_GETTIMEOFDAY and `totp` all route through it, so
+// the conversion can't drift between them. Pure; pinned by uptime_epoch_selftest (the `uptime` KAT).
+uint64_t civil_to_epoch(int y, int m, int d, int h, int mi, int s);
 void sleep(uint32_t milliseconds);
 
 void init_serial(void);
