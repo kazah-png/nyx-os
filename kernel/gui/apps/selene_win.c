@@ -690,7 +690,12 @@ static uint32_t sel_tint_px(uint32_t bgpx) {
     int lum = (r * 30 + g * 59 + b * 11) / 100;
     int d = lum < 128 ? 12 : -10;   // dark page -> panel a touch lighter; light page -> a touch darker
     r += d; g += d; b += d;
-    if (r < 0) r = 0; if (r > 255) r = 255; if (g < 0) g = 0; if (g > 255) g = 255; if (b < 0) b = 0; if (b > 255) b = 255;
+    if (r < 0) r = 0;
+    if (r > 255) r = 255;
+    if (g < 0) g = 0;
+    if (g > 255) g = 255;
+    if (b < 0) b = 0;
+    if (b > 255) b = 255;
     return fb_rgb((uint8_t)r, (uint8_t)g, (uint8_t)b);
 }
 static uint8_t sel_panel_tint(selene_ctx_t* sx) {
@@ -880,12 +885,12 @@ static void render_table(selene_ctx_t* sx, const uint8_t* body, uint32_t ts, uin
             char capbuf[SEL_LINE_COLS];
             int w = sel_cell_text(body, cs, ce, capbuf, SEL_LINE_COLS, 0);
             if (w > 0) {
-                int pad;                                                 // horizontal placement of the caption over the table width
-                if      (sel_ci_streq(calign, "left"))  pad = 0;         // flush left
-                else if (sel_ci_streq(calign, "right")) pad = total - w; // flush right
-                else                                    pad = (total - w) / 2;   // centre (default / "center")
-                if (pad < 0) pad = 0;
-                int q = 0; for (; q < pad && q < SEL_LINE_COLS - 1; q++) capline[q] = ' ';
+                int pad2;                                                 // horizontal placement of the caption over the table width
+                if      (sel_ci_streq(calign, "left"))  pad2 = 0;         // flush left
+                else if (sel_ci_streq(calign, "right")) pad2 = total - w; // flush right
+                else                                    pad2 = (total - w) / 2;   // centre (default / "center")
+                if (pad2 < 0) pad2 = 0;
+                int q = 0; for (; q < pad2 && q < SEL_LINE_COLS - 1; q++) capline[q] = ' ';
                 for (int z = 0; capbuf[z] && q < SEL_LINE_COLS - 1; z++) capline[q++] = capbuf[z];
                 capline[q] = '\0'; cap_ready = 1;
             }
@@ -1977,7 +1982,8 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                 int mx  = sel_parse_milli(mv); if (mx <= 0) mx = 1000;   // default max = 1
                 int mn  = sel_parse_milli(nv); if (mn < 0) mn = 0;       // <meter min> (progress has none)
                 if (mx <= mn) mx = mn + 1000;
-                if (val < mn) val = mn; if (val > mx) val = mx;
+                if (val < mn) val = mn;
+                if (val > mx) val = mx;
                 int per = (int)(((long)(val - mn) * 1000) / (mx - mn));  // 0..1000 permille filled
                 const int NB = 16; int filled = per * NB / 1000; if (filled > NB) filled = NB;
                 uint8_t bd = (uint8_t)(cur_bold | (cur_ul << 1) | (cur_st << 2) | (cur_du << 3) | (cur_vo << 4) | (cur_ol << 6));
@@ -2054,7 +2060,8 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                                 while (te2 < len && body[te2] != '<') te2++;
                                 while (ts < te2 && (body[ts]==' '||body[ts]=='\n'||body[ts]=='\r'||body[ts]=='\t')) ts++;
                                 int b = 0; for (uint32_t z = ts; z < te2 && b < 60; z++) { char c2 = (char)body[z]; if (c2=='\n'||c2=='\r'||c2=='\t') c2=' '; opt[b++]=c2; }
-                                while (b > 0 && opt[b-1]==' ') b--; opt[b]='\0';
+                                while (b > 0 && opt[b-1]==' ') b--;
+                                opt[b]='\0';
                                 have_opt = 1; if (is_sel) have_sel = 1;
                             }
                             k = opast; continue;
@@ -2127,7 +2134,9 @@ static void render_html(selene_ctx_t* s, const uint8_t* body, uint32_t len) {
                                 char bc[40] = {0}; uint32_t brgb;
                                 if (sel_css_get(bstyle, "border-color", bc, sizeof(bc))) { if (sel_parse_css_color(bc, &brgb)) bcol = sel_intern_color(s, brgb); }
                                 else for (int z = 0; bv[z]; ) {        // scan the shorthand's space-separated tokens for the first that parses as a colour (e.g. "1px solid #30363d")
-                                    while (bv[z] == ' ') z++; int e2 = z; while (bv[e2] && bv[e2] != ' ') e2++;
+                                    while (bv[z] == ' ') z++;
+                                    int e2 = z;
+                                    while (bv[e2] && bv[e2] != ' ') e2++;
                                     char tok[40]; int tl = 0; for (int q = z; q < e2 && tl < 39; q++) tok[tl++] = bv[q]; tok[tl] = '\0';
                                     if (tl && sel_parse_css_color(tok, &brgb)) { bcol = sel_intern_color(s, brgb); break; }
                                     z = e2; if (!bv[z]) break;
@@ -2893,7 +2902,7 @@ void selene_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
                 if (bd & 1) font_draw_string_trans(rx + 1, ry, sub, fg);   // bit0: synthetic bold (2nd glyph pass, +1px)
                 if (bd & 2) fb_fill_rect(rx, ry + FONT_HEIGHT - 1, (uint32_t)((b1 - b0) * FONT_WIDTH), 1, fg);  // bit1: underline
                 if (bd & 4) fb_fill_rect(rx, ry + FONT_HEIGHT / 2, (uint32_t)((b1 - b0) * FONT_WIDTH), 1, fg);  // bit2: line-through
-                if (bd & 8) { int uw = (b1 - b0) * FONT_WIDTH; for (int dx = 0; dx < uw; dx += 2) fb_fill_rect(rx + dx, ry + FONT_HEIGHT - 1, 1, 1, fg); }  // bit3: dotted underline (<abbr>)
+                if (bd & 8) { int uw2 = (b1 - b0) * FONT_WIDTH; for (int dx = 0; dx < uw2; dx += 2) fb_fill_rect(rx + dx, ry + FONT_HEIGHT - 1, 1, 1, fg); }  // bit3: dotted underline (<abbr>)
                 if (bd & 64) fb_fill_rect(rx, ry, (uint32_t)((b1 - b0) * FONT_WIDTH), 1, fg);  // bit6: overline (rule at glyph top)
                 b0 = b1;
             }
@@ -3041,7 +3050,8 @@ void selene_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
         if (cy1 <= cy0) continue;
         int x0 = cx + SEL_PAD + (int)s->cell_boxes[b].col0 * FONT_WIDTH - 2;
         int x1 = cx + SEL_PAD + ((int)s->cell_boxes[b].col1 + 1) * FONT_WIDTH + 1;
-        if (x0 < cx) x0 = cx; if (x1 > cx + SELENE_W - 2) x1 = cx + SELENE_W - 2;
+        if (x0 < cx) x0 = cx;
+        if (x1 > cx + SELENE_W - 2) x1 = cx + SELENE_W - 2;
         uint8_t ck = s->cell_boxes[b].col;
         uint32_t bc = (ck && ck <= s->npalette) ? s->palette[ck - 1] : fb_rgb(120, 128, 150);
         fb_fill_rect(x0, cy0, 1, (uint32_t)(cy1 - cy0), bc); fb_fill_rect(x1, cy0, 1, (uint32_t)(cy1 - cy0), bc);   // side verticals

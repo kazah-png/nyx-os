@@ -2045,11 +2045,14 @@ static void uuid_format(const uint8_t in[16], char* out) {
 // whatever the input bytes; pinned with all-0, all-FF, and a stepped vector.
 static int uuid_selftest(void) {
     char s[40]; uint8_t v[16];
-    for (int i=0;i<16;i++) v[i]=0x00; uuid_format(v, s);
+    for (int i=0;i<16;i++) v[i]=0x00;
+    uuid_format(v, s);
     if (strcmp(s, "00000000-0000-4000-8000-000000000000") != 0) return 1;
-    for (int i=0;i<16;i++) v[i]=0xFF; uuid_format(v, s);
+    for (int i=0;i<16;i++) v[i]=0xFF;
+    uuid_format(v, s);
     if (strcmp(s, "ffffffff-ffff-4fff-bfff-ffffffffffff") != 0) return 2;
-    for (int i=0;i<16;i++) v[i]=(uint8_t)(i*0x11); uuid_format(v, s);
+    for (int i=0;i<16;i++) v[i]=(uint8_t)(i*0x11);
+    uuid_format(v, s);
     if (strcmp(s, "00112233-4455-4677-8899-aabbccddeeff") != 0) return 3;   // version/variant placed right
     return 0;
 }
@@ -5294,8 +5297,11 @@ static int wav_parse(const uint8_t* d, uint32_t len, uint32_t* rate, uint16_t* b
     if (afmt != 1)               return -6;                    // only uncompressed PCM
     if (bps != 8 && bps != 16)   return -7;
     if (c != 1 && c != 2)        return -8;
-    if (rate) *rate = sr; if (bits) *bits = bps; if (ch) *ch = c;
-    if (doff) *doff = do_; if (dlen) *dlen = dl_;
+    if (rate) *rate = sr;
+    if (bits) *bits = bps;
+    if (ch) *ch = c;
+    if (doff) *doff = do_;
+    if (dlen) *dlen = dl_;
     return 0;
 }
 
@@ -8209,7 +8215,8 @@ static void cpt_log_append(const char* a, const char* b, const char* c) {
     int L = 0; while (cpt_log[L]) L++;
     const char* parts[3] = { a, b, c };
     for (int p = 0; p < 3; p++) { const char* q = parts[p]; if (!q) continue; while (*q && L < 510) cpt_log[L++] = *q++; }
-    if (L < 511) cpt_log[L++] = '|'; cpt_log[L] = '\0';
+    if (L < 511) cpt_log[L++] = '|';
+    cpt_log[L] = '\0';
 }
 static void cpt_test_enum(void* ec, const char* path, cpt_child_fn child, void* cc) {
     (void)ec;

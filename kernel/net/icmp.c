@@ -181,7 +181,8 @@ int icmp_selftest(void) {
     if (type != ICMP_TYPE_ECHO_REQUEST) return 2;                        // ...with the right type
     if (icmp_msg_check(pkt, sizeof(icmp_header_t) - 1, NULL)) return 3;   // runt rejected
     { uint8_t s = pkt[9]; pkt[9] ^= 0x40;                                 // corrupt a payload byte
-      if (icmp_msg_check(pkt, len, NULL)) return 4; pkt[9] = s; }         // bad checksum rejected
+      if (icmp_msg_check(pkt, len, NULL)) return 4;                       // bad checksum rejected
+      pkt[9] = s; }
     if (!icmp_msg_check(pkt, len, NULL)) return 5;                        // restored -> valid again
 
     h->type = ICMP_TYPE_ECHO_REPLY;                                      // reclassify + refresh cksum

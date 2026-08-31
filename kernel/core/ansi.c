@@ -32,7 +32,8 @@ int ansi_csi_selftest(void) {
 
     // Saturation: a long digit run never overflows, never goes negative, caps at MAX.
     { int a = 0; for (int i = 0; i < 40; i++) a = csi_param_accum(a, 9);
-      if (a != CSI_PARAM_MAX) return 4; if (a < 0) return 5; }
+      if (a != CSI_PARAM_MAX) return 4;
+      if (a < 0) return 5; }
 
     // Exact boundary: 6553 then '5' lands on the cap; further digits stay pinned.
     { int a = 6553; a = csi_param_accum(a, 5); if (a != CSI_PARAM_MAX) return 6;

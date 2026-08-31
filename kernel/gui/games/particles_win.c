@@ -53,7 +53,9 @@ void* particles_create_ctx(void) {
         int r = 90  + i * 165 / PPAL_N;
         int g = 40  + i * 150 / PPAL_N;
         int b = 140 + i * 115 / PPAL_N;
-        if (r > 255) r = 255; if (g > 255) g = 255; if (b > 255) b = 255;
+        if (r > 255) r = 255;
+        if (g > 255) g = 255;
+        if (b > 255) b = 255;
         c->pal[i] = fb_rgb((uint8_t)r, (uint8_t)g, (uint8_t)b);
     }
     for (int i = 0; i < PART_MAX; i++) emit(c, &c->p[i]);

@@ -25,7 +25,8 @@ static int      boot_epoch_set = 0;
 // Seconds since 1970-01-01 for a civil date/time (days-from-civil, Hinnant's algorithm;
 // proleptic Gregorian, UTC). PURE so a KAT can pin it against known Unix-epoch vectors.
 static uint64_t civil_to_epoch(int y, int m, int d, int h, int mi, int s) {
-    if (m < 1) m = 1; if (m > 12) m = 12;
+    if (m < 1) m = 1;
+    if (m > 12) m = 12;
     int yy = y - (m <= 2);
     int era = (yy >= 0 ? yy : yy - 399) / 400;
     unsigned yoe = (unsigned)(yy - era * 400);

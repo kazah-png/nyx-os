@@ -461,8 +461,6 @@ static int proc_utoa(uint32_t v, char* buf) {
 
 // Synthesize a /proc node's full text into buf; returns the byte length.
 static int proc_generate(vfs_node_t* ino, char* buf, int bufsz) {
-    extern uint64_t memory_total, memory_used;
-    extern volatile uint32_t tick_count;
     buf[0] = '\0';
     switch (ino->proc_type) {
         case PROC_MEMINFO: {

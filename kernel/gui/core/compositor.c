@@ -1289,7 +1289,9 @@ static void bg_ripple_ring(int cx, int cy, int r, int fw, int fh,
             int rr = skr + (214 - skr) * inten / 100;
             int gg = skg + (200 - skg) * inten / 100;
             int bl = skb + (248 - skb) * inten / 100;
-            if (rr > 255) rr = 255; if (gg > 255) gg = 255; if (bl > 255) bl = 255;
+            if (rr > 255) rr = 255;
+            if (gg > 255) gg = 255;
+            if (bl > 255) bl = 255;
             fb_fill_rect(px, py, 2, 2, fb_rgb((uint8_t)rr, (uint8_t)gg, (uint8_t)bl));
         }
         y++; err += 1 + 2 * y;
@@ -1313,7 +1315,9 @@ static void bg_star_line(int x0, int y0, int x1, int y1, int fw, int fh,
             int rr = skr + (206 - skr) * inten / 100;
             int gg = skg + (196 - skg) * inten / 100;
             int bl = skb + (240 - skb) * inten / 100;
-            if (rr > 255) rr = 255; if (gg > 255) gg = 255; if (bl > 255) bl = 255;
+            if (rr > 255) rr = 255;
+            if (gg > 255) gg = 255;
+            if (bl > 255) bl = 255;
             fb_fill_rect(x0, y0, 1, 1, fb_rgb((uint8_t)rr, (uint8_t)gg, (uint8_t)bl));
         }
         if (x0 == x1 && y0 == y1) break;
@@ -1465,7 +1469,9 @@ static void draw_background(void) {
                     int rr = skr + (cur[k].cr - skr) * lum / 100;
                     int gg = skg + (cur[k].cg - skg) * lum / 100;
                     int bb2 = skb + (cur[k].cb - skb) * lum / 100;
-                    if (rr > 255) rr = 255; if (gg > 255) gg = 255; if (bb2 > 255) bb2 = 255;
+                    if (rr > 255) rr = 255;
+                    if (gg > 255) gg = 255;
+                    if (bb2 > 255) bb2 = 255;
                     fb_fill_rect(x, yy, 3, 2, fb_rgb((uint8_t)rr, (uint8_t)gg, (uint8_t)bb2));
                 }
             }
@@ -1498,8 +1504,12 @@ static void draw_background(void) {
                 int rr = skr + (nr - skr) * inten / 100;
                 int gg = skg + (ng - skg) * inten / 100;
                 int bb2 = skb + (nb - skb) * inten / 100;
-                if (rr > 255) rr = 255; if (gg > 255) gg = 255; if (bb2 > 255) bb2 = 255;
-                if (rr < 0) rr = 0; if (gg < 0) gg = 0; if (bb2 < 0) bb2 = 0;
+                if (rr > 255) rr = 255;
+                if (gg > 255) gg = 255;
+                if (bb2 > 255) bb2 = 255;
+                if (rr < 0) rr = 0;
+                if (gg < 0) gg = 0;
+                if (bb2 < 0) bb2 = 0;
                 fb_fill_rect(x, y, 3, 2, fb_rgb((uint8_t)rr, (uint8_t)gg, (uint8_t)bb2));
             }
         }
@@ -1514,13 +1524,13 @@ static void draw_background(void) {
     // falloff, so it glows over the gradient + stars with no hard edge.
     if (style == WP_STYLE_LUCES) {
         uint32_t tms = get_ticks();
-        uint32_t seed = 0x1234567u;
+        uint32_t seed2 = 0x1234567u;
         int span = (int)fh + 48;                        // rise distance before wrap
         for (int i = 0; i < 16; i++) {
-            seed = seed * 1103515245u + 12345u; int lane  = (int)((seed >> 9) % fw);
-            seed = seed * 1103515245u + 12345u; int phase = (int)((seed >> 9) & 255);
-            seed = seed * 1103515245u + 12345u; int spd   = 34 + (int)((seed >> 9) % 34);   // ms per px up
-            seed = seed * 1103515245u + 12345u; int amp   = 16 + (int)((seed >> 9) % 40);   // sway px
+            seed2 = seed2 * 1103515245u + 12345u; int lane  = (int)((seed2 >> 9) % fw);
+            seed2 = seed2 * 1103515245u + 12345u; int phase = (int)((seed2 >> 9) & 255);
+            seed2 = seed2 * 1103515245u + 12345u; int spd   = 34 + (int)((seed2 >> 9) % 34);   // ms per px up
+            seed2 = seed2 * 1103515245u + 12345u; int amp   = 16 + (int)((seed2 >> 9) % 40);   // sway px
             int yy = (int)fh + 24 - (int)((tms / (uint32_t)spd + (uint32_t)phase * 4u) % (uint32_t)span);
             int xx = lane + wp_isin((int)(tms / 40) + phase) * amp / 1024;
             if (xx < 0 || xx >= (int)fw || yy < 0 || yy >= (int)fh) continue;
@@ -1540,7 +1550,9 @@ static void draw_background(void) {
                     int rr = skr + (214 - skr) * inten / 100;
                     int gg = skg + (194 - skg) * inten / 100;
                     int bb2 = skb + (248 - skb) * inten / 100;
-                    if (rr > 255) rr = 255; if (gg > 255) gg = 255; if (bb2 > 255) bb2 = 255;
+                    if (rr > 255) rr = 255;
+                    if (gg > 255) gg = 255;
+                    if (bb2 > 255) bb2 = 255;
                     fb_fill_rect(px, py, 1, 1, fb_rgb((uint8_t)rr, (uint8_t)gg, (uint8_t)bb2));
                 }
             }
@@ -1555,9 +1567,9 @@ static void draw_background(void) {
         int maxr = (int)fw;                          // a ring reaches the far side, then wraps
         const int NR = 4;
         int step = maxr / NR;
-        int base = (int)(tms / 5) % step;            // shared outward phase (px)
+        int base2 = (int)(tms / 5) % step;            // shared outward phase (px)
         for (int k = 0; k < NR; k++) {
-            int r = base + k * step;
+            int r = base2 + k * step;
             if (r < mr + 10) continue;               // keep clear of the moon disc
             int inten = 42 * (maxr - r) / maxr;      // bright when young, fades as it grows
             bg_ripple_ring(mx, my, r, (int)fw, (int)fh, br, bg, bb, inten);
@@ -1584,8 +1596,10 @@ static void draw_background(void) {
             for (int k = 1; k < npts; k++) {
                 cs = cs * 1103515245u + 12345u; int nx = px + (int)((cs >> 10) % 66) - 33;
                 cs = cs * 1103515245u + 12345u; int ny = py + (int)((cs >> 10) % 56) - 28;
-                if (nx < 10) nx = 10; if (nx > (int)fw - 10) nx = (int)fw - 10;
-                if (ny < 10) ny = 10; if (ny > (int)star_zone) ny = (int)star_zone;
+                if (nx < 10) nx = 10;
+                if (nx > (int)fw - 10) nx = (int)fw - 10;
+                if (ny < 10) ny = 10;
+                if (ny > (int)star_zone) ny = (int)star_zone;
                 bg_star_line(px, py, nx, ny, (int)fw, (int)fh, br, bg, bb, 34);   // faint thread
                 fb_fill_rect(nx, ny, 2, 2, fb_rgb(210, 204, 242));               // vertex star
                 px = nx; py = ny;
@@ -1626,7 +1640,9 @@ static void draw_background(void) {
                 int rr = skr + (214 - skr) * inten / 100;
                 int gg = skg + (202 - skg) * inten / 100;
                 int bl = skb + (244 - skb) * inten / 100;
-                if (rr > 255) rr = 255; if (gg > 255) gg = 255; if (bl > 255) bl = 255;
+                if (rr > 255) rr = 255;
+                if (gg > 255) gg = 255;
+                if (bl > 255) bl = 255;
                 fb_fill_rect(hx, py, (s < 3) ? 2 : 1, 1, fb_rgb((uint8_t)rr, (uint8_t)gg, (uint8_t)bl));
             }
         }
@@ -3784,7 +3800,8 @@ void compositor_run(void) {
                         int bx = spk_mute_x(), by = spk_mute_y();
                         if (mx >= tx - 4 && mx <= tx + tw + 4 && my >= ty - 5 && my <= ty + SPK_TRACK_H + 5) {
                             int v = (mx - tx) * 100 / (tw > 0 ? tw : 1);   // click the track to set volume
-                            if (v < 0) v = 0; if (v > 100) v = 100;
+                            if (v < 0) v = 0;
+                            if (v > 100) v = 100;
                             g_volume = v; g_muted = 0; apply_volume(); redraw = 1;
                         } else if (mx >= bx && mx < bx + SPK_MUTE_W && my >= by && my < by + SPK_MUTE_H) {
                             g_muted = !g_muted; apply_volume(); redraw = 1;    // toggle mute

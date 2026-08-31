@@ -42,7 +42,9 @@ static void lava_init_pal(lava_ctx_t* c) {
         if (lvl < 85)       { r = lvl * 3;        g = 0;              b = 0; }            // black -> red
         else if (lvl < 170) { r = 255;            g = (lvl - 85) * 3; b = 0; }            // red -> yellow
         else                { r = 255;            g = 255;            b = (lvl - 170) * 3; } // yellow -> white
-        if (r > 255) r = 255; if (g > 255) g = 255; if (b > 255) b = 255;
+        if (r > 255) r = 255;
+        if (g > 255) g = 255;
+        if (b > 255) b = 255;
         c->pal[i] = fb_rgb((uint8_t)r, (uint8_t)g, (uint8_t)b);
     }
 }

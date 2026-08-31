@@ -24,6 +24,18 @@ if ($Clean) {
 Write-Host "[*] Compiling kernel..." -ForegroundColor Yellow
 $result = wsl-build
 
+# Surface compiler warnings even on a SUCCESSFUL build. Previously $result was printed
+# only on failure, so a warning backlog stayed hidden behind a green build (this is the
+# gap that let ~39 warnings accumulate unseen; see the LTS 0-warn gate). Now every build
+# reports its warning count, and lists them so they never pile up invisibly again.
+$warns = @($result | Select-String -Pattern 'warning:|error:')
+if ($warns.Count -gt 0) {
+    Write-Host "[WARN] $($warns.Count) compiler warning(s):" -ForegroundColor Yellow
+    $warns | ForEach-Object { Write-Host "  $($_.Line)" -ForegroundColor DarkYellow }
+} elseif ($global:lastExit -eq 0) {
+    Write-Host "[OK] 0 warnings" -ForegroundColor Green
+}
+
 if ($global:lastExit -ne 0) {
     Write-Host "[FAIL] Build failed (exit $($global:lastExit))" -ForegroundColor Red
     $result

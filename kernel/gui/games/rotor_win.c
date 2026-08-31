@@ -54,7 +54,9 @@ void* rotor_create_ctx(void) {
         int r = 60  + i * 185 / ROT_PAL_N;
         int g = 28  + i * 120 / ROT_PAL_N;
         int b = 110 + i * 140 / ROT_PAL_N;
-        if (r > 255) r = 255; if (g > 255) g = 255; if (b > 255) b = 255;
+        if (r > 255) r = 255;
+        if (g > 255) g = 255;
+        if (b > 255) b = 255;
         c->pal[i] = fb_rgb((uint8_t)r, (uint8_t)g, (uint8_t)b);
     }
     return c;
@@ -89,7 +91,8 @@ void rotor_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch) {
                 int sy = cy + H2 + (y2 * FOV) / denom;
                 if (sx < cx || sx >= cx + ROTOR_WIN_W - 1 || sy < cy || sy >= cy + ROTOR_WIN_H - 1) continue;
                 int idx = (z2 + 220) * ROT_PAL_N / 440;     // depth -220..220 -> shade 0..63
-                if (idx < 0) idx = 0; if (idx >= ROT_PAL_N) idx = ROT_PAL_N - 1;
+                if (idx < 0) idx = 0;
+                if (idx >= ROT_PAL_N) idx = ROT_PAL_N - 1;
                 int sz = (z2 > 0) ? 3 : 2;                    // near points a touch bigger
                 fb_fill_rect(sx, sy, sz, sz, c->pal[idx]);
             }

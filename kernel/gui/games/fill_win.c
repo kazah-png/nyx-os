@@ -37,7 +37,9 @@ void* fill_create_ctx(void) {
         int r = 24 + t * (210 - 24) / (FILL_PAL_N / 2);
         int g = 12 + t * (190 - 12) / (FILL_PAL_N / 2);
         int b = 44 + t * (250 - 44) / (FILL_PAL_N / 2);
-        if (r > 255) r = 255; if (g > 255) g = 255; if (b > 255) b = 255;
+        if (r > 255) r = 255;
+        if (g > 255) g = 255;
+        if (b > 255) b = 255;
         c->pal[i] = fb_rgb((uint8_t)r, (uint8_t)g, (uint8_t)b);
     }
     return c;

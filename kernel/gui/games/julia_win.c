@@ -54,7 +54,9 @@ void* julia_create_ctx(void) {
         int r = 50 + (lvl * 180) / 255;
         int g = 8  + (lvl * 60)  / 255;
         int b = 80 + (lvl * 175) / 255;
-        if (r > 255) r = 255; if (g > 255) g = 255; if (b > 255) b = 255;
+        if (r > 255) r = 255;
+        if (g > 255) g = 255;
+        if (b > 255) b = 255;
         c->pal[i] = fb_rgb((uint8_t)r, (uint8_t)g, (uint8_t)b);
     }
     return c;

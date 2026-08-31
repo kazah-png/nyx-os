@@ -29,7 +29,9 @@ static void fire_init_pal(fire_ctx_t* c) {
         else if (i < 12)     { r = 20 + i * 20; g = i * 2;       b = 0; }        // black -> deep red
         else if (i < 26)     { r = 255;         g = (i - 11) * 18; b = 0; }      // red -> orange -> yellow
         else                 { r = 255;         g = 255;         b = (i - 25) * 22; }  // yellow -> white
-        if (r > 255) r = 255; if (g > 255) g = 255; if (b > 255) b = 255;
+        if (r > 255) r = 255;
+        if (g > 255) g = 255;
+        if (b > 255) b = 255;
         c->pal[i] = fb_rgb((uint8_t)r, (uint8_t)g, (uint8_t)b);
     }
 }
