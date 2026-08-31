@@ -5,7 +5,7 @@
 <p align="center"><strong>A from-scratch x86_64 operating system · C and Assembly · GUI desktop, real network stack, and a self-hosting C toolchain</strong></p>
 
 <p align="center">
-  <a href="https://github.com/kazah-png/nyx-os/releases/tag/v5.9.0-LTS"><img src="https://img.shields.io/badge/release-v5.9.0--LTS-825AD2?style=flat" /></a>
+  <a href="https://github.com/nyxos-dev/nyx-os/releases/tag/v6.5.0-LTS"><img src="https://img.shields.io/badge/release-v6.5.0--LTS-825AD2?style=flat" /></a>
   &nbsp;
   <img src="https://img.shields.io/badge/version-v6.5.23-825AD2?style=flat" />
   &nbsp;
