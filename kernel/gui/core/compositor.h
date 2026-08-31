@@ -52,6 +52,11 @@ enum {
     WSTATE_SNAP_BR,     // bottom-right quarter
 };
 
+// Cursor shape the pointer takes over a window's CLIENT area. Default 0 = arrow;
+// text windows (Terminal, Editor) set CURSOR_IBEAM so the pointer becomes an I-beam
+// over their content, the way every desktop signals "you can select/place text here".
+enum { CURSOR_ARROW, CURSOR_IBEAM };
+
 typedef struct window window_t;
 
 typedef void (*window_draw_fn)(window_t* win, int clip_x, int clip_y, uint32_t clip_w, uint32_t clip_h);
@@ -73,6 +78,7 @@ struct window {
     uint32_t resize_start_w, resize_start_h;
     int focused;
     int id;
+    int cursor_shape;   // CURSOR_ARROW (default) / CURSOR_IBEAM — pointer over the client area
     int workspace;
     int has_close;
     int has_min;
@@ -107,6 +113,7 @@ void compositor_run(void);
 void compositor_quit(void);
 int compositor_is_running(void);
 window_t* compositor_open_editor(const char* path);  // open Text Editor, optionally with a file
+int cursor_pick_selftest(void);   // KAT: pointer shape picked from the window under it (I-beam over text)
 extern int compositor_logout_requested;              // user menu "Log out" -> boot loop re-shows login
 
 #endif

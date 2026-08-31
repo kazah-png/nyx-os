@@ -9534,6 +9534,7 @@ static void run_selftests(void) {
         {"glob",         glob_selftest},
         {"leb128",       leb128_selftest},        {"crc16",         crc16_selftest},
         {"tgfd",         tg_fdhandoff_selftest},
+        {"curpick",      cursor_pick_selftest},
     };
     int n = (int)(sizeof(t) / sizeof(t[0])), passed = 0, failed = 0;
     serial_puts("SELFTEST-BEGIN\n");

@@ -78,6 +78,20 @@ static const uint8_t cursor_data[CURSOR_H][CURSOR_W] = {
     {1,2,2,2,1,2,2,1,0,0,0,0},{1,2,1,0,0,1,2,2,1,0,0,0},
     {1,1,0,0,0,1,2,2,1,0,0,0},{0,0,0,0,0,0,1,2,2,1,0,0},
 };
+// I-beam: a white (2) vertical bar with a black (1) outline + top/bottom serifs, so the
+// pointer reads as a text caret over Terminal/Editor content. Same 0/1/2 encoding + 12x16
+// box as the arrow, so it shares draw_cursor's save/restore path (only the bitmap swaps).
+static const uint8_t ibeam_data[CURSOR_H][CURSOR_W] = {
+    {0,0,0,1,1,1,1,1,1,0,0,0},{0,0,0,1,2,2,2,2,1,0,0,0},
+    {0,0,0,0,1,2,2,1,0,0,0,0},{0,0,0,0,1,2,2,1,0,0,0,0},
+    {0,0,0,0,1,2,2,1,0,0,0,0},{0,0,0,0,1,2,2,1,0,0,0,0},
+    {0,0,0,0,1,2,2,1,0,0,0,0},{0,0,0,0,1,2,2,1,0,0,0,0},
+    {0,0,0,0,1,2,2,1,0,0,0,0},{0,0,0,0,1,2,2,1,0,0,0,0},
+    {0,0,0,0,1,2,2,1,0,0,0,0},{0,0,0,0,1,2,2,1,0,0,0,0},
+    {0,0,0,0,1,2,2,1,0,0,0,0},{0,0,0,0,1,2,2,1,0,0,0,0},
+    {0,0,0,1,2,2,2,2,1,0,0,0},{0,0,0,1,1,1,1,1,1,0,0,0},
+};
+static int pick_cursor_shape(int mx, int my);   // defined after window_hit (below)
 static uint32_t cursor_bg_buf[CURSOR_H * CURSOR_W];
 static int cursor_saved = 0;
 
@@ -113,9 +127,13 @@ static void draw_cursor(int mx, int my) {
     uint32_t* fb = (uint32_t*)fb_get_addr();
     if (!fb) return;
 
+    // Context cursor: an I-beam over a text window's client area, the arrow otherwise.
+    // The saved/restored 12x16 box is the same for both, so only the bitmap changes.
+    const uint8_t (*glyph)[CURSOR_W] =
+        (pick_cursor_shape(mx, my) == CURSOR_IBEAM) ? ibeam_data : cursor_data;
     for (int y = 0; y < CURSOR_H && my + y < (int)fh; y++) {
         for (int x = 0; x < CURSOR_W && mx + x < (int)fw; x++) {
-            uint8_t p = cursor_data[y][x];
+            uint8_t p = glyph[y][x];
             if (p == 0) continue;
             if (p == 2)
                 fb[(my + y) * fw + (mx + x)] = 0xFFFFFF;
@@ -376,6 +394,49 @@ static int min_hit(window_t* win, int mx, int my) {
 static int window_hit(window_t* win, int mx, int my) {
     return mx >= win->x && mx < win->x + (int)win->w
         && my >= win->y && my < win->y + (int)win_total_h(win);
+}
+
+// Which cursor shape belongs at (mx,my): the topmost window under the pointer decides.
+// Over its CLIENT area (below the title bar) the pointer takes that window's cursor_shape
+// (I-beam for text windows); over the title bar or the bare desktop it stays the arrow.
+static int pick_cursor_shape(int mx, int my) {
+    window_t* top = NULL;
+    for (int i = 0; i < MAX_WINDOWS; i++) {
+        window_t* w = windows[i];
+        if (!w || !w->visible) continue;
+        if (w->workspace != current_workspace || w->state == WSTATE_MINIMIZED) continue;
+        if (!window_hit(w, mx, my)) continue;
+        if (!top || w->z_order > top->z_order) top = w;
+    }
+    if (!top) return CURSOR_ARROW;
+    if (my >= top->y + TITLE_H) return top->cursor_shape;   // client area
+    return CURSOR_ARROW;                                    // title bar
+}
+
+// KAT: the pointer shape is picked from the topmost window under it — I-beam over a text
+// window's client area, arrow over its title bar / the bare desktop / a non-text window.
+// Stages a throwaway window in the (idle, pre-run) compositor table and restores it.
+int cursor_pick_selftest(void) {
+    static window_t fake;
+    memset_asm(&fake, 0, sizeof fake);
+    fake.x = 100; fake.y = 100; fake.w = 200; fake.h = 150;
+    fake.visible = 1; fake.state = WSTATE_NORMAL; fake.z_order = 7;
+    fake.workspace = current_workspace;
+    fake.cursor_shape = CURSOR_IBEAM;
+    int slot = -1;
+    for (int i = 0; i < MAX_WINDOWS; i++) if (!windows[i]) { slot = i; break; }
+    if (slot < 0) return 5;
+    windows[slot] = &fake;
+    int rc = 0;
+    if      (pick_cursor_shape(150, 100 + TITLE_H + 30) != CURSOR_IBEAM) rc = 10; // client -> I-beam
+    else if (pick_cursor_shape(150, 100 + 5)            != CURSOR_ARROW) rc = 11; // title bar -> arrow
+    else if (pick_cursor_shape(400, 400)                != CURSOR_ARROW) rc = 12; // off-window -> arrow
+    else {                                                                        // arrow window keeps arrow
+        fake.cursor_shape = CURSOR_ARROW;
+        if (pick_cursor_shape(150, 100 + TITLE_H + 30)  != CURSOR_ARROW) rc = 13;
+    }
+    windows[slot] = NULL;
+    return rc;
 }
 
 static int resize_hit(window_t* win, int mx, int my, int* dir) {
@@ -1827,6 +1888,7 @@ static window_t* find_window(int id) {
 window_t* compositor_open_editor(const char* path) {
     window_t* ewin = window_create(150, 120, 600, 400, EDITOR_NAME, editor_win_draw);
     if (!ewin) return NULL;
+    ewin->cursor_shape = CURSOR_IBEAM;   // Mnemosyne: text area -> I-beam pointer
     ewin->reserved = editor_create_ctx();
     if (!ewin->reserved) { window_destroy(ewin->id); return NULL; }
     ewin->on_click = editor_win_click;
@@ -1974,6 +2036,7 @@ void launch_nyxflex(void) {
     NF_POS(0, hh, 640, 400, tx, ty);
     window_t* tw = window_create(tx, ty, 640, 400, "Terminal", terminal_win_draw);
     if (tw) {
+        tw->cursor_shape = CURSOR_IBEAM;   // Erebus: text area -> I-beam pointer
         tw->reserved = terminal_create_ctx();
         if (tw->reserved) {
             tw->on_key = terminal_win_key;
@@ -2220,6 +2283,7 @@ static void do_start_menu_action(int idx) {
             {
                 window_t* twin = window_create(80, 80, 640, 400, "Terminal", terminal_win_draw);
                 if (twin) {
+                    twin->cursor_shape = CURSOR_IBEAM;   // Erebus: text area -> I-beam pointer
                     twin->reserved = terminal_create_ctx();
                     twin->on_key = terminal_win_key;
                 }
