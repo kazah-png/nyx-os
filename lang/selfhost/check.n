@@ -805,6 +805,54 @@ fn brret(st: *i64, b: i64) -> i64 {
     return 0;
 }
 
+// v0.19 auto-drops (ncc's own_drops_emit): at scope ends and returns,
+// every LIVE binding at index >= from whose TYPE carries a #[drop]
+// destructor drops (reverse birth order) — it becomes MOVED, so the
+// leak scan that follows only reports values with no destructor.
+// Held params never auto-drop: a callee owns its parameters manually.
+fn cdrops(p: *u8, st: *i64, from: i64) {
+    if st[41] == 1 { return; }
+    va := st[39] as *i64;
+    sa := st[49] as *i64;
+    mut j := st[40] - 1;
+    while j >= from {
+        if va[j * 10 + 8] == 1 {
+            t := vty(st, j);
+            if t.pt == 0 && t.l > 0 {
+                si := sfind(p, st, t.s, t.l);
+                if si >= 0 && sa[si * 8 + 4] == 1 && sa[si * 8 + 6] > 0 {
+                    va[j * 10 + 8] = 2;
+                }
+            }
+        }
+        j = j - 1;
+    }
+}
+
+// The leak scan (ncc's own_leak_scan): any own binding at index >=
+// from still LIVE here leaks — report the first (ascending, ncc's
+// loop order). w: 0 = "this return"; 1 = a scope end, whose wording
+// splits on BLOCK_DEPTH — the function's own block or an inner one.
+fn cleak(p: *u8, st: *i64, from: i64, ln: i64, w: i64) {
+    if st[41] == 1 { return; }
+    va := st[39] as *i64;
+    mut j := from;
+    while j < st[40] {
+        if va[j * 10 + 8] == 1 {
+            put("{ln}: unconsumed own value '");
+            put_span(p, va[j * 10], va[j * 10 + 1]);
+            put("' at ");
+            if w == 0 { put("this return"); }
+            if w == 1 && st[43] == 1 { put("the end of the function"); }
+            if w == 1 && st[43] != 1 { put("the end of this block"); }
+            put(" — return it, pass it on, or give the type a #[drop] destructor\n");
+            st[41] = 1;
+            return;
+        }
+        j = j + 1;
+    }
+}
+
 // ---------------------------------------------------------------- //
 // Types. ncc's Ty={name,ptrs,is_user} is exactly the parser's T
 // (pt, us, name-span); sl == 0 marks "no type" (void), ncc's NULL
@@ -2777,8 +2825,10 @@ fn cstmt(p: *u8, st: *i64, i: i64) {
                 st[41] = 1;
             }
             cmove(p, st, nd[i * 8 + 1], nd[i * 8 + 4]);   // v0.17:
-            return;                                       // returning
-        }                                                 // consumes
+            cdrops(p, st, 0);                  // returning consumes; then
+            cleak(p, st, 0, nd[i * 8 + 4], 0); // the drops drain and the
+            return;                            // whole frame must be clean
+        }
         if rt4.l > 0 && !nvr {
             ln3 := nd[i * 8 + 4];
             put("{ln3}: 'return' without a value in a function returning ");
@@ -2786,7 +2836,9 @@ fn cstmt(p: *u8, st: *i64, i: i64) {
             put("\n");
             st[41] = 1;
         }
-        return;
+        cdrops(p, st, 0);                      // ncc scans bare returns
+        cleak(p, st, 0, nd[i * 8 + 4], 0);     // too — same drain, same
+        return;                                // "this return" wording
     }
     if k == 23 {                           // expr stmt: an own result
         cexpr(p, st, nd[i * 8 + 1]);       // nobody binds is refused
@@ -3078,6 +3130,16 @@ fn cblock(p: *u8, st: *i64, i: i64) {
         cexpr(p, st, t);
         cmove(p, st, t, 0);                // ncc: own_move_expr(tail, 0)
     }
+    cdrops(p, st, vsave);                  // v0.19 auto-drops close the
+    mut s2 := nd[i * 8 + 1];               // scope, THEN nothing may leak
+    mut lst2 := 0;                         // out of it — the scan reports
+    while s2 > 0 {                         // at the LAST statement's line
+        lst2 = s2;                         // (ncc: b->st[n-1]->line, 0
+        s2 = nd[s2 * 8 + 7];               // for an empty block)
+    }
+    mut ln9 := 0;
+    if lst2 > 0 { ln9 = nd[lst2 * 8 + 4]; }
+    cleak(p, st, vsave, ln9, 1);
     st[43] = st[43] - 1;
     st[40] = vsave;
 }

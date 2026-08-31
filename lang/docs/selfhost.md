@@ -872,6 +872,31 @@ what remains of own/move is exactly the leak scan — rung 10b is
 now just that — before the declarations and their FILE-level
 normalization question.
 
+### Rung 10b — the leak scan closes the ledger
+
+Ownership had one open side left: a value could be born and simply
+never go anywhere. ncc closes it with two sweeps that always run in
+the same order — the v0.19 auto-drops first (every LIVE binding
+whose type carries a `#[drop]` destructor drops, last born first,
+and becomes MOVED), then the leak scan (the first binding still
+LIVE is refused). The rewrite places them at ncc's exact three
+sites: both return forms drain and scan the whole frame at the
+return's line ("at this return"), and every block close drains and
+scans its own births — from the scope's saved base — wording the
+refusal by block depth ("the end of the function" vs "the end of
+this block") and anchoring it at the last statement's line, zero
+for an empty block, which is ncc's own quirk kept faithfully.
+
+The drop flip is what makes the scan honest: own.n leans on v0.19
+throughout — `use_page` never consumes its page and expects the
+destructor to fire at the function's end, and `touch_pages` births
+one inside a loop body where moves are refused, relying on the
+body-close drop. Both stay silences. With `bad_own_leak` claimed,
+fifty-two rows hold and the own/move family is done but for its
+declarations: rung 10c is `#[drop]` validation and the own-nest
+rule, whose FILE-level messages carry the harness's next
+normalization design.
+
 And the hardest lexer feature landed: **interpolation**. A toy string
 containing a brace lexes as segments — HEAD before the first hole,
 MID between holes, TAIL after the last (ncc's own

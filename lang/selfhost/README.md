@@ -164,6 +164,7 @@ stripped (the normalization rule lives in
    bad_own_branch   6: own value 'f' is consumed in only one branch of this if — ...
    bad_own_branch_noelse 6: own value 'f' is consumed in only one branch ...
    bad_drop_branch  7: own value 'p' is consumed in only one branch ...
+   bad_own_leak     3: unconsumed own value 'f' at the end of the function — ...
 
 plus ALL TWENTY-TWO examples as POSITIVE targets — the complete
 directory checks clean, silence enforced, nparse.n's 150K included. Coverage, stated honestly: extern
@@ -215,6 +216,23 @@ the checker became the biggest N program yet written. Struct
 fields, enum semantics and method returns still fall back softly
 (their tables are the next rungs); the claimed rows never reach
 them.
+
+**Rung 10b — the leak scan (landed): OWNERSHIP IS NOW A CLOSED
+LEDGER.** The other half of must-consume: at every `return` (drops
+drain, then the whole frame must be clean — "at this return") and
+at every scope close (this block's own births — "the end of the
+function" or "the end of this block", split on the block depth,
+reported at the LAST statement's line, ncc's exact anchor), any own
+binding still LIVE is refused with the corpus's leak row. The v0.19
+auto-drop rides in front of every scan: a LIVE binding whose type
+carries a `#[drop]` destructor drops instead of leaking — the
+struct table has held the attribute's span since 10a, so "has a
+destructor" was one slot read away — which is precisely what keeps
+own.n silent (its `use_page` leaks-by-design into an auto-drop, and
+its loop body births a page each iteration and drops it at the
+body's close). One row, and the accounting property is total: an
+own value now provably goes SOMEWHERE — moved, returned, dropped,
+or refused at compile time.
 
 **Rung 10a — own states and consume points (landed): NINE ROWS,
 AND THE BRANCH MERGE CAME EARLY.** The deepest family opened: the
