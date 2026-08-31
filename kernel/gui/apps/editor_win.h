@@ -6,6 +6,10 @@
 
 #define EDITOR_MAX_LINES 512
 #define EDITOR_LINE_LEN 256
+#define EDITOR_UNDO_N   16          // undo depth (snapshots kept before mutating edits)
+
+// One undo snapshot: a heap copy of the used lines (line_count * EDITOR_LINE_LEN bytes) + cursor.
+typedef struct { char* text; int line_count, cx, cy; } editor_undo_t;
 
 typedef struct {
     char lines[EDITOR_MAX_LINES][EDITOR_LINE_LEN];
@@ -27,12 +31,15 @@ typedef struct {
     int  goto_active;          // Ctrl+G goto-line mode: capturing a target line number
     char goto_buf[12];         // the digits typed in goto mode
     int  goto_len;
+    editor_undo_t undo[EDITOR_UNDO_N];   // Ctrl+Z undo stack (undo[undo_n-1] = most recent)
+    int  undo_n;
 } editor_win_t;
 
 editor_win_t* editor_create_ctx(void);
 void editor_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch);
 void editor_win_click(window_t* win, int mx, int my, int btn);
 void editor_win_key(window_t* win, int key);
+void editor_win_close(window_t* win);   // on_close: free the undo snapshots before the ctx is kfree'd
 void editor_load_file(editor_win_t* ed, const char* path);  // load `path` into this editor
 int  editor_find_selftest(void);                            // KAT for the Ctrl+F search core (editor_win.c)
 int  editor_replace_selftest(void);                         // KAT for the Ctrl+R replace core (editor_win.c)

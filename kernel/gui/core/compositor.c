@@ -1910,6 +1910,7 @@ window_t* compositor_open_editor(const char* path) {
     if (!ewin->reserved) { window_destroy(ewin->id); return NULL; }
     ewin->on_click = editor_win_click;
     ewin->on_key = editor_win_key;
+    ewin->on_close = editor_win_close;   // free the undo snapshots when the window closes
     if (path && path[0]) editor_load_file((editor_win_t*)ewin->reserved, path);
     return ewin;
 }

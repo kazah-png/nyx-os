@@ -5,6 +5,8 @@
 #include "../../drivers/video/font.h"
 #include "../../auth/login.h"   // g_login_home: default new saves into the persistent home
 
+static void editor_clear_undo(editor_win_t* ed);   // defined below; a new file drops the undo stack
+
 #define TOOLBAR_H 26
 #define STATUS_H 18
 #define BTN_W 56
@@ -57,6 +59,7 @@ static void editor_save(editor_win_t* ed) {
 }
 
 static void editor_open(editor_win_t* ed, const char* path) {
+    editor_clear_undo(ed);                          // a different file: old snapshots no longer apply
     strncpy(ed->filename, path, sizeof(ed->filename) - 1);
     int fd = vfs_open(path, 0, 0);
     if (fd < 0) {
@@ -449,6 +452,53 @@ int editor_goto_selftest(void) {
     return 0;
 }
 
+// Push the current buffer onto the undo stack before a mutating edit. Snapshots only the used
+// lines (line_count * EDITOR_LINE_LEN, contiguous in lines[]) so a small file costs little; drops
+// the oldest snapshot when the stack is full. A failed kmalloc just skips undo for this edit.
+static void editor_push_undo(editor_win_t* ed) {
+    int bytes = ed->line_count * EDITOR_LINE_LEN;
+    char* snap = (char*)kmalloc(bytes);
+    if (!snap) return;
+    memcpy_asm(snap, ed->lines, bytes);
+    if (ed->undo_n == EDITOR_UNDO_N) {                       // full: free + shift out the oldest
+        kfree(ed->undo[0].text);
+        for (int i = 1; i < EDITOR_UNDO_N; i++) ed->undo[i - 1] = ed->undo[i];
+        ed->undo_n--;
+    }
+    ed->undo[ed->undo_n].text = snap;
+    ed->undo[ed->undo_n].line_count = ed->line_count;
+    ed->undo[ed->undo_n].cx = ed->cursor_x;
+    ed->undo[ed->undo_n].cy = ed->cursor_y;
+    ed->undo_n++;
+}
+
+// Ctrl+Z: restore (and drop) the most recent snapshot.
+static void editor_undo_pop(editor_win_t* ed) {
+    if (ed->undo_n == 0) { snprintf(ed->status, sizeof(ed->status), "Nothing to undo"); return; }
+    editor_undo_t* u = &ed->undo[--ed->undo_n];
+    ed->line_count = (u->line_count < 1) ? 1 : u->line_count;
+    memcpy_asm(ed->lines, u->text, u->line_count * EDITOR_LINE_LEN);
+    ed->cursor_y = u->cy; ed->cursor_x = u->cx;
+    if (ed->cursor_y >= ed->line_count) ed->cursor_y = ed->line_count - 1;
+    if (ed->cursor_y < 0) ed->cursor_y = 0;
+    int llen = strlen(ed->lines[ed->cursor_y]);
+    if (ed->cursor_x > llen) ed->cursor_x = llen;
+    kfree(u->text); u->text = 0;
+    ed->modified = 1;
+    snprintf(ed->status, sizeof(ed->status), "Undo (%d left)", ed->undo_n);
+}
+
+// Free every retained snapshot (on window close, and when a new file replaces the buffer so a
+// stale snapshot can't be restored over unrelated content).
+static void editor_clear_undo(editor_win_t* ed) {
+    for (int i = 0; i < ed->undo_n; i++) if (ed->undo[i].text) { kfree(ed->undo[i].text); ed->undo[i].text = 0; }
+    ed->undo_n = 0;
+}
+void editor_win_close(window_t* win) {
+    editor_win_t* ed = (editor_win_t*)win->reserved;
+    if (ed) editor_clear_undo(ed);
+}
+
 void editor_win_key(window_t* win, int key) {
     editor_win_t* ed = (editor_win_t*)win->reserved;
     if (!ed) return;
@@ -552,6 +602,7 @@ void editor_win_key(window_t* win, int key) {
                 snprintf(ed->status, sizeof(ed->status), "Replace '%s' with: ", ed->repl_find);
                 return;
             }
+            editor_push_undo(ed);                   // so Ctrl+Z reverts the whole replace
             int n = editor_replace_all(ed->lines, ed->line_count, ed->repl_find, ed->repl_with);
             if (n > 0) ed->modified = 1;
             if (ed->cursor_y >= ed->line_count) ed->cursor_y = ed->line_count - 1;   // clamp after edits
@@ -598,13 +649,23 @@ void editor_win_key(window_t* win, int key) {
         return;
     }
 
+    if (key == 0x1A) { // Ctrl+Z — undo the last edit
+        editor_undo_pop(ed);
+        editor_adjust_scroll(ed, win);
+        return;
+    }
+
     if (key >= 0x20 && key <= 0x7E) {
+        editor_push_undo(ed);
         editor_insert_char(ed, (char)key);
     } else if (key == '\r' || key == '\n') {
+        editor_push_undo(ed);
         editor_newline(ed);
     } else if (key == '\b') {
+        editor_push_undo(ed);
         editor_backspace(ed);
     } else if (key == KEY_DEL) {
+        editor_push_undo(ed);
         editor_delete(ed);
     } else if (key == KEY_LEFT) {
         if (ed->cursor_x > 0) ed->cursor_x--;
