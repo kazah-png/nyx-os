@@ -32,6 +32,20 @@ stack, [NETWORK.md](NETWORK.md).
   from ring 0 traps instead of silently succeeding. (QEMU's default `qemu64` CPU does not
   advertise SMEP/SMAP; use `-cpu qemu64,+smep,+smap` or a Haswell+/`max` model to activate
   them.)
+- **W^X (write-xor-execute).** No page may be simultaneously writable and executable — the
+  classic exploit primitive (write shellcode, then jump to it). `do_mmap`/`do_mprotect` reject
+  any protection that sets both `PROT_WRITE` and `PROT_EXEC` (`mm/mmap.c`); the ELF loader maps
+  `.text` R+X and `.data` R+W|NX, never both. Nothing JITs. Pinned by the `wx` self-test.
+- **ASLR (mmap base).** Each process's mmap area begins at `MMAP_BASE` plus a random,
+  page-aligned slide (a fresh CSPRNG draw per process, 20 bits of entropy inside the 112 TiB
+  window), so mmap'd regions — the shared libc, large allocations — land at an unpredictable
+  address each run instead of a fixed one (`mm/mmap.c`, pinned by `mmapaslr`). Honest limit: this
+  covers the mmap base only; the user stack and the non-PIE ELF load address are still fixed.
+- **Kernel-stack canaries.** Each 4 KB kernel task stack carries a magic word at its low
+  (overflow) end, stamped at allocation; `stackcheck` (`stack_canary_sweep`, `proc/process.c`)
+  sweeps every task and reports any stack that has grown past 4 KB into its canary — a
+  detect-and-report tripwire for a smashed kernel stack, alongside the off-stack-buffer hardening
+  (#68). Pinned by `stack-canary`.
 
 ## Fault isolation
 
