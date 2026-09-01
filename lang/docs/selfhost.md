@@ -1277,6 +1277,25 @@ Every stage of the loop runs inside the operating system the
 language was built for. That is M5's sentence with every word
 load-bearing, and the batch fence is its proof.
 
+### the ladder learns the builtins
+
+Self-hosting is a maintenance promise, not a trophy: when ncc grows,
+the ladder must follow, or the byte-identity claim quietly expires.
+v0.23 was the first test. ncc gained program arguments in two parts —
+a changed `main` prologue (every program's emitted C shifted) and the
+`arg_count()`/`arg(i)` builtins (only programs that use them shift) —
+and the ladder followed in two matched steps. The prologue landed in
+gen.n the same commit as ncc's, because every differential baseline
+moved at once; the builtins landed the following iteration as
+identical checker arms in check.n and gen.n (resolved before the
+fn-table lookup, ncc's order, with ncc's exact wording) plus the
+generator's lowering to the runtime accessors. Then `args.n` joined
+every differential list — the parser dump, the checker silence, the
+emission byte-compare — and the suite went green: the ladder speaks
+v0.23. The pattern is now precedent: an emitted-shape change rides in
+lockstep with ncc; a new construct follows one rung behind, and joins
+the fences only when its mirror exists.
+
 And the hardest lexer feature landed: **interpolation**. A toy string
 containing a brace lexes as segments — HEAD before the first hole,
 MID between holes, TAIL after the last (ncc's own

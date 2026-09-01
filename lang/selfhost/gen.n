@@ -136,6 +136,16 @@ fn eq6(p: *u8, s: i64, a: i64, b: i64, c: i64, d: i64, e: i64, f: i64) -> bool {
     return eq5(p, s, a, b, c, d, e) && p[s + 5] as i64 == f;
 }
 
+// v0.23: the program-argument builtins. 1 for 'arg_count', 2 for 'arg',
+// 0 otherwise — ncc resolves these BEFORE the fn-table lookup.
+fn is_argb(p: *u8, s: i64, l: i64) -> i64 {
+    if l == 3 && eq3(p, s, 97, 114, 103) { return 2; }     // arg
+    if l != 9 { return 0; }
+    if !eq5(p, s, 97, 114, 103, 95, 99) { return 0; }      // arg_c
+    if !eq4(p, s + 5, 111, 117, 110, 116) { return 0; }    // ount
+    return 1;
+}
+
 fn eq7(p: *u8, s: i64, a: i64, b: i64, c: i64, d: i64, e: i64, f: i64, g: i64) -> bool {
     return eq6(p, s, a, b, c, d, e, f) && p[s + 6] as i64 == g;
 }
@@ -2216,6 +2226,31 @@ fn cexpr(p: *u8, st: *i64, i: i64) {
         ln := nd[i * 8 + 4];
         na := nd[i * 8 + 3];
         if nd[cal * 8] == 5 {              // named callee: the fn table
+            ab := is_argb(p, nd[cal * 8 + 5], nd[cal * 8 + 6]);
+            if ab == 1 {                   // v0.23 builtin: not a fn, not
+                if na != 0 {               // a syscall — checked before
+                    put("{ln}: 'arg_count' takes 0 arguments, got {na}\n");
+                    st[41] = 1;            // the table lookup (ncc's order)
+                }
+                return;
+            }
+            if ab == 2 {
+                if na != 1 {
+                    put("{ln}: 'arg' takes 1 argument, got {na}\n");
+                    st[41] = 1;
+                    return;
+                }
+                cexpr(p, st, al[nd[i * 8 + 2]]);
+                if st[41] == 1 { return; }
+                at9 := cinfer(p, st, al[nd[i * 8 + 2]]);
+                if !tcompat(p, at9, t_i64(st)) {
+                    put("{ln}: 'arg' index must be an integer, got ");
+                    ty_put(p, st, at9);
+                    put("\n");
+                    st[41] = 1;
+                }
+                return;
+            }
             fi := ffind(p, st, nd[cal * 8 + 5], nd[cal * 8 + 6]);
             if fi < 0 {
                 put("{ln}: unknown function '");
@@ -3574,6 +3609,9 @@ fn cinfer(p: *u8, st: *i64, i: i64) -> T {
     if k == 6 {                            // call: the callee's return
         cal := nd[i * 8 + 1];
         if nd[cal * 8] == 5 {
+            ab2 := is_argb(p, nd[cal * 8 + 5], nd[cal * 8 + 6]);
+            if ab2 == 1 { return t_i64(st); }          // v0.23 builtins
+            if ab2 == 2 { return t_str(st); }
             fi := ffind(p, st, nd[cal * 8 + 5], nd[cal * 8 + 6]);
             if fi >= 0 { return frty(st, fi); }
         }
@@ -4046,6 +4084,19 @@ fn gexpr(p: *u8, st: *i64, i: i64) {
                     put(")");
                     return;
                 }
+            }
+        }
+        if nd[cal * 8] == 5 {              // v0.23 builtins lower to the
+            ab3 := is_argb(p, nd[cal * 8 + 5], nd[cal * 8 + 6]);
+            if ab3 == 1 {                  // runtime accessors (ncc's
+                put("nyx_arg_count()");    // gen_expr order: before the
+                return;                    // general call emission)
+            }
+            if ab3 == 2 {
+                put("nyx_arg(");
+                gexpr(p, st, al[nd[i * 8 + 2]]);
+                put(")");
+                return;
             }
         }
         gexpr(p, st, nd[i * 8 + 1]);
