@@ -25,7 +25,6 @@ void launch_mandel(void);               // open Nyx Fractal, the Mandelbrot perf
 void launch_julia(void);                // open Nyx Julia, the Julia-set perf-demo window
 void launch_particles(void);            // open Nyx Particles, the particle-fountain perf-demo window
 void launch_rotor(void);                // open Nyx Rotor, the spinning-3D-lattice perf-demo window
-void launch_aeronyx(void);              // open Aeronyx, the animated nyxfetch (spinning 3D ASCII moon + stats)
 void launch_fill(void);                 // open Nyx Fill, the 2D fill-rate/overdraw perf-demo window
 void launch_life(void);                 // open Nyx Life, the Game-of-Life compute/render perf-demo window
 void launch_blobs(void);                // open Nyx Blobs, the metaballs render-perf-demo window

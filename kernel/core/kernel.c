@@ -276,7 +276,6 @@ static void cmd_fractal(int argc, char** argv);
 static void cmd_julia(int argc, char** argv);
 static void cmd_particles(int argc, char** argv);
 static void cmd_rotor(int argc, char** argv);
-static void cmd_aeronyx(int argc, char** argv);
 static void cmd_fill(int argc, char** argv);
 static void cmd_life(int argc, char** argv);
 static void cmd_blobs(int argc, char** argv);
@@ -540,7 +539,6 @@ static const command_t commands[] = {
     {"julia",     cmd_julia,     "Open Nyx Julia (morphing Julia-set render-perf demo)", false},
     {"particles", cmd_particles, "Open Nyx Particles (particle-fountain render-perf demo)", false},
     {"rotor", cmd_rotor, "Open Nyx Rotor (spinning 3D point-lattice render-perf demo)", false},
-    {"aeronyx", cmd_aeronyx, "Open Aeronyx: an animated nyxfetch (spinning 3D ASCII moon + live stats)", false},
     {"fill", cmd_fill, "Open Nyx Fill (2D fill-rate / overdraw render-perf demo)", false},
     {"life", cmd_life, "Open Nyx Life (Conway's Game of Life compute/render-perf demo)", false},
     {"blobs", cmd_blobs, "Open Nyx Blobs (metaballs render-perf demo)", false},
@@ -889,7 +887,7 @@ typedef struct { const char* title; const char* const* names; } help_cat_t;
 static const char* const HC_shell[] = {"help","man","version","clear","history","alias","unalias","exec","spawn","jobs","wait","nice","renice","taskset",0};
 static const char* const HC_files[] = {"ls","cd","pwd","pushd","popd","dirs","cat","file","identify","tar","iniget","open","touch","mkdir","rm","shred","cp","mv","tree","find","which","basename","dirname","realpath","files","df","du","disks","lsblk","lspci","nvme","nyxpart","mkfs","nyxinstall","nyxgrub","mount","ext2ls","ext2cat",0};
 static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","sed","patch","fold","fmt","nl","expand","unexpand","factor","isprime","strings","sha256sum","sha512sum","sha1sum","md5sum","seq","paste","clip","cut","uniq","join","comm","printf","wc","write","hexdump",0};
-static const char* const HC_sys[]   = {"ps","top","time","kill","pgrep","pkill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","aeronyx","vfsstat","screenshot","stackcheck",0};
+static const char* const HC_sys[]   = {"ps","top","time","kill","pgrep","pkill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat","screenshot","stackcheck",0};
 static const char* const HC_user[]  = {"useradd","users",0};
 static const char* const HC_net[]   = {"ifconfig","route","arp","netstat","dhcp","dns","ping","setip","httpget","httpd","tls","ipcalc",0};
 static const char* const HC_dev[]   = {"cc","xbm","semver","fnv","urlcode","crc32c","fletcher","murmur","base58","bech32","deflate","gzip","gunzip","zcat","calc","expr","json","hmac","totp","uuid",0};
@@ -1049,7 +1047,6 @@ static const man_page_t man_pages[] = {
     {"julia",    "Open Nyx Julia, a fixed-point Julia-set renderer whose constant c orbits a circle so the set continuously morphs. A P4 rendering-performance-testing demo (sibling to `fractal`): its benchmark HUD shows the per-frame render time, render FPS, iteration cap and the live c value, so you can watch the renderer's cost change as the shape moves between connected and disconnected sets. All-integer (Q8.24 fixed point)."},
     {"particles","Open Nyx Particles, a purple particle-fountain and P4 rendering-performance-testing demo. Particles get integer sub-pixel physics (gravity plus floor/wall bounce) and respawn at the nozzle when they settle; the benchmark HUD shows the per-frame simulation time and derived FPS. Press + / - to change the live particle count so the frame-time rises and falls with the load, and r to reset. All-integer (no floats)."},
     {"rotor","Open Nyx Rotor, a spinning 3D point-lattice and P4 rendering-performance-testing demo (the 3D-transform sibling of Nyx Particles). An NxNxN cube of points tumbles on two axes, each point rotated with fixed-point sin/cos, perspective-projected and shaded by depth; the benchmark HUD shows the per-frame render time and derived FPS. Press + / - to change the lattice density so the point count (N^3) and the frame-time scale with the load. All-integer (no floats)."},
-    {"aeronyx","Open Aeronyx, an ANIMATED nyxfetch: the NyxOS moon rendered as a rotating, shaded 3D SPHERE drawn in ASCII (a donut.c-style relief — each surface point's normal-dot-light brightness picks a glyph off the ramp \".,-~:;=!*#$@\") spinning beside live system stats (version, uptime, memory). Inspired by areofyl/fetch. All fixed-point — the kernel is built -mno-sse, so there are no floats: the sphere point and its normal rotate with Q12 sin/cos and project with a perspective divide."},
     {"fill","Open Nyx Fill, a 2D fill-rate / overdraw P4 rendering-performance-testing demo (the pure-fill sibling of Nyx Rotor and Nyx Fractal). Each frame paints the whole window over N times with a scrolling purple/lilac gradient; the benchmark HUD shows the pixels drawn per frame, the measured frame time, and the derived fill rate in Mpx/s. Press + / - to change the overdraw factor so the pixel throughput and the frame-time scale with the load. All-integer (no floats)."},
     {"life","Open Nyx Life, Conway's Game of Life as a P4 compute/render performance testbed (the cellular-automaton sibling of Nyx Fill and Nyx Fractal). A bounded grid steps by the classic B3/S23 rule and renders live cells as blocks (fresh births glow brighter than survivors); the benchmark HUD shows the generation counter, the live-cell count, the per-frame step time and the derived generations/second. Press + / - to change generations-per-frame so the compute load and the frame-time scale; 'r' reseeds a random soup, 'p' pauses, 'c' clears. All-integer (no floats)."},
     {"blobs","Open Nyx Blobs, a metaballs P4 rendering-performance-testing demo (the organic scalar-field sibling of Nyx Fractal and Nyx Fill). N soft blobs drift and bounce around the window; each frame sums an inverse-square field from every blob at each 2x2 cell and maps it through a purple/lilac ramp, so the blobs glow and merge. The benchmark HUD shows the per-frame field evaluations, the frame time and the rate in Mev/s. Press + / - to change the blob count so the per-sample cost and the frame-time scale. All-integer (no floats)."},
@@ -6411,14 +6408,6 @@ static void cmd_particles(int argc, char** argv) {
 static void cmd_rotor(int argc, char** argv) {
     (void)argc; (void)argv;
     launch_rotor();
-}
-
-// `aeronyx` — open Aeronyx, the animated nyxfetch: the NyxOS moon as a spinning 3D ASCII
-// sphere beside live system stats (compositor.c / gui/apps/aeronyx_win.c). Inspired by
-// areofyl/fetch.
-static void cmd_aeronyx(int argc, char** argv) {
-    (void)argc; (void)argv;
-    launch_aeronyx();
 }
 
 // `fill` — open the Nyx Fill window (2D fill-rate / overdraw render-perf demo, compositor.c).
