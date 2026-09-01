@@ -19,16 +19,6 @@
 </p>
 
 <p align="center">
-  <img src="https://img.shields.io/badge/C-825AD2?style=flat" />
-  &nbsp;
-  <img src="https://img.shields.io/badge/C%2B%2B-825AD2?style=flat" />
-  &nbsp;
-  <img src="https://img.shields.io/badge/Rust-825AD2?style=flat" />
-  &nbsp;
-  <img src="https://img.shields.io/badge/C%23-825AD2?style=flat" />
-</p>
-
-<p align="center">
   <a href="https://github.com/kazah-png/nyx-os/actions/workflows/build.yml"><img src="https://github.com/kazah-png/nyx-os/actions/workflows/build.yml/badge.svg?branch=master" alt="Build kernel" /></a>
   &nbsp;
   <a href="https://github.com/kazah-png/nyx-os/actions/workflows/codeql.yml"><img src="https://github.com/kazah-png/nyx-os/actions/workflows/codeql.yml/badge.svg?branch=master" alt="CodeQL" /></a>
