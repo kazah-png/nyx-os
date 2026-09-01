@@ -453,7 +453,7 @@ static const command_t commands[] = {
     {"unalias",   cmd_unalias,   "Remove a command alias: unalias <name>", false},
     {"find",      cmd_find,      "Find files by name: find <name> [path]", false},
     {"grep",      cmd_grep,      "Search file contents: grep [-cinv] <pattern> <file>", false},
-    {"tail",      cmd_tail,      "Show last lines of a file: tail <file> [lines]", false},
+    {"tail",      cmd_tail,      "Show the end of a file: tail [-n [+]N | -c [+]N] <file> [lines]", false},
     {"sort",      cmd_sort,      "Sort lines of a file: sort [-rnfu] <file>", false},
     {"rev",       cmd_rev,       "Reverse the characters of each line: rev <file>", false},
     {"tr",        cmd_tr,        "Translate/delete/squeeze chars: tr [-ds] SET1 [SET2] <file>", false},
@@ -1057,7 +1057,7 @@ static const man_page_t man_pages[] = {
     {"selene",   "Open Selene, the NyxOS web browser (HTTP and TLS, HTML and images)."},
     {"man",      "Display the manual page for a command: its name, a synopsis, and a description of what it does."},
     {"head",     "Write the first part of <file> to standard output: the first 10 lines by default, `-n N` for N lines, or `-c N` for the first N bytes. (A bare count as the second argument still works, e.g. `head file 3`.) Useful for peeking at the top of a file without reading the whole thing."},
-    {"tail",     "Write the last lines of <file> to standard output (10 by default, or a count given as the second argument)."},
+    {"tail",     "Write the end of <file> to standard output — the last 10 lines by default. -n N prints the last N lines, -n +N prints from line N to the end; -c N the last N bytes, -c +N from byte N. A legacy positional count (`tail <file> 20`) also works. Matches GNU tail byte-for-byte, including a final line with no trailing newline; reads a bounded window from the end of the file."},
     {"tree",     "Print the directory rooted at [path] (the current directory by default) as an indented tree, showing each subdirectory's immediate children."},
     {"disks",    "List the physical disks attached to the machine and their partitions (aliased as `lsblk`). For each ATA disk it reads the drive's IDENTIFY data (model name + capacity) and then sector 0, parsing the MBR partition table: for every non-empty entry it prints the partition number, type byte + a human label (Linux/EFI System/FAT32/NTFS/...), the starting LBA, the size, and a [boot] flag for an active partition. Read-only — the first rung of the `nyxinstall` disk-management work; partitioning, formatting and installing come later. A raw or GPT-only disk reports that it has no MBR table."},
     {"lspci",    "Enumerate the machine's PCI/PCIe devices via configuration mechanism #1 (the 0xCF8/0xCFC port pair). For each device it prints the bus:slot.func address, the vendor:device ID, and a human label decoded from the class code (Host bridge, Display/VGA, Ethernet, USB, IDE/SATA AHCI/NVMe storage, ...). Storage controllers additionally show their class:subclass:prog-if triple, revision and BAR0. This is the hardware-recon step for real machines: on a modern UEFI laptop the disk is an NVMe controller on PCIe, which the ATA-based `disks` command cannot see, so `lspci` is how you locate it (and read the BAR a future NVMe driver will map). Read-only."},
@@ -5093,31 +5093,116 @@ static void cmd_grep(int argc, char** argv) {
     if (count_only) printf("%d\n", matches);
 }
 
-static void cmd_tail(int argc, char** argv) {
-    if (argc < 2) { printf("Usage: tail <file> [lines]\n"); return; }
-    int n = 10;
-    if (argc >= 3) n = atoi(argv[2]);
-    int fd = vfs_open(argv[1], 0, 0);
-    if (fd < 0) { printf("tail: cannot open '%s'\n", argv[1]); return; }
-    char buf[2048];
-    int bytes = vfs_read(fd, buf, sizeof(buf) - 1);
-    vfs_close(fd);
-    if (bytes <= 0) return;
-    buf[bytes] = '\0';
-    int lines = 0;
-    for (int i = 0; buf[i]; i++) if (buf[i] == '\n') lines++;
-    int printed = 0;
-    int start_line = lines - n;
-    if (start_line < 0) start_line = 0;
-    int cur = 0;
-    for (int i = 0; buf[i]; i++) {
-        if (buf[i] == '\n') cur++;
-        if (cur >= start_line && printed < n) {
-            putchar(buf[i]);
-            if (buf[i] == '\n') printed++;
+// ---- tail: emit the tail of a buffer, GNU-byte-exact (pure, so a KAT can pin it) ----------
+// A "line" includes its trailing '\n'; a final line with no '\n' still counts as a line.
+//   bytes_mode 0 = lines, 1 = bytes.  from_start 0 = the last `count` (from the END),
+//   1 = from the `count`-th line/byte (1-based) to the end — GNU's `-n +N` / `-c +N`.
+typedef void (*tail_emit_fn)(void* ctx, const char* s, uint32_t n);
+typedef struct { int bytes_mode; int from_start; long count; } tail_opts_t;
+
+static void tail_run(const tail_opts_t* o, const char* text, uint32_t len,
+                     tail_emit_fn emit, void* ctx) {
+    if (len == 0) return;
+    if (o->bytes_mode) {
+        uint32_t start;
+        if (o->from_start) {                                  // -c +N : from byte N (1-based)
+            start = o->count > 1 ? (uint32_t)(o->count - 1) : 0;
+            if (start >= len) return;
+        } else {                                              // -c N : the last N bytes
+            uint32_t n = o->count < 0 ? 0 : (uint32_t)o->count;
+            start = n >= len ? 0 : len - n;
         }
+        emit(ctx, text + start, len - start);
+        return;
     }
-    if (printed > 0 && buf[bytes-1] != '\n') putchar('\n');
+    if (o->from_start) {                                      // -n +N : from line N (1-based)
+        long target = o->count <= 1 ? 1 : o->count;
+        long line = 1; uint32_t i = 0;
+        while (line < target && i < len) { if (text[i] == '\n') line++; i++; }
+        if (i < len) emit(ctx, text + i, len - i);
+        return;
+    }
+    // -n N : the last N lines. Walk backward to the start of the N-th line from the end,
+    // ignoring a single trailing '\n' (it terminates the last line, not a new empty one).
+    long n = o->count < 0 ? 0 : o->count;
+    if (n == 0) return;
+    uint32_t scan = len;
+    if (scan > 0 && text[scan - 1] == '\n') scan--;           // skip the trailing newline
+    long seen = 0; uint32_t start = 0;
+    while (scan > 0) {
+        if (text[scan - 1] == '\n') { if (++seen == n) { start = scan; break; } }
+        scan--;
+    }
+    emit(ctx, text + start, len - start);                     // start stays 0 when fewer than n lines
+}
+
+// ---- known-answer self-test (`tail`) -----------------------------------------------------
+typedef struct { char* buf; uint32_t len; uint32_t cap; } tail_rec_t;
+static void tail_rec_emit(void* ctx, const char* s, uint32_t n) {
+    tail_rec_t* r = (tail_rec_t*)ctx;
+    for (uint32_t i = 0; i < n && r->len < r->cap - 1; i++) r->buf[r->len++] = s[i];
+    r->buf[r->len] = '\0';
+}
+static int tail_expect(const tail_opts_t* o, const char* in, const char* want) {
+    char out[256]; tail_rec_t r; r.buf = out; r.cap = (uint32_t)sizeof out; r.len = 0; out[0] = '\0';
+    tail_run(o, in, (uint32_t)strlen(in), tail_rec_emit, &r);
+    return strcmp(out, want) == 0;
+}
+// Pins GNU-tail parity: last-N lines (trailing-nl AND no-trailing-nl — the exact off-by-one
+// that regressed here), n>lines, n=0, -n +N (from a line), and -c N / -c +N (byte modes).
+static int tail_selftest(void) {
+    { tail_opts_t o = {0,0,2}; if (!tail_expect(&o, "a\nb\nc\nd\n", "c\nd\n")) return 1; }
+    { tail_opts_t o = {0,0,2}; if (!tail_expect(&o, "a\nb\nc\nd",   "c\nd"))   return 2; }
+    { tail_opts_t o = {0,0,1}; if (!tail_expect(&o, "x\ny\n",       "y\n"))    return 3; }
+    { tail_opts_t o = {0,0,5}; if (!tail_expect(&o, "a\nb\n",       "a\nb\n")) return 4; }
+    { tail_opts_t o = {0,0,3}; if (!tail_expect(&o, "one\ntwo\nthree\n", "one\ntwo\nthree\n")) return 5; }
+    { tail_opts_t o = {0,0,0}; if (!tail_expect(&o, "a\nb\n",       ""))       return 6; }
+    { tail_opts_t o = {0,1,2}; if (!tail_expect(&o, "a\nb\nc\nd\n", "b\nc\nd\n")) return 7; }
+    { tail_opts_t o = {0,1,1}; if (!tail_expect(&o, "a\nb\n",       "a\nb\n")) return 8; }
+    { tail_opts_t o = {1,0,3}; if (!tail_expect(&o, "abcdef",       "def"))    return 9; }
+    { tail_opts_t o = {1,1,3}; if (!tail_expect(&o, "abcdef",       "cdef"))   return 10; }
+    { tail_opts_t o = {1,0,100};if (!tail_expect(&o, "abc",         "abc"))    return 11; }
+    return 0;
+}
+
+static void tail_emit_stdout(void* ctx, const char* s, uint32_t n) {
+    (void)ctx;
+    for (uint32_t i = 0; i < n; i++) putchar(s[i]);
+}
+static void cmd_tail(int argc, char** argv) {
+    // GNU-style -n [+]N / -c [+]N (bytes), plus the legacy positional `tail <file> [lines]`.
+    tail_opts_t o; o.bytes_mode = 0; o.from_start = 0; o.count = 10;
+    int ai = 1;
+    if (ai < argc && argv[ai][0] == '-' && (argv[ai][1] == 'n' || argv[ai][1] == 'c')) {
+        o.bytes_mode = (argv[ai][1] == 'c');
+        const char* v = argv[ai][2] ? argv[ai] + 2 : (ai + 1 < argc ? argv[++ai] : "");
+        if (*v == '+') { o.from_start = 1; v++; }               // -n +N / -c +N : count from the start
+        o.count = atoi(v);
+        ai++;
+    }
+    if (ai >= argc) { printf("Usage: tail [-n [+]N | -c [+]N] <file> [lines]\n"); return; }
+    const char* path = argv[ai];
+    if (!o.bytes_mode && !o.from_start && ai + 1 < argc) o.count = atoi(argv[ai + 1]);   // legacy positional count
+    int fd = vfs_open(path, 0, 0);
+    if (fd < 0) { printf("tail: cannot open '%s'\n", path); return; }
+    static char buf[4096];
+    uint32_t want = sizeof(buf) - 1;
+    int total = vfs_fsize(fd);
+    if (total < 0) total = 0;
+    // From-END reads the LAST window of the file (so tail of a >4 KB file tails the end, not
+    // the head); from-START (+N) reads from offset 0. Either way it is bounded to the buffer.
+    uint32_t off = (!o.from_start && (uint32_t)total > want) ? (uint32_t)total - want : 0;
+    int b = vfs_pread(fd, buf, want, off);
+    vfs_close(fd);
+    if (b <= 0) return;
+    // If the window didn't start at the file's start, drop the (likely partial) first line so
+    // line counting begins on a boundary — only meaningful in line mode.
+    uint32_t s0 = 0;
+    if (off > 0 && !o.bytes_mode) {
+        while (s0 < (uint32_t)b && buf[s0] != '\n') s0++;
+        if (s0 < (uint32_t)b) s0++;
+    }
+    tail_run(&o, buf + s0, (uint32_t)b - s0, tail_emit_stdout, 0);
 }
 
 // Leading-integer key for `sort -n` (sign-aware); a non-numeric line keys as 0,
@@ -9919,7 +10004,7 @@ static void run_selftests(void) {
         {"tritex",       tritex_selftest},        {"mat4",          mat4_selftest},
         {"shuf",         shuf_selftest},
         {"comm",         comm_selftest},          {"join",          join_selftest},
-        {"uniq",         uniq_selftest},
+        {"uniq",         uniq_selftest},          {"tail",          tail_selftest},
         {"securezero",   secure_zero_selftest},
         {"chacha20",     chacha20_selftest},        {"siphash",       siphash_selftest},
         {"poly1305",     poly1305_selftest},        {"chachapoly",    chacha20poly1305_selftest},
