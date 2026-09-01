@@ -1,7 +1,7 @@
 # N & N++ — the native languages of NyxOS
 
 <p align="center">
-  <img src="https://img.shields.io/badge/N-v0.22-825AD2?style=flat" />
+  <img src="https://img.shields.io/badge/N-v0.23-825AD2?style=flat" />
   &nbsp;
   <img src="https://img.shields.io/badge/N%2B%2B-design-825AD2?style=flat" />
   &nbsp;
@@ -31,7 +31,7 @@ N++ program, and N++ compiles down through the same pipeline.
 | Memory model | Manual, raw pointers | Ownership/borrowing opt-in, `#[user]` checked pointers |
 | Error handling | Return codes | `Result<T, E>` + `?` propagation |
 | Data types | Primitives, pointers, `str` | + `struct` methods, `enum` sum types, `match`, generics, traits |
-| Status | **v0.22 — working** (see below) | **P1–P4 complete, P5 started** (`own` types complete: must-consume, branch-aware moves, `#[drop]` destructors; GUI bindings wait on kernel window syscalls) |
+| Status | **v0.23 — working** (see below) | **P1–P4 complete, P5 started** (`own` types complete: must-consume, branch-aware moves, `#[drop]` destructors; GUI bindings wait on kernel window syscalls) |
 
 Both share the same DNA:
 
@@ -64,7 +64,7 @@ Both share the same DNA:
 ## Status — what works today
 
 The bootstrap compiler `ncc` ([ncc/ncc.c](ncc/ncc.c), single-file C, no
-dependencies) implements N v0.22 — type inference (typed `:=` bindings with an
+dependencies) implements N v0.23 — type inference (typed `:=` bindings with an
 `i64` default, interpolation that inserts `str` values as text — with `:x`/`:X` hex and `:wN`/`:zN` width/zero-pad format specs — enforced
 `mut`), a complete expression-level checker plus missing-return flow analysis (undeclared names, unknown
 callees, arity, argument/operand/return/assignment types — all compile errors

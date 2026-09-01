@@ -29,6 +29,25 @@ typedef _Bool    nyx_bool;
 typedef struct { const char* ptr; nyx_u64 len; } nyx_str;
 #define NYX_STR(s) ((nyx_str){ (s), sizeof(s) - 1 })
 
+/* v0.23: program arguments. ncc emits main(nyx_i64 __argc, nyx_u8** __argv)
+ * and stashes the SysV frame here as its first act; the arg_count()/arg(i)
+ * builtins lower to the readers. Header-static on purpose: the emitted main
+ * and the accessors always live in the same translation unit. */
+static nyx_i64  __nyx_argc;
+static nyx_u8** __nyx_argv;
+static inline void __nyx_args_set(nyx_i64 c, nyx_u8** v) {
+    __nyx_argc = c;
+    __nyx_argv = v;
+}
+static inline nyx_i64 nyx_arg_count(void) { return __nyx_argc; }
+static inline nyx_str nyx_arg(nyx_i64 i) {
+    nyx_str s = { "", 0 };
+    if (i < 0 || i >= __nyx_argc || !__nyx_argv || !__nyx_argv[i]) return s;
+    s.ptr = (const char*)__nyx_argv[i];
+    { nyx_u64 n = 0; while (s.ptr[n]) n++; s.len = n; }
+    return s;
+}
+
 /* slice []T (type-erased in the MVP; the checker monomorphizes later). */
 typedef struct { void* ptr; nyx_u64 len; } nyx_slice;
 

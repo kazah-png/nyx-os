@@ -1486,6 +1486,10 @@ static Ty infer_type(Expr* e) {
             return v ? v->ty : ty_named("i64");
         }
         case E_CALL:
+            if (e->callee->k == E_PATH && !strcmp(e->callee->name, "arg_count"))
+                return ty_named("i64");
+            if (e->callee->k == E_PATH && !strcmp(e->callee->name, "arg"))
+                return ty_named("str");
             if (e->callee->k == E_PATH) return ret_type_of(e->callee->name);
             if (e->callee->k == E_FIELD) {      /* method: type from the receiver */
                 Ty rt = infer_type(e->callee->base);
@@ -1626,6 +1630,25 @@ static void check_expr(Expr* e) {
             }
             if (e->callee->k != E_PATH)
                 die("%s:%d: only named functions can be called", FILENAME, e->line);
+            /* v0.23 builtins: program arguments, lowered to the nyxrt
+             * accessors — not syscalls, so no capability is involved. */
+            if (!strcmp(e->callee->name, "arg_count")) {
+                if (e->nargs != 0)
+                    die("%s:%d: 'arg_count' takes 0 arguments, got %d",
+                        FILENAME, e->line, e->nargs);
+                break;
+            }
+            if (!strcmp(e->callee->name, "arg")) {
+                if (e->nargs != 1)
+                    die("%s:%d: 'arg' takes 1 argument, got %d",
+                        FILENAME, e->line, e->nargs);
+                check_expr(e->args[0]);
+                Ty at0 = infer_type(e->args[0]);
+                if (!ty_compat(at0, ty_named("i64")))
+                    die("%s:%d: 'arg' index must be an integer, got %s",
+                        FILENAME, e->line, ty_str(at0));
+                break;
+            }
             Param* ps; int np; Ty ret;
             if (!fn_lookup(e->callee->name, &ps, &np, &ret))
                 die("%s:%d: unknown function '%s'", FILENAME, e->line, e->callee->name);
@@ -1932,6 +1955,16 @@ static void gen_expr(Expr* e) {
                     fputs(", ", OUT);
                     gen_expr(e->args[i]);
                 }
+                fputc(')', OUT);
+                break;
+            }
+            if (e->callee->k == E_PATH && !strcmp(e->callee->name, "arg_count")) {
+                fputs("nyx_arg_count()", OUT);
+                break;
+            }
+            if (e->callee->k == E_PATH && !strcmp(e->callee->name, "arg")) {
+                fputs("nyx_arg(", OUT);
+                gen_expr(e->args[0]);
                 fputc(')', OUT);
                 break;
             }
@@ -2706,10 +2739,17 @@ static void gen_stmt(Stmt* s, int ind) {
     }
 }
 
+static int STASH_ARGS;   /* v0.23: set for main's body — its first act is
+                          * handing the SysV frame to the runtime */
+
 static void gen_block(Block* b, int ind, int fn_tail) {
     int vsave = NVARS;                  /* block scope: locals die with the block */
     BLOCK_DEPTH++;
     fputs("{\n", OUT);
+    if (STASH_ARGS) {
+        fputs("    __nyx_args_set(__argc, __argv);\n", OUT);
+        STASH_ARGS = 0;
+    }
     for (int i = 0; i < b->n; i++) gen_stmt(b->st[i], ind + 1);
     if (b->tail) {
         check_expr(b->tail);
@@ -2798,6 +2838,10 @@ static void gen_fn_sig(Fn* f) {
     if (!f->ret.name || is_never(f->ret)) fputs("void", OUT);
     else emit_type(f->ret);
     fprintf(OUT, " %s(", f->name);
+    if (!strcmp(f->name, "main") && !f->np) {   /* v0.23: main receives the SysV frame */
+        fputs("nyx_i64 __argc, nyx_u8** __argv)", OUT);
+        return;
+    }
     if (!f->np) fputs("void", OUT);
     for (int i = 0; i < f->np; i++) {
         if (i) fputs(", ", OUT);
@@ -2957,6 +3001,7 @@ static void gen_program(const char* srcname) {
         if (f->ret.name && !is_never(f->ret) && !block_guarantees(f->body))
             die("%s: not every path through '%s' returns a %s — add a tail expression or a return",
                 FILENAME, f->name, ty_str(f->ret));
+        STASH_ARGS = !strcmp(f->name, "main") && !f->np;
         gen_fn_sig(f);
         fputc(' ', OUT);
         gen_block(f->body, 0, 1);

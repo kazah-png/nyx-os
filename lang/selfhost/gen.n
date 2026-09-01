@@ -3793,7 +3793,14 @@ fn efsig(p: *u8, st: *i64, fi: i64) {
     put_span(p, ft[fi * 8], ft[fi * 8 + 1]);
     put("(");
     np := ft[fi * 8 + 2];
-    if np == 0 { put("void"); }
+    ns0 := ft[fi * 8];                     // v0.23: main receives the SysV
+    nl0 := ft[fi * 8 + 1];                 // frame (ncc's gen_fn_sig)
+    mut ismain := 0;
+    if nl0 == 4 && p[ns0] == 109 && p[ns0 + 1] == 97 && p[ns0 + 2] == 105 && p[ns0 + 3] == 110 {
+        ismain = 1;
+    }
+    if np == 0 && ismain == 1 { put("nyx_i64 __argc, nyx_u8** __argv"); }
+    if np == 0 && ismain == 0 { put("void"); }
     mut q := 0;
     while q < np {
         if q > 0 { put(", "); }
@@ -4678,6 +4685,10 @@ fn gblock(p: *u8, st: *i64, b: i64, d: i64, ftail: i64) {
     nd := st[33] as *i64;
     vsave := st[40];
     put("\{\n");
+    if st[60] == 1 {
+        st[60] = 0;
+        put("    __nyx_args_set(__argc, __argv);\n");
+    }
     mut s := nd[b * 8 + 1];
     while s > 0 {
         gstmt(p, st, s, d + 1);
@@ -4755,6 +4766,12 @@ fn gfn(p: *u8, st: *i64, fi: i64) {
         }
         q = q + 1;
     }
+    ns1 := ft[fi * 8];
+    nl1 := ft[fi * 8 + 1];
+    st[60] = 0;
+    if nl1 == 4 && ft[fi * 8 + 2] == 0 && p[ns1] == 109 && p[ns1 + 1] == 97 && p[ns1 + 2] == 105 && p[ns1 + 3] == 110 {
+        st[60] = 1;                        // v0.23: main's first act is the
+    }                                      // args stash (ncc's STASH_ARGS)
     efsig(p, st, fi);
     put(" ");
     gblock(p, st, ft[fi * 8 + 4], 0, 1);

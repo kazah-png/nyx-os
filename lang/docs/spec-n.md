@@ -1,6 +1,6 @@
 # The N Language — Specification
 
-**Version:** v0.22 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
+**Version:** v0.23 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
 
 This document specifies N exactly as implemented by the bootstrap compiler
 `ncc`. It is a *descriptive* spec: everything here compiles today. Planned
@@ -283,6 +283,9 @@ fn add(a: i64, b: i64) -> i64 {
 Parameters are `name: type`, comma-separated. The return type follows `->` and
 may be omitted for `void`. `fn main() -> i64` is the program entry point; its
 return value becomes the process exit status (via `crt0` → `SYS_EXIT`).
+Since v0.23 the emitted C `main` receives the SysV `argc`/`argv` frame the
+kernel builds for every launch and hands it to the runtime as its first act
+— that is what the `arg_count()`/`arg(i)` builtins (§6.7) read.
 
 ### 4.3 `struct` declarations (since v0.5)
 
@@ -944,6 +947,26 @@ Function calls take positional arguments. Field access uses `.` and applies to
 Method-call syntax (`value.method()`) is reserved for N++ and rejected by
 `ncc` with a clear error.
 
+### 6.7 Program arguments — `arg_count()` / `arg(i)` (since v0.23)
+
+```n
+fn main() -> i64 {
+    n := arg_count() - 1;          // argv[0] is the program's own path
+    first := arg(1);               // str — empty if out of range
+    ...
+}
+```
+
+N's first call builtins — not functions you declare, and not syscalls (no
+capability involved): the checker knows their shapes (`arg_count()` takes
+nothing and yields `i64`; `arg(i)` takes one integer and yields `str`) and
+the generator lowers them to the runtime accessors `nyx_arg_count()` /
+`nyx_arg()`. The values come from the SysV frame stashed by `main`'s
+prologue (§4.2): `arg(0)` is the program path, `arg(i)` beyond the count is
+the empty string — never a fault. On the host the C runtime fills the same
+frame, so `./program alpha beta` works identically there
+([`args.n`](../examples/args.n) is the worked example).
+
 ## 7. Code generation contract
 
 This section specifies what C the compiler is *required* to emit, because N's
@@ -1066,7 +1089,7 @@ String interpolation is handled lexically: the lexer emits
 `HEAD { expr } [MID { expr }]* TAIL` token runs with a brace-depth stack, so
 interpolated expressions are parsed by the ordinary expression grammar.
 
-## 9. Limitations (honest list, current as of v0.22)
+## 9. Limitations (honest list, current as of v0.23)
 
 The bootstrap grew through the staged N++ plan until nearly all of it
 shipped in `ncc` itself — the static checker (v0.3–0.4), `struct` (v0.5),
@@ -1102,8 +1125,9 @@ remains:
 Early-bootstrap gaps that are simply gone: `:=` bindings get concrete
 types with `i64` as the integer default; interpolation dispatches by type
 and carries format controls (hex in v0.20, width and zero-padding in
-v0.21); `mut` is enforced; v0.22 added missing-return flow analysis; and
-the generated C is strict C99 with no GNU extensions (TinyCC-compatible).
+v0.21); `mut` is enforced; v0.22 added missing-return flow analysis; v0.23
+added program arguments (§6.7); and the generated C is strict C99 with no
+GNU extensions (TinyCC-compatible).
 
 ## 10. Toolchain
 

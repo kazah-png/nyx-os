@@ -1,0 +1,24 @@
+// args.n — program arguments (v0.23): the arg_count() / arg(i) builtins.
+//
+// The kernel builds a SysV argc/argv frame for every launch and execve()
+// fills it with the caller's words; ncc's emitted main hands the frame to
+// the runtime, and these builtins read it back. argv[0] is the program's
+// own path, so the demo counts and prints from 1.
+
+extern syscall {
+    fn write(fd: i32, buf: *u8, len: isize) -> i64 = 1
+}
+
+fn main() -> i64 {
+    n := arg_count() - 1;
+    head := "args: {n}\n";
+    write(1, head.ptr as *u8, head.len as isize);
+    mut i := 1;
+    while i < arg_count() {
+        a := arg(i);
+        line := "  [{i}] {a}\n";
+        write(1, line.ptr as *u8, line.len as isize);
+        i = i + 1;
+    }
+    0
+}
