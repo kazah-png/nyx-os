@@ -1066,36 +1066,44 @@ String interpolation is handled lexically: the lexer emits
 `HEAD { expr } [MID { expr }]* TAIL` token runs with a brace-depth stack, so
 interpolated expressions are parsed by the ordinary expression grammar.
 
-## 9. Limitations (v0.1 — honest list)
+## 9. Limitations (honest list, current as of v0.22)
 
-These are known, deliberate gaps in the bootstrap; each is queued for the
-N++/type-checker phase:
+The bootstrap grew through the staged N++ plan until nearly all of it
+shipped in `ncc` itself — the static checker (v0.3–0.4), `struct` (v0.5),
+`defer` (v0.6), `enum` + `match` (v0.7), `impl` methods (v0.8),
+match-as-expression (v0.9), `?` over structural result enums (v0.10),
+counted `for` loops (v0.11), `#[user]` checked pointers (v0.12),
+`pageflags` W^X (v0.13), capabilities (v0.14), raw index writes (v0.16),
+and `own` types with branch-aware tracking and `#[drop]` destructors
+(v0.17–0.19). The language is also **self-hosted**: `lang/selfhost/gen.n`
+reimplements the whole pipeline in N and emits byte-identical C, verified
+on the host and inside NyxOS (see `docs/selfhost.md`). What genuinely
+remains:
 
-1. **Missing constructs:** closures, modules/`use`, generic
-   `Result<T, E>` — all specified in the N++ design document. (`struct`
-   landed in v0.5, `defer` in v0.6, `enum` + `match` in v0.7, `impl`
-   methods in v0.8 — completing the N++ P2 stage — match-as-expression
-   in v0.9, `?` over structural result enums in v0.10, and counted `for`
-   loops in v0.11.)
+1. **Missing constructs:** closures, modules/`use`, and generic
+   `Result<T, E>` (monomorphized generics in general) — specified in the
+   N++ design document; they are the substance of a future `n++`
+   front-end rather than of this bootstrap.
 2. **Match-expression and `?` positions are limited** (§5.6.1, §5.8):
    statement value positions only — no general expression nesting
    until the lowering needs it.
-3. **No allocator-backed slice type yet** (§6.5): buffers are raw
+3. **No allocator-backed slice type** (§6.5): buffers are raw
    `sbrk`/`mmap` pointers with programmer-contract bounds; a
-   length-carrying checked slice is n++ territory. (Raw index *writes*
-   landed in v0.16.)
-4. Fixed implementation caps (per file: 64 functions, 64 syscalls; per
-   function: 16 parameters and 256 live locals; per call: 16 arguments;
-   per struct literal: 16 fields; per block: 256 statements) — generous
-   for the bootstrap, diagnosed clearly when exceeded.
+   length-carrying checked slice is n++ territory.
+4. Fixed implementation caps (per file: 256 functions, 64 syscalls,
+   64 methods, 16 enums; per function: 16 parameters, 256 live locals,
+   16 defers; per call: 16 arguments; per struct literal: 16 fields;
+   per block: 256 statements) — diagnosed clearly when exceeded. Two of
+   them have already been outgrown and raised by the self-host ladder
+   itself (functions: 64 → 128 for the checker, 128 → 256 for the
+   generator) — the honest expectation is that others will follow as N
+   programs grow.
 
-Resolved since v0.1: `:=` bindings now get concrete types with `i64` as the
-integer default; interpolation dispatches by type; `mut` is enforced; the
-generated C is strict C99 with no GNU extensions (TinyCC-compatible — this
-removed `__auto_type`, which tcc does not support). Interpolation format
-controls landed across v0.20 (hex) and v0.21 (width and zero-padding), and
-v0.22 added missing-return flow analysis — the C compiler is no longer the
-backstop for a typed function falling off the end.
+Early-bootstrap gaps that are simply gone: `:=` bindings get concrete
+types with `i64` as the integer default; interpolation dispatches by type
+and carries format controls (hex in v0.20, width and zero-padding in
+v0.21); `mut` is enforced; v0.22 added missing-return flow analysis; and
+the generated C is strict C99 with no GNU extensions (TinyCC-compatible).
 
 ## 10. Toolchain
 
