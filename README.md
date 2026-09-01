@@ -19,6 +19,16 @@
 </p>
 
 <p align="center">
+  <img src="https://img.shields.io/badge/C-825AD2?style=flat" />
+  &nbsp;
+  <img src="https://img.shields.io/badge/C%2B%2B-825AD2?style=flat" />
+  &nbsp;
+  <img src="https://img.shields.io/badge/Rust-825AD2?style=flat" />
+  &nbsp;
+  <img src="https://img.shields.io/badge/C%23-825AD2?style=flat" />
+</p>
+
+<p align="center">
   <a href="https://github.com/kazah-png/nyx-os/actions/workflows/build.yml"><img src="https://github.com/kazah-png/nyx-os/actions/workflows/build.yml/badge.svg?branch=master" alt="Build kernel" /></a>
   &nbsp;
   <a href="https://github.com/kazah-png/nyx-os/actions/workflows/codeql.yml"><img src="https://github.com/kazah-png/nyx-os/actions/workflows/codeql.yml/badge.svg?branch=master" alt="CodeQL" /></a>
@@ -135,6 +145,48 @@ The **`NyxOS-uefi.iso`** release image boots via GRUB-EFI into a GOP framebuffer
 
 **Filesystem**
 - Ramdisk VFS + persistent EXT2 read/write, auto-mounted at `/mnt` — 1K/2K/4K blocks, indirect and double-indirect blocks, sparse files
+
+---
+
+## The NyxOS language family
+
+NyxOS has a family of sibling ports in **17 languages** — and every one boots. The C implementation is this repository; each port lives in its own repo under the [`nyxos-dev`](https://github.com/nyxos-dev) organization.
+
+<p align="center">
+  <a href="https://github.com/nyxos-dev/NyxOS-Ada"><img src="https://img.shields.io/badge/Ada-825AD2?style=flat" /></a>
+  &nbsp;
+  <a href="https://github.com/nyxos-dev/NyxOS-Asm"><img src="https://img.shields.io/badge/Assembly-825AD2?style=flat" /></a>
+  &nbsp;
+  <a href="https://github.com/nyxos-dev/NyxOS-Cpp"><img src="https://img.shields.io/badge/C%2B%2B-825AD2?style=flat" /></a>
+  &nbsp;
+  <a href="https://github.com/nyxos-dev/NyxOS-CSharp"><img src="https://img.shields.io/badge/C%23-825AD2?style=flat" /></a>
+  &nbsp;
+  <a href="https://github.com/nyxos-dev/NyxOS-COBOL"><img src="https://img.shields.io/badge/COBOL-825AD2?style=flat" /></a>
+  &nbsp;
+  <a href="https://github.com/nyxos-dev/NyxOS-D"><img src="https://img.shields.io/badge/D-825AD2?style=flat" /></a>
+  &nbsp;
+  <a href="https://github.com/nyxos-dev/NyxOS-Go"><img src="https://img.shields.io/badge/Go-825AD2?style=flat" /></a>
+  &nbsp;
+  <a href="https://github.com/nyxos-dev/NyxOS-Hare"><img src="https://img.shields.io/badge/Hare-825AD2?style=flat" /></a>
+  &nbsp;
+  <a href="https://github.com/nyxos-dev/NyxOS-Haskell"><img src="https://img.shields.io/badge/Haskell-825AD2?style=flat" /></a>
+  &nbsp;
+  <a href="https://github.com/nyxos-dev/NyxOS-Lisp"><img src="https://img.shields.io/badge/Lisp-825AD2?style=flat" /></a>
+  &nbsp;
+  <a href="https://github.com/nyxos-dev/NyxOS-Nim"><img src="https://img.shields.io/badge/Nim-825AD2?style=flat" /></a>
+  &nbsp;
+  <a href="https://github.com/nyxos-dev/NyxOS-OCaml"><img src="https://img.shields.io/badge/OCaml-825AD2?style=flat" /></a>
+  &nbsp;
+  <a href="https://github.com/nyxos-dev/NyxOS-Odin"><img src="https://img.shields.io/badge/Odin-825AD2?style=flat" /></a>
+  &nbsp;
+  <a href="https://github.com/nyxos-dev/NyxOS-Pascal"><img src="https://img.shields.io/badge/Pascal-825AD2?style=flat" /></a>
+  &nbsp;
+  <a href="https://github.com/nyxos-dev/NyxOS-Rust"><img src="https://img.shields.io/badge/Rust-825AD2?style=flat" /></a>
+  &nbsp;
+  <a href="https://github.com/nyxos-dev/NyxOS-Swift"><img src="https://img.shields.io/badge/Swift-825AD2?style=flat" /></a>
+  &nbsp;
+  <a href="https://github.com/nyxos-dev/NyxOS-Zig"><img src="https://img.shields.io/badge/Zig-825AD2?style=flat" /></a>
+</p>
 
 ---
 
