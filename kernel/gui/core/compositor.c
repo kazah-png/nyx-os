@@ -1366,7 +1366,7 @@ static void do_ctx_menu_action(int idx) {
             break;
         case 4: // Wallpaper
             {
-                window_t* wwin = window_create(180, 96, 400, 480, "Wallpaper", wallpaper_win_draw);
+                window_t* wwin = window_create(180, 96, 400, 520, "Wallpaper", wallpaper_win_draw);
                 if (wwin) wwin->on_click = wallpaper_win_click;
             }
             break;
