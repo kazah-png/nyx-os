@@ -18,4 +18,7 @@ typedef void (*tac_emit_fn)(const char* data, uint32_t len, void* ctx);
 // split (no bytes are lost).
 void tac_run(const char* text, uint32_t len, const char* sep, uint32_t seplen,
              uint32_t* starts, uint32_t maxrecs, tac_emit_fn emit, void* ctx);
+
+// Known-answer self-test: pins GNU-tac record-reverse parity (separator-as-terminator). Returns 0 on pass.
+int tac_selftest(void);
 #endif

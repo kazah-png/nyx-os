@@ -34,3 +34,30 @@ void tac_run(const char* text, uint32_t len, const char* sep, uint32_t seplen,
         emit(text + s, e - s, ctx);
     }
 }
+
+// ---- known-answer self-test (`tac`) ------------------------------------------------------
+// A recording emit: concatenate the reversed record spans into a bounded buffer.
+typedef struct { char* buf; uint32_t len; uint32_t cap; } tac_rec_t;
+static void tac_rec_emit(const char* data, uint32_t len, void* ctx) {
+    tac_rec_t* r = (tac_rec_t*)ctx;
+    for (uint32_t i = 0; i < len && r->len < r->cap - 1; i++) r->buf[r->len++] = data[i];
+    r->buf[r->len] = '\0';
+}
+static int tac_expect(const char* in, const char* sep, const char* want) {
+    char out[256]; tac_rec_t r; r.buf = out; r.cap = (uint32_t)sizeof out; r.len = 0; out[0] = '\0';
+    uint32_t starts[128], slen = 0; while (sep[slen]) slen++;
+    tac_run(in, (uint32_t)strlen(in), sep, slen, starts, 128, tac_rec_emit, &r);
+    return strcmp(out, want) == 0;
+}
+// Pins GNU-tac parity: trailing-separator reverse, the no-trailing-newline case (the last two
+// lines JOIN — the subtle "separator = terminator" edge), a single line, two empty lines, and a
+// multi-character separator both with and without a trailing separator.
+int tac_selftest(void) {
+    if (!tac_expect("a\nb\nc\n", "\n", "c\nb\na\n")) return 1;
+    if (!tac_expect("a\nb\nc",   "\n", "cb\na\n"))   return 2;
+    if (!tac_expect("only\n",    "\n", "only\n"))    return 3;
+    if (!tac_expect("\n\n",      "\n", "\n\n"))      return 4;
+    if (!tac_expect("aXXbXXc",   "XX", "cbXXaXX"))   return 5;
+    if (!tac_expect("aXXbXX",    "XX", "bXXaXX"))    return 6;
+    return 0;
+}
