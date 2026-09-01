@@ -99,6 +99,13 @@ int wallpaper_color_from_name(const char* name) {
 static const char* wg_labels[5] = { "Off", "BR", "BL", "TR", "TL" };
 static const int   wg_pos[5]    = {  -1,    0,    1,    2,    3  };
 
+// "Reset to defaults" button (below the Panel row): restores the seeded rice —
+// Nightfall wallpaper, Morado accent, panel on in the bottom-right — and persists it.
+#define WP_RST_OY  456
+#define WP_RST_X   16
+#define WP_RST_W   168
+#define WP_RST_H   26
+
 // Fill a disc clipped to the rect [clx,cly,clw,clh) — a tiny moon for the preview
 // swatches (bg_fill_circle lives in compositor.c and isn't visible here).
 static void wp_fill_disc_clip(int cx, int cy, int r, uint32_t c, int clx, int cly, int clw, int clh) {
@@ -323,6 +330,21 @@ void wallpaper_win_draw(window_t* win, int cx, int cy, uint32_t cw, uint32_t ch)
         font_draw_string(x + (WP_WG_BW - nlen) / 2, y + (WP_WG_BH - FONT_HEIGHT) / 2, wg_labels[i],
                          sel ? fb_rgb(255, 255, 255) : fb_rgb(200, 200, 210), fill);
     }
+
+    // --- Reset button: one click back to the seeded defaults ------------------
+    {
+        int x = cx + WP_RST_X, y = cy + WP_RST_OY;
+        fb_fill_rect(x, y, WP_RST_W, WP_RST_H, fb_rgb(58, 48, 62));
+        uint32_t fr = fb_rgb(96, 84, 104);
+        fb_fill_rect(x, y, WP_RST_W, 1, fr);
+        fb_fill_rect(x, y + WP_RST_H - 1, WP_RST_W, 1, fr);
+        fb_fill_rect(x, y, 1, WP_RST_H, fr);
+        fb_fill_rect(x + WP_RST_W - 1, y, 1, WP_RST_H, fr);
+        const char* lbl = "Reset to defaults";
+        int nlen = (int)strlen(lbl) * FONT_WIDTH;
+        font_draw_string(x + (WP_RST_W - nlen) / 2, y + (WP_RST_H - FONT_HEIGHT) / 2, lbl,
+                         fb_rgb(225, 225, 235), fb_rgb(58, 48, 62));
+    }
 }
 
 void wallpaper_win_click(window_t* win, int mx, int my, int btn) {
@@ -362,6 +384,19 @@ void wallpaper_win_click(window_t* win, int mx, int my, int btn) {
             if (wg_pos[i] < 0) g_widget_on = 0;
             else { g_widget_on = 1; g_widget_pos = wg_pos[i]; }
             save_nyx_config();                // persist; the compositor repaints on this click
+            return;
+        }
+    }
+
+    // Reset button: back to the seeded defaults (Nightfall / Morado / panel on, bottom-right).
+    {
+        int x = cx + WP_RST_X, y = cy + WP_RST_OY;
+        if (mx >= x && mx < x + WP_RST_W && my >= y && my < y + WP_RST_H) {
+            g_style = WP_STYLE_NIGHTFALL;
+            g_wallpaper = 0;                      // Morado (brand purple), index 0
+            theme_set_accent(wallpaper_base_color());
+            g_widget_on = 1; g_widget_pos = 0;    // panel on, bottom-right
+            save_nyx_config();
             return;
         }
     }
