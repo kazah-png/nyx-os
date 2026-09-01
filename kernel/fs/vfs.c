@@ -688,7 +688,9 @@ void init_vfs(void) {
         "# widget: a live CPU/RAM graph panel on the desktop (on|off)\n"
         "widget = on\n"
         "# widget_pos: which corner the panel hugs (bottom-right|bottom-left|top-right|top-left)\n"
-        "widget_pos = bottom-right\n";
+        "widget_pos = bottom-right\n"
+        "# clock: the taskbar clock face (24h|12h)\n"
+        "clock = 24h\n";
     int cfd = vfs_open("/etc/nyx.conf", 1, 0644);
     vfs_write(cfd, nyxconf, strlen(nyxconf));
     vfs_close(cfd);

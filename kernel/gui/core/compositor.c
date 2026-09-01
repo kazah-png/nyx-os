@@ -54,6 +54,7 @@ int compositor_logout_requested = 0; // set by the user menu; boot loop re-shows
 static int ctx_menu_open = 0;
 static int ctx_menu_x = 0, ctx_menu_y = 0;
 static int cal_popup_open = 0;      // the taskbar clock's calendar popup
+static int g_clock_12h = 0;         // taskbar clock: 0 = 24-hour (default), 1 = 12-hour AM/PM — nyx.conf `clock`
 static int net_popup_open = 0;      // the system tray's network-status popup
 static int spk_popup_open = 0;      // the system tray's sound/volume popup
 static int g_volume = 75;           // master volume 0..100 (persisted while running)
@@ -869,7 +870,9 @@ static void draw_taskbar(void) {
     rtc_time_t rt;
     rtc_read_time(&rt);
     char timebuf[32];
-    date_format(timebuf, sizeof(timebuf), "%a %H:%M  %d/%m", &rt);   // weekday computed by date_format (Sakamoto)
+    // 24-hour by default; nyx.conf `clock = 12h` switches to a 12-hour AM/PM face.
+    const char* clkfmt = g_clock_12h ? "%a %I:%M %p  %d/%m" : "%a %H:%M  %d/%m";
+    date_format(timebuf, sizeof(timebuf), clkfmt, &rt);   // weekday computed by date_format (Sakamoto)
     fb_fill_rect(fw - CLOCK_W - 4, tb_y + 4, CLOCK_W, TASKBAR_H - 8, fb_rgb(30,30,35));
     font_draw_string(fw - CLOCK_W - 2 + (CLOCK_W - strlen(timebuf) * FONT_WIDTH) / 2,
                      tb_y + (TASKBAR_H - FONT_HEIGHT) / 2, timebuf, fb_rgb(180,180,200), fb_rgb(30,30,35));
@@ -3688,6 +3691,9 @@ static void apply_nyx_config(void) {
         int p = widget_pos_from_name(val);          // which corner the monitor widget hugs
         if (p >= 0) g_widget_pos = p;               // unknown name -> keep the default corner
     }
+    if (nyxconf_get(buf, "clock", val, sizeof val)) {
+        g_clock_12h = (strcmp(val, "12h") == 0 || strcmp(val, "12") == 0);   // else 24-hour
+    }
 }
 
 // Write the current theme (wallpaper style + accent color + widget state) back to
@@ -3700,11 +3706,13 @@ void save_nyx_config(void) {
         "wallpaper = %s\n"
         "accent = %s\n"
         "widget = %s\n"
-        "widget_pos = %s\n",
+        "widget_pos = %s\n"
+        "clock = %s\n",
         wallpaper_style_name(wallpaper_style()),
         wallpaper_color_name(wallpaper_color()),
         g_widget_on ? "on" : "off",
-        widget_pos_name(g_widget_pos));
+        widget_pos_name(g_widget_pos),
+        g_clock_12h ? "12h" : "24h");
     if (n <= 0) return;
     int fd = vfs_open("/etc/nyx.conf", O_CREAT | O_TRUNC, 0644);
     if (fd >= 0) { vfs_write(fd, buf, (size_t)n); vfs_close(fd); }

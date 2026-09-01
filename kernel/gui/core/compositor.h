@@ -26,7 +26,7 @@
 #define TASKBAR_H          36
 #define START_W            160
 #define START_H            400
-#define CLOCK_W            140   /* wide enough for "Www HH:MM  DD/MM" (weekday + time + date) */
+#define CLOCK_W            160   /* fits "Www HH:MM  DD/MM" (24h) and the wider "Www II:MM PP  DD/MM" (12h nyx.conf clock) */
 
 enum {
     RESIZE_NONE,
