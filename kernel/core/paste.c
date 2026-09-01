@@ -51,3 +51,29 @@ void paste_run(const paste_file_t* files, int nfiles,
         emit('\n', ctx);
     }
 }
+
+// ---- known-answer self-test (`paste`) ----------------------------------------------------
+typedef struct { char* buf; uint32_t n; uint32_t cap; } paste_rec_t;
+static void paste_rec_emit(char c, void* ctx) {
+    paste_rec_t* r = (paste_rec_t*)ctx;
+    if (r->n < r->cap - 1) r->buf[r->n++] = c;
+    r->buf[r->n] = '\0';
+}
+static int paste_expect(const paste_file_t* files, int nf, const char* delims, int nd,
+                        int serial, const char* want) {
+    char out[256]; paste_rec_t r; r.buf = out; r.cap = (uint32_t)sizeof out; r.n = 0; out[0] = '\0';
+    paste_run(files, nf, delims, nd, serial, paste_rec_emit, &r);
+    return strcmp(out, want) == 0;
+}
+// Pins GNU-paste parity: parallel merge of equal files, unequal lengths (a spent file gives an
+// empty field), serial join of one file's lines, multi-char delimiter CYCLING in both modes,
+// and a final line with no trailing newline.
+int paste_selftest(void) {
+    { paste_file_t f[2] = {{"a\nb\n",4},{"1\n2\n",4}};      if (!paste_expect(f,2,"\t",1,0,"a\t1\nb\t2\n"))     return 1; }
+    { paste_file_t f[2] = {{"a\nb\nc\n",6},{"1\n",2}};      if (!paste_expect(f,2,"\t",1,0,"a\t1\nb\t\nc\t\n")) return 2; }
+    { paste_file_t f[1] = {{"a\nb\nc\n",6}};                if (!paste_expect(f,1,"\t",1,1,"a\tb\tc\n"))        return 3; }
+    { paste_file_t f[3] = {{"a\n",2},{"b\n",2},{"c\n",2}};  if (!paste_expect(f,3,"-+",2,0,"a-b+c\n"))          return 4; }
+    { paste_file_t f[2] = {{"a\nb",3},{"1\n2",3}};          if (!paste_expect(f,2,"\t",1,0,"a\t1\nb\t2\n"))     return 5; }
+    { paste_file_t f[1] = {{"w\nx\ny\nz\n",8}};             if (!paste_expect(f,1,"-+",2,1,"w-x+y-z\n"))        return 6; }
+    return 0;
+}

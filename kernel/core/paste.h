@@ -19,4 +19,7 @@ typedef struct { const char* text; uint32_t len; } paste_file_t;
 void paste_run(const paste_file_t* files, int nfiles,
                const char* delims, int ndelims, int serial,
                paste_emit_fn emit, void* ctx);
+
+// Known-answer self-test: pins GNU-paste parity (parallel/serial, empty fields, delim cycling). 0 on pass.
+int paste_selftest(void);
 #endif
