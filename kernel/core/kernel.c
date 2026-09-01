@@ -10021,6 +10021,7 @@ static void run_selftests(void) {
         {"tgfd",         tg_fdhandoff_selftest},
         {"curpick",      cursor_pick_selftest},
         {"resizecur",    cursor_resize_selftest},
+        {"snapgap",      snap_gap_selftest},
         {"nyxconf",      nyxconf_selftest},
         {"fmnav",        fileman_nav_selftest},
     };

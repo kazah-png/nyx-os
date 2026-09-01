@@ -690,7 +690,9 @@ void init_vfs(void) {
         "# widget_pos: which corner the panel hugs (bottom-right|bottom-left|top-right|top-left)\n"
         "widget_pos = bottom-right\n"
         "# clock: the taskbar clock face (24h|12h)\n"
-        "clock = 24h\n";
+        "clock = 24h\n"
+        "# gaps: px inset around + between snapped/maximized tiles (0 = classic, off)\n"
+        "gaps = 0\n";
     int cfd = vfs_open("/etc/nyx.conf", 1, 0644);
     vfs_write(cfd, nyxconf, strlen(nyxconf));
     vfs_close(cfd);

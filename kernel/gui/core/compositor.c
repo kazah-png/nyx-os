@@ -55,6 +55,7 @@ static int ctx_menu_open = 0;
 static int ctx_menu_x = 0, ctx_menu_y = 0;
 static int cal_popup_open = 0;      // the taskbar clock's calendar popup
 static int g_clock_12h = 0;         // taskbar clock: 0 = 24-hour (default), 1 = 12-hour AM/PM — nyx.conf `clock`
+static int g_gaps      = 0;         // WM gaps (px) inset around + between snapped/maximized tiles — nyx.conf `gaps` (0 = classic tiling, off)
 static int net_popup_open = 0;      // the system tray's network-status popup
 static int spk_popup_open = 0;      // the system tray's sound/volume popup
 static int g_volume = 75;           // master volume 0..100 (persisted while running)
@@ -2716,14 +2717,8 @@ static void windows_reflow(uint32_t old_fw, uint32_t old_fh) {
         // restoring one of these later still lands where the user left it.
         // (Since v5.9.7 Alt+Up maximises and Alt+Left/Right snap from the
         // keyboard, so both of these branches are now headlessly exercised.)
-        if (win->state == WSTATE_MAXIMIZED) {
-            win->x = 0; win->y = 0;
-            win->w = fb_get_width();
-            win->h = fb_get_height() - TASKBAR_H - TITLE_H;
-            continue;
-        }
-        if (win_is_snapped(win->state)) {
-            apply_snap_geom(win);
+        if (win->state == WSTATE_MAXIMIZED || win_is_snapped(win->state)) {
+            apply_snap_geom(win);   // re-derive maximize AND snap from the shared gap-aware path
             continue;
         }
 
@@ -2992,24 +2987,71 @@ static int snap_zone_for_cursor(int mx, int my, int fw, int fh) {
 
 // Outer on-screen footprint a window occupies when snapped to `zone` (WSTATE_MAXIMIZED
 // or a WSTATE_SNAP_*), on an fw x fh framebuffer with a bottom taskbar of height tb.
-// Pure geometry mirroring apply_snap_geom / window_maximize, so the drag preview and
-// the eventual drop land on exactly the same rectangle. Returns 1 and fills the out
-// params for a snap/maximize zone, 0 otherwise (leaving them untouched).
-static int snap_zone_rect(int zone, int fw, int fh, int tb,
+// Pure geometry, the ONE source of truth for every snapped/maximized rect: the drag
+// preview, the keyboard snap, the drop, the maximize, and the mode-change reflow all
+// read it, so none can drift. Returns 1 and fills the out params for a snap/maximize
+// zone, 0 otherwise (leaving them untouched).
+//
+// `g` is the WM gap: it insets the usable area by an outer margin on all four sides and
+// leaves exactly one inner gap of `g` between adjacent tiles — the classic ricing
+// "gaps". g = 0 is byte-identical to seamless tiling (halves/quarters meet, no crack),
+// so the feature is a pure opt-in with no change to the default look. The far edge takes
+// any odd pixel, so two tiles never overlap or leave a one-pixel seam.
+static int snap_zone_rect(int zone, int fw, int fh, int tb, int g,
                           int* rx, int* ry, int* rw, int* rh) {
-    int usable = fh - tb;
-    int half_w = fw / 2;
-    int half_v = usable / 2;
-    if (zone == WSTATE_MAXIMIZED) { *rx = 0; *ry = 0; *rw = fw; *rh = usable; return 1; }
+    if (g < 0) g = 0;
+    int uw = fw - 2 * g;                 // usable width  after the outer margin
+    int uh = (fh - tb) - 2 * g;          // usable height after the outer margin
+    if (uw < 1) uw = 1;
+    if (uh < 1) uh = 1;
+    if (zone == WSTATE_MAXIMIZED) { *rx = g; *ry = g; *rw = uw; *rh = uh; return 1; }
     if (!win_is_snapped(zone)) return 0;
     int left = win_snap_left(zone);
     int vz   = win_snap_vzone(zone);
-    *rx = left ? 0 : half_w;
-    *rw = left ? half_w : (fw - half_w);
-    if (vz == 1)      { *ry = 0;      *rh = half_v; }            // top quarter
-    else if (vz == 2) { *ry = half_v; *rh = usable - half_v; }   // bottom quarter
-    else              { *ry = 0;      *rh = usable; }            // full-height half
+    int lw = (uw - g) / 2;               // left tile width (one inner gap between halves)
+    if (left) { *rx = g;          *rw = lw; }
+    else      { *rx = g + lw + g; *rw = uw - g - lw; }           // right takes the remainder
+    int th = (uh - g) / 2;               // top tile height (one inner gap between quarters)
+    if (vz == 1)      { *ry = g;          *rh = th; }            // top quarter
+    else if (vz == 2) { *ry = g + th + g; *rh = uh - g - th; }   // bottom quarter
+    else              { *ry = g;          *rh = uh; }            // full-height half
     return 1;
+}
+
+// KAT: the pure snap/maximize geometry, with and without gaps. Pins that g = 0 tiles the
+// screen seamlessly (halves/quarters meet and cover to the edge) and that g > 0 insets
+// every zone by one outer margin and leaves exactly one inner gap between adjacent tiles,
+// the far edge taking the odd pixel. Guards the shared call sites from ever drifting. 0 = pass.
+int snap_gap_selftest(void) {
+    int x, y, w, h, fw = 1024, fh = 768, tb = 36, usable = fh - tb;   // usable = 732
+    // ---- g = 0: seamless tiling, identical to the pre-gap geometry ----
+    if (!snap_zone_rect(WSTATE_MAXIMIZED, fw, fh, tb, 0, &x, &y, &w, &h)) return 1;
+    if (x || y || w != fw || h != usable) return 2;
+    snap_zone_rect(WSTATE_SNAP_LEFT,  fw, fh, tb, 0, &x, &y, &w, &h);
+    if (x != 0 || y != 0 || h != usable) return 3;
+    int lw = w;
+    snap_zone_rect(WSTATE_SNAP_RIGHT, fw, fh, tb, 0, &x, &y, &w, &h);
+    if (x != lw || x + w != fw || h != usable) return 4;          // halves meet, cover to edge
+    snap_zone_rect(WSTATE_SNAP_TL, fw, fh, tb, 0, &x, &y, &w, &h);
+    int th = h;
+    snap_zone_rect(WSTATE_SNAP_BL, fw, fh, tb, 0, &x, &y, &w, &h);
+    if (y != th || y + h != usable) return 5;                     // quarters meet, cover to edge
+    // ---- g = 12: one outer margin every side, one inner gap between tiles ----
+    int g = 12;
+    snap_zone_rect(WSTATE_MAXIMIZED, fw, fh, tb, g, &x, &y, &w, &h);
+    if (x != g || y != g || w != fw - 2 * g || h != usable - 2 * g) return 6;
+    snap_zone_rect(WSTATE_SNAP_LEFT,  fw, fh, tb, g, &x, &y, &w, &h);
+    if (x != g || y != g || h != usable - 2 * g) return 7;
+    int Lx = x, Lw = w;
+    snap_zone_rect(WSTATE_SNAP_RIGHT, fw, fh, tb, g, &x, &y, &w, &h);
+    if (x != Lx + Lw + g) return 8;                               // exactly one inner gap
+    if (x + w != fw - g) return 9;                                // right ends at the margin
+    snap_zone_rect(WSTATE_SNAP_TL, fw, fh, tb, g, &x, &y, &w, &h);
+    int Ty = y, Th = h;
+    snap_zone_rect(WSTATE_SNAP_BL, fw, fh, tb, g, &x, &y, &w, &h);
+    if (y != Ty + Th + g) return 10;                             // one inner gap, vertical
+    if (y + h != (fh - tb) - g) return 11;                       // bottom ends at the margin
+    return 0;
 }
 
 // While a title-bar drag is in progress, trace a 3px accent border around the zone an
@@ -3022,7 +3064,7 @@ static void draw_snap_preview(void) {
     int fw = (int)fb_get_width(), fh = (int)fb_get_height();
     int zone = snap_zone_for_cursor(mouse_x, mouse_y, fw, fh);
     int rx, ry, rw, rh;
-    if (!snap_zone_rect(zone, fw, fh, TASKBAR_H, &rx, &ry, &rw, &rh)) return;
+    if (!snap_zone_rect(zone, fw, fh, TASKBAR_H, g_gaps, &rx, &ry, &rw, &rh)) return;
     uint32_t c = fb_rgb(150, 110, 235);
     const int T = 3;                                  // border thickness
     fb_fill_rect(rx, ry, rw, T, c);                   // top
@@ -3031,29 +3073,18 @@ static void draw_snap_preview(void) {
     fb_fill_rect(rx + rw - T, ry, T, rh, c);          // right
 }
 
-// Fill a snapped window's rect for the CURRENT framebuffer from its state's two
-// axes. Shared by window_snap (initial placement) and windows_reflow (re-derive
-// on a mode change) so the two paths cannot drift — the same reason maximize is
-// re-derived rather than scaled. The far edges take the odd pixel (right w =
-// fw - fw/2, bottom h = rest) so the two tiles on each axis meet with no
-// one-pixel gap or overlap.
+// Place `win` on the rect its state maps to — a snap zone OR maximize — for the CURRENT
+// framebuffer and the active gap (g_gaps). Every path routes through here (the keyboard
+// snap, the drag drop, the maximize, and the mode-change reflow) so no two can drift and
+// one gap value governs them all. win->h drops TITLE_H because the struct's h is the
+// content height below the title bar. A non-snapped, non-maximized window is untouched.
 static void apply_snap_geom(window_t* win) {
-    uint32_t fw = fb_get_width();
-    uint32_t half_w = fw / 2;
-    uint32_t vtotal = fb_get_height() - TASKBAR_H;   // usable height incl. title bars
-    uint32_t half_v = vtotal / 2;
-    int vz = win_snap_vzone(win->state);
-
-    if (win_snap_left(win->state)) { win->x = 0;            win->w = half_w; }
-    else                           { win->x = (int)half_w;  win->w = fw - half_w; }
-
-    if (vz == 1) {          // top quarter
-        win->y = 0;               win->h = half_v - TITLE_H;
-    } else if (vz == 2) {   // bottom quarter
-        win->y = (int)half_v;     win->h = vtotal - half_v - TITLE_H;
-    } else {                // full-height half
-        win->y = 0;               win->h = vtotal - TITLE_H;
-    }
+    int rx, ry, rw, rh;
+    if (!snap_zone_rect(win->state, (int)fb_get_width(), (int)fb_get_height(),
+                        TASKBAR_H, g_gaps, &rx, &ry, &rw, &rh)) return;
+    win->x = rx; win->y = ry;
+    win->w = (uint32_t)rw;
+    win->h = (uint32_t)(rh > (int)TITLE_H ? rh - (int)TITLE_H : 1);
 }
 
 void window_maximize(int id) {
@@ -3061,10 +3092,8 @@ void window_maximize(int id) {
     if (!win) return;
     if (win->state == WSTATE_MAXIMIZED) { window_restore(id); return; }
     save_normal_geom(win);   // no-op if coming from a snap, preserving the original
-    win->x = 0; win->y = 0;
-    win->w = fb_get_width();
-    win->h = fb_get_height() - TASKBAR_H - TITLE_H;
     win->state = WSTATE_MAXIMIZED;
+    apply_snap_geom(win);    // re-derive the rect (honoring the active gap) from ONE place
 }
 
 // Alt+Left / Alt+Right: set the horizontal side of the snap.
@@ -3660,7 +3689,7 @@ static void draw_desktop_icons(void) {
 // Rice config foundation (v6.5.23): read /etc/nyx.conf at desktop start and apply the
 // desktop settings it names. A missing file or unknown value just leaves the defaults, so
 // the desktop always comes up. Currently drives the wallpaper style + accent color; future
-// keys (font, taskbar, gaps…) hang off the same parser.
+// keys (font, taskbar…) hang off the same parser.
 static void apply_nyx_config(void) {
     theme_set_accent(fb_rgb(130, 90, 210));     // Morado default UI accent (may be overridden below)
     int fd = vfs_open("/etc/nyx.conf", 0, 0);   // O_RDONLY; -1 if absent
@@ -3694,25 +3723,33 @@ static void apply_nyx_config(void) {
     if (nyxconf_get(buf, "clock", val, sizeof val)) {
         g_clock_12h = (strcmp(val, "12h") == 0 || strcmp(val, "12") == 0);   // else 24-hour
     }
+    if (nyxconf_get(buf, "gaps", val, sizeof val)) {
+        int gp = 0;                                  // px between tiles + around the screen
+        for (const char* p = val; *p >= '0' && *p <= '9'; p++) gp = gp * 10 + (*p - '0');
+        if (gp > 64) gp = 64;                        // clamp to a sane rice range
+        g_gaps = gp;
+    }
 }
 
 // Write the current theme (wallpaper style + accent color + widget state) back to
 // /etc/nyx.conf, so a change made in the GUI (the Wallpaper theme picker) persists across
 // reboots — apply_nyx_config reads it at desktop start. The inverse of apply_nyx_config.
 void save_nyx_config(void) {
-    char buf[256];
+    char buf[320];
     int n = snprintf(buf, sizeof buf,
         "# NyxOS desktop config -- rice it here (also editable from the Wallpaper picker).\n"
         "wallpaper = %s\n"
         "accent = %s\n"
         "widget = %s\n"
         "widget_pos = %s\n"
-        "clock = %s\n",
+        "clock = %s\n"
+        "gaps = %d\n",
         wallpaper_style_name(wallpaper_style()),
         wallpaper_color_name(wallpaper_color()),
         g_widget_on ? "on" : "off",
         widget_pos_name(g_widget_pos),
-        g_clock_12h ? "12h" : "24h");
+        g_clock_12h ? "12h" : "24h",
+        g_gaps);
     if (n <= 0) return;
     int fd = vfs_open("/etc/nyx.conf", O_CREAT | O_TRUNC, 0644);
     if (fd >= 0) { vfs_write(fd, buf, (size_t)n); vfs_close(fd); }
