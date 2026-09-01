@@ -1296,6 +1296,22 @@ v0.23. The pattern is now precedent: an emitted-shape change rides in
 lockstep with ncc; a new construct follows one rung behind, and joins
 the fences only when its mirror exists.
 
+### ngen grows an argv mouth
+
+And then the ladder used the feature it had just learned. `ngen`'s
+target was a fixed path — a harness convention from the days when the
+generator was an experiment — and v0.23's own builtins retire it:
+`arg_count() > 1` promotes `arg(1)` to the target, the fixed path
+stays as the no-argument fallback (so every existing fence runs
+unchanged), and the provenance comment now names the actual input,
+verbatim, exactly as ncc names its argv. The suite's [8f] stage is
+the first fence where the generator is invoked as a tool —
+`ngen file.n` against `ncc file.n -o` on the same real path, byte
+-identical with zero normalization, the fixed-target copy gone from
+the comparison entirely. The self-host loop closes aesthetically
+here too: the generator reads its own command line through builtins
+it emits the lowering for.
+
 And the hardest lexer feature landed: **interpolation**. A toy string
 containing a brace lexes as segments — HEAD before the first hole,
 MID between holes, TAIL after the last (ncc's own
