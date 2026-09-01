@@ -146,3 +146,11 @@ sources inside their own package directory (a path-traversal guard), so the
 copy is by design. When changing the compiler, refresh it with
 `cp lang/ncc/ncc.c user/pkg/ncc/ncc.c`; the canonical source is always
 `lang/ncc/`.
+
+**The compiler also exists in N.** `lang/selfhost/gen.n` is a byte-faithful
+reimplementation of ncc's whole pipeline — lexer, parser, checker, code
+generator — written in the language itself and verified to emit exactly the
+C ncc emits, for every example and for the selfhost sources themselves,
+its own included (on the host and inside NyxOS). The full account is in
+[../docs/selfhost.md](../docs/selfhost.md). `ncc.c` remains the reference
+implementation and the one this document describes.
