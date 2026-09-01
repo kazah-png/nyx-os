@@ -3557,6 +3557,10 @@ static void draw_icon_at(int i) {
 #define WGT_MARGIN    16
 #define WGT_N        160          // history samples == graph width in px
 #define WGT_SAMPLE_MS 500u        // sample + scroll cadence
+// Animation partial-present: publish up to this many simultaneously-animating windows' rects
+// (a game + the live monitor + a GIF, or the Nyx Flex tiles) instead of a full-screen blit.
+// Beyond it — or when the combined damage covers most of the screen — a full present is cheaper.
+#define TICK_MAX_RECTS 4
 int g_widget_on = 1;              // set from /etc/nyx.conf (apply_nyx_config); default on
 int g_widget_pos = 0;             // 0=bottom-right (default) 1=bottom-left 2=top-right 3=top-left — nyx.conf `widget_pos`
 static uint8_t wgt_cpu[WGT_N], wgt_ram[WGT_N];
@@ -4484,12 +4488,16 @@ done_click:
         // dirty source turns out to be exactly one animating window, the present below publishes
         // just that window's rect (see tick_partial) instead of the whole ~3 MB screen.
         int redraw_pre_tick = redraw;
-        int tick_changed = 0, tick_win_idx = -1;
+        int tick_changed = 0, tick_idx[TICK_MAX_RECTS];
         if (now - game_tick_ms >= 33) {
             game_tick_ms = now;
             for (int gi = 0; gi < MAX_WINDOWS; gi++)
                 if (windows[gi] && windows[gi]->on_tick && windows[gi]->visible) {
-                    if (windows[gi]->on_tick(windows[gi])) { redraw = 1; tick_changed++; tick_win_idx = gi; }
+                    if (windows[gi]->on_tick(windows[gi])) {
+                        redraw = 1;
+                        if (tick_changed < TICK_MAX_RECTS) tick_idx[tick_changed] = gi;
+                        tick_changed++;   // total; only the first TICK_MAX_RECTS are recorded
+                    }
                 }
         }
 
@@ -4578,24 +4586,37 @@ done_click:
             // lever as the drag (.32) / resize (.35) paths, now covering the last frequent full
             // present. on_tick handlers animate CONTENT inside a fixed window (never move/resize
             // it), so the current footprint IS the whole damage region — no old∪new union needed.
-            int tick_partial = 0, tpx = 0, tpy = 0, tpw = 0, tph = 0;
-            if (!drag_partial && frame_dirty && redraw_pre_tick == 0 && tick_changed == 1
-                && tick_win_idx >= 0 && !drag_id && !resize_id && !taskbar_only && !widget_only
+            // Generalised from one window (.39) to up to TICK_MAX_RECTS: collect each ticked
+            // window's footprint into a rect list. The blit cost is ~linear in pixels, so N rects
+            // beat a full present as long as their COMBINED area stays well under the whole screen
+            // — guard on that (else 3-4 near-fullscreen windows would blit MORE than one full frame).
+            int tick_partial = 0, tprn = 0;
+            int tprx[TICK_MAX_RECTS], tpry[TICK_MAX_RECTS], tprw[TICK_MAX_RECTS], tprh[TICK_MAX_RECTS];
+            if (!drag_partial && frame_dirty && redraw_pre_tick == 0
+                && tick_changed >= 1 && tick_changed <= TICK_MAX_RECTS
+                && !drag_id && !resize_id && !taskbar_only && !widget_only
                 && !fb_fullscreen_active() && !wallpaper_animated()
                 && notify_active_count(now) == 0 && !toast_just_expired
                 && !start_menu_open && !ctx_menu_open && !user_menu_open) {
-                window_t* tw = windows[tick_win_idx];
-                if (tw && tw->visible && tw->state != WSTATE_MINIMIZED) {
-                    const int M = SHADOW_OFFSET + SHADOW_RADIUS + 2;
+                const int M = SHADOW_OFFSET + SHADOW_RADIUS + 2;
+                long area = 0;
+                for (int t = 0; t < tick_changed; t++) {
+                    window_t* tw = windows[tick_idx[t]];
+                    if (!tw || !tw->visible || tw->state == WSTATE_MINIMIZED) continue;
                     int x0 = tw->x - M, y0 = tw->y - M;
                     int x1 = tw->x + (int)tw->w + M, y1 = tw->y + (int)win_total_h(tw) + M;
                     if (x0 < 0) x0 = 0;
                     if (y0 < 0) y0 = 0;
                     if (x1 > (int)fw) x1 = (int)fw;
                     if (y1 > (int)fh) y1 = (int)fh;
-                    tpx = x0; tpy = y0; tpw = x1 - x0; tph = y1 - y0;
-                    if (tpw > 0 && tph > 0) tick_partial = 1;
+                    if (x1 - x0 > 0 && y1 - y0 > 0) {
+                        tprx[tprn] = x0; tpry[tprn] = y0; tprw[tprn] = x1 - x0; tprh[tprn] = y1 - y0;
+                        area += (long)(x1 - x0) * (y1 - y0);
+                        tprn++;
+                    }
                 }
+                // Only publish rects when they cover clearly less than the whole screen (85%).
+                if (tprn >= 1 && area < (long)fw * (long)fh * 85 / 100) tick_partial = 1;
             }
 
             if (drag_partial) {
@@ -4605,7 +4626,7 @@ done_click:
                     fb_present_rect(mouse_x, mouse_y, CURSOR_W, CURSOR_H);
                 }
             } else if (tick_partial) {
-                fb_present_rect(tpx, tpy, tpw, tph);
+                for (int t = 0; t < tprn; t++) fb_present_rect(tprx[t], tpry[t], tprw[t], tprh[t]);
                 if (moved) {   // the pointer may have moved this frame too — publish its rects
                     fb_present_rect(old_cx, old_cy, CURSOR_W, CURSOR_H);
                     fb_present_rect(mouse_x, mouse_y, CURSOR_W, CURSOR_H);
