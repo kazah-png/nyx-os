@@ -31,6 +31,7 @@
 #include "paste.h"
 #include "tac.h"
 #include "wc.h"
+#include "expand.h"
 #include "csv.h"
 #include "tsort.h"
 #include "base58.h"
@@ -3647,6 +3648,8 @@ static void cmd_printf(int argc, char** argv) {
 // columns apart (default 8): a tab advances to the NEXT multiple of N, so columns
 // line up (not a fixed N spaces per tab). File-arg like fold/rev (kernel builtins
 // have no stdin). Accepts both `-t N` and `-tN`.
+static void expand_putchar_emit(char c, void* ctx) { (void)ctx; putchar(c); }
+
 static void cmd_expand(int argc, char** argv) {
     int tabw = 8, ai = 1;
     if (ai < argc && argv[ai][0] == '-' && argv[ai][1] == 't') {
@@ -3664,18 +3667,7 @@ static void cmd_expand(int argc, char** argv) {
     vfs_close(fd);
     if (bytes <= 0) return;
 
-    int col = 0;
-    for (int i = 0; i < bytes; i++) {
-        char c = buf[i];
-        if (c == '\t') {
-            int next = (col / tabw + 1) * tabw;       // advance to the next tab stop
-            while (col < next) { putchar(' '); col++; }
-        } else if (c == '\n') {
-            putchar('\n'); col = 0;                   // newline resets the column
-        } else {
-            putchar(c); col++;
-        }
-    }
+    expand_run(buf, bytes, tabw, expand_putchar_emit, 0);   // shared, unit-tested (kernel/core/expand.c)
 }
 
 // Emit a run of blank columns [from, to) as the FEWEST tabs+spaces that reproduce
@@ -9989,6 +9981,7 @@ static void run_selftests(void) {
         {"uniq",         uniq_selftest},          {"tail",          tail_selftest},
         {"tac",          tac_selftest},           {"seq",           seq_selftest},
         {"paste",        paste_selftest},         {"wc",            wc_selftest},
+        {"expand",       expand_selftest},
         {"securezero",   secure_zero_selftest},
         {"chacha20",     chacha20_selftest},        {"siphash",       siphash_selftest},
         {"poly1305",     poly1305_selftest},        {"chachapoly",    chacha20poly1305_selftest},
