@@ -193,6 +193,22 @@ int64_t uwin_set_title(int id, const char* title) {
     return 0;                                           /* headless: nothing to draw */
 }
 
+/* App-initiated resize of the client area to w x h. The backing is dropped (the old-size
+ * buffer no longer matches), so uwin_present's size check now demands the NEW dimensions and
+ * the client must present a fresh w x h buffer. The bound compositor window's frame is resized
+ * the same way uwin_create maps it (client h + TITLE_H). A no-op (same size) succeeds without
+ * touching the backing. Bad id / zero / oversize -> -1. */
+int64_t uwin_resize(int id, uint32_t w, uint32_t h) {
+    user_win_t* s = uwin_slot(id);
+    if (!s) return -1;
+    if (w == 0 || h == 0 || w > USERWIN_MAX_W || h > USERWIN_MAX_H) return -1;
+    if (w == s->w && h == s->h) return 0;               /* no-op: keep the backing */
+    s->w = w; s->h = h;
+    if (s->backing) { kfree(s->backing); s->backing = 0; }  /* next present reallocs at new size */
+    if (s->win_id >= 0) window_resize(s->win_id, w, h + TITLE_H);  /* mirror uwin_create's frame mapping */
+    return 0;
+}
+
 /* ---------------------------------------------------------------------------
  * KAT — exercises the event ring, the registry (alloc / present / poll / release /
  * reuse / exhaustion) with no compositor window, entirely on kernel buffers.
@@ -263,5 +279,24 @@ int uwin_selftest(void) {
     if (uwin_set_title(pid, "retitled") != 0) return 31;         /* headless slot -> 0 */
     if (uwin_set_title(9999, "x")       != -1) return 32;        /* bad id -> -1 */
     uwin_release(ps);
+
+    /* 6. resize: client dims update and the backing is DROPPED (so the next present reallocs
+     * at the new size), a no-op resize keeps the backing, and bad dims / bad id are rejected. */
+    int rid = uwin_alloc_slot(20, 10);
+    if (rid < 0) return 33;
+    static uint32_t rbuf0[20 * 10];
+    for (int i = 0; i < 20 * 10; i++) rbuf0[i] = 0x00445566;
+    if (uwin_present(rid, rbuf0, 20, 10) != 0) return 34;        /* backing at 20x10 */
+    if (uwin_resize(rid, 32, 24) != 0) return 35;                /* grow */
+    user_win_t* rs = uwin_slot(rid);
+    if (!rs || rs->w != 32 || rs->h != 24 || rs->backing != 0) return 36;  /* dims updated, backing dropped */
+    static uint32_t rbuf1[32 * 24];
+    for (int i = 0; i < 32 * 24; i++) rbuf1[i] = 0x00778899;
+    if (uwin_present(rid, rbuf1, 32, 24) != 0) return 37;        /* present at the NEW size works */
+    if (uwin_resize(rid, 32, 24) != 0) return 38;                /* no-op resize -> 0 */
+    if (uwin_slot(rid)->backing == 0) return 39;                 /* ...and it kept the backing */
+    if (uwin_resize(rid, 0, 10) != -1) return 40;                /* zero dim rejected */
+    if (uwin_resize(9999, 8, 8) != -1) return 41;                /* bad id rejected */
+    uwin_release(uwin_slot(rid));
     return 0;
 }

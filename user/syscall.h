@@ -64,6 +64,7 @@
 #define SYS_WIN_POLL_EVENT 60
 #define SYS_WIN_PRESENT_RECT 61
 #define SYS_WIN_SET_TITLE  62
+#define SYS_WIN_RESIZE     63
 
 /* Threads (v5.8.87). CLONE_VM makes the new task SHARE this address space — a real
  * thread — instead of getting fork()'s copy-on-write duplicate. */
@@ -304,6 +305,12 @@ static inline int win_set_title(int id, const char* title) {
     unsigned int n = 0;
     if (title) while (title[n]) n++;
     return (int)syscall3(SYS_WIN_SET_TITLE, id, (long)title, (long)n);
+}
+/* win_resize(id, w, h): app-initiated resize of the client area to w x h. The old backing
+ * is dropped, so the caller must present a NEW w x h buffer afterwards. Returns 0, or -1
+ * (unknown window / zero or too-large dimensions). */
+static inline int win_resize(int id, unsigned int w, unsigned int h) {
+    return (int)syscall3(SYS_WIN_RESIZE, id, (long)w, (long)h);
 }
 
 static inline long open(const char* path, int flags, int mode) {

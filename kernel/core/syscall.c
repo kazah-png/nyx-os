@@ -1559,6 +1559,9 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
             }
             return (uint64_t)(int64_t)uwin_set_title(id, title);
         }
+        case SYS_WIN_RESIZE:
+            // win_resize(id, w, h) -> 0/-1. Scalars only, no user pointer to copy.
+            return (uint64_t)(int64_t)uwin_resize((int)a1, (uint32_t)a2, (uint32_t)a3);
         default:
             printf("[SYSCALL] Unknown syscall %lu\n", no);
             return -1;
