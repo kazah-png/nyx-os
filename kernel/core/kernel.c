@@ -32,6 +32,7 @@
 #include "tac.h"
 #include "wc.h"
 #include "expand.h"
+#include "unexpand.h"
 #include "csv.h"
 #include "tsort.h"
 #include "base58.h"
@@ -3670,19 +3671,7 @@ static void cmd_expand(int argc, char** argv) {
     expand_run(buf, bytes, tabw, expand_putchar_emit, 0);   // shared, unit-tested (kernel/core/expand.c)
 }
 
-// Emit a run of blank columns [from, to) as the FEWEST tabs+spaces that reproduce
-// it: step tab stop to tab stop, using a tab whenever it collapses >= 2 columns
-// (a single column to the next stop stays a space, since one blank must never
-// become a tab), then any leftover columns short of a stop as spaces.
-static void unexpand_flush(int from, int to, int tabw) {
-    int c = from;
-    while ((c / tabw + 1) * tabw <= to) {
-        int nt = (c / tabw + 1) * tabw;
-        if (nt - c >= 2) { putchar('\t'); c = nt; }
-        else             { putchar(' ');  c++;    }
-    }
-    while (c < to) { putchar(' '); c++; }
-}
+static void unexpand_putchar_emit(char c, void* ctx) { (void)ctx; putchar(c); }
 
 // unexpand — the inverse of expand: turn runs of spaces back into tabs. Default
 // converts only the LEADING blanks of each line (GNU behaviour); -a converts
@@ -3709,26 +3698,7 @@ static void cmd_unexpand(int argc, char** argv) {
     vfs_close(fd);
     if (bytes <= 0) return;
 
-    // col = current column; while `convert` is on, blanks are buffered as a column
-    // run [runstart, col) and only flushed (collapsed to tabs) at the next non-blank
-    // / newline / EOF. Default mode turns convert off after the first non-blank of a
-    // line (leading-only); -a keeps it on for the whole line.
-    int col = 0, run = 0, runstart = 0, convert = 1;
-    for (int i = 0; i < bytes; i++) {
-        char c = buf[i];
-        if (convert && (c == ' ' || c == '\t')) {
-            if (run == 0) runstart = col;
-            col = (c == '\t') ? (col / tabw + 1) * tabw : col + 1;
-            run = col - runstart;
-        } else {
-            if (run > 0) { unexpand_flush(runstart, col, tabw); run = 0; }
-            if (c == '\n')      { putchar('\n'); col = 0; convert = 1; }
-            else if (c == '\t') { putchar('\t'); col = (col / tabw + 1) * tabw; }
-            else if (c == ' ')  { putchar(' ');  col++; }
-            else                { putchar(c); col++; if (!all) convert = 0; }
-        }
-    }
-    if (run > 0) unexpand_flush(runstart, col, tabw);
+    unexpand_run(buf, bytes, tabw, all, unexpand_putchar_emit, 0);   // shared, unit-tested (kernel/core/unexpand.c)
 }
 
 // deflate <in> <out> — zlib-compress a file (RFC 1950). The output round-trips through NyxOS's
@@ -9981,7 +9951,7 @@ static void run_selftests(void) {
         {"uniq",         uniq_selftest},          {"tail",          tail_selftest},
         {"tac",          tac_selftest},           {"seq",           seq_selftest},
         {"paste",        paste_selftest},         {"wc",            wc_selftest},
-        {"expand",       expand_selftest},
+        {"expand",       expand_selftest},        {"unexpand",      unexpand_selftest},
         {"securezero",   secure_zero_selftest},
         {"chacha20",     chacha20_selftest},        {"siphash",       siphash_selftest},
         {"poly1305",     poly1305_selftest},        {"chachapoly",    chacha20poly1305_selftest},
