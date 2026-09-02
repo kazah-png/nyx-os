@@ -4861,26 +4861,39 @@ done_click:
         }
 
         if (redraw) {
-            // Dirty-rect FIRST SLICE (FLUIDEZ): when the SOLE dirty source this frame is exactly
-            // one animating window's on_tick (a game, video, live graph) and nothing outside it
-            // could have changed, repaint ONLY that window instead of the whole scene — the back
-            // buffer is persistent, so the wallpaper (~8.8M cyc), this window's unmoved shadow,
-            // every other window and the taskbar stay valid from the last full frame. The guard is
-            // a strict SUBSET of the tick_partial PRESENT conditions below (single window +
-            // un-occluded), so when we clip-redraw, the publish shrinks to that window's rect too.
-            window_t* solo = NULL;
-            if (redraw_pre_tick == 0 && tick_changed == 1
+            // Dirty-rect clip-redraw (FLUIDEZ): when the SOLE dirty source this frame is the on_tick
+            // of 1..TICK_MAX_RECTS animating windows (games, video, live graphs) and nothing outside
+            // them could have changed, repaint ONLY those windows instead of the whole scene — the
+            // back buffer is persistent, so the wallpaper (~8.8M cyc), their unmoved shadows, every
+            // other window and the taskbar stay valid from the last full frame. .69 did the single
+            // window; .71 generalises to the multi-window case (a game + the Nyx Monitor, Nyx Flex
+            // tiles). Each ticked window must be un-occluded (window_occluded_above) — which also
+            // means the ticked windows can't overlap EACH OTHER (an overlap puts one above the other
+            // → that one occludes it → fall back), so paint order doesn't matter. The guard is a
+            // strict SUBSET of the tick_partial PRESENT conditions below, so the publish shrinks to
+            // match; if ANY ticked window fails the guard, one full redraw_all covers everything.
+            window_t* clipwins[TICK_MAX_RECTS];
+            int nclip = 0, clip_ok = 0;
+            if (redraw_pre_tick == 0 && tick_changed >= 1 && tick_changed <= TICK_MAX_RECTS
                 && !taskbar_only && !widget_only && !drag_id && !resize_id
                 && !fb_fullscreen_active() && !wallpaper_animated()
                 && notify_active_count(now) == 0 && !toast_just_expired
                 && !start_menu_open && !ctx_menu_open && !user_menu_open) {
-                window_t* tw = windows[tick_idx[0]];
-                if (tw && tw->visible && tw->state != WSTATE_MINIMIZED
-                    && tw->workspace == current_workspace && !window_occluded_above(tw))
-                    solo = tw;
+                clip_ok = 1;
+                for (int t = 0; t < tick_changed; t++) {
+                    window_t* tw = windows[tick_idx[t]];
+                    if (!tw || !tw->visible || tw->state == WSTATE_MINIMIZED
+                        || tw->workspace != current_workspace || window_occluded_above(tw)) {
+                        clip_ok = 0; break;
+                    }
+                    clipwins[nclip++] = tw;
+                }
             }
-            if (solo) redraw_window_only(solo);
-            else      redraw_all();
+            if (clip_ok && nclip >= 1) {
+                for (int t = 0; t < nclip; t++) redraw_window_only(clipwins[t]);
+            } else {
+                redraw_all();
+            }
             redraw = 0;
         } else {
             if (taskbar_only) draw_taskbar();   // idle clock/module refresh: taskbar strip only
