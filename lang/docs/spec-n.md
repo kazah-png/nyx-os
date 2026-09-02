@@ -986,6 +986,8 @@ This section specifies what C the compiler is *required* to emit, because N's
 | `return match s { … }` | same switch shape; defers run after `__mres` is computed, then `return __mres;` |
 | `x := e?;` (§5.8) | `T x = 0;` + `{ R __t = e'; if (__t.tag == Err) { defers; return __t-or-rewrap; } x = __t.u.Ok.f; }` |
 | `for i in a..b { … }` (§5.10) | `{ nyx_i64 __fs = a'; nyx_i64 __fe = b'; for (nyx_i64 i = __fs; i < __fe; i++) { … } }` |
+| `fn main() -> i64 { … }` (§4.2, v0.23) | `nyx_i64 main(nyx_i64 __argc, nyx_u8** __argv) { __nyx_args_set(__argc, __argv); … }` — the SysV frame reaches the runtime before any user statement |
+| `arg_count()` / `arg(i)` (§6.7, v0.23) | `nyx_arg_count()` / `nyx_arg(i')` — runtime accessors over the stashed frame |
 
 ### 7.2 The runtime
 
