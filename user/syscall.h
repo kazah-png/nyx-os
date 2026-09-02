@@ -62,6 +62,7 @@
 #define SYS_WIN_DESTROY    58
 #define SYS_WIN_PRESENT    59
 #define SYS_WIN_POLL_EVENT 60
+#define SYS_WIN_PRESENT_RECT 61
 
 /* Threads (v5.8.87). CLONE_VM makes the new task SHARE this address space — a real
  * thread — instead of getting fork()'s copy-on-write duplicate. */
@@ -280,6 +281,15 @@ static inline int win_destroy(int id) {
  * w,h MUST equal the create-time size. Returns 0, or -1. Call once per frame. */
 static inline int win_present(int id, const void* buf, unsigned int w, unsigned int h) {
     return (int)syscall4(SYS_WIN_PRESENT, id, (long)buf, (long)w, (long)h);
+}
+/* win_present_rect(id, buf, x, y, w, h): blit a w*h XRGB buffer into just the (x,y)
+ * sub-rectangle of the client area — a damage-rect update, cheaper than re-sending the
+ * whole window. The rect must lie inside the client area. Returns 0, or -1. */
+static inline int win_present_rect(int id, const void* buf, unsigned int x, unsigned int y,
+                                   unsigned int w, unsigned int h) {
+    long xy = (long)(((y & 0xFFFF) << 16) | (x & 0xFFFF));
+    long wh = (long)(((h & 0xFFFF) << 16) | (w & 0xFFFF));
+    return (int)syscall4(SYS_WIN_PRESENT_RECT, id, (long)buf, xy, wh);
 }
 /* win_poll_event(id, ev): pop one input event into *ev. Returns 1 (got one),
  * 0 (queue empty), or -1 (no such window — it was closed). Non-blocking. */

@@ -156,6 +156,26 @@ int64_t uwin_present(int id, const uint32_t* px, uint32_t w, uint32_t h) {
     return 0;
 }
 
+/* Damage-rect present: copy a rw*rh XRGB buffer into the sub-rectangle at (rx,ry) of the
+ * client area, leaving the rest of the backing untouched — so a client can update just what
+ * changed instead of re-sending the whole window. The rect must lie fully inside the client
+ * area. If nothing has been presented yet the backing is allocated and cleared first. */
+int64_t uwin_present_rect(int id, const uint32_t* px, int rx, int ry, int rw, int rh) {
+    user_win_t* s = uwin_slot(id);
+    if (!s || !px || rw <= 0 || rh <= 0) return -1;
+    if (rx < 0 || ry < 0 ||
+        (uint32_t)(rx + rw) > s->w || (uint32_t)(ry + rh) > s->h) return -1;   /* out of bounds */
+    if (!s->backing) {
+        s->backing = (uint32_t*)kmalloc((size_t)s->w * s->h * 4);
+        if (!s->backing) return -1;
+        for (uint32_t i = 0; i < s->w * s->h; i++) s->backing[i] = 0;           /* start opaque black */
+    }
+    for (int row = 0; row < rh; row++)
+        for (int col = 0; col < rw; col++)
+            s->backing[(uint32_t)(ry + row) * s->w + (uint32_t)(rx + col)] = px[row * rw + col];
+    return 0;
+}
+
 int64_t uwin_poll_event(int id, uwin_event_t* out) {
     user_win_t* s = uwin_slot(id);
     if (!s || !out) return -1;
@@ -205,5 +225,27 @@ int uwin_selftest(void) {
     uwin_release(uwin_slot(ids[3]));
     if (uwin_alloc_slot(8, 8) != ids[3]) return 18;     /* freed id reused */
     for (int i = 0; i < USERWIN_MAX; i++) if (uwin_slot(i)) uwin_release(uwin_slot(i));
+
+    /* 4. partial present: a sub-rect lands exactly, neighbours are untouched, and an
+     * out-of-bounds rect / bad id is rejected. */
+    int pid = uwin_alloc_slot(16, 12);
+    if (pid < 0) return 19;
+    static uint32_t pbuf[16 * 12];
+    for (int i = 0; i < 16 * 12; i++) pbuf[i] = 0x00112233;
+    if (uwin_present(pid, pbuf, 16, 12) != 0) return 20;         /* fill backing */
+    static uint32_t r2[2 * 2];
+    for (int i = 0; i < 4; i++) r2[i] = 0x00AABBCC;
+    if (uwin_present_rect(pid, r2, 3, 4, 2, 2) != 0) return 21;  /* 2x2 at (x=3,y=4) */
+    user_win_t* ps = uwin_slot(pid);
+    if (!ps || !ps->backing) return 22;
+    if (ps->backing[4 * 16 + 3] != 0x00AABBCC) return 23;        /* (3,4) updated */
+    if (ps->backing[5 * 16 + 4] != 0x00AABBCC) return 24;        /* (4,5) updated */
+    if (ps->backing[0]          != 0x00112233) return 25;        /* corner untouched */
+    if (ps->backing[4 * 16 + 2] != 0x00112233) return 26;        /* just left of rect untouched */
+    if (uwin_present_rect(pid, r2, 15, 4, 2, 2) != -1) return 27; /* x+w=17 > 16 -> reject */
+    if (uwin_present_rect(pid, r2, 3, 11, 2, 2) != -1) return 28; /* y+h=13 > 12 -> reject */
+    if (uwin_present_rect(9999, r2, 0, 0, 2, 2) != -1) return 29; /* bad id -> reject */
+    if (ps->backing[4 * 16 + 3] != 0x00AABBCC) return 30;        /* rejects left the backing intact */
+    uwin_release(ps);
     return 0;
 }

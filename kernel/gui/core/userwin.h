@@ -14,8 +14,9 @@
  * function here takes KERNEL pointers only, which keeps the whole model unit-
  * testable without a ring-3 process (see uwin_selftest).
  *
- * v1 non-goals (per the proposal): no damage rects (present is whole client area),
- * no shared mappings (present copies), no callbacks into user code, no vsync.
+ * Damage rects arrived in v6.5.56 (uwin_present_rect — update a sub-rectangle instead of
+ * the whole client area). Still v1 non-goals: no shared mappings (present copies), no
+ * callbacks into user code, no vsync.
  */
 
 #define USERWIN_MAX      8       /* concurrent user windows */
@@ -48,6 +49,7 @@ int  uwin_evq_pop(uwin_evq_t* q, uwin_event_t* out);   /* 1 = got one, 0 = empty
 int64_t uwin_create(uint32_t w, uint32_t h, const char* title); /* id (>=0) or -1  */
 int64_t uwin_destroy(int id);                                   /* 0 (idempotent)   */
 int64_t uwin_present(int id, const uint32_t* px, uint32_t w, uint32_t h); /* 0 / -1 */
+int64_t uwin_present_rect(int id, const uint32_t* px, int rx, int ry, int rw, int rh); /* dirty-rect update; 0 / -1 */
 int64_t uwin_poll_event(int id, uwin_event_t* out);             /* 1 / 0 / -1       */
 
 int uwin_selftest(void);   /* KAT */

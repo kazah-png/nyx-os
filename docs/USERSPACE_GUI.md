@@ -63,8 +63,10 @@ internal API directly (`window_create`, `fb_*`, `font_*`), not ring-3 clients us
 Moving one means rewriting it as a standalone ELF that renders into its own buffer and presents
 it. The client ABI is also still minimal for rich apps; likely additions as real apps are ported:
 
-- **Partial present.** `uwin_present` only accepts a whole-client blit that matches the window
-  size exactly; there is no dirty-rect update, so a large window repaints fully each frame.
+- ~~**Partial present.**~~ **DONE (v6.5.56):** `win_present_rect(id, buf, x, y, w, h)`
+  (`SYS_WIN_PRESENT_RECT`, 61) updates a sub-rectangle of the client area, so a client sends only
+  what changed instead of the whole window. (The compositor still blits the whole backing on
+  redraw — a compositor-side partial-blit is a later optimization.)
 - **No resize / no title update** after `win_create`; no window-move or focus events surfaced
   to the client (only key/click/move within the client area).
 - **No shared widget toolkit** in user space yet (buttons, menus, text fields) — each ported

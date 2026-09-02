@@ -1524,6 +1524,26 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
             }
             return (uint64_t)r;
         }
+        case SYS_WIN_PRESENT_RECT: {
+            // win_present_rect(id, buf, (y<<16)|x, (h<<16)|w) -> 0/-1. Update a w×h sub-rect at
+            // (x,y) of the client area. Same bounds-check-then-copy-to-scratch discipline as
+            // SYS_WIN_PRESENT so uwin_present_rect only ever sees a kernel buffer.
+            static uint32_t* rect_scratch = 0;
+            static uint64_t rect_scratch_sz = 0;
+            int id = (int)a1;
+            uint32_t rx = (uint32_t)(a3 & 0xFFFF), ry = (uint32_t)((a3 >> 16) & 0xFFFF);
+            uint32_t rw = (uint32_t)(a4 & 0xFFFF), rh = (uint32_t)((a4 >> 16) & 0xFFFF);
+            if (rw == 0 || rh == 0 || rw > USERWIN_MAX_W || rh > USERWIN_MAX_H) return -1;
+            uint64_t bytes = (uint64_t)rw * rh * 4;     // <= 2048*2048*4, no overflow
+            if (!user_ptr_ok(a2, bytes)) return -1;
+            if (bytes > rect_scratch_sz) {
+                uint32_t* n = (uint32_t*)krealloc(rect_scratch, bytes);
+                if (!n) return -1;
+                rect_scratch = n; rect_scratch_sz = bytes;
+            }
+            if (copy_from_user(rect_scratch, a2, bytes) != 0) return -1;
+            return (uint64_t)(int64_t)uwin_present_rect(id, rect_scratch, (int)rx, (int)ry, (int)rw, (int)rh);
+        }
         default:
             printf("[SYSCALL] Unknown syscall %lu\n", no);
             return -1;

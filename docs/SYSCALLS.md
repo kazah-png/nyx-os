@@ -132,6 +132,7 @@ while waiting); the TCP receive window advertises real free space and caps the r
 | 58 | `SYS_WIN_DESTROY` | `win_destroy(id)` | close the window (idempotent — 0 even if already gone) |
 | 59 | `SYS_WIN_PRESENT` | `win_present(id, buf, w, h)` | blit a `w×h` XRGB (`0x00RRGGBB`) buffer as the whole client area |
 | 60 | `SYS_WIN_POLL_EVENT` | `win_poll_event(id, ev)` | pop one input event, non-blocking: `1` got / `0` none / −1 |
+| 61 | `SYS_WIN_PRESENT_RECT` | `win_present_rect(id, buf, x, y, w, h)` | blit a `w×h` XRGB buffer into just the `(x,y)` sub-rectangle of the client area (damage-rect update) |
 
 The framebuffer + raw-key-event trio (54–56) lets a fullscreen ring-3 program (the DOOM
 port) own the whole screen and input. The windowing quartet (57–60) is the *windowed*
