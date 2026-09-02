@@ -1,6 +1,6 @@
 # N++ — Design Document
 
-**Status:** staged into `ncc` (P1–P5 complete at bootstrap scale) · **Base language:** [N](spec-n.md) · **Compiler (planned):** `n++`
+**Status:** P1–P5 staged into `ncc` (complete at bootstrap scale); **the front-end era is open — §6 is the plan** · **Base language:** [N](spec-n.md) · **Compiler:** `nppc`
 
 N++ is to N what C++ was to C: a superset that keeps the base language intact
 and adds the abstraction and safety layer on top. The contract:
@@ -239,6 +239,10 @@ to the same C surface `ncc` targets* — same runtime, same crt0, same
 Makefile rules. This keeps one backend to maintain and means every N++
 feature is debuggable by reading the generated C.
 
+*(This sketch predates self-hosting. §6 revises the target: the
+front-end now lowers to **N source**, and the verified N pipeline —
+ncc or the selfhost toolbox — carries it the rest of the way.)*
+
 ## 4. Staged roadmap
 
 | Stage | Contents | Gate |
@@ -256,12 +260,99 @@ existing. It also immediately improves plain N (better errors from `ncc`).
 
 Recorded here so decisions are made deliberately, not by accident:
 
-1. **Generics monomorphization vs erasure** — leaning monomorphization
-   (C++-style, zero-cost, larger binaries); decide at P2 with real data.
+1. **Generics monomorphization vs erasure** — **decided (§6.2): monomorphization**
+   (C++-style, zero-cost, larger binaries; N has no runtime to erase into).
 2. **String ownership** — `str` is a view; N++ needs an owning string for
    builders. Candidate: `String` as an `own struct` over the future
    user-space allocator.
-3. **Closure representation** — fat pointer (fn ptr + env ptr) vs
-   monomorphized call sites; needed by P5 for event handlers.
+3. **Closure representation** — **decided (§6.2): explicit capture struct +
+   top-level function**, the classic lambda-lifting lowering; a fat-pointer
+   calling convention only if dynamic dispatch is ever needed.
 4. **`n++` binary name on VFS** — `n++` is a valid NyxOS filename today; if
    shell parsing ever conflicts, fallback name is `npc`.
+
+## 6. The n++ front-end era — the staged plan
+
+The bootstrap staging (§4) is finished: every P-row shipped inside `ncc`,
+and N is self-hosted with a byte-verified, installable toolchain
+(`docs/selfhost.md`). What remains of the N++ vision is exactly what a
+*separate front-end* exists for — generics, closures, modules — and this
+section is its plan, written the way `selfhost.md` was written for M5:
+shape first, then rungs, then the verification each rung must survive.
+
+### 6.1 The compiler shape — lower to N source
+
+Three shapes were on the table:
+
+1. **`nppc` lowers `.npp` to `.n` source** — the front-end handles the
+   new constructs (instantiate generics, lift closures, resolve modules)
+   and emits plain N; the existing pipeline (`ncc`, or the self-hosted
+   toolbox) carries it to C and the OS. **Chosen.**
+2. Lowering straight to C — one less hop, but it forks the backend: two
+   emitters to keep honest, and the lowered program bypasses every
+   verified stage the last months built.
+3. Growing `ncc` further — no new dialect, but generics and modules are
+   front-end-sized complexity; the single-file bootstrap stays simple
+   precisely because they live elsewhere (§1's whole argument).
+
+Shape 1 wins on the strength the project already paid for: the lowered
+`.n` is **checked by ncc's own type/ownership/capability checker** (a
+free soundness net under the new front-end — a lowering bug that
+produces ill-typed N is caught, loudly, by a compiler that is itself
+held byte-faithful by the selfhost differentials), it is readable the
+way §3 wanted the C to be readable, and every `.npp` program
+automatically exercises the verified ladder end to end. The cost — one
+more textual hop — buys the entire trust chain.
+
+### 6.2 The feature ladder
+
+**Monomorphized generics + `Result<T, E>`** (the flagship). Generic
+`fn` and `struct`/`enum` declarations are templates the front-end
+instantiates on use; each instantiation becomes a plain N item with a
+mangled name (`__g_<name>_<type>…`, stable and readable), and
+`Result<T, E>` becomes the declared-pair result enums v0.10 already
+compiles — the structural bridge is shipped, the front-end only
+automates the declaring. Duplicate instantiations dedupe by mangled
+name. No erasure: N has no runtime to erase into.
+
+**Closures** — lambda lifting. A closure literal becomes an explicit
+capture `struct` plus a top-level function taking it as its first
+parameter; the checker computes the capture set (by value; an `own`
+capture moves and the struct inherits must-consume). What today is
+written as the nwin event loop's manual dispatch becomes
+`win.on(Event.Click, fn(e) …)` sugar over exactly that lowering.
+
+**Modules / `use`** — file-level units. A module is a file; `use`
+imports its public items (`pub` marks them); resolution is a topological
+walk with cyclic imports refused; the front-end concatenates the
+instantiated, resolved program into the single `.n` unit the pipeline
+already consumes. No link-time machinery — the flat model the OS
+toolchain already trusts.
+
+### 6.3 The verification story — differentials from day one
+
+Every rung lands the way the N rungs landed: worked examples + negative
+tests in the same commit, and a differential fence in the suite from the
+first day — `nppc` lowers an `.npp` example to `.n`, then **both** `ncc`
+and the self-hosted toolbox compile it and their C must agree
+byte-for-byte (the [8d]-class guarantee extending up one layer). The
+lowered `.n` is committed beside its source where it aids review, and
+regenerated-and-compared by the suite where it does not (the [1c]
+pattern). `nppc` itself starts as hosted C99 beside `ncc.c` — one file,
+same toolchain discipline — and the self-hosting question is deferred
+until the dialect stabilizes (the N ladder showed the way; it can be
+climbed again when it is worth climbing).
+
+### 6.4 Milestones
+
+| Stage | Contents | Gate |
+|---|---|---|
+| M6.1 | This plan | ✅ this section |
+| M6.2 | `nppc` skeleton: compiles the N subset of `.npp` by delegation (lex/parse reused, passthrough lowering), the first `.npp` example + the day-one differential fence | an `.npp` file with only-N constructs lowers to byte-stable `.n` and both compilers agree on its C |
+| M6.3 | Monomorphized generics + generic `Result<T, E>` | `read_config()`-style code (§2.2) compiles via instantiation; negative tests for arity/constraint misuse |
+| M6.4 | Closures (lambda lifting, `own` captures) | an event-handler example over the nwin surface; escape/negative tests |
+| M6.5 | Modules / `use` | a two-file `.npp` program; cycle + visibility negatives |
+| M6.6 | `nppc` self-describes | an `.npp` program written in the dialect's own idioms exercises every rung at once |
+
+The rungs are sized like M5's were: one honest increment each, docs in
+the same commit, nothing claimed that a fence does not hold.
