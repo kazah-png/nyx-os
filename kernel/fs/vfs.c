@@ -699,7 +699,9 @@ void init_vfs(void) {
         "# clock: the taskbar clock face (24h|12h)\n"
         "clock = 24h\n"
         "# gaps: px inset around + between snapped/maximized tiles (0 = classic, off)\n"
-        "gaps = 0\n";
+        "gaps = 0\n"
+        "# rounding: window + start-menu corner radius in px, 0-14 (0 = square windows)\n"
+        "# rounding = 0\n";
     int cfd = vfs_open("/etc/nyx.conf", 1, 0644);
     vfs_write(cfd, nyxconf, strlen(nyxconf));
     vfs_close(cfd);

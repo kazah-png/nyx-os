@@ -252,6 +252,11 @@ static void draw_max_button(int x, int y, int size, uint32_t color) {
 
 // Corner-rounding radius for window title bars.
 #define WIN_RADIUS 7
+#define WIN_RADIUS_MAX 14                   // rice clamp for the nyx.conf `rounding` key
+// Runtime corner radius (px). Default WIN_RADIUS; the nyx.conf `rounding` key overrides it
+// (0 = fully square windows + start menu). win_radius() still shrinks it per window so a
+// minimum-size window never over-rounds. Set by apply_nyx_config().
+static int g_corner_radius = WIN_RADIUS;
 
 // Rounded-corner primitives (fb_corner_inset / fb_fill_round_rect /
 // fb_stroke_round_rect) and the integer sqrt now live in fb.c, shared with the
@@ -260,7 +265,7 @@ static void draw_max_button(int x, int y, int size, uint32_t color) {
 // The radius a given window can actually use: shrink it so a minimum-size window
 // (120x80) never rounds so hard the two corners meet.
 static int win_radius(window_t* win) {
-    int r = WIN_RADIUS;
+    int r = g_corner_radius;
     if (r > (int)win->w / 2) r = (int)win->w / 2;
     if (r > TITLE_H)         r = TITLE_H;             // rounding lives in the title bar
     return r < 0 ? 0 : r;
@@ -1104,7 +1109,7 @@ static void draw_start_menu(void) {
     uint32_t fh = fb_get_height();
     int sm_x = 2, sm_y = fh - TASKBAR_H - START_H;
 
-    int R = WIN_RADIUS;
+    int R = g_corner_radius;   // follow the nyx.conf `rounding` knob (0 = square menu top)
 
     // Rounded-top body. The bottom sits flush on the taskbar, so it stays square
     // there — the menu reads as growing out of the bar. Corner-outside pixels are
@@ -3777,6 +3782,27 @@ int border_color_selftest(void) {
     return 0;
 }
 
+// nyx.conf `rounding` — the window/menu corner radius in px, clamped to [0, WIN_RADIUS_MAX].
+// 0 = fully square windows (a classic rice choice); a leading non-digit or NULL -> 0. Pure
+// (does not set g_corner_radius) so the KAT can check the parse in isolation.
+static int rounding_resolve(const char* val) {
+    int r = 0;
+    if (val) for (const char* p = val; *p >= '0' && *p <= '9'; p++) r = r * 10 + (*p - '0');
+    if (r > WIN_RADIUS_MAX) r = WIN_RADIUS_MAX;
+    return r < 0 ? 0 : r;
+}
+
+// KAT: the `rounding` parser clamps to [0, WIN_RADIUS_MAX] and maps NULL / non-numeric to 0.
+int rounding_selftest(void) {
+    if (rounding_resolve("7")   != 7)              return 1;
+    if (rounding_resolve("0")   != 0)              return 2;   // square windows
+    if (rounding_resolve("999") != WIN_RADIUS_MAX) return 3;   // clamped
+    if (rounding_resolve(0)     != 0)              return 4;   // NULL -> 0
+    if (rounding_resolve("abc") != 0)              return 5;   // non-numeric -> 0
+    if (rounding_resolve("12")  != 12)             return 6;
+    return 0;
+}
+
 // nyx.conf `scheme` — one-word colorscheme presets. Each preset names a coordinated
 // (wallpaper style, accent color) pair, so a single keyword themes the whole desktop —
 // the "swappable colorschemes" the rice north star asks for. Returns 1 and sets *wp and
@@ -3877,6 +3903,9 @@ static void apply_nyx_config(void) {
         for (const char* p = val; *p >= '0' && *p <= '9'; p++) t = t * 10 + (*p - '0');
         if (t > 100) t = 100;
         g_panel_tint = t;
+    }
+    if (nyxconf_get(buf, "rounding", val, sizeof val)) {
+        g_corner_radius = rounding_resolve(val);      // window/menu corner radius; 0 = square
     }
 }
 
