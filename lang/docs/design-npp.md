@@ -348,7 +348,7 @@ climbed again when it is worth climbing).
 | Stage | Contents | Gate |
 |---|---|---|
 | M6.1 | This plan | ✅ this section |
-| M6.2 | `nppc` skeleton: compiles the N subset of `.npp` by delegation (lex/parse reused, passthrough lowering), the first `.npp` example + the day-one differential fence | an `.npp` file with only-N constructs lowers to byte-stable `.n` and both compilers agree on its C |
+| M6.2 | ✅ `nppc` skeleton shipped ([`../nppc/nppc.c`](../nppc/nppc.c)): the read side is ncc’s lexer whole (same tokens, escapes, interpolation stack, attributes, diagnostics — accept and refuse exactly as the N pipeline would), lowering is the identity on the N subset, [`hello.npp`](../examples/hello.npp) is the founding contract as a file, and the suite’s stage [10] is the day-one fence. The parse tree arrives with M6.3’s first real transform | ✅ hello.npp lowers byte-identically and `ncc` + the self-hosted `ngen` agree on its C |
 | M6.3 | Monomorphized generics + generic `Result<T, E>` | `read_config()`-style code (§2.2) compiles via instantiation; negative tests for arity/constraint misuse |
 | M6.4 | Closures (lambda lifting, `own` captures) | an event-handler example over the nwin surface; escape/negative tests |
 | M6.5 | Modules / `use` | a two-file `.npp` program; cycle + visibility negatives |
