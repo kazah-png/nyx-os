@@ -93,6 +93,7 @@ struct window {
     void (*on_click)(struct window* win, int mx, int my, int btn);
     void (*on_pressed)(struct window* win, int mx, int my, int btn);
     void (*on_mousemove)(struct window* win, int mx, int my, int btns);
+    void (*on_resize)(struct window* win, int w, int h);   // client area resized (fired on drag-release); w,h = new CLIENT size
     int  (*on_tick)(struct window* win);   // periodic ~30fps tick; returns 1 if it changed something needing a redraw (0 = idle, no repaint)
     void (*on_close)(struct window* win);  // optional: called by window_destroy BEFORE freeing `reserved`, so an app can release ctx sub-allocations
     void* reserved;

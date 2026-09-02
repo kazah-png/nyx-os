@@ -104,6 +104,19 @@ static void uwin_on_move(window_t* win, int mx, int my, int btns) {
         uwin_evq_push(&s->evq, UWE_MOVE, mx - WIN_CLIENT_X(win), my - WIN_CLIENT_Y(win), btns);
 }
 
+// The compositor fires this once when a USER drag-resize of this window's frame is released,
+// with the new CLIENT dimensions. Adopt them into the registry, DROP the (now wrong-size) backing
+// so the next present reallocs + uwin_present's size check demands the new size, and queue a
+// UWE_RESIZE so the client re-presents at the new size. (Mirrors uwin_resize's app-initiated path.)
+static void uwin_on_resize(window_t* win, int w, int h) {
+    user_win_t* s = (user_win_t*)win->reserved;
+    if (!s || !s->active || w <= 0 || h <= 0) return;
+    if ((uint32_t)w == s->w && (uint32_t)h == s->h) return;       // no change
+    s->w = (uint32_t)w; s->h = (uint32_t)h;
+    if (s->backing) { kfree(s->backing); s->backing = 0; }
+    uwin_evq_push(&s->evq, UWE_RESIZE, w, h, 0);
+}
+
 static void uwin_on_close_cb(window_t* win) {
     /* window_destroy calls this before freeing win. If the app initiated the
      * teardown, uwin_destroy already released the slot (no-op here); if the
@@ -129,6 +142,7 @@ int64_t uwin_create(uint32_t w, uint32_t h, const char* title) {
         win->on_key       = uwin_on_key;
         win->on_click     = uwin_on_click;
         win->on_mousemove = uwin_on_move;
+        win->on_resize    = uwin_on_resize;
         win->on_close     = uwin_on_close_cb;
         g_uwin[id].win_id = win->id;
     }
@@ -300,6 +314,19 @@ int uwin_selftest(void) {
     if (uwin_slot(rid)->backing == 0) return 39;                 /* ...and it kept the backing */
     if (uwin_resize(rid, 0, 10) != -1) return 40;                /* zero dim rejected */
     if (uwin_resize(9999, 8, 8) != -1) return 41;                /* bad id rejected */
+
+    /* 7. compositor-driven resize notify (a USER drag-resize): uwin_on_resize adopts the new
+     * client dims, drops the backing, and queues UWE_RESIZE(w,h). Staged window bound to the slot
+     * (static -> zero-initialised; only `reserved` matters to the callback). */
+    static window_t fkw;                          /* zero-init; reserved set below */
+    fkw.reserved = uwin_slot(rid);
+    uwin_on_resize(&fkw, 48, 36);
+    if (uwin_slot(rid)->w != 48 || uwin_slot(rid)->h != 36) return 42;   /* adopted new client dims */
+    if (uwin_slot(rid)->backing != 0) return 43;                          /* backing dropped */
+    uwin_event_t re;
+    if (uwin_poll_event(rid, &re) != 1 || re.kind != UWE_RESIZE || re.a != 48 || re.b != 36) return 44;
+    uwin_on_resize(&fkw, 48, 36);                                         /* same size -> no-op */
+    if (uwin_poll_event(rid, &re) != 0) return 45;                        /* ...queues nothing */
     uwin_release(uwin_slot(rid));
     return 0;
 }

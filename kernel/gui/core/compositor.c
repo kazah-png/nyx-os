@@ -4192,6 +4192,11 @@ void compositor_run(void) {
         }
 
         if (resize_id && !(btns & 1)) {
+            // Drag-resize released: notify the window of its FINAL client size (once, not per
+            // pixel) so a ring-3 client can realloc + re-present. win->w/win->h are the client
+            // dims (title bar is separate — see the .67 TITLE_H fix).
+            window_t* rw = find_window(resize_id);
+            if (rw && rw->on_resize) rw->on_resize(rw, (int)rw->w, (int)rw->h);
             resize_id = 0; redraw = 1;
         }
 
