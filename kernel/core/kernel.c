@@ -30,6 +30,7 @@
 #include "seq.h"
 #include "paste.h"
 #include "tac.h"
+#include "wc.h"
 #include "csv.h"
 #include "tsort.h"
 #include "base58.h"
@@ -5289,16 +5290,8 @@ static void cmd_wc(int argc, char** argv) {
     int bytes = vfs_read(fd, buf, sizeof(buf) - 1);
     vfs_close(fd);
     if (bytes < 0) bytes = 0;
-    int lines = 0, words = 0, chars = bytes, in_word = 0, cur_len = 0, max_len = 0;
-    for (int i = 0; i < bytes; i++) {
-        char c = buf[i];
-        if (c == '\n') { lines++; if (cur_len > max_len) max_len = cur_len; cur_len = 0; }
-        else if (c == '\t') cur_len += 8 - (cur_len % 8);   // -L: tab advances to the next tab stop (GNU)
-        else cur_len++;
-        if (c == ' ' || c == '\n' || c == '\t' || c == '\r') in_word = 0;
-        else if (!in_word) { in_word = 1; words++; }
-    }
-    if (cur_len > max_len) max_len = cur_len;               // a final line with no trailing newline
+    int lines, words, chars, max_len;
+    wc_count(buf, bytes, &lines, &words, &chars, &max_len);   // shared, unit-tested count (kernel/core/wc.c)
 
     int first = 1;
     if (want_l) { printf(first ? "%d" : " %d", lines); first = 0; }
@@ -9995,7 +9988,7 @@ static void run_selftests(void) {
         {"comm",         comm_selftest},          {"join",          join_selftest},
         {"uniq",         uniq_selftest},          {"tail",          tail_selftest},
         {"tac",          tac_selftest},           {"seq",           seq_selftest},
-        {"paste",        paste_selftest},
+        {"paste",        paste_selftest},         {"wc",            wc_selftest},
         {"securezero",   secure_zero_selftest},
         {"chacha20",     chacha20_selftest},        {"siphash",       siphash_selftest},
         {"poly1305",     poly1305_selftest},        {"chachapoly",    chacha20poly1305_selftest},
