@@ -56,6 +56,7 @@ static int cal_popup_open = 0;      // the taskbar clock's calendar popup
 static int g_clock_12h = 0;         // taskbar clock: 0 = 24-hour (default), 1 = 12-hour AM/PM — nyx.conf `clock`
 static int g_gaps      = 0;         // WM gaps (px) inset around + between snapped/maximized tiles — nyx.conf `gaps` (0 = classic tiling, off)
 static uint32_t g_border_color = 0; // focused-window outline override — nyx.conf `border` (0 = follow the UI accent)
+static int g_panel_tint = 0;        // taskbar tint toward the wallpaper colour, 0-100% — nyx.conf `panel_tint` (0 = off)
 static int net_popup_open = 0;      // the system tray's network-status popup
 static int spk_popup_open = 0;      // the system tray's sound/volume popup
 static int g_volume = 75;           // master volume 0..100 (persisted while running)
@@ -288,6 +289,37 @@ static uint32_t col_lighten(uint32_t c, int pct) {
 static uint32_t col_darken(uint32_t c, int pct) {
     int r = (c >> 16) & 0xFF, g = (c >> 8) & 0xFF, b = c & 0xFF;
     return fb_rgb(r - r * pct / 100, g - g * pct / 100, b - b * pct / 100);
+}
+// Alpha-mix two colours per channel: `a` percent of `fg` over `bg` (0 = all bg, 100 = all
+// fg). The reusable blend primitive — used now by the `panel_tint` frosted taskbar, and the
+// groundwork for future true (fb-read-back) window/panel translucency.
+static uint32_t col_blend(uint32_t fg, uint32_t bg, int a) {
+    if (a < 0) a = 0; else if (a > 100) a = 100;
+    int fr = (fg >> 16) & 0xFF, fgn = (fg >> 8) & 0xFF, fbn = fg & 0xFF;
+    int br = (bg >> 16) & 0xFF, bgn = (bg >> 8) & 0xFF, bbn = bg & 0xFF;
+    return fb_rgb((fr * a + br * (100 - a)) / 100,
+                  (fgn * a + bgn * (100 - a)) / 100,
+                  (fbn * a + bbn * (100 - a)) / 100);
+}
+
+// KAT for col_blend: endpoints (all-fg / all-bg), a half mix, a quarter mix, and the
+// identity of blending equal colours. 0 = pass.
+int col_blend_selftest(void) {
+    uint32_t red = fb_rgb(255, 0, 0), blue = fb_rgb(0, 0, 255);
+    if (col_blend(red, blue, 100) != red)  return 1;
+    if (col_blend(red, blue, 0)   != blue) return 2;
+    if (col_blend(red, blue, 50)  != fb_rgb(127, 0, 127)) return 3;
+    if (col_blend(fb_rgb(255,255,255), fb_rgb(0,0,0), 25) != fb_rgb(63, 63, 63)) return 4;
+    if (col_blend(fb_rgb(128,128,128), fb_rgb(128,128,128), 40) != fb_rgb(128,128,128)) return 5;
+    return 0;
+}
+
+// The taskbar background, tinted toward the wallpaper's colour by nyx.conf `panel_tint`
+// (0 = the plain theme colour, the default; 100 = fully the wallpaper colour) — a frosted
+// panel that picks up the desktop hue. Two known colours, so no fb read-back and no
+// per-frame drift. Every taskbar_bg draw site routes through here to stay coherent.
+static uint32_t taskbar_bg_effective(void) {
+    return g_panel_tint ? col_blend(wallpaper_base_color(), taskbar_bg, g_panel_tint) : taskbar_bg;
 }
 
 // The runtime UI accent (declared in theme.h; THEME_ACCENT/THEME_ACCENT_DIM read
@@ -734,7 +766,7 @@ static int systray_online(void) {
 #define TASKBAR_MOD_W 148   // live CPU%/RAM% status module, just left of the tray
 static void draw_systray(int x, int tb_y) {
     int cy = tb_y + TASKBAR_H / 2;
-    fb_fill_rect(x, tb_y + 4, SYSTRAY_W, TASKBAR_H - 8, col_darken(taskbar_bg, 14));  // inset panel
+    fb_fill_rect(x, tb_y + 4, SYSTRAY_W, TASKBAR_H - 8, col_darken(taskbar_bg_effective(), 14));  // inset panel
 
     // network: four ascending signal bars
     int online = systray_online();
@@ -799,8 +831,8 @@ static void draw_taskbar(void) {
 
     // Subtle top-lit gradient bar with a 1px highlight along its top edge, to sit
     // with the windows' gradient title bars rather than reading as a flat slab.
-    fb_fill_vgrad(0, tb_y, fw, TASKBAR_H, col_lighten(taskbar_bg, 12), col_darken(taskbar_bg, 10));
-    fb_fill_rect(0, tb_y, fw, 1, col_lighten(taskbar_bg, 34));
+    fb_fill_vgrad(0, tb_y, fw, TASKBAR_H, col_lighten(taskbar_bg_effective(), 12), col_darken(taskbar_bg_effective(), 10));
+    fb_fill_rect(0, tb_y, fw, 1, col_lighten(taskbar_bg_effective(), 34));
 
     // The Menu button is the brand launcher, so it always wears the accent (dimmed
     // when the menu is closed, full-strength when open) instead of blending in.
@@ -832,7 +864,7 @@ static void draw_taskbar(void) {
         else if (windows[i]->focused)
             fb_fill_vgrad(bx, tb_y + 4, bw, bh, col_lighten(taskbar_hl, 16), col_darken(taskbar_hl, 16));
         else
-            fb_fill_vgrad(bx, tb_y + 4, bw, bh, col_lighten(taskbar_bg, 10), col_darken(taskbar_bg, 10));
+            fb_fill_vgrad(bx, tb_y + 4, bw, bh, col_lighten(taskbar_bg_effective(), 10), col_darken(taskbar_bg_effective(), 10));
         if (windows[i]->title[0])
             font_draw_string_trans(bx + 4, tb_y + (TASKBAR_H - FONT_HEIGHT) / 2,
                                    windows[i]->title, fb_rgb(230, 230, 235));
@@ -3796,6 +3828,12 @@ static void apply_nyx_config(void) {
     }
     if (nyxconf_get(buf, "border", val, sizeof val)) {
         g_border_color = border_resolve(val);        // focused-window outline; 0 = follow accent
+    }
+    if (nyxconf_get(buf, "panel_tint", val, sizeof val)) {
+        int t = 0;                                   // % the taskbar tints toward the wallpaper
+        for (const char* p = val; *p >= '0' && *p <= '9'; p++) t = t * 10 + (*p - '0');
+        if (t > 100) t = 100;
+        g_panel_tint = t;
     }
 }
 

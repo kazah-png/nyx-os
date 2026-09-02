@@ -690,6 +690,8 @@ void init_vfs(void) {
         "accent = Morado\n"
         "# border: focused-window outline color (accent | any accent color name); default follows the accent\n"
         "# border = Turquesa\n"
+        "# panel_tint: how much the taskbar tints toward the wallpaper color, 0-100 (0 = off)\n"
+        "# panel_tint = 60\n"
         "# widget: a live CPU/RAM graph panel on the desktop (on|off)\n"
         "widget = on\n"
         "# widget_pos: which corner the panel hugs (bottom-right|bottom-left|top-right|top-left)\n"
