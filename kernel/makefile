@@ -86,7 +86,7 @@ USER_ELFS = $(USER_DIR)/hello.elf $(USER_DIR)/init.elf $(USER_DIR)/spin.elf $(US
             $(USER_DIR)/sh.elf $(USER_DIR)/echo.elf $(USER_DIR)/upper.elf $(USER_DIR)/cat.elf $(USER_DIR)/wc.elf $(USER_DIR)/ls.elf \
             $(USER_DIR)/grep.elf $(USER_DIR)/head.elf $(USER_DIR)/tail.elf \
             $(USER_DIR)/mkdir.elf $(USER_DIR)/rm.elf $(USER_DIR)/touch.elf $(USER_DIR)/sort.elf $(USER_DIR)/uniq.elf $(USER_DIR)/cut.elf $(USER_DIR)/tr.elf $(USER_DIR)/fold.elf $(USER_DIR)/cksum.elf $(USER_DIR)/nl.elf $(USER_DIR)/xxd.elf $(USER_DIR)/base64.elf $(USER_DIR)/base32.elf $(USER_DIR)/tac.elf $(USER_DIR)/seq.elf $(USER_DIR)/diff.elf $(USER_DIR)/comm.elf $(USER_DIR)/tee.elf $(USER_DIR)/paste.elf $(USER_DIR)/factor.elf $(USER_DIR)/expand.elf $(USER_DIR)/od.elf $(USER_DIR)/basename.elf $(USER_DIR)/dirname.elf $(USER_DIR)/unexpand.elf $(USER_DIR)/sha256sum.elf $(USER_DIR)/md5sum.elf $(USER_DIR)/rev.elf $(USER_DIR)/split.elf $(USER_DIR)/sha512sum.elf $(USER_DIR)/join.elf $(USER_DIR)/cmp.elf $(USER_DIR)/sum.elf $(USER_DIR)/column.elf $(USER_DIR)/printf.elf $(USER_DIR)/dd.elf $(USER_DIR)/find.elf $(USER_DIR)/test.elf $(USER_DIR)/true.elf $(USER_DIR)/false.elf \
-            $(USER_DIR)/ps.elf $(USER_DIR)/kill.elf $(USER_DIR)/top.elf $(USER_DIR)/edit.elf $(USER_DIR)/dltest.elf \
+             $(USER_DIR)/ps.elf $(USER_DIR)/kill.elf $(USER_DIR)/top.elf $(USER_DIR)/edit.elf $(USER_DIR)/dltest.elf $(USER_DIR)/yes.elf $(USER_DIR)/arch.elf \
             $(USER_DIR)/pmap.elf $(USER_DIR)/free.elf $(USER_DIR)/env.elf $(USER_DIR)/date.elf $(USER_DIR)/cal.elf $(USER_DIR)/sleep.elf \
             $(USER_DIR)/cp.elf $(USER_DIR)/mv.elf $(USER_DIR)/uname.elf $(USER_DIR)/whoami.elf $(USER_DIR)/which.elf $(USER_DIR)/clear.elf \
             $(USER_DIR)/fault.elf $(USER_DIR)/less.elf $(USER_DIR)/more.elf \
@@ -734,4 +734,12 @@ $(USER_DIR)/true.o: $(USER_DIR)/true.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
 $(USER_DIR)/false.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/false.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/false.o
 $(USER_DIR)/false.o: $(USER_DIR)/false.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
+	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/yes.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/yes.o
+	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/yes.o
+$(USER_DIR)/yes.o: $(USER_DIR)/yes.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
+	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
+$(USER_DIR)/arch.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/arch.o
+	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/arch.o
+$(USER_DIR)/arch.o: $(USER_DIR)/arch.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
 	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
