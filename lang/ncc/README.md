@@ -154,3 +154,9 @@ C ncc emits, for every example and for the selfhost sources themselves,
 its own included (on the host and inside NyxOS). The full account is in
 [../docs/selfhost.md](../docs/selfhost.md). `ncc.c` remains the reference
 implementation and the one this document describes.
+
+That N implementation is installable too: `xbm install ngen` builds it
+in-OS from `user/pkg/ngen/` (ncc's emitted C for `gen.n`, one
+translation unit with the runtime appended — regenerated and
+byte-verified by the suite on every change), and `ngen file.n` then
+transpiles like `ncc file.n -o` — same C, byte for byte.

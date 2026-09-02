@@ -1,0 +1,3 @@
+name: ngen
+source: ngen.c
+bin: ngen
