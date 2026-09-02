@@ -167,6 +167,11 @@ malformed inputs to prove the decoders fail safely rather than misbehaving.
 - **games/** — DOOM (the real 1993 shareware, playable), Pong, Snake, Tetris, Minesweeper,
   and the **"Nyx" render/perf demos** (see below).
 
+> The GUI currently runs **in the kernel** (ring 0). NyxOS already exposes a ring-3
+> windowing ABI (`SYS_WIN_*`, proven end-to-end by `user/wintest.c`) as the groundwork for
+> moving apps to user space; the audit + phased migration plan is in
+> [USERSPACE_GUI.md](USERSPACE_GUI.md).
+
 ### Toolchain & packages
 NyxOS carries a **TinyCC** port (`user/tcc/`) exposed in-OS as `cc`: it compiles C
 *inside* the running OS and **self-hosts** (tcc compiles tcc). **`xbm`** is the package
