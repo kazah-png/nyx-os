@@ -2013,6 +2013,46 @@ void compositor_redraw_now(void) {
     frame_dirty = 0;
 }
 
+// Dirty-rect groundwork (FLUIDEZ): is any window ABOVE `a` (higher z, so it draws
+// on top in redraw_all's sorted pass) overlapping a's footprint — INCLUDING the
+// drop-shadow margin, since a higher window's shadow can fall onto a? If so, a
+// clipped repaint of `a` alone would paint over that window, so the caller must
+// fall back to a full redraw_all. Only visible, non-minimized windows on the
+// current workspace count.
+static int window_occluded_above(window_t* a) {
+    const int M = SHADOW_OFFSET + SHADOW_RADIUS + 2;
+    int ax0 = a->x - M, ay0 = a->y - M;
+    int ax1 = a->x + (int)a->w + M, ay1 = a->y + (int)win_total_h(a) + M;
+    for (int i = 0; i < MAX_WINDOWS; i++) {
+        window_t* b = windows[i];
+        if (!b || b == a || !b->visible || b->state == WSTATE_MINIMIZED
+            || b->workspace != current_workspace || b->z_order <= a->z_order) continue;
+        int bx0 = b->x - M, by0 = b->y - M;
+        int bx1 = b->x + (int)b->w + M, by1 = b->y + (int)win_total_h(b) + M;
+        if (ax0 < bx1 && bx0 < ax1 && ay0 < by1 && by0 < ay1) return 1;   // overlap
+    }
+    return 0;
+}
+
+// Dirty-rect FIRST SLICE (FLUIDEZ): repaint just ONE window into the persistent
+// back buffer, WITHOUT touching the wallpaper, its (unmoved) drop shadow, the other
+// windows, or the taskbar — they stay valid from the last full redraw_all. This is
+// exactly redraw_all's per-window block for `win`, minus draw_window_shadow (the
+// window isn't moving, so its shadow pixels are already correct). The caller must
+// guarantee nothing else changed this frame and `win` is un-occluded (see
+// window_occluded_above) so the result is pixel-identical to a full recomposite.
+static void redraw_window_only(window_t* win) {
+    int wr = win_radius(win);
+    fb_set_round_clip(win->x, win->y, (int)win->w, (int)win_total_h(win), wr);
+    fb_fill_rect(win->x, win->y + TITLE_H, win->w, win->h, fb_rgb(35,35,40));
+    if (win->draw)
+        win->draw(win, win->x, win->y + TITLE_H, win->w, win->h);
+    fb_clear_clip();
+    draw_window_frame(win);
+    draw_titlebar(win);
+    frame_dirty = 1;      // a fresh (partial) frame is in the back buffer, awaiting present
+}
+
 // ---------------------------------------------------------------------------
 // Desktop notifications / toasts (v6.4.247). notify_push() drops a short-lived
 // purple Nyx card in the top-right corner; the compositor keeps repainting
@@ -4821,7 +4861,26 @@ done_click:
         }
 
         if (redraw) {
-            redraw_all();
+            // Dirty-rect FIRST SLICE (FLUIDEZ): when the SOLE dirty source this frame is exactly
+            // one animating window's on_tick (a game, video, live graph) and nothing outside it
+            // could have changed, repaint ONLY that window instead of the whole scene — the back
+            // buffer is persistent, so the wallpaper (~8.8M cyc), this window's unmoved shadow,
+            // every other window and the taskbar stay valid from the last full frame. The guard is
+            // a strict SUBSET of the tick_partial PRESENT conditions below (single window +
+            // un-occluded), so when we clip-redraw, the publish shrinks to that window's rect too.
+            window_t* solo = NULL;
+            if (redraw_pre_tick == 0 && tick_changed == 1
+                && !taskbar_only && !widget_only && !drag_id && !resize_id
+                && !fb_fullscreen_active() && !wallpaper_animated()
+                && notify_active_count(now) == 0 && !toast_just_expired
+                && !start_menu_open && !ctx_menu_open && !user_menu_open) {
+                window_t* tw = windows[tick_idx[0]];
+                if (tw && tw->visible && tw->state != WSTATE_MINIMIZED
+                    && tw->workspace == current_workspace && !window_occluded_above(tw))
+                    solo = tw;
+            }
+            if (solo) redraw_window_only(solo);
+            else      redraw_all();
             redraw = 0;
         } else {
             if (taskbar_only) draw_taskbar();   // idle clock/module refresh: taskbar strip only
