@@ -10014,6 +10014,7 @@ static void run_selftests(void) {
         {"scheme",       scheme_selftest},
         {"border",       border_color_selftest},
         {"colblend",     col_blend_selftest},
+        {"titleset",     title_set_selftest},
         {"nyxconf",      nyxconf_selftest},
         {"fmnav",        fileman_nav_selftest},
     };

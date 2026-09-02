@@ -51,6 +51,7 @@ int64_t uwin_destroy(int id);                                   /* 0 (idempotent
 int64_t uwin_present(int id, const uint32_t* px, uint32_t w, uint32_t h); /* 0 / -1 */
 int64_t uwin_present_rect(int id, const uint32_t* px, int rx, int ry, int rw, int rh); /* dirty-rect update; 0 / -1 */
 int64_t uwin_poll_event(int id, uwin_event_t* out);             /* 1 / 0 / -1       */
+int64_t uwin_set_title(int id, const char* title);             /* retitle the bound window; 0 / -1 */
 
 int uwin_selftest(void);   /* KAT */
 

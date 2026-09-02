@@ -100,6 +100,10 @@ struct window {
 
 void compositor_init(void);
 window_t* window_create(int x, int y, uint32_t w, uint32_t h, const char* title, window_draw_fn draw);
+// Replace a window's title-bar text after creation (a ring-3 client via SYS_WIN_SET_TITLE,
+// or an in-kernel app). Truncated to MAX_TITLE-1; redraws so the bar + taskbar refresh.
+// Returns 0, or -1 for an unknown id.
+int window_set_title(int id, const char* title);
 // Change the screen mode and re-flow icons + open windows onto it. Callers must
 // pass a mode the hardware actually supports — vbe_set_mode validates nothing.
 void display_set_mode(uint32_t w, uint32_t h);
@@ -126,6 +130,7 @@ int snap_gap_selftest(void);      // KAT: snap/maximize tiling geometry, with an
 int scheme_selftest(void);        // KAT: nyx.conf colorscheme presets resolve to real wallpaper+accent names
 int border_color_selftest(void);  // KAT: nyx.conf `border` focused-window outline color resolves to real palette rgb
 int col_blend_selftest(void);     // KAT: the col_blend alpha-mix primitive (panel_tint / future translucency)
+int title_set_selftest(void);     // KAT: window_set_title copy/truncation + bad-id reject (SYS_WIN_SET_TITLE path)
 extern int compositor_logout_requested;              // user menu "Log out" -> boot loop re-shows login
 
 #endif

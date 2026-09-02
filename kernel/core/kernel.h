@@ -18,7 +18,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.5.57"
+#define KERNEL_VERSION "6.5.58"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -27,7 +27,7 @@
 // Erebus (primordial darkness) is the terminal emulator. Used wherever these
 // components identify themselves (nyxfetch, the terminal banner).
 #define COMPOSITOR_NAME    "Hemera"
-#define COMPOSITOR_VERSION "3.17"      // Hemera: the windowing compositor (2nd-gen daedalOS-style desktop)
+#define COMPOSITOR_VERSION "3.18"      // Hemera: the windowing compositor (2nd-gen daedalOS-style desktop)
 #define TERMINAL_NAME      "Erebus"
 #define TERMINAL_VERSION   "1.3"      // Erebus: the terminal emulator
 #define SELENE_NAME        "Selene"
@@ -132,6 +132,7 @@
 #define SYS_WIN_PRESENT   59 /* win_present(id, buf, w, h) -> 0/-1 (whole XRGB client-area blit) */
 #define SYS_WIN_POLL_EVENT 60 /* win_poll_event(id, ev[4 i64]) -> 1 got / 0 empty / -1 bad id */
 #define SYS_WIN_PRESENT_RECT 61 /* win_present_rect(id, buf, (y<<16)|x, (h<<16)|w) -> blit a w*h XRGB sub-rect at (x,y) of the client area */
+#define SYS_WIN_SET_TITLE 62 /* win_set_title(id, title_ptr, title_len) -> 0/-1 (update the title-bar text after creation) */
 
 /* ------------------------------------------------------------------ */
 /*  Threads (v5.8.89) — clone(CLONE_VM) + futex                        */

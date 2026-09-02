@@ -1544,6 +1544,21 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
             if (copy_from_user(rect_scratch, a2, bytes) != 0) return -1;
             return (uint64_t)(int64_t)uwin_present_rect(id, rect_scratch, (int)rx, (int)ry, (int)rw, (int)rh);
         }
+        case SYS_WIN_SET_TITLE: {
+            // win_set_title(id, title_ptr, title_len) -> 0/-1. Copy the title at the crossing
+            // (same discipline as SYS_WIN_CREATE) so uwin_set_title only sees a kernel string.
+            int id = (int)a1;
+            char title[64];
+            title[0] = 0;
+            int tlen = (int)a3;
+            if (a2 && tlen > 0) {
+                if (tlen > (int)sizeof(title) - 1) tlen = sizeof(title) - 1;
+                if (!user_ptr_ok(a2, (uint64_t)tlen)) return -1;
+                if (copy_from_user(title, a2, (uint64_t)tlen) != 0) return -1;
+                title[tlen] = 0;
+            }
+            return (uint64_t)(int64_t)uwin_set_title(id, title);
+        }
         default:
             printf("[SYSCALL] Unknown syscall %lu\n", no);
             return -1;

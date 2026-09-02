@@ -63,6 +63,7 @@
 #define SYS_WIN_PRESENT    59
 #define SYS_WIN_POLL_EVENT 60
 #define SYS_WIN_PRESENT_RECT 61
+#define SYS_WIN_SET_TITLE  62
 
 /* Threads (v5.8.87). CLONE_VM makes the new task SHARE this address space — a real
  * thread — instead of getting fork()'s copy-on-write duplicate. */
@@ -295,6 +296,14 @@ static inline int win_present_rect(int id, const void* buf, unsigned int x, unsi
  * 0 (queue empty), or -1 (no such window — it was closed). Non-blocking. */
 static inline int win_poll_event(int id, win_event_t* ev) {
     return (int)syscall2(SYS_WIN_POLL_EVENT, id, (long)ev);
+}
+/* win_set_title(id, title): replace the window's title-bar text after creation, so a
+ * client can reflect state (the edited file, the current URL, the cwd). Truncated to
+ * the kernel's title limit. Returns 0, or -1 for an unknown/headless window. */
+static inline int win_set_title(int id, const char* title) {
+    unsigned int n = 0;
+    if (title) while (title[n]) n++;
+    return (int)syscall3(SYS_WIN_SET_TITLE, id, (long)title, (long)n);
 }
 
 static inline long open(const char* path, int flags, int mode) {

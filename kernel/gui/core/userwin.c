@@ -182,6 +182,17 @@ int64_t uwin_poll_event(int id, uwin_event_t* out) {
     return uwin_evq_pop(&s->evq, out) ? 1 : 0;
 }
 
+/* Retitle the compositor window bound to this slot, so a client can reflect state
+ * (edited file, current URL, cwd) after creation. A headless slot (no desktop, or the
+ * window table was full at create time) has no title bar: report success (0) so the
+ * client need not special-case it. A bad/dead id is -1. */
+int64_t uwin_set_title(int id, const char* title) {
+    user_win_t* s = uwin_slot(id);
+    if (!s) return -1;
+    if (s->win_id >= 0) return window_set_title(s->win_id, title);
+    return 0;                                           /* headless: nothing to draw */
+}
+
 /* ---------------------------------------------------------------------------
  * KAT — exercises the event ring, the registry (alloc / present / poll / release /
  * reuse / exhaustion) with no compositor window, entirely on kernel buffers.
@@ -246,6 +257,11 @@ int uwin_selftest(void) {
     if (uwin_present_rect(pid, r2, 3, 11, 2, 2) != -1) return 28; /* y+h=13 > 12 -> reject */
     if (uwin_present_rect(9999, r2, 0, 0, 2, 2) != -1) return 29; /* bad id -> reject */
     if (ps->backing[4 * 16 + 3] != 0x00AABBCC) return 30;        /* rejects left the backing intact */
+
+    /* 5. set_title: a headless slot (win_id == -1, no compositor window) is a no-op
+     * success so a client need not special-case the desktop-down path; a bad id is -1. */
+    if (uwin_set_title(pid, "retitled") != 0) return 31;         /* headless slot -> 0 */
+    if (uwin_set_title(9999, "x")       != -1) return 32;        /* bad id -> -1 */
     uwin_release(ps);
     return 0;
 }

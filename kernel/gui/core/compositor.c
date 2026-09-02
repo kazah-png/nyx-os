@@ -2786,6 +2786,17 @@ void display_set_mode(uint32_t w, uint32_t h) {
            fb_get_width(), fb_get_height(), window_count);
 }
 
+// Copy `title` into win->title with truncation to MAX_TITLE-1 and NUL-termination.
+// ONE definition shared by window_create and window_set_title so the two can never
+// drift on the truncation rule. No redraw — callers that want it on screen do that.
+static void window_store_title(window_t* win, const char* title) {
+    if (!title) title = "";
+    int sl = strlen(title);
+    if (sl >= MAX_TITLE) sl = MAX_TITLE - 1;
+    memcpy(win->title, title, sl);
+    win->title[sl] = '\0';
+}
+
 window_t* window_create(int x, int y, uint32_t w, uint32_t h, const char* title, window_draw_fn draw) {
     if (window_count >= MAX_WINDOWS) return NULL;
     int slot = -1;
@@ -2844,14 +2855,46 @@ window_t* window_create(int x, int y, uint32_t w, uint32_t h, const char* title,
     win->on_click = NULL;
     win->on_mousemove = NULL;
     win->reserved = NULL;
-    int sl = strlen(title);
-    if (sl >= MAX_TITLE) sl = MAX_TITLE - 1;
-    memcpy(win->title, title, sl);
-    win->title[sl] = '\0';
+    window_store_title(win, title);
     windows[slot] = win;
     window_count++;
     window_focus(win->id);
     return win;
+}
+
+// Change a window's title-bar text after creation. find_window rejects an unknown id
+// (returns -1) BEFORE any redraw, so the KAT can exercise that path headless; the
+// success path copies via the shared helper and recomposites so the title bar AND the
+// taskbar button (both read win->title) pick up the new text.
+int window_set_title(int id, const char* title) {
+    window_t* win = find_window(id);
+    if (!win) return -1;
+    window_store_title(win, title);
+    redraw_all();
+    return 0;
+}
+
+// KAT: window_set_title's copy logic (via the shared window_store_title) truncates and
+// NUL-terminates like window_create, and the id lookup rejects an unknown window. The
+// copy is checked on a throwaway window_t (no redraw); the reject path returns before any
+// recomposite, so the whole test runs headless in the idle compositor.
+int title_set_selftest(void) {
+    static window_t fake;
+    memset_asm(&fake, 0, sizeof fake);
+    int rc = 0;
+    window_store_title(&fake, "hello");
+    if (strcmp(fake.title, "hello") != 0) rc = 1;
+    else { window_store_title(&fake, 0); if (fake.title[0] != '\0') rc = 2; }   // NULL -> ""
+    if (!rc) {                                                                  // over-long truncates
+        static char longt[MAX_TITLE + 16];
+        for (int i = 0; i < MAX_TITLE + 15; i++) longt[i] = 'A';
+        longt[MAX_TITLE + 15] = '\0';
+        window_store_title(&fake, longt);
+        if ((int)strlen(fake.title) != MAX_TITLE - 1) rc = 3;
+        else if (fake.title[MAX_TITLE - 1] != '\0')   rc = 4;
+    }
+    if (!rc && window_set_title(-31337, "x") != -1) rc = 5;                     // unknown id -> -1
+    return rc;
 }
 
 static void focus_next_window(void) {
