@@ -118,9 +118,12 @@ int64_t uwin_create(uint32_t w, uint32_t h, const char* title) {
     int id = uwin_alloc_slot(w, h);
     if (id < 0) return -1;
 
-    /* Bind a compositor window: client area is w x h, the frame adds TITLE_H. */
+    /* Bind a compositor window whose CLIENT area is w x h. window_create's h param IS the
+     * client height (win_total_h adds TITLE_H for the title bar on top), so pass h directly —
+     * NOT h + TITLE_H, which made the frame one title-bar too tall and left a TITLE_H strip of
+     * bare body fill below the app's w x h backing. In-kernel windows pass the client height too. */
     int px = 80 + id * 24, py = 80 + id * 24;
-    window_t* win = window_create(px, py, w, h + TITLE_H, title ? title : "app", uwin_draw_cb);
+    window_t* win = window_create(px, py, w, h, title ? title : "app", uwin_draw_cb);
     if (win) {
         win->reserved     = &g_uwin[id];
         win->on_key       = uwin_on_key;
@@ -205,7 +208,7 @@ int64_t uwin_resize(int id, uint32_t w, uint32_t h) {
     if (w == s->w && h == s->h) return 0;               /* no-op: keep the backing */
     s->w = w; s->h = h;
     if (s->backing) { kfree(s->backing); s->backing = 0; }  /* next present reallocs at new size */
-    if (s->win_id >= 0) window_resize(s->win_id, w, h + TITLE_H);  /* mirror uwin_create's frame mapping */
+    if (s->win_id >= 0) window_resize(s->win_id, w, h);  /* client height; window_resize/win_total_h add TITLE_H */
     return 0;
 }
 
