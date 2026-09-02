@@ -3675,6 +3675,46 @@ static void draw_desktop_icons(void) {
     if (drag_icon_idx >= 0) draw_icon_at(drag_icon_idx);
 }
 
+// nyx.conf `scheme` — one-word colorscheme presets. Each preset names a coordinated
+// (wallpaper style, accent color) pair, so a single keyword themes the whole desktop —
+// the "swappable colorschemes" the rice north star asks for. Returns 1 and sets *wp and
+// *accent to the preset's wallpaper-style + accent-color NAMES (fed straight into the same
+// validated wallpaper_*_from_name lookups the wallpaper/accent keys use), or 0 for an
+// unknown name (the caller then keeps whatever the other keys set).
+static int scheme_lookup(const char* name, const char** wp, const char** accent) {
+    static const struct { const char* name; const char* wp; const char* accent; } S[] = {
+        { "nightfall", "Nightfall",  "Morado"   },   // signature default: moon + brand purple
+        { "aurora",    "Aurora",     "Turquesa" },
+        { "ember",     "Meteoros",   "Naranja"  },
+        { "nebula",    "Nebula",     "Rosa"     },
+        { "abyss",     "Astral",     "Azul"     },
+        { "forest",    "Cordillera", "Verde"    },
+        { "mono",      "Plano",      "Pizarra"  },
+    };
+    for (int i = 0; i < (int)(sizeof(S) / sizeof(S[0])); i++)
+        if (strcmp(name, S[i].name) == 0) { *wp = S[i].wp; *accent = S[i].accent; return 1; }
+    return 0;
+}
+
+// KAT: the colorscheme presets. Every preset must resolve to a REAL wallpaper style AND a
+// REAL accent color (a typo'd preset would silently no-op), two specific mappings are pinned,
+// and an unknown name must be rejected. 0 = pass.
+int scheme_selftest(void) {
+    const char *wp, *ac;
+    if (!scheme_lookup("nightfall", &wp, &ac)) return 1;
+    if (strcmp(wp, "Nightfall") || strcmp(ac, "Morado")) return 2;
+    if (!scheme_lookup("aurora", &wp, &ac)) return 3;
+    if (strcmp(wp, "Aurora") || strcmp(ac, "Turquesa")) return 4;
+    static const char* names[] = { "nightfall", "aurora", "ember", "nebula", "abyss", "forest", "mono" };
+    for (int i = 0; i < (int)(sizeof(names) / sizeof(names[0])); i++) {
+        if (!scheme_lookup(names[i], &wp, &ac)) return 5;
+        if (wallpaper_style_from_name(wp) < 0) return 6;   // a real wallpaper style
+        if (wallpaper_color_from_name(ac) < 0) return 7;   // a real accent color
+    }
+    if (scheme_lookup("bogus", &wp, &ac)) return 8;        // unknown -> rejected
+    return 0;
+}
+
 // Rice config foundation (v6.5.23): read /etc/nyx.conf at desktop start and apply the
 // desktop settings it names. A missing file or unknown value just leaves the defaults, so
 // the desktop always comes up. Currently drives the wallpaper style + accent color; future
@@ -3698,6 +3738,15 @@ static void apply_nyx_config(void) {
         if (c >= 0) {
             wallpaper_set_color(c);                 // the wallpaper base color…
             theme_set_accent(wallpaper_base_color()); // …AND the whole UI chrome, cohesively
+        }
+    }
+    if (nyxconf_get(buf, "scheme", val, sizeof val)) {
+        const char *swp, *sac;                      // a one-word preset overrides wallpaper+accent
+        if (scheme_lookup(val, &swp, &sac)) {
+            int s = wallpaper_style_from_name(swp);
+            int c = wallpaper_color_from_name(sac);
+            if (s >= 0) wallpaper_set_style(s);
+            if (c >= 0) { wallpaper_set_color(c); theme_set_accent(wallpaper_base_color()); }
         }
     }
     if (nyxconf_get(buf, "widget", val, sizeof val)) {

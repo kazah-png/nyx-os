@@ -680,6 +680,9 @@ void init_vfs(void) {
     // start (apply_nyx_config) to pick the wallpaper scene + accent color by name.
     static const char* nyxconf =
         "# NyxOS desktop config -- rice it here.\n"
+        "# scheme: one-word colorscheme preset (nightfall|aurora|ember|nebula|abyss|forest|mono);\n"
+        "#         when set it overrides the wallpaper + accent below. Uncomment to use one.\n"
+        "# scheme = aurora\n"
         "# wallpaper: Limpio Nightfall Plano Estrellas Meteoros Aurora Nebula Luces Ondas Astral Lluvia Cordillera\n"
         "wallpaper = Nightfall\n"
         "# accent tints the wallpaper AND the whole UI (title bars, taskbar, menus, pop-ups)\n"

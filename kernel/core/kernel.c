@@ -10011,6 +10011,7 @@ static void run_selftests(void) {
         {"curpick",      cursor_pick_selftest},
         {"resizecur",    cursor_resize_selftest},
         {"snapgap",      snap_gap_selftest},
+        {"scheme",       scheme_selftest},
         {"nyxconf",      nyxconf_selftest},
         {"fmnav",        fileman_nav_selftest},
     };
