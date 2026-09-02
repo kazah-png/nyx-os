@@ -58,6 +58,7 @@ static int g_gaps      = 0;         // WM gaps (px) inset around + between snapp
 static uint32_t g_border_color = 0; // focused-window outline override — nyx.conf `border` (0 = follow the UI accent)
 static int g_panel_tint = 0;        // taskbar tint toward the wallpaper colour, 0-100% — nyx.conf `panel_tint` (0 = off)
 static int g_shadows   = 1;         // window + start-menu drop shadows — nyx.conf `shadow` (off = flat, no shadows)
+static int g_title_center = 0;      // title-bar text alignment — nyx.conf `title_align` (0 = left default, 1 = center)
 static int net_popup_open = 0;      // the system tray's network-status popup
 static int spk_popup_open = 0;      // the system tray's sound/volume popup
 static int g_volume = 75;           // master volume 0..100 (persisted while running)
@@ -380,6 +381,7 @@ static void fit_title(const char* title, int avail_px, char* out, int outsz) {
     out[i] = '\0';
 }
 
+static int title_text_x(int left, int right, int textw, int center);   // fwd (defined with its KAT below)
 static void draw_titlebar(window_t* win) {
     uint32_t base = win->focused ? title_active : title_inactive;
     // A subtle top-lit vertical gradient gives the bar some dimension to sit with
@@ -414,7 +416,8 @@ static void draw_titlebar(window_t* win) {
     fit_title(win->title, leftmost_btn - 6 - text_x, tbuf, (int)sizeof(tbuf));
 
     int y_off = win->y + (TITLE_H - FONT_HEIGHT) / 2;
-    font_draw_string_trans(text_x, y_off, tbuf, THEME_TITLE_TEXT);
+    int tx = title_text_x(text_x, leftmost_btn - 6, (int)strlen(tbuf) * FONT_WIDTH, g_title_center);
+    font_draw_string_trans(tx, y_off, tbuf, THEME_TITLE_TEXT);
 
     int bx = win->x + win->w - CLOSE_W - 2;
     if (win->has_close) {
@@ -3812,6 +3815,26 @@ static int conf_is_off(const char* val) {
                    strcmp(val, "false") == 0 || strcmp(val, "no") == 0);
 }
 
+// x for the title text in the span [left, right): left-aligned, or centered when `center` and the
+// (already-fit) text is narrower than the span. Never left of `left`, never past the buttons.
+static int title_text_x(int left, int right, int textw, int center) {
+    if (!center) return left;
+    int span = right - left;
+    if (textw >= span || span <= 0) return left;
+    return left + (span - textw) / 2;
+}
+
+// KAT: the title-text x placement — left mode is width-independent; centered splits the slack,
+// clamps to `left` when the text is as wide as / wider than the span, and on a degenerate span.
+int titlebar_selftest(void) {
+    if (title_text_x(10, 200, 40, 0)  != 10)  return 1;   // left mode -> always `left`
+    if (title_text_x(10, 200, 40, 1)  != 85)  return 2;   // centered: 10 + (190-40)/2
+    if (title_text_x(10, 200, 300, 1) != 10)  return 3;   // wider than span -> clamp left
+    if (title_text_x(10, 200, 190, 1) != 10)  return 4;   // exact fit -> left
+    if (title_text_x(100, 100, 0, 1)  != 100) return 5;   // degenerate span -> left
+    return 0;
+}
+
 // KAT: conf_is_off recognises exactly off/0/false/no as disabled; everything else (incl. NULL,
 // and case variants like "Off") is enabled.
 int shadow_selftest(void) {
@@ -3933,6 +3956,9 @@ static void apply_nyx_config(void) {
     }
     if (nyxconf_get(buf, "shadow", val, sizeof val)) {
         g_shadows = !conf_is_off(val);                // window/menu drop shadows; off = flat
+    }
+    if (nyxconf_get(buf, "title_align", val, sizeof val)) {
+        g_title_center = (strcmp(val, "center") == 0);  // title-bar text: center, else left (default)
     }
 }
 

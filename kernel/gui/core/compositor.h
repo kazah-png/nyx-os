@@ -133,6 +133,7 @@ int col_blend_selftest(void);     // KAT: the col_blend alpha-mix primitive (pan
 int title_set_selftest(void);     // KAT: window_set_title copy/truncation + bad-id reject (SYS_WIN_SET_TITLE path)
 int rounding_selftest(void);      // KAT: nyx.conf `rounding` corner-radius parse + clamp (0 = square windows)
 int shadow_selftest(void);        // KAT: nyx.conf boolean-off parse (`shadow` toggle: off/0/false/no)
+int titlebar_selftest(void);      // KAT: title-bar text x placement (nyx.conf `title_align` left/center)
 extern int compositor_logout_requested;              // user menu "Log out" -> boot loop re-shows login
 
 #endif

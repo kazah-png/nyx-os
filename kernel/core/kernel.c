@@ -9973,6 +9973,7 @@ static void run_selftests(void) {
         {"titleset",     title_set_selftest},
         {"rounding",     rounding_selftest},
         {"shadow",       shadow_selftest},
+        {"titlebar",     titlebar_selftest},
         {"nyxconf",      nyxconf_selftest},
         {"fmnav",        fileman_nav_selftest},
     };

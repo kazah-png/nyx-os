@@ -703,7 +703,9 @@ void init_vfs(void) {
         "# rounding: window + start-menu corner radius in px, 0-14 (0 = square windows)\n"
         "# rounding = 0\n"
         "# shadow: window + start-menu drop shadows (on|off); off = a flat, shadowless desktop\n"
-        "# shadow = off\n";
+        "# shadow = off\n"
+        "# title_align: window title-bar text alignment (left|center); default left\n"
+        "# title_align = center\n";
     int cfd = vfs_open("/etc/nyx.conf", 1, 0644);
     vfs_write(cfd, nyxconf, strlen(nyxconf));
     vfs_close(cfd);
