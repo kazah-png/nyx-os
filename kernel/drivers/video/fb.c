@@ -211,14 +211,21 @@ void fb_present_rect(int x, int y, int w, int h) {
 void fb_present_kbuf(const uint32_t* src, uint32_t sw, uint32_t sh) {
     if (!fb_hw || fb_bpp != 32 || !src || sw == 0 || sh == 0) return;
     uint32_t* dst = (uint32_t*)fb_hw;
+    // Precompute the source column for every destination column ONCE (fb_width divides),
+    // so the inner loop is a table lookup instead of a 64-bit divide PER PIXEL
+    // (fb_width*fb_height divides — ~786K/frame at 1024x768). Big win for the fullscreen
+    // present path (DOOM and any SYS_FBPRESENT app). Sized to the widest supported mode;
+    // wider would just fall back to a per-pixel divide for the overflow columns.
+    static uint32_t xmap[2048];
+    uint32_t vw = fb_width <= 2048 ? fb_width : 2048;
+    for (uint32_t x = 0; x < vw; x++) xmap[x] = (uint32_t)((uint64_t)x * sw / fb_width);
     for (uint32_t y = 0; y < fb_height; y++) {
         uint32_t sy = (uint32_t)((uint64_t)y * sh / fb_height);
         const uint32_t* srow = src + (uint64_t)sy * sw;
         uint32_t* drow = dst + (uint64_t)y * fb_width;
-        for (uint32_t x = 0; x < fb_width; x++) {
-            uint32_t sx = (uint32_t)((uint64_t)x * sw / fb_width);
-            drow[x] = srow[sx];
-        }
+        uint32_t x = 0;
+        for (; x < vw; x++) drow[x] = srow[xmap[x]];
+        for (; x < fb_width; x++) drow[x] = srow[(uint32_t)((uint64_t)x * sw / fb_width)]; // >2048 fallback
     }
     uint32_t t = get_ticks();
     fb_fs_last = t ? t : 1;                 // nonzero => fb_fullscreen_active() sees it
