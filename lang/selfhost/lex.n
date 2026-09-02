@@ -16,8 +16,8 @@
 // Errors return kind -1 and stop the stream; differential targets are
 // valid sources, so -1 in a diff means the lexer itself is wrong.
 //
-// The target path is fixed: /tmp/n_lex_target.n — the harness copies
-// each source there before a run (N takes no argv at this scale).
+// The target: `nlex file.n` (v0.23 argv), falling back to the fixed
+// /tmp/n_lex_target.n the harness copies each source into.
 //
 // State lives in one sbrk'd word block, threaded as a single pointer:
 //   st[0] pos     st[1] line    st[2] itop (-1 = none)
@@ -380,7 +380,9 @@ fn dump_tok(p: *u8, st: *i64, k: i64) {
 
 #[caps(syscall)]
 fn main() -> i64 {
-    path := "/tmp/n_lex_target.n";
+    mut path := "/tmp/n_lex_target.n";     // the harness convention is
+    if arg_count() > 1 { path = arg(1); }  // the FALLBACK; `nlex file.n`
+                                           // names a target (v0.23 argv)
     fd := sys_open(path.ptr as *u8, 0, 0);
     if fd < 0 {
         put("(no lex target - skipped)\n");

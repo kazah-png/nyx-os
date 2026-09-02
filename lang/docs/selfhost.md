@@ -1328,6 +1328,14 @@ command: a compiler written in N, translated by the C-hosted ncc,
 compiled by TinyCC inside NyxOS, emitting byte-for-byte what ncc
 emits — available from the package manager like any other tool.
 
+And the whole toolbox followed: `nlex file.n` and `nparse file.n`
+take the same argv mouth the generator grew — two lines each in
+their mains, the fixed harness paths surviving as no-argument
+fallbacks so every existing differential runs untouched, and one
+suite row per tool holding the argv invocations byte-identical to
+`ncc --tokens` and `ncc --ast` on the same real file. Every program
+on the selfhost ladder now reads its target from the command line.
+
 And the hardest lexer feature landed: **interpolation**. A toy string
 containing a brace lexes as segments — HEAD before the first hole,
 MID between holes, TAIL after the last (ncc's own

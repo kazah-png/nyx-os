@@ -43,8 +43,8 @@
 // counts balance. Four cheap scans buy ncc's exact dump order with
 // zero stored text.
 //
-// The target path is fixed: /tmp/n_parse_target.n — the harness
-// copies each source there before a run.
+// The target: `nparse file.n` (v0.23 argv), falling back to the fixed
+// /tmp/n_parse_target.n the harness copies each source into.
 //
 // State lives in one sbrk'd word block:
 //   st[0] pos     st[1] line    st[2] itop (-1 = none)
@@ -1480,7 +1480,9 @@ fn pass_items(p: *u8, n: i64, st: *i64, which: i64, ps: *i64) {
 
 #[caps(syscall)]
 fn main() -> i64 {
-    path := "/tmp/n_parse_target.n";
+    mut path := "/tmp/n_parse_target.n";   // the harness convention is
+    if arg_count() > 1 { path = arg(1); }  // the FALLBACK; `nparse file.n`
+                                           // names a target (v0.23 argv)
     fd := sys_open(path.ptr as *u8, 0, 0);
     if fd < 0 {
         put("(no parse target - skipped)\n");
