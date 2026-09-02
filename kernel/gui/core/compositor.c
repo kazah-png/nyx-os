@@ -57,6 +57,7 @@ static int g_clock_12h = 0;         // taskbar clock: 0 = 24-hour (default), 1 =
 static int g_gaps      = 0;         // WM gaps (px) inset around + between snapped/maximized tiles — nyx.conf `gaps` (0 = classic tiling, off)
 static uint32_t g_border_color = 0; // focused-window outline override — nyx.conf `border` (0 = follow the UI accent)
 static int g_panel_tint = 0;        // taskbar tint toward the wallpaper colour, 0-100% — nyx.conf `panel_tint` (0 = off)
+static int g_shadows   = 1;         // window + start-menu drop shadows — nyx.conf `shadow` (off = flat, no shadows)
 static int net_popup_open = 0;      // the system tray's network-status popup
 static int spk_popup_open = 0;      // the system tray's sound/volume popup
 static int g_volume = 75;           // master volume 0..100 (persisted while running)
@@ -1903,6 +1904,7 @@ static void settings_draw_fn(window_t* win, int cx, int cy, uint32_t cw, uint32_
 // gradient, no compounding) and the cost is perimeter, not area — a handful of
 // thin strips per window instead of RADIUS full-window fills.
 static void draw_window_shadow(window_t* win) {
+    if (!g_shadows) return;                      // nyx.conf `shadow = off` -> flat, shadowless windows
     // A maximized window fills the usable area, so its shadow would be entirely
     // behind it or off-screen: pure wasted work. Snapped/normal windows all cast.
     if (win->state == WSTATE_MAXIMIZED) return;
@@ -1934,7 +1936,7 @@ static void draw_window_shadow(window_t* win) {
 // (already drawn), reading as growing out of it, so a shadow there would just
 // smudge the bar — the side bands stop at the taskbar top for the same reason.
 static void draw_start_menu_shadow(void) {
-    if (!start_menu_open) return;
+    if (!start_menu_open || !g_shadows) return;   // nyx.conf `shadow = off` -> no menu shadow either
     int fh = (int)fb_get_height();
     int sm_x = 2, sm_y = fh - TASKBAR_H - START_H;
     int bar_top = fh - TASKBAR_H;                 // side bands stop here, off the taskbar
@@ -3803,6 +3805,28 @@ int rounding_selftest(void) {
     return 0;
 }
 
+// nyx.conf boolean-OFF parse: any of off/0/false/no reads as "disabled"; anything else
+// (including NULL) is "enabled". Shared by toggle keys like `shadow`.
+static int conf_is_off(const char* val) {
+    return val && (strcmp(val, "off")   == 0 || strcmp(val, "0")  == 0 ||
+                   strcmp(val, "false") == 0 || strcmp(val, "no") == 0);
+}
+
+// KAT: conf_is_off recognises exactly off/0/false/no as disabled; everything else (incl. NULL,
+// and case variants like "Off") is enabled.
+int shadow_selftest(void) {
+    if (!conf_is_off("off"))   return 1;
+    if (!conf_is_off("0"))     return 2;
+    if (!conf_is_off("false")) return 3;
+    if (!conf_is_off("no"))    return 4;
+    if (conf_is_off("on"))     return 5;
+    if (conf_is_off("1"))      return 6;
+    if (conf_is_off("yes"))    return 7;
+    if (conf_is_off(0))        return 8;   // NULL -> enabled
+    if (conf_is_off("Off"))    return 9;   // case-sensitive -> enabled
+    return 0;
+}
+
 // nyx.conf `scheme` — one-word colorscheme presets. Each preset names a coordinated
 // (wallpaper style, accent color) pair, so a single keyword themes the whole desktop —
 // the "swappable colorschemes" the rice north star asks for. Returns 1 and sets *wp and
@@ -3906,6 +3930,9 @@ static void apply_nyx_config(void) {
     }
     if (nyxconf_get(buf, "rounding", val, sizeof val)) {
         g_corner_radius = rounding_resolve(val);      // window/menu corner radius; 0 = square
+    }
+    if (nyxconf_get(buf, "shadow", val, sizeof val)) {
+        g_shadows = !conf_is_off(val);                // window/menu drop shadows; off = flat
     }
 }
 

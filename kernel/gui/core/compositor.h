@@ -132,6 +132,7 @@ int border_color_selftest(void);  // KAT: nyx.conf `border` focused-window outli
 int col_blend_selftest(void);     // KAT: the col_blend alpha-mix primitive (panel_tint / future translucency)
 int title_set_selftest(void);     // KAT: window_set_title copy/truncation + bad-id reject (SYS_WIN_SET_TITLE path)
 int rounding_selftest(void);      // KAT: nyx.conf `rounding` corner-radius parse + clamp (0 = square windows)
+int shadow_selftest(void);        // KAT: nyx.conf boolean-off parse (`shadow` toggle: off/0/false/no)
 extern int compositor_logout_requested;              // user menu "Log out" -> boot loop re-shows login
 
 #endif
