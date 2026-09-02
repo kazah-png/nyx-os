@@ -595,3 +595,39 @@ what ncc emits for gen.n on the host. Self-hosting's full circle,
 closed where the language lives: the compiler that compiles the
 compiler is itself compiled inside the operating system it was
 built for, and can reproduce itself there exactly.
+
+**What a self-hosted compiler owes its language came due the same
+week.** ncc grew v0.23 — program arguments — and the ladder had to
+follow or let the byte-identity claim quietly expire. It followed
+in two matched steps that are now precedent: the changed `main`
+prologue (every program's emitted C moved) landed in gen.n in the
+SAME commit as ncc's, so every baseline shifted together and
+regenerated identically; the new `arg_count()`/`arg(i)` builtins
+followed one rung behind, as identical checker arms in check.n and
+gen.n with ncc's exact wording, and only then did `args.n` join
+every differential list. An emitted-shape change rides in
+lockstep; a new construct follows when its mirror exists.
+
+Then the ladder used the feature it had just learned. `ngen
+file.n` names its target from argv — the fixed harness path
+survives as the no-argument fallback, the provenance comment names
+the real input exactly as ncc names its own — and `nlex` and
+`nparse` grew the same two-line mouth. The suite holds all three
+as tools now: invoked with real paths against ncc on the same
+paths, byte-identical with zero normalization, because every path
+in the comparison is the true one.
+
+**And the toolbox installs.** `xbm install nlex`, `nparse`,
+`ngen`: three packages cut from one cloth — each tool's emitted C
+with the runtime appended, one translation unit, a local header, a
+three-line recipe — and none of it hand-written: the suite's [1c]
+guard regenerates every package from its N source on each run and
+byte-compares, so a package can never drift from the source it
+claims to be. Batches V56 and V57 close the story on target: a
+booted NyxOS installs all three from its package manager and runs
+them — token dump, syntax tree, generated C, the self-emission
+itself — off the installed binaries, byte-identical to the
+reference, every fence green. The ladder that began as a lexer
+held to `ncc --tokens` ends as an installable compiler toolchain,
+written in N, verified byte-for-byte, living inside the operating
+system it was built for.
