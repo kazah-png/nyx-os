@@ -33,6 +33,7 @@
 #include "wc.h"
 #include "expand.h"
 #include "unexpand.h"
+#include "fold.h"
 #include "csv.h"
 #include "tsort.h"
 #include "base58.h"
@@ -3392,6 +3393,8 @@ static void cmd_pr(int argc, char** argv) {
     pr_paginate(lines, n, per_page, pr_print_put, NULL);
 }
 
+static void fold_putchar_emit(char c, void* ctx) { (void)ctx; putchar(c); }
+
 static void cmd_fold(int argc, char** argv) {
     int width = 80, ai = 1;
     if (ai < argc && argv[ai][0] == '-' && argv[ai][1] == 'w') {
@@ -3409,14 +3412,7 @@ static void cmd_fold(int argc, char** argv) {
     vfs_close(fd);
     if (bytes <= 0) return;
 
-    int col = 0;
-    for (int i = 0; i < bytes; i++) {
-        char c = buf[i];
-        if (c == '\n') { putchar('\n'); col = 0; continue; }   // keep real line breaks
-        if (col >= width) { putchar('\n'); col = 0; }          // hard-wrap before this char
-        putchar(c);
-        col++;
-    }
+    fold_run(buf, bytes, width, fold_putchar_emit, 0);   // shared, unit-tested (kernel/core/fold.c)
 }
 
 // Greedy word-wrap reflow, the core of `fmt`. Collapses each paragraph's internal
@@ -9952,6 +9948,7 @@ static void run_selftests(void) {
         {"tac",          tac_selftest},           {"seq",           seq_selftest},
         {"paste",        paste_selftest},         {"wc",            wc_selftest},
         {"expand",       expand_selftest},        {"unexpand",      unexpand_selftest},
+        {"fold",         fold_selftest},
         {"securezero",   secure_zero_selftest},
         {"chacha20",     chacha20_selftest},        {"siphash",       siphash_selftest},
         {"poly1305",     poly1305_selftest},        {"chachapoly",    chacha20poly1305_selftest},
