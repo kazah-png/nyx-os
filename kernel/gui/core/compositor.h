@@ -124,6 +124,7 @@ int cursor_pick_selftest(void);   // KAT: pointer shape picked from the window u
 int cursor_resize_selftest(void); // KAT: resize-edge dir -> directional cursor mapping
 int snap_gap_selftest(void);      // KAT: snap/maximize tiling geometry, with and without WM gaps
 int scheme_selftest(void);        // KAT: nyx.conf colorscheme presets resolve to real wallpaper+accent names
+int border_color_selftest(void);  // KAT: nyx.conf `border` focused-window outline color resolves to real palette rgb
 extern int compositor_logout_requested;              // user menu "Log out" -> boot loop re-shows login
 
 #endif

@@ -55,6 +55,7 @@ static int ctx_menu_x = 0, ctx_menu_y = 0;
 static int cal_popup_open = 0;      // the taskbar clock's calendar popup
 static int g_clock_12h = 0;         // taskbar clock: 0 = 24-hour (default), 1 = 12-hour AM/PM — nyx.conf `clock`
 static int g_gaps      = 0;         // WM gaps (px) inset around + between snapped/maximized tiles — nyx.conf `gaps` (0 = classic tiling, off)
+static uint32_t g_border_color = 0; // focused-window outline override — nyx.conf `border` (0 = follow the UI accent)
 static int net_popup_open = 0;      // the system tray's network-status popup
 static int spk_popup_open = 0;      // the system tray's sound/volume popup
 static int g_volume = 75;           // master volume 0..100 (persisted while running)
@@ -397,8 +398,12 @@ static void draw_window_frame(window_t* win) {
     // continuous edge. Previously this bevel was identical on every window, so a
     // window buried under others gave no focus cue at all once its title bar was
     // covered.
-    uint32_t hi = win->focused ? THEME_ACCENT     : THEME_FRAME_HI;
-    uint32_t lo = win->focused ? THEME_ACCENT_DIM : THEME_FRAME_LO;
+    // Focused windows outline in the accent (or the nyx.conf `border` color if set), so
+    // the border + title strip read as one edge; unfocused windows keep the neutral bevel.
+    uint32_t acc_hi = g_border_color ? g_border_color               : THEME_ACCENT;
+    uint32_t acc_lo = g_border_color ? col_darken(g_border_color, 28) : THEME_ACCENT_DIM;
+    uint32_t hi = win->focused ? acc_hi : THEME_FRAME_HI;
+    uint32_t lo = win->focused ? acc_lo : THEME_FRAME_LO;
     int x = win->x, y = win->y, w = (int)win->w, H = (int)win_total_h(win);
     int R = win_radius(win);
 
@@ -3675,6 +3680,28 @@ static void draw_desktop_icons(void) {
     if (drag_icon_idx >= 0) draw_icon_at(drag_icon_idx);
 }
 
+// nyx.conf `border` — the focused window's outline color. Default (or "accent") follows
+// the UI accent, as the frame always has; a palette color name (Morado/Azul/Turquesa/…)
+// outlines focused windows in a distinct color — the canonical rice "focused border color".
+// Returns the rgb, or 0 meaning "follow the accent" (an unknown name falls back to that).
+static uint32_t border_resolve(const char* name) {
+    if (!name || strcmp(name, "accent") == 0) return 0;
+    int idx = wallpaper_color_from_name(name);
+    return idx >= 0 ? wallpaper_color_rgb(idx) : 0;
+}
+
+// KAT: the border-color resolver — "accent"/unknown/NULL -> 0 (follow accent), a real
+// palette name -> that exact rgb. 0 = pass.
+int border_color_selftest(void) {
+    if (border_resolve("accent") != 0) return 1;
+    if (border_resolve(0) != 0) return 2;
+    if (border_resolve("zzz") != 0) return 3;
+    if (border_resolve("Morado")   != fb_rgb(130, 90, 210)) return 4;
+    if (border_resolve("Turquesa") != fb_rgb(40, 160, 175)) return 5;
+    if (border_resolve("Carbon")   != fb_rgb(45, 50, 70))   return 6;
+    return 0;
+}
+
 // nyx.conf `scheme` — one-word colorscheme presets. Each preset names a coordinated
 // (wallpaper style, accent color) pair, so a single keyword themes the whole desktop —
 // the "swappable colorschemes" the rice north star asks for. Returns 1 and sets *wp and
@@ -3766,6 +3793,9 @@ static void apply_nyx_config(void) {
         for (const char* p = val; *p >= '0' && *p <= '9'; p++) gp = gp * 10 + (*p - '0');
         if (gp > 64) gp = 64;                        // clamp to a sane rice range
         g_gaps = gp;
+    }
+    if (nyxconf_get(buf, "border", val, sizeof val)) {
+        g_border_color = border_resolve(val);        // focused-window outline; 0 = follow accent
     }
 }
 

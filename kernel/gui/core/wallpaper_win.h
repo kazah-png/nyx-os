@@ -28,6 +28,7 @@ enum {
 };
 
 uint32_t wallpaper_base_color(void);   // current base color, for the compositor background
+uint32_t wallpaper_color_rgb(int idx); // rgb of ANY palette color by index (nyx.conf `border`)
 int      wallpaper_style(void);        // current render style (WP_STYLE_*)
 void     wallpaper_set_style(int style);            // set render style (clamped)
 void     wallpaper_set_color(int idx);              // set base-color index (clamped)

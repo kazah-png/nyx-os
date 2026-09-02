@@ -39,6 +39,13 @@ uint32_t wallpaper_base_color(void) {
     return fb_rgb(palette[g_wallpaper].r, palette[g_wallpaper].g, palette[g_wallpaper].b);
 }
 
+// rgb of ANY palette color by index (not just the selected one) — for the nyx.conf
+// `border` key, which can outline focused windows in any of the 11 accent colors.
+uint32_t wallpaper_color_rgb(int idx) {
+    if (idx < 0 || idx >= WALLPAPER_COUNT) idx = 0;
+    return fb_rgb(palette[idx].r, palette[idx].g, palette[idx].b);
+}
+
 int wallpaper_style(void) {
     return g_style;
 }

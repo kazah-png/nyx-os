@@ -10012,6 +10012,7 @@ static void run_selftests(void) {
         {"resizecur",    cursor_resize_selftest},
         {"snapgap",      snap_gap_selftest},
         {"scheme",       scheme_selftest},
+        {"border",       border_color_selftest},
         {"nyxconf",      nyxconf_selftest},
         {"fmnav",        fileman_nav_selftest},
     };
