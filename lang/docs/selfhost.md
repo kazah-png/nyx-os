@@ -1343,7 +1343,12 @@ three-line recipe), all covered by the same suite guard that
 regenerates each from its N source on every run and byte-compares.
 Token stream, syntax tree, generated C: the whole pipeline, written
 in N, verified against ncc, installable on any NyxOS from its own
-package manager.
+package manager. Batch V57 is the on-target proof: a booted NyxOS
+runs `xbm install` for all three, then `nlex /mnt/args.n`,
+`nparse /mnt/args.n` and `ngen /mnt/args.n` off the installed
+binaries — token dump, AST dump and generated C all byte-identical
+to the reference, the tool fences needing no normalization at all
+because every path in play is the real one.
 
 And the hardest lexer feature landed: **interpolation**. A toy string
 containing a brace lexes as segments — HEAD before the first hole,
