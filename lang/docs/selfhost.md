@@ -1336,6 +1336,15 @@ suite row per tool holding the argv invocations byte-identical to
 `ncc --tokens` and `ncc --ast` on the same real file. Every program
 on the selfhost ladder now reads its target from the command line.
 
+And every one of them installs: `xbm install nlex`, `nparse`, `ngen`
+— three packages cut from the same cloth (the tool's emitted C with
+the runtime appended, one translation unit each, a local header, a
+three-line recipe), all covered by the same suite guard that
+regenerates each from its N source on every run and byte-compares.
+Token stream, syntax tree, generated C: the whole pipeline, written
+in N, verified against ncc, installable on any NyxOS from its own
+package manager.
+
 And the hardest lexer feature landed: **interpolation**. A toy string
 containing a brace lexes as segments — HEAD before the first hole,
 MID between holes, TAIL after the last (ncc's own
