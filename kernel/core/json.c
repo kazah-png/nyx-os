@@ -269,3 +269,71 @@ int json_query_selftest(void) {
     }
     return 0;
 }
+
+// ---- json_format: pretty-print a VALIDATED JSON string (2-space indent) -----------------
+// Re-indents well-formed JSON — call json_validate() first, this assumes valid input and
+// does no error checking. Strings are copied verbatim (respecting \" and \\ escapes so a
+// quote inside a string never ends it); `{`/`[` open a block (an empty {}/[]] stays inline),
+// `}`/`]` close one, `,` breaks to a new line, `:` becomes ": ". Existing whitespace outside
+// strings is dropped and rebuilt. Emits char-by-char via emit(c, ctx) so the caller can print
+// to stdout or collect into a buffer; a trailing newline is emitted.
+void json_format(const char* s, int len, void (*emit)(char, void*), void* ctx) {
+    int depth = 0;
+    for (int i = 0; i < len && s[i]; i++) {
+        char c = s[i];
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\r') continue;   // drop existing ws
+        if (c == '"') {                                                  // string: copy verbatim
+            emit(c, ctx);
+            for (i++; i < len && s[i]; i++) {
+                emit(s[i], ctx);
+                if (s[i] == '\\') { if (i + 1 < len) { emit(s[i + 1], ctx); i++; } }
+                else if (s[i] == '"') break;
+            }
+            continue;
+        }
+        if (c == '{' || c == '[') {
+            char close = (c == '{') ? '}' : ']';
+            int j = i + 1;                                               // peek: empty container?
+            while (j < len && (s[j] == ' ' || s[j] == '\t' || s[j] == '\n' || s[j] == '\r')) j++;
+            if (j < len && s[j] == close) { emit(c, ctx); emit(close, ctx); i = j; continue; }
+            emit(c, ctx); emit('\n', ctx); depth++;
+            for (int k = 0; k < depth * 2; k++) emit(' ', ctx);
+            continue;
+        }
+        if (c == '}' || c == ']') {
+            emit('\n', ctx); depth--;
+            for (int k = 0; k < depth * 2; k++) emit(' ', ctx);
+            emit(c, ctx);
+            continue;
+        }
+        if (c == ',') {
+            emit(c, ctx); emit('\n', ctx);
+            for (int k = 0; k < depth * 2; k++) emit(' ', ctx);
+            continue;
+        }
+        if (c == ':') { emit(':', ctx); emit(' ', ctx); continue; }
+        emit(c, ctx);                                                    // scalar char
+    }
+    emit('\n', ctx);
+}
+
+// KAT: json_format on a minified doc (nested array/object, empty {}/[], a string with an
+// escaped quote) -> the exact 2-space-indented text. 0 = pass, else the failing case.
+typedef struct { char* buf; int n; int cap; } jfmt_sink;
+static void jfmt_collect(char c, void* ctx) {
+    jfmt_sink* k = (jfmt_sink*)ctx;
+    if (k->n < k->cap - 1) k->buf[k->n++] = c;
+}
+int json_fmt_selftest(void) {
+    static const char* IN   = "{\"a\":1,\"b\":[2,3],\"c\":{},\"d\":[],\"e\":\"x\\\"y\"}";
+    static const char* WANT =
+        "{\n  \"a\": 1,\n  \"b\": [\n    2,\n    3\n  ],\n  \"c\": {},\n  \"d\": [],\n  \"e\": \"x\\\"y\"\n}\n";
+    char out[128]; jfmt_sink k; k.buf = out; k.n = 0; k.cap = (int)sizeof(out);
+    int inlen = 0; while (IN[inlen]) inlen++;
+    json_format(IN, inlen, jfmt_collect, &k);
+    out[k.n] = '\0';
+    int wl = 0; while (WANT[wl]) wl++;
+    if (k.n != wl) return 1;
+    for (int i = 0; i < wl; i++) if (out[i] != WANT[i]) return 2;
+    return 0;
+}

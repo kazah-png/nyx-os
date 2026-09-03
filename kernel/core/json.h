@@ -23,4 +23,9 @@ enum { JQ_OK = 0, JQ_ENOTFOUND = -1, JQ_ETYPE = -2, JQ_EPATH = -3, JQ_EMALFORMED
 // on a non-array), JQ_EPATH (malformed selector), JQ_EMALFORMED (input wasn't valid JSON).
 int json_query(const char* s, const char* path, int* out_start, int* out_len);
 int json_query_selftest(void);   // KAT: fixed doc + path->span and path->error vectors
+
+// Pretty-print a VALIDATED JSON string with 2-space indentation, emitting char-by-char via
+// emit(c, ctx). Assumes `s` (length `len`) already passed json_validate. Used by `json fmt`.
+void json_format(const char* s, int len, void (*emit)(char, void*), void* ctx);
+int json_fmt_selftest(void);     // KAT: minified doc -> exact indented text (escapes, empty {}/[])
 #endif

@@ -514,7 +514,7 @@ static const command_t commands[] = {
     {"ipcalc",    cmd_ipcalc,    "IPv4 subnet calc: ipcalc <ip>/<prefix> | <ip> <mask>", false},
     {"calc",      cmd_calc,      "Evaluate an integer expression: calc <expr>", false},
     {"expr",      cmd_expr,      "Evaluate an expression: expr length|substr|index ... | expr <arithmetic>", false},
-    {"json",      cmd_json,      "Validate / query JSON: json <file> | json get <file> <path>", false},
+    {"json",      cmd_json,      "Validate / format / query JSON: json <file> | json fmt <file> | json get <file> <path>", false},
     {"wc",        cmd_wc,        "Count lines/words/chars/longest-line: wc [-lwcL] <file>", false},
     {"write",     cmd_write,     "Write text to file: write <file> <text>", false},
     {"dhcp",      cmd_dhcp,      "Request IP via DHCP", false},
@@ -4036,14 +4036,18 @@ static void cmd_expr(int argc, char** argv) {
 // json <file>            — validate a JSON document (RFC 8259) read from the VFS (core/json.c).
 // json get <file> <path> — extract the value at a jq-lite path, e.g. json get cfg.json .a[0].b
 static char json_buf[65536];   // off the 4 KB kernel stack: JSON documents can be large
+static void json_fmt_putc(char c, void* ctx) { (void)ctx; putchar(c); }
+
 static void cmd_json(int argc, char** argv) {
     int getmode = (argc >= 2 && strcmp(argv[1], "get") == 0);
-    if (getmode ? (argc < 4) : (argc < 2)) {
+    int fmtmode = (argc >= 2 && strcmp(argv[1], "fmt") == 0);
+    if (getmode ? (argc < 4) : (fmtmode ? (argc < 3) : (argc < 2))) {
         printf("Usage: json <file>            (validate, RFC 8259)\n");
+        printf("       json fmt <file>        (pretty-print with 2-space indent)\n");
         printf("       json get <file> <path> (extract value, e.g. .users[0].name)\n");
         return;
     }
-    const char* file = getmode ? argv[2] : argv[1];
+    const char* file = (getmode || fmtmode) ? argv[2] : argv[1];
     int fd = vfs_open(file, 0, 0);
     if (fd < 0) { printf("json: cannot open '%s'\n", file); return; }
     int bytes = vfs_read(fd, json_buf, sizeof(json_buf) - 1);
@@ -4055,6 +4059,7 @@ static void cmd_json(int argc, char** argv) {
         printf("%s: invalid JSON at byte %d\n", file, errpos);
         return;
     }
+    if (fmtmode) { json_format(json_buf, bytes, json_fmt_putc, (void*)0); return; }
     if (!getmode) { printf("%s: valid JSON\n", file); return; }
     int st, ln;
     int r = json_query(json_buf, argv[3], &st, &ln);
@@ -9891,6 +9896,7 @@ static void run_selftests(void) {
         {"calc",         calc_selftest},
         {"json",         json_selftest},
         {"json-query",   json_query_selftest},
+        {"json-fmt",     json_fmt_selftest},
         {"pkg-hash",     pkg_hash_selftest},
         {"ppm",          ppm_selftest},
         {"png-encode",   png_encode_selftest},
