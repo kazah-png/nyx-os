@@ -272,19 +272,90 @@ void fb_set_round_clip(int x, int y, int w, int h, int r) {
 }
 void fb_clear_clip(void) { clip_on = 0; }
 
-// Allowed horizontal span [*lo, *hi) for row `py` under the active clip: empty if
-// the row is outside it, narrowed by the arc inset within clip_r of the bottom.
-static void clip_span(int py, int* lo, int* hi) {
-    if (py < clip_y0 || py > clip_y1) { *lo = *hi = 0; return; }
-    int l = clip_x0, r = clip_x1 + 1;               // [l, r)
-    int from_bottom = clip_y1 - py;
-    if (from_bottom < clip_r) {
-        int inset = fb_corner_inset(from_bottom, clip_r);   // fb.c, declared in kernel.h
-        l += inset; r -= inset;
+// A SECOND, "outer" rectangular clip that INTERSECTS the round clip above — the
+// groundwork for dirty-rect region redraws (repaint the desktop composited but
+// bounded to a damage rect). It composes with the per-window round clip rather
+// than replacing it: set the region once, then the normal draw sequence (which
+// sets/clears its own round clip per window) also stays inside the region. Only
+// the primitives that honour clip_span (fb_fill_rect, fb_blit) respect it so far;
+// extending the rest (fonts/darken/round-rect) is a later slice. NOT yet wired to
+// any redraw path — v6.5.75 adds the mechanism + KAT in isolation.
+static int region_on = 0;
+static int region_x0, region_y0, region_x1, region_y1;
+
+void fb_set_region_clip(int x, int y, int w, int h) {
+    region_on = 1;
+    region_x0 = x; region_y0 = y;
+    region_x1 = x + w - 1; region_y1 = y + h - 1;
+}
+void fb_clear_region_clip(void) { region_on = 0; }
+
+// Pure span math (no globals) so it can be unit-tested: the allowed horizontal
+// span [*lo,*hi) for row `py`, given an optional round clip (rounded rect, arc
+// radius `rr`) intersected with an optional region rect, all clamped to [0,fbw).
+// Empty (lo>=hi) when the row is outside either clip or they don't overlap in x.
+static void clip_compute_span(int py, int fbw,
+        int round_on, int rx0, int ry0, int rx1, int ry1, int rr,
+        int reg_on,   int gx0, int gy0, int gx1, int gy1,
+        int* lo, int* hi) {
+    int l = 0, r = fbw;                             // start with the whole row
+    if (round_on) {
+        if (py < ry0 || py > ry1) { *lo = *hi = 0; return; }
+        int cl = rx0, cr = rx1 + 1;
+        int from_bottom = ry1 - py;
+        if (from_bottom < rr) {
+            int inset = fb_corner_inset(from_bottom, rr);   // arc inset near the rounded bottom
+            cl += inset; cr -= inset;
+        }
+        if (cl > l) l = cl;
+        if (cr < r) r = cr;
+    }
+    if (reg_on) {
+        if (py < gy0 || py > gy1) { *lo = *hi = 0; return; }
+        if (gx0     > l) l = gx0;
+        if (gx1 + 1 < r) r = gx1 + 1;
     }
     if (l < 0) l = 0;
-    if (r > (int)fb_width) r = (int)fb_width;
+    if (r > fbw) r = fbw;
+    if (r < l) r = l;                               // empty (disjoint) -> lo==hi
     *lo = l; *hi = r;
+}
+
+// Allowed horizontal span [*lo,*hi) for row `py` under the active clip(s): the
+// round clip and/or the region clip, whichever are on (see clip_compute_span).
+static void clip_span(int py, int* lo, int* hi) {
+    clip_compute_span(py, (int)fb_width,
+                       clip_on, clip_x0, clip_y0, clip_x1, clip_y1, clip_r,
+                       region_on, region_x0, region_y0, region_x1, region_y1,
+                       lo, hi);
+}
+
+// KAT: the pure region/round span intersection. rr=0 keeps the round clip a plain
+// rect (no arc) so the geometry is exact. 0 = pass, else the failing case number.
+int region_clip_selftest(void) {
+    int lo, hi;
+    // 1. region only, row inside -> [gx0, gx1+1], clamped to fbw.
+    clip_compute_span(50, 200, 0,0,0,0,0,0, 1, 10,40,60,80, &lo,&hi);
+    if (lo != 10 || hi != 61) return 1;
+    // 2. region only, row ABOVE the region -> empty.
+    clip_compute_span(10, 200, 0,0,0,0,0,0, 1, 10,40,60,80, &lo,&hi);
+    if (lo != hi) return 2;
+    // 3. round only (rr=0), row inside -> [rx0, rx1+1].
+    clip_compute_span(50, 200, 1, 5,40,100,80,0, 0,0,0,0,0, &lo,&hi);
+    if (lo != 5 || hi != 101) return 3;
+    // 4. BOTH: intersection of x-ranges (round [5,100] ∩ region [10,60]) -> [10,61).
+    clip_compute_span(50, 200, 1, 5,40,100,80,0, 1, 10,40,60,80, &lo,&hi);
+    if (lo != 10 || hi != 61) return 4;
+    // 5. BOTH but x-disjoint (round right of region) -> empty.
+    clip_compute_span(50, 200, 1, 120,40,150,80,0, 1, 10,40,60,80, &lo,&hi);
+    if (lo != hi) return 5;
+    // 6. BOTH, row inside round but OUTSIDE region -> empty.
+    clip_compute_span(90, 200, 1, 5,40,100,120,0, 1, 10,40,60,80, &lo,&hi);
+    if (lo != hi) return 6;
+    // 7. region wider than the screen -> clamped to [0, fbw).
+    clip_compute_span(50, 200, 0,0,0,0,0,0, 1, -20,40,999,80, &lo,&hi);
+    if (lo != 0 || hi != 200) return 7;
+    return 0;
 }
 
 void fb_fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color) {
@@ -294,7 +365,7 @@ void fb_fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color
     if (y + h > fb_height) h = fb_height - y;
 
     if (fb_bpp == 32) {
-        if (!clip_on) {
+        if (!clip_on && !region_on) {
             uint32_t* ptr = (uint32_t*)fb_addr + y * fb_width + x;
             for (uint32_t row = 0; row < h; row++) {
                 for (uint32_t col = 0; col < w; col++)
@@ -345,7 +416,7 @@ void fb_blit(const void* src, uint32_t sx, uint32_t sy, uint32_t w, uint32_t h,
         uint32_t* dst = (uint32_t*)fb_addr + dy * fb_width + dx;
         uint32_t* src32 = (uint32_t*)src + sy * src_stride + sx;
         for (uint32_t row = 0; row < h; row++) {
-            if (!clip_on) {
+            if (!clip_on && !region_on) {
                 for (uint32_t col = 0; col < w; col++)
                     dst[col] = src32[col];
             } else {

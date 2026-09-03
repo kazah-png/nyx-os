@@ -9463,6 +9463,7 @@ extern int rtc_selftest(void);           // drivers/misc/rtc.c: CMOS BCD/binary 
 extern int pf_decode_selftest(void);     // core/isr.c: #PF error-code bit decode for the fault dump
 extern int pipe_selftest(void);          // proc/pipe.c: the pipe ring-buffer read/write path
 extern int vfs_selftest(void);           // fs/vfs.c: ramdisk open/create/O_TRUNC/read/write behaviour
+extern int region_clip_selftest(void);   // drivers/video/fb.c: region ∩ round clip span math (dirty-rect groundwork)
 extern int dhcp_options_selftest(void);
 // http_parse_selftest / ext2_dir_selftest are declared in ../net/http.h / ../fs/ext2.h (included above).
 
@@ -9974,6 +9975,7 @@ static void run_selftests(void) {
         {"shadow",       shadow_selftest},
         {"titlebar",     titlebar_selftest},
         {"wallpaperdim", wallpaper_dim_selftest},
+        {"regionclip",   region_clip_selftest},
         {"nyxconf",      nyxconf_selftest},
         {"fmnav",        fileman_nav_selftest},
     };
