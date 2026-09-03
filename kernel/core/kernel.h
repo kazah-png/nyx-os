@@ -18,7 +18,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.5.84"
+#define KERNEL_VERSION "6.5.85"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -27,7 +27,7 @@
 // Erebus (primordial darkness) is the terminal emulator. Used wherever these
 // components identify themselves (nyxfetch, the terminal banner).
 #define COMPOSITOR_NAME    "Hemera"
-#define COMPOSITOR_VERSION "3.29"      // Hemera: the windowing compositor (2nd-gen daedalOS-style desktop)
+#define COMPOSITOR_VERSION "3.30"      // Hemera: the windowing compositor (2nd-gen daedalOS-style desktop)
 #define TERMINAL_NAME      "Erebus"
 #define TERMINAL_VERSION   "1.3"      // Erebus: the terminal emulator
 #define SELENE_NAME        "Selene"
@@ -533,8 +533,12 @@ typedef struct {
     uint32_t flags;
     uint32_t tx_packets;
     uint32_t rx_packets;
+    uint64_t tx_bytes;      // total frame bytes sent (eth_send) — for the desktop NET monitor
+    uint64_t rx_bytes;      // total frame bytes accepted for this host (eth_poll)
     void* driver_data;
 } net_iface_t;
+
+uint64_t net_total_bytes(void);   // tx+rx bytes summed across all interfaces (live NET-rate source)
 
 // ============================================================
 // Network byte order (host x86 is little-endian; the wire is big-endian)

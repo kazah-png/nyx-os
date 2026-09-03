@@ -3710,17 +3710,20 @@ static void draw_icon_at(int i) {
 // lighter shade, so the widget follows the runtime colorscheme (v6.5.28). Toggle with
 // `widget = on|off` in nyx.conf.
 #define WGT_W        180
-#define WGT_H        124          // two stacked graphs (CPU + RAM)
+#define WGT_H        182          // three stacked graphs (CPU + RAM + NET)
 #define WGT_MARGIN    16
 #define WGT_N        160          // history samples == graph width in px
 #define WGT_SAMPLE_MS 500u        // sample + scroll cadence
+#define WGT_NET_REF  131072u      // bytes/s that fills the NET bar (128 KB/s); higher clamps to 100%
 // Animation partial-present: publish up to this many simultaneously-animating windows' rects
 // (a game + the live monitor + a GIF, or the Nyx Flex tiles) instead of a full-screen blit.
 // Beyond it — or when the combined damage covers most of the screen — a full present is cheaper.
 #define TICK_MAX_RECTS 4
 int g_widget_on = 1;              // set from /etc/nyx.conf (apply_nyx_config); default on
 int g_widget_pos = 0;             // 0=bottom-right (default) 1=bottom-left 2=top-right 3=top-left — nyx.conf `widget_pos`
-static uint8_t wgt_cpu[WGT_N], wgt_ram[WGT_N];
+static uint8_t wgt_cpu[WGT_N], wgt_ram[WGT_N], wgt_net[WGT_N];
+static uint64_t wgt_net_last;         // net_total_bytes() at the previous sample
+static unsigned long wgt_net_bps;     // current NET rate (bytes/s) for the caption
 
 // nyx.conf name <-> index for the widget corner (rice: place the monitor where you like).
 static const char* widget_pos_name(int p) {
@@ -3749,13 +3752,44 @@ static uint32_t wgt_ram_pct(void) {
     return mt ? (uint32_t)(((uint64_t)mu * 100) / mt) : 0;
 }
 
-// Push the current CPU% + RAM% and scroll both histories one sample left (newest at right).
+// Format a bytes/second rate as a short human string ("0 B/s", "12 KB/s", "3 MB/s") for the
+// NET graph caption — integer units, no decimals. Pure; KAT'd by net_rate_selftest.
+static void net_rate_str(unsigned long bps, char* out, int outsz) {
+    if (bps < 1024UL)                snprintf(out, outsz, "%lu B/s", bps);
+    else if (bps < 1024UL * 1024UL)  snprintf(out, outsz, "%lu KB/s", bps / 1024UL);
+    else                             snprintf(out, outsz, "%lu MB/s", bps / (1024UL * 1024UL));
+}
+
+// KAT: the NET-rate caption formatter — B/s under 1 KiB, KB/s under 1 MiB (truncating), else
+// MB/s. 0 = pass.
+int net_rate_selftest(void) {
+    char b[24];
+    net_rate_str(0, b, sizeof b);        if (strcmp(b, "0 B/s")     != 0) return 1;
+    net_rate_str(512, b, sizeof b);      if (strcmp(b, "512 B/s")   != 0) return 2;
+    net_rate_str(1023, b, sizeof b);     if (strcmp(b, "1023 B/s")  != 0) return 3;
+    net_rate_str(1024, b, sizeof b);     if (strcmp(b, "1 KB/s")    != 0) return 4;
+    net_rate_str(1536, b, sizeof b);     if (strcmp(b, "1 KB/s")    != 0) return 5;   // truncates
+    net_rate_str(1048575, b, sizeof b);  if (strcmp(b, "1023 KB/s") != 0) return 6;
+    net_rate_str(1048576, b, sizeof b);  if (strcmp(b, "1 MB/s")    != 0) return 7;
+    net_rate_str(5242880, b, sizeof b);  if (strcmp(b, "5 MB/s")    != 0) return 8;
+    return 0;
+}
+
+// Push the current CPU%, RAM% and NET rate and scroll all three histories one sample left.
 static void wgt_push_sample(void) {
     uint32_t c = perf_cpu_percent(); if (c > 100) c = 100;
     uint32_t r = wgt_ram_pct();      if (r > 100) r = 100;
-    for (int i = 1; i < WGT_N; i++) { wgt_cpu[i - 1] = wgt_cpu[i]; wgt_ram[i - 1] = wgt_ram[i]; }
+    // NET: bytes since the last sample -> a per-second rate over the WGT_SAMPLE_MS window,
+    // normalized against WGT_NET_REF for the 0..100 bar height. Counters only ever climb.
+    uint64_t tot = net_total_bytes();
+    uint64_t delta = (tot >= wgt_net_last) ? (tot - wgt_net_last) : 0;
+    wgt_net_last = tot;
+    wgt_net_bps = (unsigned long)(delta * 1000u / WGT_SAMPLE_MS);
+    uint32_t np = (uint32_t)(wgt_net_bps * 100u / WGT_NET_REF); if (np > 100) np = 100;
+    for (int i = 1; i < WGT_N; i++) { wgt_cpu[i-1] = wgt_cpu[i]; wgt_ram[i-1] = wgt_ram[i]; wgt_net[i-1] = wgt_net[i]; }
     wgt_cpu[WGT_N - 1] = (uint8_t)c;
     wgt_ram[WGT_N - 1] = (uint8_t)r;
+    wgt_net[WGT_N - 1] = (uint8_t)np;
 }
 
 // Does any visible window overlap the widget's rect? (If so, skip its partial repaint — it
@@ -3773,9 +3807,8 @@ static int widget_covered(void) {
 
 // Draw one labelled history graph: a dark inset, a 50% grid line, and WGT_N bars rising from
 // the baseline in `color`, with a "LABEL nn%" caption above it.
-static void wgt_draw_graph(int x, int y, const char* label, uint32_t pct, const uint8_t* series, uint32_t color) {
-    char cap[24]; snprintf(cap, sizeof cap, "%s %u%%", label, pct);
-    font_draw_string_trans(x, y, cap, fb_rgb(212, 206, 228));
+static void wgt_draw_graph(int x, int y, const char* caption, const uint8_t* series, uint32_t color) {
+    font_draw_string_trans(x, y, caption, fb_rgb(212, 206, 228));
     int gx = x, gy = y + 14, gw = WGT_N, gh = 38;
     fb_fill_rect(gx, gy, gw, gh, fb_rgb(14, 14, 18));
     fb_fill_rect(gx, gy + gh / 2, gw, 1, fb_rgb(42, 42, 52));   // 50% grid line
@@ -3798,8 +3831,14 @@ static void draw_desktop_widget(void) {
     uint32_t cpu = perf_cpu_percent(); if (cpu > 100) cpu = 100;
     // Two stacked live graphs: CPU in the accent, RAM in a lighter shade of it (both follow
     // the runtime colorscheme). Each scrolls every WGT_SAMPLE_MS → the motion the rice wants.
-    wgt_draw_graph(x + 10, y + 6,  "CPU", cpu,           wgt_cpu, THEME_ACCENT);
-    wgt_draw_graph(x + 10, y + 64, "RAM", wgt_ram_pct(), wgt_ram, col_lighten(THEME_ACCENT, 35));
+    char cap[24];
+    snprintf(cap, sizeof cap, "CPU %u%%", cpu);
+    wgt_draw_graph(x + 10, y + 6,   cap, wgt_cpu, THEME_ACCENT);
+    snprintf(cap, sizeof cap, "RAM %u%%", wgt_ram_pct());
+    wgt_draw_graph(x + 10, y + 64,  cap, wgt_ram, col_lighten(THEME_ACCENT, 35));
+    char nr[16]; net_rate_str(wgt_net_bps, nr, sizeof nr);
+    snprintf(cap, sizeof cap, "NET %s", nr);
+    wgt_draw_graph(x + 10, y + 122, cap, wgt_net, col_lighten(THEME_ACCENT, 60));
 }
 
 static void draw_desktop_icons(void) {

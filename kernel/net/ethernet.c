@@ -25,8 +25,10 @@ int eth_send(const uint8_t* dst_mac, uint16_t type, const uint8_t* data, uint32_
     if (data && len > 0) memcpy(packet + ETH_HEADER_LEN, data, len);
     int result = rtl8139_send_packet(packet, ETH_HEADER_LEN + len);
     kfree(packet);
-    if (result >= 0 && iface_idx >= 0 && iface_idx < 8)
+    if (result >= 0 && iface_idx >= 0 && iface_idx < 8) {
         net_interfaces[iface_idx].tx_packets++;      // a frame handed to the NIC
+        net_interfaces[iface_idx].tx_bytes += ETH_HEADER_LEN + len;
+    }
     return result;
 }
 
@@ -53,10 +55,19 @@ void eth_poll(int iface_idx) {
                       dm[3] == om[3] && dm[4] == om[4] && dm[5] == om[5]);
         if (!for_us) return;
         net_interfaces[iface_idx].rx_packets++;      // an inbound frame accepted for this host
+        net_interfaces[iface_idx].rx_bytes += (uint32_t)len;
     }
     uint16_t type = ntohs(hdr->type);
     uint8_t* payload = buffer + ETH_HEADER_LEN;
     uint32_t payload_len = len - ETH_HEADER_LEN;
     if (type == ETH_TYPE_ARP) arp_handle_packet(payload, payload_len);
     else if (type == ETH_TYPE_IP) ip_handle_packet(payload, payload_len);
+}
+
+// Total bytes sent + received across every interface — the live source for the desktop
+// NET-rate graph (the compositor samples the delta each half-second).
+uint64_t net_total_bytes(void) {
+    uint64_t t = 0;
+    for (int i = 0; i < 8; i++) t += net_interfaces[i].tx_bytes + net_interfaces[i].rx_bytes;
+    return t;
 }
