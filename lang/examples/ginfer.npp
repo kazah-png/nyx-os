@@ -1,0 +1,25 @@
+// ginfer.npp — N++ call-site inference (M6.3d): a generic call needs no <Type>.
+//
+// `id(41)` infers T = i64 from the literal argument, exactly as if `id<i64>(41)`
+// had been written — both forms lower to the same `__g_id_i64`. Inference is
+// literal-driven for now (int -> i64, string -> str, bool -> bool); a value
+// whose type nppc cannot read still asks for the explicit form.
+
+extern syscall {
+    fn write(fd: i32, buf: *u8, len: isize) -> i64 = 1
+}
+
+fn id<T>(x: T) -> T {
+    x
+}
+
+fn put(s: str) {
+    write(1, s.ptr as *u8, s.len as isize);
+}
+
+fn main() -> i64 {
+    a := id(41);          // inferred: id<i64>
+    b := id<i64>(1);      // explicit: same instantiation
+    put("inferred {a}, explicit {b}\n");
+    a - 41 + b - 1
+}

@@ -372,8 +372,11 @@ static int NGS;
 
 typedef struct {
     int gi;                               /* which GStruct */
-    int atok[MAXP]; int nargs;            /* type-arg IDENT tokens */
-    int start, end;                       /* span of `NAME<...>` to rewrite */
+    char* aname[MAXP]; int alen[MAXP];    /* type-arg names (a token's text for an
+                                           * explicit arg, an inferred type for a
+                                           * bare call) */
+    int nargs;
+    int start, end;                       /* span to rewrite to the mangled name */
 } Inst;
 static Inst INSTS[MAXI];
 static int NINST;
@@ -465,29 +468,104 @@ static void collect_instantiations(void) {
         Inst* n = &INSTS[NINST++];
         n->gi = gi;
         n->nargs = nargs;
-        for (int a = 0; a < nargs; a++) n->atok[a] = atok[a];
+        for (int a = 0; a < nargs; a++) {
+            n->aname[a] = TOKS[atok[a]].s;
+            n->alen[a] = TOKS[atok[a]].slen;
+        }
         n->start = TOKS[i].start;
         n->end = TOKS[j - 1].end;         /* past the closing '>' */
         i = j - 1;                        /* skip past the args */
     }
 }
 
+/* Bare generic-function calls `NAME(args)` with no explicit `<...>`: infer
+ * each type parameter from a literal argument in the matching position, and
+ * record an instantiation that rewrites just the name. Literal arguments only
+ * for now (int -> i64, string -> str, bool -> bool); anything else asks for an
+ * explicit `NAME<Type>(...)`. */
+static void collect_inferred_calls(void) {
+    for (int i = 0; i + 1 < NTOK; i++) {
+        if (TOKS[i].k != T_IDENT || TOKS[i + 1].k != T_LP) continue;
+        if (i > 0 && TOKS[i - 1].k == T_KW_FN) continue;   /* a decl header, not a call */
+        int gi = gfind(i);
+        if (gi < 0 || GS[gi].kind != 1) continue;          /* generic-fn calls only */
+        GStruct* g = &GS[gi];
+        /* Walk the fn's own parameter list `(name: type, ...)` from just after
+         * `>`, mapping each value parameter to a type-param index (or -1). */
+        int vptp[64], nv = 0, j = g->angleclose + 2;       /* first param name */
+        while (TOKS[j].k != T_RP && TOKS[j].k != T_EOF) {
+            if (TOKS[j].k != T_IDENT) break;
+            j++;
+            if (TOKS[j].k != T_COLON) break;
+            j++;
+            while (TOKS[j].k == T_ATTR_USER || TOKS[j].k == T_KW_RAW || TOKS[j].k == T_STAR) j++;
+            int tp = -1;
+            for (int p = 0; p < g->nparams; p++)
+                if (tokspan_eq(g->ptok[p], j)) tp = p;
+            if (nv < 64) vptp[nv++] = tp;
+            j++;
+            if (TOKS[j].k == T_COMMA) { j++; continue; }
+            break;
+        }
+        /* First token of each top-level call argument. */
+        int argfirst[64], na = 0, depth = 0, startarg = 1;
+        for (int t = i + 1; TOKS[t].k != T_EOF; t++) {
+            TK kk = TOKS[t].k;
+            if (kk == T_LP || kk == T_LB || kk == T_LBRACK) depth++;
+            else if (kk == T_RP || kk == T_RB || kk == T_RBRACK) { depth--; if (depth == 0) break; }
+            else if (kk == T_COMMA && depth == 1) startarg = 1;
+            else if (depth >= 1 && startarg) { if (na < 64) argfirst[na++] = t; startarg = 0; }
+        }
+        /* Infer each type parameter from the value parameter that uses it. */
+        char* an[MAXP]; int al[MAXP], bound[MAXP];
+        for (int p = 0; p < g->nparams; p++) bound[p] = 0;
+        for (int v = 0; v < nv && v < na; v++) {
+            int tp = vptp[v];
+            if (tp < 0) continue;
+            char* ty; int tl;
+            TK ak = TOKS[argfirst[v]].k;
+            if (ak == T_INT) { ty = "i64"; tl = 3; }
+            else if (ak == T_STR || ak == T_STR_HEAD) { ty = "str"; tl = 3; }
+            else if (ak == T_KW_TRUE || ak == T_KW_FALSE) { ty = "bool"; tl = 4; }
+            else die("%s:%d: cannot infer a generic type from argument %d — write it "
+                     "explicitly, %.*s<Type>(...)", FILENAME, TOKS[i].line, v + 1,
+                     TOKS[g->nametok].slen, TOKS[g->nametok].s);
+            if (bound[tp] && (al[tp] != tl || memcmp(an[tp], ty, (size_t)tl)))
+                die("%s:%d: conflicting types inferred for one generic parameter",
+                    FILENAME, TOKS[i].line);
+            an[tp] = ty; al[tp] = tl; bound[tp] = 1;
+        }
+        for (int p = 0; p < g->nparams; p++)
+            if (!bound[p])
+                die("%s:%d: cannot infer every generic parameter of '%.*s' — write them "
+                    "explicitly", FILENAME, TOKS[i].line, TOKS[g->nametok].slen, TOKS[g->nametok].s);
+        if (NINST >= MAXI) die("%s: too many generic instantiations", FILENAME);
+        Inst* n = &INSTS[NINST++];
+        n->gi = gi;
+        n->nargs = g->nparams;
+        for (int p = 0; p < g->nparams; p++) { n->aname[p] = an[p]; n->alen[p] = al[p]; }
+        n->start = TOKS[i].start;
+        n->end = TOKS[i].end;              /* rewrite just the name to the mangled name */
+    }
+}
+
 /* "__g_Box_i64" for Box<i64>. Args are bare type names, so the result is a
  * valid N/C identifier by construction. */
-static char* mangle(int gi, int* atok) {
+static char* mangle(Inst* it) {
+    GStruct* g = &GS[it->gi];
     char* out = xmalloc(256);
     int n = 0;
-    n += sprintf(out + n, "__g_%.*s", TOKS[GS[gi].nametok].slen, TOKS[GS[gi].nametok].s);
-    for (int a = 0; a < GS[gi].nparams; a++)
-        n += sprintf(out + n, "_%.*s", TOKS[atok[a]].slen, TOKS[atok[a]].s);
+    n += sprintf(out + n, "__g_%.*s", TOKS[g->nametok].slen, TOKS[g->nametok].s);
+    for (int a = 0; a < g->nparams; a++)
+        n += sprintf(out + n, "_%.*s", it->alen[a], it->aname[a]);
     return out;
 }
 
 /* The concrete N struct for one instantiation: the template body with each
  * type parameter replaced by the matching argument. */
-static char* concrete_struct(int gi, int* atok) {
-    GStruct* g = &GS[gi];
-    char* mn = mangle(gi, atok);
+static char* concrete_struct(Inst* it) {
+    GStruct* g = &GS[it->gi];
+    char* mn = mangle(it);
     char* out = xmalloc(4096);
     int n = 0;
     n += sprintf(out + n, "struct %s {\n", mn);
@@ -501,7 +579,7 @@ static char* concrete_struct(int gi, int* atok) {
                      TOKS[g->fields[fi].fname].s);
         for (int s = 0; s < stars; s++) out[n++] = '*';
         if (sub >= 0)
-            n += sprintf(out + n, "%.*s", TOKS[atok[sub]].slen, TOKS[atok[sub]].s);
+            n += sprintf(out + n, "%.*s", it->alen[sub], it->aname[sub]);
         else
             n += sprintf(out + n, "%.*s", TOKS[bt].slen, TOKS[bt].s);
         n += sprintf(out + n, ",\n");
@@ -590,9 +668,9 @@ static void collect_generic_fns(void) {
  * declaration with the header rewritten to the mangled name and every
  * type-parameter type slot replaced by its argument — the body's exact bytes
  * (spacing and comments) pass through untouched. */
-static char* concrete_fn(int gi, int* atok) {
-    GStruct* g = &GS[gi];
-    char* mn = mangle(gi, atok);
+static char* concrete_fn(Inst* it) {
+    GStruct* g = &GS[it->gi];
+    char* mn = mangle(it);
     int es[512], ee[512]; char* er[512]; int ne = 0;
     es[ne] = TOKS[g->nametok].start;      /* `NAME<params>` -> mangled name */
     ee[ne] = TOKS[g->angleclose].end;
@@ -603,7 +681,7 @@ static char* concrete_fn(int gi, int* atok) {
         if (ne >= 512) die("%s: generic function too large", FILENAME);
         es[ne] = TOKS[t].start;
         ee[ne] = TOKS[t].end;
-        er[ne] = xstrndup(TOKS[atok[q]].s, (size_t)TOKS[atok[q]].slen);
+        er[ne] = xstrndup(it->aname[q], (size_t)it->alen[q]);
         ne++;
     }
     /* Edits are already in source order (header first, then increasing token
@@ -620,14 +698,15 @@ static char* concrete_fn(int gi, int* atok) {
     return out;
 }
 
-static char* concrete_item(int gi, int* atok) {
-    return GS[gi].kind == 0 ? concrete_struct(gi, atok) : concrete_fn(gi, atok);
+static char* concrete_item(Inst* it) {
+    return GS[it->gi].kind == 0 ? concrete_struct(it) : concrete_fn(it);
 }
 
 static int args_same(Inst* a, Inst* b) {
     if (a->gi != b->gi || a->nargs != b->nargs) return 0;
     for (int i = 0; i < a->nargs; i++)
-        if (!tokspan_eq(a->atok[i], b->atok[i])) return 0;
+        if (a->alen[i] != b->alen[i] || memcmp(a->aname[i], b->aname[i], (size_t)a->alen[i]))
+            return 0;
     return 1;
 }
 
@@ -662,6 +741,7 @@ int main(int argc, char** argv) {
     collect_generic_decls();
     collect_generic_fns();
     collect_instantiations();
+    collect_inferred_calls();
 
     /* Build the edit list: each generic declaration is replaced by the
      * concrete structs its distinct instantiations require (in first-use
@@ -676,7 +756,7 @@ int main(int argc, char** argv) {
             for (int j = 0; j < i; j++)
                 if (INSTS[j].gi == g && args_same(&INSTS[i], &INSTS[j])) { dup = 1; break; }
             if (dup) continue;
-            char* cs = concrete_item(g, INSTS[i].atok);
+            char* cs = concrete_item(&INSTS[i]);
             int add = (int)strlen(cs) + 2;
             body = realloc(body, (size_t)blen + (size_t)add + 1);
             if (!body) die("nppc: out of memory");
@@ -691,7 +771,7 @@ int main(int argc, char** argv) {
     for (int i = 0; i < NINST; i++) {
         EDITS[NEDIT].start = INSTS[i].start;
         EDITS[NEDIT].end = INSTS[i].end;
-        EDITS[NEDIT].repl = mangle(INSTS[i].gi, INSTS[i].atok);
+        EDITS[NEDIT].repl = mangle(&INSTS[i]);
         NEDIT++;
     }
     qsort(EDITS, (size_t)NEDIT, sizeof(Edit), edit_cmp);
