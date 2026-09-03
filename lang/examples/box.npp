@@ -1,0 +1,30 @@
+// box.npp — N++ generic structs (M6.3a): monomorphized on use.
+//
+// `struct Box<T>` is a template; each concrete use `Box<i64>` / `Box<u8>`
+// makes nppc emit one plain N struct (`__g_Box_i64`, `__g_Box_u8`) with the
+// type parameter substituted, and rewrites the use to that name. The lowered
+// N is then compiled by the verified pipeline exactly like a hand-written
+// struct — generics cost nothing at run time.
+
+extern syscall {
+    fn write(fd: i32, buf: *u8, len: isize) -> i64 = 1
+}
+
+struct Box<T> {
+    val: T,
+}
+
+fn put(s: str) {
+    write(1, s.ptr as *u8, s.len as isize);
+}
+
+fn unwrap_i(b: Box<i64>) -> i64 {
+    b.val
+}
+
+fn main() -> i64 {
+    bi := Box<i64>{ val: 42 };
+    bb := Box<u8>{ val: 7 };
+    put("box holds {unwrap_i(bi)} and {bb.val}\n");
+    unwrap_i(bi) - 42
+}

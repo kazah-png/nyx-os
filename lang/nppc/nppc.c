@@ -85,6 +85,12 @@ static const char* FILENAME;
 static const char* SRC;
 static int POS, LEN, LINE = 1, COL = 1;
 
+/* Source span of the token next_token() is about to return: TOK_START is set
+ * past leading whitespace/comments, TOK_END is read as POS right after the
+ * call. The generic pass (M6.3) needs these to splice edits over the verbatim
+ * source, so everything it does not rewrite keeps its exact bytes. */
+static int TOK_START;
+
 /* string-interpolation mode stack */
 static int istack[16], itop = -1, brace_depth = 0, resume_str = 0;
 
@@ -167,6 +173,7 @@ static TK kwlook(const char* s, int n) {
 static Tok next_token(void) {
     if (resume_str) {
         resume_str = 0;
+        TOK_START = POS;
         return scan_string_body(1);
     }
     for (;;) {   /* skip whitespace + comments */
@@ -192,6 +199,7 @@ static Tok next_token(void) {
         break;
     }
     int sl = LINE;
+    TOK_START = POS;
     char c = SRC[POS];
 
     if (is_idc(c)) {
@@ -295,7 +303,219 @@ static Tok next_token(void) {
 }
 
 /* ------------------------------------------------------------------ */
-/* driver: read, validate (full lex), lower (identity), write         */
+/* token buffer — the generic pass (M6.3) needs random access + spans  */
+/* ------------------------------------------------------------------ */
+typedef struct { TK k; int start; int end; int line; char* s; int slen; } STok;
+static STok* TOKS;
+static int NTOK;
+
+static void lex_all(void) {
+    int cap = 1024;
+    TOKS = xmalloc((size_t)cap * sizeof(STok));
+    NTOK = 0;
+    for (;;) {
+        Tok t = next_token();
+        if (NTOK >= cap) {
+            cap *= 2;
+            TOKS = realloc(TOKS, (size_t)cap * sizeof(STok));
+            if (!TOKS) die("nppc: out of memory");
+        }
+        STok s;
+        s.k = t.k; s.s = t.s; s.slen = t.slen; s.line = t.line;
+        s.start = (t.k == T_EOF) ? LEN : TOK_START;
+        s.end = POS;
+        TOKS[NTOK++] = s;
+        if (t.k == T_EOF) break;
+    }
+    if (itop >= 0) die("%s: unterminated interpolation at end of file", FILENAME);
+}
+
+static int tokeq(int i, const char* w) {   /* token i is IDENT with text w */
+    return i >= 0 && i < NTOK && TOKS[i].k == T_IDENT && TOKS[i].s &&
+           (int)strlen(w) == TOKS[i].slen && !memcmp(w, TOKS[i].s, (size_t)TOKS[i].slen);
+}
+static int tokspan_eq(int a, int b) {      /* two IDENT tokens name the same word */
+    return TOKS[a].k == T_IDENT && TOKS[b].k == T_IDENT &&
+           TOKS[a].slen == TOKS[b].slen &&
+           !memcmp(TOKS[a].s, TOKS[b].s, (size_t)TOKS[a].slen);
+}
+
+/* ------------------------------------------------------------------ */
+/* the generic pass (M6.3a): monomorphize generic structs             */
+/*                                                                    */
+/* `struct Box<T> { val: T }` used as `Box<i64>` (in a type position   */
+/* or a `Box<i64>{...}` literal) becomes a concrete `__g_Box_i64` with */
+/* T substituted, and every use is rewritten to the mangled name. The  */
+/* transform is span-local: only the generic declaration and its use   */
+/* sites are edited, so all other bytes (comments, spacing) pass        */
+/* through verbatim, and a program with no generics is the identity.    */
+/* ------------------------------------------------------------------ */
+#define MAXP 8
+#define MAXF 64
+#define MAXG 64
+#define MAXI 2048
+
+typedef struct {
+    int nametok;                          /* the IDENT token of the generic name */
+    int ptok[MAXP]; int nparams;          /* type-param IDENT tokens */
+    int declstart, declend;               /* source span of `struct NAME<...> {...}` */
+    struct { int fname; int ptrs; int base; } fields[MAXF];
+    int nfields;                          /* base: token index of the field type name */
+} GStruct;
+static GStruct GS[MAXG];
+static int NGS;
+
+typedef struct {
+    int gi;                               /* which GStruct */
+    int atok[MAXP]; int nargs;            /* type-arg IDENT tokens */
+    int start, end;                       /* span of `NAME<...>` to rewrite */
+} Inst;
+static Inst INSTS[MAXI];
+static int NINST;
+
+typedef struct { int start, end; char* repl; } Edit;
+static Edit EDITS[MAXG + MAXI];
+static int NEDIT;
+
+static int gfind(int nametok) {           /* generic index whose name == this IDENT */
+    for (int i = 0; i < NGS; i++)
+        if (tokspan_eq(GS[i].nametok, nametok)) return i;
+    return -1;
+}
+
+/* Collect `struct NAME<params> { fields }` declarations. Plain (non-generic)
+ * structs have no `<` after the name and are left entirely alone. */
+static void collect_generic_decls(void) {
+    for (int i = 0; i + 2 < NTOK; i++) {
+        if (TOKS[i].k != T_KW_STRUCT) continue;
+        if (TOKS[i + 1].k != T_IDENT || TOKS[i + 2].k != T_LT) continue;
+        if (NGS >= MAXG) die("%s: too many generic structs", FILENAME);
+        GStruct* g = &GS[NGS];
+        g->nametok = i + 1;
+        g->nparams = 0;
+        g->declstart = TOKS[i].start;
+        int j = i + 3;                    /* first param */
+        for (;;) {
+            if (TOKS[j].k != T_IDENT)
+                die("%s:%d: generic parameter must be a name", FILENAME, TOKS[j].line);
+            if (g->nparams >= MAXP) die("%s: too many type parameters", FILENAME);
+            g->ptok[g->nparams++] = j++;
+            if (TOKS[j].k == T_COMMA) { j++; continue; }
+            if (TOKS[j].k == T_GT) { j++; break; }
+            die("%s:%d: expected ',' or '>' in type-parameter list", FILENAME, TOKS[j].line);
+        }
+        if (TOKS[j].k != T_LB)
+            die("%s:%d: expected '{' after generic struct header", FILENAME, TOKS[j].line);
+        j++;                              /* into the body */
+        g->nfields = 0;
+        while (TOKS[j].k != T_RB) {
+            if (TOKS[j].k == T_EOF)
+                die("%s: unterminated generic struct body", FILENAME);
+            if (TOKS[j].k != T_IDENT)
+                die("%s:%d: expected a field name", FILENAME, TOKS[j].line);
+            int fname = j++;
+            if (TOKS[j].k != T_COLON)
+                die("%s:%d: expected ':' after field name", FILENAME, TOKS[j].line);
+            j++;
+            if (TOKS[j].k == T_ATTR_USER || TOKS[j].k == T_KW_RAW)
+                die("%s:%d: M6.3a: attributes on generic-struct fields are pending",
+                    FILENAME, TOKS[j].line);
+            int ptrs = 0;
+            while (TOKS[j].k == T_STAR) { ptrs++; j++; }
+            if (TOKS[j].k != T_IDENT)
+                die("%s:%d: expected a field type", FILENAME, TOKS[j].line);
+            if (g->nfields >= MAXF) die("%s: too many fields", FILENAME);
+            g->fields[g->nfields].fname = fname;
+            g->fields[g->nfields].ptrs = ptrs;
+            g->fields[g->nfields].base = j++;
+            g->nfields++;
+            if (TOKS[j].k == T_COMMA) j++;
+        }
+        g->declend = TOKS[j].end;         /* past the closing '}' */
+        NGS++;
+    }
+}
+
+/* Collect `NAME<args>` use sites of a declared generic. Lenient: a `<` that
+ * is not a well-formed type-argument list is left as a comparison operator. */
+static void collect_instantiations(void) {
+    for (int i = 0; i + 1 < NTOK; i++) {
+        if (TOKS[i].k != T_IDENT || TOKS[i + 1].k != T_LT) continue;
+        if (i > 0 && TOKS[i - 1].k == T_KW_STRUCT) continue;   /* the decl header */
+        int gi = gfind(i);
+        if (gi < 0) continue;             /* `<` after a non-generic name: comparison */
+        int atok[MAXP], nargs = 0, ok = 1, j = i + 2;
+        for (;;) {
+            if (TOKS[j].k != T_IDENT) { ok = 0; break; }
+            if (nargs >= MAXP) { ok = 0; break; }
+            atok[nargs++] = j++;
+            if (TOKS[j].k == T_COMMA) { j++; continue; }
+            if (TOKS[j].k == T_GT) { j++; break; }
+            ok = 0; break;
+        }
+        if (!ok || nargs != GS[gi].nparams) continue;   /* not this generic's shape */
+        if (NINST >= MAXI) die("%s: too many generic instantiations", FILENAME);
+        Inst* n = &INSTS[NINST++];
+        n->gi = gi;
+        n->nargs = nargs;
+        for (int a = 0; a < nargs; a++) n->atok[a] = atok[a];
+        n->start = TOKS[i].start;
+        n->end = TOKS[j - 1].end;         /* past the closing '>' */
+        i = j - 1;                        /* skip past the args */
+    }
+}
+
+/* "__g_Box_i64" for Box<i64>. Args are bare type names, so the result is a
+ * valid N/C identifier by construction. */
+static char* mangle(int gi, int* atok) {
+    char* out = xmalloc(256);
+    int n = 0;
+    n += sprintf(out + n, "__g_%.*s", TOKS[GS[gi].nametok].slen, TOKS[GS[gi].nametok].s);
+    for (int a = 0; a < GS[gi].nparams; a++)
+        n += sprintf(out + n, "_%.*s", TOKS[atok[a]].slen, TOKS[atok[a]].s);
+    return out;
+}
+
+/* The concrete N struct for one instantiation: the template body with each
+ * type parameter replaced by the matching argument. */
+static char* concrete_struct(int gi, int* atok) {
+    GStruct* g = &GS[gi];
+    char* mn = mangle(gi, atok);
+    char* out = xmalloc(4096);
+    int n = 0;
+    n += sprintf(out + n, "struct %s {\n", mn);
+    for (int fi = 0; fi < g->nfields; fi++) {
+        int bt = g->fields[fi].base;
+        int sub = -1;                     /* is the field type a type parameter? */
+        for (int p = 0; p < g->nparams; p++)
+            if (tokspan_eq(g->ptok[p], bt)) { sub = p; break; }
+        int stars = g->fields[fi].ptrs;
+        n += sprintf(out + n, "    %.*s: ", TOKS[g->fields[fi].fname].slen,
+                     TOKS[g->fields[fi].fname].s);
+        for (int s = 0; s < stars; s++) out[n++] = '*';
+        if (sub >= 0)
+            n += sprintf(out + n, "%.*s", TOKS[atok[sub]].slen, TOKS[atok[sub]].s);
+        else
+            n += sprintf(out + n, "%.*s", TOKS[bt].slen, TOKS[bt].s);
+        n += sprintf(out + n, ",\n");
+    }
+    n += sprintf(out + n, "}");
+    return out;
+}
+
+static int args_same(Inst* a, Inst* b) {
+    if (a->gi != b->gi || a->nargs != b->nargs) return 0;
+    for (int i = 0; i < a->nargs; i++)
+        if (!tokspan_eq(a->atok[i], b->atok[i])) return 0;
+    return 1;
+}
+
+static int edit_cmp(const void* x, const void* y) {
+    return ((const Edit*)x)->start - ((const Edit*)y)->start;
+}
+
+/* ------------------------------------------------------------------ */
+/* driver                                                             */
 /* ------------------------------------------------------------------ */
 int main(int argc, char** argv) {
     if (argc != 4 || strcmp(argv[2], "-o") != 0)
@@ -314,30 +534,62 @@ int main(int argc, char** argv) {
     SRC = buf;
     LEN = (int)sz;
 
-    /* The read side is real: the whole file must lex as the N dialect.
-     * A file that fails here would fail identically under ncc — refusing
-     * it now keeps the M6.2 contract ("the accepted dialect is the N
-     * subset") honest. The tokens are counted and discarded; the parse
-     * tree arrives with the first real transform (M6.3). */
-    long ntok = 0;
-    for (;;) {
-        Tok t = next_token();
-        if (t.k == T_EOF) break;
-        if (t.s) free(t.s);
-        ntok++;
-    }
-    if (itop >= 0) die("%s: unterminated interpolation at end of file", FILENAME);
+    /* The read side is real: the whole file lexes as the N dialect (a file
+     * that fails here would fail identically under ncc), and the token
+     * buffer with source spans is what the generic pass rewrites over. */
+    lex_all();
+    collect_generic_decls();
+    collect_instantiations();
 
-    /* Lowering, at this rung, is the identity: every valid N program is a
-     * valid N++ program with identical behavior, and the skeleton holds
-     * that contract byte-for-byte. */
+    /* Build the edit list: each generic declaration is replaced by the
+     * concrete structs its distinct instantiations require (in first-use
+     * order), and each use site is replaced by its mangled name. */
+    for (int g = 0; g < NGS; g++) {
+        char* body = xmalloc(1);
+        body[0] = 0;
+        int blen = 0, emitted = 0;
+        for (int i = 0; i < NINST; i++) {
+            if (INSTS[i].gi != g) continue;
+            int dup = 0;
+            for (int j = 0; j < i; j++)
+                if (INSTS[j].gi == g && args_same(&INSTS[i], &INSTS[j])) { dup = 1; break; }
+            if (dup) continue;
+            char* cs = concrete_struct(g, INSTS[i].atok);
+            int add = (int)strlen(cs) + 2;
+            body = realloc(body, (size_t)blen + (size_t)add + 1);
+            if (!body) die("nppc: out of memory");
+            blen += sprintf(body + blen, "%s%s", emitted ? "\n\n" : "", cs);
+            emitted = 1;
+        }
+        EDITS[NEDIT].start = GS[g].declstart;
+        EDITS[NEDIT].end = GS[g].declend;
+        EDITS[NEDIT].repl = body;         /* empty if the generic is never used */
+        NEDIT++;
+    }
+    for (int i = 0; i < NINST; i++) {
+        EDITS[NEDIT].start = INSTS[i].start;
+        EDITS[NEDIT].end = INSTS[i].end;
+        EDITS[NEDIT].repl = mangle(INSTS[i].gi, INSTS[i].atok);
+        NEDIT++;
+    }
+    qsort(EDITS, (size_t)NEDIT, sizeof(Edit), edit_cmp);
+
+    /* Splice: verbatim between edits, replacement at each. With no generics
+     * there are no edits and the output equals the input byte-for-byte. */
     FILE* out = fopen(argv[3], "wb");
     if (!out) die("nppc: cannot open '%s' for writing", argv[3]);
-    if (sz > 0 && fwrite(buf, 1, (size_t)sz, out) != (size_t)sz)
-        die("nppc: cannot write '%s'", argv[3]);
+    int prev = 0;
+    for (int e = 0; e < NEDIT; e++) {
+        if (EDITS[e].start < prev)
+            die("%s: overlapping generic rewrites", FILENAME);
+        fwrite(SRC + prev, 1, (size_t)(EDITS[e].start - prev), out);
+        fwrite(EDITS[e].repl, 1, strlen(EDITS[e].repl), out);
+        prev = EDITS[e].end;
+    }
+    fwrite(SRC + prev, 1, (size_t)(LEN - prev), out);
     fclose(out);
 
-    fprintf(stderr, "nppc: OK — %ld token(s), lowered to %s (identity at M6.2)\n",
-            ntok, argv[3]);
+    fprintf(stderr, "nppc: OK — %d token(s), %d generic struct(s), %d instantiation(s) -> %s\n",
+            NTOK - 1, NGS, NINST, argv[3]);
     return 0;
 }

@@ -349,7 +349,8 @@ climbed again when it is worth climbing).
 |---|---|---|
 | M6.1 | This plan | ✅ this section |
 | M6.2 | ✅ `nppc` skeleton shipped ([`../nppc/nppc.c`](../nppc/nppc.c)): the read side is ncc’s lexer whole (same tokens, escapes, interpolation stack, attributes, diagnostics — accept and refuse exactly as the N pipeline would), lowering is the identity on the N subset, [`hello.npp`](../examples/hello.npp) is the founding contract as a file, and the suite’s stage [10] is the day-one fence. The parse tree arrives with M6.3’s first real transform | ✅ hello.npp lowers byte-identically and `ncc` + the self-hosted `ngen` agree on its C |
-| M6.3 | Monomorphized generics + generic `Result<T, E>` | `read_config()`-style code (§2.2) compiles via instantiation; negative tests for arity/constraint misuse |
+| M6.3a | ✅ **generic structs** monomorphize ([`box.npp`](../examples/box.npp)): `struct Box<T>` + explicit uses `Box<i64>` / `Box<u8>` lower to concrete `__g_Box_<T>` structs (type parameter substituted, uses rewritten, everything else spliced through verbatim) via a token-span rewrite — no full parser needed, no inference. Suite stage [10b] | ✅ box.npp monomorphizes and the lowered N compiles identically under `ncc` and `ngen` |
+| M6.3b | Generic **functions** `fn f<T>(...)` (call-site instantiation) and generic **enums** incl. `Result<T, E>` (needs Ok/Err construction-site inference) | pending |
 | M6.4 | Closures (lambda lifting, `own` captures) | an event-handler example over the nwin surface; escape/negative tests |
 | M6.5 | Modules / `use` | a two-file `.npp` program; cycle + visibility negatives |
 | M6.6 | `nppc` self-describes | an `.npp` program written in the dialect's own idioms exercises every rung at once |
