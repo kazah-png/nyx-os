@@ -1,0 +1,23 @@
+// gcast.npp — N++ generic body type slots (M6.3c): a cast to a type parameter.
+//
+// N locals are always inferred (`x := e`), so the one type slot inside a
+// function body is a cast target. `x as T` in a generic body substitutes just
+// like the signature's `-> T`: nppc rewrites both when it monomorphizes.
+
+extern syscall {
+    fn write(fd: i32, buf: *u8, len: isize) -> i64 = 1
+}
+
+fn widen<T>(x: u8) -> T {
+    x as T
+}
+
+fn put(s: str) {
+    write(1, s.ptr as *u8, s.len as isize);
+}
+
+fn main() -> i64 {
+    n := widen<i64>(200);
+    put("widened to {n}\n");
+    n - 200
+}

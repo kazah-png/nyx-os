@@ -515,7 +515,10 @@ static char* concrete_struct(int gi, int* atok) {
 static int typaram_at(GStruct* g, int t) {
     if (TOKS[t].k != T_IDENT || t == 0) return -1;
     TK p = TOKS[t - 1].k;
-    if (p != T_COLON && p != T_ARROW && p != T_STAR) return -1;
+    /* A base type follows ':' (a param/field type), '->' (a return type),
+     * '*' (a pointer type), or 'as' (a cast target — the one type slot that
+     * appears inside a function body, since N locals are always inferred). */
+    if (p != T_COLON && p != T_ARROW && p != T_STAR && p != T_KW_AS) return -1;
     for (int q = 0; q < g->nparams; q++)
         if (tokspan_eq(g->ptok[q], t)) return q;
     return -1;
