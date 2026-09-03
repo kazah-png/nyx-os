@@ -1,0 +1,34 @@
+// genum.npp — N++ generic enums (M6.3e): monomorphized on use.
+//
+// `enum Maybe<T>` is a template; each concrete use `Maybe<i64>` makes nppc
+// emit one plain N enum (`__g_Maybe_i64`) with the payload type substituted.
+// Type arguments are explicit everywhere — in type positions AND at the
+// construction sites `Maybe<i64>.Some{...}` / `Maybe<i64>.None` — so no
+// inference is needed; construction-site inference is a later rung.
+
+extern syscall {
+    fn write(fd: i32, buf: *u8, len: isize) -> i64 = 1
+}
+
+enum Maybe<T> {
+    Some(v: T),
+    None,
+}
+
+fn put(s: str) {
+    write(1, s.ptr as *u8, s.len as isize);
+}
+
+fn unwrap_or(m: Maybe<i64>, dflt: i64) -> i64 {
+    return match m {
+        Some(v) => v,
+        None => dflt,
+    };
+}
+
+fn main() -> i64 {
+    a := unwrap_or(Maybe<i64>.Some{ v: 42 }, 0);
+    b := unwrap_or(Maybe<i64>.None, 7);
+    put("some={a} none={b}\n");
+    a - 42 + b - 7
+}

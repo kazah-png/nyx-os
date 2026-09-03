@@ -330,10 +330,6 @@ static void lex_all(void) {
     if (itop >= 0) die("%s: unterminated interpolation at end of file", FILENAME);
 }
 
-static int tokeq(int i, const char* w) {   /* token i is IDENT with text w */
-    return i >= 0 && i < NTOK && TOKS[i].k == T_IDENT && TOKS[i].s &&
-           (int)strlen(w) == TOKS[i].slen && !memcmp(w, TOKS[i].s, (size_t)TOKS[i].slen);
-}
 static int tokspan_eq(int a, int b) {      /* two IDENT tokens name the same word */
     return TOKS[a].k == T_IDENT && TOKS[b].k == T_IDENT &&
            TOKS[a].slen == TOKS[b].slen &&
@@ -450,7 +446,8 @@ static void collect_generic_decls(void) {
 static void collect_instantiations(void) {
     for (int i = 0; i + 1 < NTOK; i++) {
         if (TOKS[i].k != T_IDENT || TOKS[i + 1].k != T_LT) continue;
-        if (i > 0 && (TOKS[i - 1].k == T_KW_STRUCT || TOKS[i - 1].k == T_KW_FN))
+        if (i > 0 && (TOKS[i - 1].k == T_KW_STRUCT || TOKS[i - 1].k == T_KW_FN ||
+                      TOKS[i - 1].k == T_KW_ENUM))
             continue;                      /* the decl header, not a use site */
         int gi = gfind(i);
         if (gi < 0) continue;             /* `<` after a non-generic name: comparison */
@@ -664,8 +661,62 @@ static void collect_generic_fns(void) {
     }
 }
 
-/* The concrete N function for one instantiation: a span-splice of the source
- * declaration with the header rewritten to the mangled name and every
+/* Collect `enum NAME<params> { variants }` generic enums. An enum body is
+ * variants with optional `(field: type, ...)` payloads; type parameters live
+ * in those payload type slots (after ':'), which the span-splice emit handles
+ * exactly as it does a function's — so a generic enum reuses concrete_fn. The
+ * body `{...}` follows the `>` directly (no parameter list). */
+static void collect_generic_enums(void) {
+    for (int i = 0; i + 2 < NTOK; i++) {
+        if (TOKS[i].k != T_KW_ENUM) continue;
+        if (TOKS[i + 1].k != T_IDENT || TOKS[i + 2].k != T_LT) continue;
+        if (NGS >= MAXG) die("%s: too many generics", FILENAME);
+        GStruct* g = &GS[NGS];
+        g->kind = 2;
+        g->nametok = i + 1;
+        g->nparams = 0;
+        g->nfields = 0;
+        g->declstart = TOKS[i].start;
+        int j = i + 3;
+        for (;;) {
+            if (TOKS[j].k != T_IDENT)
+                die("%s:%d: generic parameter must be a name", FILENAME, TOKS[j].line);
+            if (g->nparams >= MAXP) die("%s: too many type parameters", FILENAME);
+            g->ptok[g->nparams++] = j++;
+            if (TOKS[j].k == T_COMMA) { j++; continue; }
+            if (TOKS[j].k == T_GT) { break; }
+            die("%s:%d: expected ',' or '>' in type-parameter list", FILENAME, TOKS[j].line);
+        }
+        g->angleclose = j;
+        j++;
+        if (TOKS[j].k != T_LB)
+            die("%s:%d: expected '{' after generic enum header", FILENAME, TOKS[j].line);
+        int depth = 0;
+        for (;;) {
+            if (TOKS[j].k == T_EOF) die("%s: unterminated generic enum body", FILENAME);
+            if (TOKS[j].k == T_LB) depth++;
+            else if (TOKS[j].k == T_RB) { depth--; if (depth == 0) break; }
+            j++;
+        }
+        g->lasttok = j;
+        g->declend = TOKS[j].end;
+        for (int t = g->angleclose + 1; t <= g->lasttok; t++) {
+            if (TOKS[t].k != T_IDENT) continue;
+            int isp = 0;
+            for (int q = 0; q < g->nparams; q++)
+                if (tokspan_eq(g->ptok[q], t)) { isp = 1; break; }
+            if (!isp) continue;
+            if (typaram_at(g, t) < 0)
+                die("%s:%d: M6.3e: type parameter '%.*s' appears in an unsupported "
+                    "position (only payload type slots are lowered)",
+                    FILENAME, TOKS[t].line, TOKS[t].slen, TOKS[t].s);
+        }
+        NGS++;
+    }
+}
+
+/* The concrete N function or enum for one instantiation: a span-splice of the
+ * source declaration with the header rewritten to the mangled name and every
  * type-parameter type slot replaced by its argument — the body's exact bytes
  * (spacing and comments) pass through untouched. */
 static char* concrete_fn(Inst* it) {
@@ -740,6 +791,7 @@ int main(int argc, char** argv) {
     lex_all();
     collect_generic_decls();
     collect_generic_fns();
+    collect_generic_enums();
     collect_instantiations();
     collect_inferred_calls();
 
