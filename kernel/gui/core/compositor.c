@@ -3833,6 +3833,46 @@ int border_color_selftest(void) {
     return 0;
 }
 
+// nyx.conf `accent` may name a preset OR give a raw #RRGGBB hex, so a rice can pick ANY accent
+// color, not just the 11 presets. Parse exactly six hex digits with an optional leading '#'
+// (values arrive space/CR-trimmed from nyxconf_get); on success store the rgb and return 1,
+// else return 0 (the caller then tries the preset-name path). Pure.
+static int parse_hex_color(const char* s, uint32_t* out) {
+    if (!s) return 0;
+    if (*s == '#') s++;
+    int v[6];
+    for (int i = 0; i < 6; i++) {
+        char c = s[i];
+        if      (c >= '0' && c <= '9') v[i] = c - '0';
+        else if (c >= 'a' && c <= 'f') v[i] = c - 'a' + 10;
+        else if (c >= 'A' && c <= 'F') v[i] = c - 'A' + 10;
+        else return 0;                          // too short or a non-hex digit
+    }
+    if (s[6] != '\0') return 0;                 // trailing garbage / too long
+    if (out) *out = fb_rgb((uint32_t)(v[0]*16 + v[1]),
+                           (uint32_t)(v[2]*16 + v[3]),
+                           (uint32_t)(v[4]*16 + v[5]));
+    return 1;
+}
+
+// KAT: the #RRGGBB accent parser — accepts 6 hex digits with/without '#' (case-insensitive),
+// rejects wrong length / non-hex / trailing garbage, and never touches *out on failure. 0 = pass.
+int hex_color_selftest(void) {
+    uint32_t c = 0;
+    if (!parse_hex_color("#1E90FF", &c) || c != fb_rgb(0x1E, 0x90, 0xFF)) return 1;
+    if (!parse_hex_color("1e90ff",  &c) || c != fb_rgb(0x1E, 0x90, 0xFF)) return 2;  // no '#', lowercase
+    if (!parse_hex_color("#000000", &c) || c != fb_rgb(0, 0, 0))          return 3;
+    if (!parse_hex_color("#FFFFFF", &c) || c != fb_rgb(255, 255, 255))    return 4;
+    if (parse_hex_color("#12345",  &c))  return 5;   // too short
+    if (parse_hex_color("#1234567", &c)) return 6;   // too long
+    if (parse_hex_color("#12345g",  &c)) return 7;   // non-hex digit
+    if (parse_hex_color("Morado",   &c)) return 8;   // a preset name is not hex
+    if (parse_hex_color(0,          &c)) return 9;   // NULL
+    c = 0xABCD;                                      // failure must leave *out untouched
+    if (parse_hex_color("nope!!", &c) || c != 0xABCD) return 10;
+    return 0;
+}
+
 // nyx.conf `rounding` — the window/menu corner radius in px, clamped to [0, WIN_RADIUS_MAX].
 // 0 = fully square windows (a classic rice choice); a leading non-digit or NULL -> 0. Pure
 // (does not set g_corner_radius) so the KAT can check the parse in isolation.
@@ -3978,10 +4018,16 @@ static void apply_nyx_config(void) {
         if (s >= 0) wallpaper_set_style(s);
     }
     if (nyxconf_get(buf, "accent", val, sizeof val)) {
-        int c = wallpaper_color_from_name(val);
-        if (c >= 0) {
-            wallpaper_set_color(c);                 // the wallpaper base color…
-            theme_set_accent(wallpaper_base_color()); // …AND the whole UI chrome, cohesively
+        uint32_t hex;
+        if (parse_hex_color(val, &hex)) {               // accent = #RRGGBB -> ANY color (wallpaper + chrome)
+            wallpaper_set_color_rgb(hex);
+            theme_set_accent(hex);
+        } else {
+            int c = wallpaper_color_from_name(val);
+            if (c >= 0) {
+                wallpaper_set_color(c);                 // the wallpaper base color…
+                theme_set_accent(wallpaper_base_color()); // …AND the whole UI chrome, cohesively
+            }
         }
     }
     if (nyxconf_get(buf, "scheme", val, sizeof val)) {

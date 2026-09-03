@@ -35,7 +35,14 @@ static const char* style_names[WP_STYLE_COUNT] = { "Limpio", "Nightfall", "Plano
 static int g_wallpaper = 0;                    // selected base color; default = morado
 static int g_style     = WP_STYLE_NIGHTFALL;   // selected render style; default = moon + stars
 
+// Arbitrary base-color override — nyx.conf `accent = #RRGGBB` picks any color, not just the 11
+// presets. Off by default (the palette index wins); set via wallpaper_set_color_rgb and cleared
+// whenever a preset index is chosen, so every named-accent path stays byte-identical.
+static int      g_wp_override     = 0;
+static uint32_t g_wp_override_rgb = 0;
+
 uint32_t wallpaper_base_color(void) {
+    if (g_wp_override) return g_wp_override_rgb;
     return fb_rgb(palette[g_wallpaper].r, palette[g_wallpaper].g, palette[g_wallpaper].b);
 }
 
@@ -53,7 +60,9 @@ int wallpaper_style(void) {
 // Setters + name lookups so /etc/nyx.conf (the rice config) can pick the wallpaper by name
 // (v6.5.23). Out-of-range is ignored; an unknown name returns -1 so the caller keeps the default.
 void wallpaper_set_style(int style) { if (style >= 0 && style < WP_STYLE_COUNT) g_style = style; }
-void wallpaper_set_color(int idx)   { if (idx   >= 0 && idx   < WALLPAPER_COUNT) g_wallpaper = idx; }
+void wallpaper_set_color(int idx)   { if (idx   >= 0 && idx   < WALLPAPER_COUNT) { g_wallpaper = idx; g_wp_override = 0; } }
+// nyx.conf `accent = #RRGGBB`: set the base color to an arbitrary rgb (tints wallpaper + UI).
+void wallpaper_set_color_rgb(uint32_t rgb) { g_wp_override = 1; g_wp_override_rgb = rgb; }
 int wallpaper_color(void)           { return g_wallpaper; }   // current base-color index
 // Index -> name, for writing /etc/nyx.conf back from the GUI (save_nyx_config). Out-of-range
 // falls back to the default names so a bad index never yields a NULL into snprintf.

@@ -32,6 +32,7 @@ uint32_t wallpaper_color_rgb(int idx); // rgb of ANY palette color by index (nyx
 int      wallpaper_style(void);        // current render style (WP_STYLE_*)
 void     wallpaper_set_style(int style);            // set render style (clamped)
 void     wallpaper_set_color(int idx);              // set base-color index (clamped)
+void     wallpaper_set_color_rgb(uint32_t rgb);     // set an arbitrary base rgb (nyx.conf accent = #RRGGBB)
 int      wallpaper_color(void);        // current base-color index
 const char* wallpaper_style_name(int i);   // index -> style name (default "Nightfall" if OOR)
 const char* wallpaper_color_name(int i);   // index -> color name (default "Morado" if OOR)
