@@ -492,9 +492,12 @@ static void format_core(emit_fn emit, void* ctx, const char* fmt, va_list args) 
             case 'o': { unsigned int v = va_arg(args, unsigned int); fmt_u64(emit, ctx, v, 8, pad, padchar, left, 0); break; }
             case 'x': { unsigned int v = va_arg(args, unsigned int); fmt_u64(emit, ctx, v, 16, pad, padchar, left, 0); break; }
             case 'X': { unsigned int v = va_arg(args, unsigned int); fmt_u64(emit, ctx, v, 16, pad, padchar, left, 1); break; }
+            case 'z':   /* size_t / ssize_t (64-bit on LP64) */
+            case 't':   /* ptrdiff_t   (64-bit on LP64) */
             case 'l': {
                 fmt++;
-                if (*fmt == 'u') { unsigned long v = va_arg(args, unsigned long); fmt_u64(emit, ctx, v, 10, pad, padchar, left, 0); }
+                if (*fmt == 'l') fmt++;   /* ll: long long == long on LP64, so read one 64-bit slot */
+                if      (*fmt == 'u') { unsigned long v = va_arg(args, unsigned long); fmt_u64(emit, ctx, v, 10, pad, padchar, left, 0); }
                 else if (*fmt == 'x') { unsigned long v = va_arg(args, unsigned long); fmt_u64(emit, ctx, v, 16, pad, padchar, left, 0); }
                 else if (*fmt == 'X') { unsigned long v = va_arg(args, unsigned long); fmt_u64(emit, ctx, v, 16, pad, padchar, left, 1); }
                 else if (*fmt == 'o') { unsigned long v = va_arg(args, unsigned long); fmt_u64(emit, ctx, v, 8, pad, padchar, left, 0); }

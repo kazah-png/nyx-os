@@ -167,6 +167,12 @@ int main(int argc, char** argv) {
         char x[40];
         int n3 = snprintf(x, sizeof(x), "%X-%08X-%lX", 0xabcu, 0x1a2bu, 0xDEADBEEFCAFEUL);
         if (strcmp(x, "ABC-00001A2B-DEADBEEFCAFE") != 0 || n3 != 25) pf_ok = 0;
+        /* 64-bit length modifiers: %z (size_t) / %ll (long long) must not truncate or drop
+         * the arg (regression: format_core had no z/t case and only handled a single 'l'). */
+        char z[64];
+        snprintf(z, sizeof(z), "%zu/%zx/%llu/%lld", (size_t)0x1FFFFFFFFULL,
+                 (size_t)0xDEADBEEFCAFEULL, 18446744073709551615ULL, -9000000000LL);
+        if (strcmp(z, "8589934591/deadbeefcafe/18446744073709551615/-9000000000") != 0) pf_ok = 0;
 
         const char* fp = "/mnt/libctest_fprintf.txt";
         FILE* f = fopen(fp, "w");
