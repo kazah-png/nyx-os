@@ -3873,6 +3873,34 @@ int hex_color_selftest(void) {
     return 0;
 }
 
+// Format the `accent` value save_nyx_config writes back to /etc/nyx.conf: a hand-set (or
+// override) color has no palette name, so persist it as a lowercase #RRGGBB that parse_hex_color
+// reads back verbatim — otherwise saving from the GUI clobbered a #hex accent with the stale
+// index's name ("Morado"). A named color is written by name. Pure. `rgb` is an fb_rgb() value.
+static void accent_config_str(int is_override, uint32_t rgb, const char* name, char* out, int outsz) {
+    if (is_override)
+        snprintf(out, outsz, "#%02x%02x%02x", (unsigned)((rgb >> 16) & 0xFF),
+                 (unsigned)((rgb >> 8) & 0xFF), (unsigned)(rgb & 0xFF));
+    else
+        snprintf(out, outsz, "%s", name ? name : "Morado");
+}
+
+// KAT: the accent config-string round-trips through parse_hex_color (a #hex written by save must
+// re-parse to the SAME rgb), and a named color is written by name. 0 = pass.
+int accent_config_selftest(void) {
+    char b[16]; uint32_t rgb;
+    accent_config_str(1, fb_rgb(0x1E, 0x90, 0xFF), "Morado", b, sizeof b);
+    if (strcmp(b, "#1e90ff") != 0) return 1;
+    if (!parse_hex_color(b, &rgb) || rgb != fb_rgb(0x1E, 0x90, 0xFF)) return 2;   // round-trips
+    accent_config_str(0, 0, "Turquesa", b, sizeof b);
+    if (strcmp(b, "Turquesa") != 0) return 3;                                     // named -> name
+    accent_config_str(1, fb_rgb(0, 0, 0), "x", b, sizeof b);
+    if (strcmp(b, "#000000") != 0) return 4;
+    accent_config_str(1, fb_rgb(255, 255, 255), "x", b, sizeof b);
+    if (strcmp(b, "#ffffff") != 0) return 5;
+    return 0;
+}
+
 // nyx.conf `rounding` — the window/menu corner radius in px, clamped to [0, WIN_RADIUS_MAX].
 // 0 = fully square windows (a classic rice choice); a leading non-digit or NULL -> 0. Pure
 // (does not set g_corner_radius) so the KAT can check the parse in isolation.
@@ -4085,6 +4113,9 @@ static void apply_nyx_config(void) {
 // reboots — apply_nyx_config reads it at desktop start. The inverse of apply_nyx_config.
 void save_nyx_config(void) {
     char buf[320];
+    char acc[16];   // a #RRGGBB accent has no palette name — persist it so the GUI save round-trips
+    accent_config_str(wallpaper_is_rgb_override(), wallpaper_override_rgb(),
+                      wallpaper_color_name(wallpaper_color()), acc, sizeof acc);
     int n = snprintf(buf, sizeof buf,
         "# NyxOS desktop config -- rice it here (also editable from the Wallpaper picker).\n"
         "wallpaper = %s\n"
@@ -4094,7 +4125,7 @@ void save_nyx_config(void) {
         "clock = %s\n"
         "gaps = %d\n",
         wallpaper_style_name(wallpaper_style()),
-        wallpaper_color_name(wallpaper_color()),
+        acc,
         g_widget_on ? "on" : "off",
         widget_pos_name(g_widget_pos),
         g_clock_12h ? "12h" : "24h",

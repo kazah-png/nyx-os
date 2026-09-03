@@ -64,6 +64,8 @@ void wallpaper_set_color(int idx)   { if (idx   >= 0 && idx   < WALLPAPER_COUNT)
 // nyx.conf `accent = #RRGGBB`: set the base color to an arbitrary rgb (tints wallpaper + UI).
 void wallpaper_set_color_rgb(uint32_t rgb) { g_wp_override = 1; g_wp_override_rgb = rgb; }
 int wallpaper_color(void)           { return g_wallpaper; }   // current base-color index
+int      wallpaper_is_rgb_override(void) { return g_wp_override; }     // nyx.conf `accent = #RRGGBB` active?
+uint32_t wallpaper_override_rgb(void)    { return g_wp_override_rgb; } // its rgb (valid when the above is 1)
 // Index -> name, for writing /etc/nyx.conf back from the GUI (save_nyx_config). Out-of-range
 // falls back to the default names so a bad index never yields a NULL into snprintf.
 const char* wallpaper_style_name(int i) { return (i >= 0 && i < WP_STYLE_COUNT)  ? style_names[i] : "Nightfall"; }

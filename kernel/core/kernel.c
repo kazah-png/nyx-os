@@ -9980,6 +9980,7 @@ static void run_selftests(void) {
         {"snapgap",      snap_gap_selftest},
         {"scheme",       scheme_selftest},
         {"border",       border_color_selftest},   {"hexcolor",      hex_color_selftest},
+        {"accentcfg",    accent_config_selftest},
         {"colblend",     col_blend_selftest},
         {"titleset",     title_set_selftest},
         {"rounding",     rounding_selftest},

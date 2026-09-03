@@ -131,6 +131,7 @@ int snap_gap_selftest(void);      // KAT: snap/maximize tiling geometry, with an
 int scheme_selftest(void);        // KAT: nyx.conf colorscheme presets resolve to real wallpaper+accent names
 int border_color_selftest(void);  // KAT: nyx.conf `border` focused-window outline color resolves to real palette rgb
 int hex_color_selftest(void);      // KAT: nyx.conf `accent = #RRGGBB` hex color parser
+int accent_config_selftest(void);  // KAT: save_nyx_config accent string round-trips (#hex or name)
 int col_blend_selftest(void);     // KAT: the col_blend alpha-mix primitive (panel_tint / future translucency)
 int title_set_selftest(void);     // KAT: window_set_title copy/truncation + bad-id reject (SYS_WIN_SET_TITLE path)
 int rounding_selftest(void);      // KAT: nyx.conf `rounding` corner-radius parse + clamp (0 = square windows)
