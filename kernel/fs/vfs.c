@@ -705,7 +705,9 @@ void init_vfs(void) {
         "# shadow: window + start-menu drop shadows (on|off); off = a flat, shadowless desktop\n"
         "# shadow = off\n"
         "# title_align: window title-bar text alignment (left|center); default left\n"
-        "# title_align = center\n";
+        "# title_align = center\n"
+        "# wallpaper_dim: darken the wallpaper 0-80% so windows/icons pop (0 = off)\n"
+        "# wallpaper_dim = 40\n";
     int cfd = vfs_open("/etc/nyx.conf", 1, 0644);
     vfs_write(cfd, nyxconf, strlen(nyxconf));
     vfs_close(cfd);

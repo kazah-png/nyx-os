@@ -135,6 +135,7 @@ int title_set_selftest(void);     // KAT: window_set_title copy/truncation + bad
 int rounding_selftest(void);      // KAT: nyx.conf `rounding` corner-radius parse + clamp (0 = square windows)
 int shadow_selftest(void);        // KAT: nyx.conf boolean-off parse (`shadow` toggle: off/0/false/no)
 int titlebar_selftest(void);      // KAT: title-bar text x placement (nyx.conf `title_align` left/center)
+int wallpaper_dim_selftest(void); // KAT: nyx.conf `wallpaper_dim` percent parse + clamp (0..80)
 extern int compositor_logout_requested;              // user menu "Log out" -> boot loop re-shows login
 
 #endif

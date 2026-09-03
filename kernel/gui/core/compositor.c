@@ -59,6 +59,7 @@ static uint32_t g_border_color = 0; // focused-window outline override — nyx.c
 static int g_panel_tint = 0;        // taskbar tint toward the wallpaper colour, 0-100% — nyx.conf `panel_tint` (0 = off)
 static int g_shadows   = 1;         // window + start-menu drop shadows — nyx.conf `shadow` (off = flat, no shadows)
 static int g_title_center = 0;      // title-bar text alignment — nyx.conf `title_align` (0 = left default, 1 = center)
+static int g_wallpaper_dim = 0;     // wallpaper darken percent 0..80 — nyx.conf `wallpaper_dim` (0 = off; mutes the background so windows/icons pop)
 static int net_popup_open = 0;      // the system tray's network-status popup
 static int spk_popup_open = 0;      // the system tray's sound/volume popup
 static int g_volume = 75;           // master volume 0..100 (persisted while running)
@@ -1954,6 +1955,11 @@ static void draw_start_menu_shadow(void) {
 
 static void redraw_all(void) {
     draw_background();
+    // nyx.conf `wallpaper_dim`: mute the freshly-painted wallpaper by g_wallpaper_dim percent
+    // (BEFORE widgets/icons/windows, so only the background dims). Off (0) = a no-op.
+    if (g_wallpaper_dim > 0)
+        fb_darken_rect(0, 0, (int)fb_get_width(), (int)fb_get_height(),
+                       (uint8_t)(g_wallpaper_dim * 255 / 100));
     draw_desktop_widget();   // on the wallpaper, behind windows
     draw_desktop_icons();
 
@@ -3848,6 +3854,29 @@ int rounding_selftest(void) {
     return 0;
 }
 
+// nyx.conf `wallpaper_dim` — darken the wallpaper by this PERCENT (0..80). 0 = off (no dim);
+// higher values mute the background so windows/icons/text stand out (an r/unixporn staple).
+// Clamped to 80 so the desktop never goes fully black; NULL / non-numeric -> 0. Pure (does not
+// set g_wallpaper_dim) so the KAT can check the parse in isolation.
+#define WALLPAPER_DIM_MAX 80
+static int wallpaper_dim_resolve(const char* val) {
+    int d = 0;
+    if (val) for (const char* p = val; *p >= '0' && *p <= '9'; p++) d = d * 10 + (*p - '0');
+    if (d > WALLPAPER_DIM_MAX) d = WALLPAPER_DIM_MAX;
+    return d < 0 ? 0 : d;
+}
+
+// KAT: the `wallpaper_dim` parser clamps to [0, WALLPAPER_DIM_MAX] and maps NULL / non-numeric to 0.
+int wallpaper_dim_selftest(void) {
+    if (wallpaper_dim_resolve("0")   != 0)                 return 1;   // off
+    if (wallpaper_dim_resolve("40")  != 40)                return 2;
+    if (wallpaper_dim_resolve("80")  != WALLPAPER_DIM_MAX) return 3;
+    if (wallpaper_dim_resolve("100") != WALLPAPER_DIM_MAX) return 4;   // clamped
+    if (wallpaper_dim_resolve(0)     != 0)                 return 5;   // NULL -> 0
+    if (wallpaper_dim_resolve("abc") != 0)                 return 6;   // non-numeric -> 0
+    return 0;
+}
+
 // nyx.conf boolean-OFF parse: any of off/0/false/no reads as "disabled"; anything else
 // (including NULL) is "enabled". Shared by toggle keys like `shadow`.
 static int conf_is_off(const char* val) {
@@ -3999,6 +4028,9 @@ static void apply_nyx_config(void) {
     }
     if (nyxconf_get(buf, "title_align", val, sizeof val)) {
         g_title_center = (strcmp(val, "center") == 0);  // title-bar text: center, else left (default)
+    }
+    if (nyxconf_get(buf, "wallpaper_dim", val, sizeof val)) {
+        g_wallpaper_dim = wallpaper_dim_resolve(val);   // darken the wallpaper 0-80% (0 = off)
     }
 }
 

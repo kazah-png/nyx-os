@@ -18,7 +18,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.5.73"
+#define KERNEL_VERSION "6.5.74"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -27,7 +27,7 @@
 // Erebus (primordial darkness) is the terminal emulator. Used wherever these
 // components identify themselves (nyxfetch, the terminal banner).
 #define COMPOSITOR_NAME    "Hemera"
-#define COMPOSITOR_VERSION "3.26"      // Hemera: the windowing compositor (2nd-gen daedalOS-style desktop)
+#define COMPOSITOR_VERSION "3.27"      // Hemera: the windowing compositor (2nd-gen daedalOS-style desktop)
 #define TERMINAL_NAME      "Erebus"
 #define TERMINAL_VERSION   "1.3"      // Erebus: the terminal emulator
 #define SELENE_NAME        "Selene"
