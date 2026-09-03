@@ -35,6 +35,8 @@ void fb_stroke_round_rect(int x, int y, int w, int h, int R, uint32_t col);  // 
 void fb_set_round_clip(int x, int y, int w, int h, int r);  // mask fills/blits to a rect w/ rounded bottom corners
 void fb_clear_clip(void);
 void fb_set_region_clip(int x, int y, int w, int h);        // outer damage-rect clip, INTERSECTS the round clip (dirty-rect groundwork)
+int  fb_clip_active(void);                                  // 1 if a round/region clip is up (per-glyph gate for direct blitters)
+int  fb_pixel_visible(int x, int y);                        // 1 if (x,y) passes the active round/region clip
 void fb_clear_region_clip(void);
 void fb_blit(const void* src, uint32_t sx, uint32_t sy, uint32_t w, uint32_t h, uint32_t dx, uint32_t dy);
 void fb_clear(uint32_t color);

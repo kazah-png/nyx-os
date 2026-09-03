@@ -341,6 +341,12 @@ static int clip_pixel_ok(int x, int y) {
     return x >= lo && x < hi;
 }
 
+// Public clip probes for direct-write blitters (font glyphs) that bypass fb_put_pixel for
+// speed: check fb_clip_active() ONCE per glyph and, only when a clip is up, gate each pixel
+// with fb_pixel_visible(). With no clip the caller keeps its tight direct-write loop.
+int fb_clip_active(void)          { return clip_on || region_on; }
+int fb_pixel_visible(int x, int y) { return clip_pixel_ok(x, y); }
+
 // KAT: the pure region/round span intersection. rr=0 keeps the round clip a plain
 // rect (no arc) so the geometry is exact. 0 = pass, else the failing case number.
 int region_clip_selftest(void) {

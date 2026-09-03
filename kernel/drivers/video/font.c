@@ -275,10 +275,12 @@ void font_draw_char(uint32_t x, uint32_t y, unsigned char c, uint32_t fg, uint32
     if (x + FONT_WIDTH > w || y + FONT_HEIGHT > h) return;
     uint32_t* fb = (uint32_t*)fb_get_addr();
     const uint8_t* glyph = font_data[c];
+    int clipped = fb_clip_active();   // honour a round/region clip; unclipped keeps the tight loop
     for (uint32_t row = 0; row < FONT_HEIGHT; row++) {
         uint32_t row_bits = glyph[row];
         if (row_bits == 0 && bg == 0) continue;
         for (uint32_t col = 0; col < FONT_WIDTH; col++) {
+            if (clipped && !fb_pixel_visible((int)(x + col), (int)(y + row))) continue;
             uint32_t idx = (y + row) * w + (x + col);
             fb[idx] = (row_bits >> (7 - col)) & 1 ? fg : bg;
         }
@@ -301,6 +303,7 @@ void font_draw_string_trans(uint32_t x, uint32_t y, const char* str, uint32_t fg
     uint32_t w = fb_get_width(), h = fb_get_height();
     uint32_t* fb = (uint32_t*)fb_get_addr();
     if (!fb) return;
+    int clipped = fb_clip_active();   // gate glyph pixels under a round/region clip (unclipped = fast path)
     while (*str) {
         const uint8_t* glyph = font_data[(unsigned char)*str];
         if (x + FONT_WIDTH <= w && y + FONT_HEIGHT <= h) {
@@ -308,8 +311,10 @@ void font_draw_string_trans(uint32_t x, uint32_t y, const char* str, uint32_t fg
                 uint32_t rb = glyph[row];
                 if (!rb) continue;
                 for (uint32_t col = 0; col < FONT_WIDTH; col++)
-                    if ((rb >> (7 - col)) & 1)
+                    if ((rb >> (7 - col)) & 1) {
+                        if (clipped && !fb_pixel_visible((int)(x + col), (int)(y + row))) continue;
                         fb[(y + row) * w + (x + col)] = fg;
+                    }
             }
         }
         x += FONT_WIDTH;
