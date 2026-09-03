@@ -1,0 +1,31 @@
+// modlib.npp — a module: the file modmain.npp uses (M6.5).
+//
+// A module is a file. `pub` marks what it exports — here the output helper,
+// a generic enum, and a function over one instantiation of it. The syscall
+// block stays private to the module. Monomorphization runs over the whole
+// program after `use` resolution, so an instantiation made in modmain.npp
+// (`Maybe<str>`) lands here, next to the template, once — exactly as it
+// would inside a single file.
+
+extern syscall {
+    fn write(fd: i32, buf: *u8, len: isize) -> i64 = 1
+}
+
+pub fn put(s: str) {
+    write(1, s.ptr as *u8, s.len as isize);
+}
+
+pub enum Maybe<T> {
+    Some(v: T),
+    None,
+}
+
+pub fn first_even(a: i64, b: i64) -> Maybe<i64> {
+    if a % 2 == 0 {
+        return Maybe.Some{ v: a };
+    }
+    if b % 2 == 0 {
+        return Maybe.Some{ v: b };
+    }
+    Maybe.None
+}

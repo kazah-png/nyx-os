@@ -68,3 +68,27 @@ refused with the explicit form spelled out in the diagnostic. Still
 pending: generic uses inside another generic's body — each
 instantiation is emitted from the template's own source span, which
 cannot carry a nested rewrite yet.
+
+## Modules (M6.5), plainly
+
+A module is a file. A top-level `use "lib.npp";` inlines that file's
+text in its place — the path is relative to the using file — and the
+program the generic pass sees is the flat result, so a template declared
+in one file and instantiated in another monomorphizes and dedups exactly
+as it would in one file. The rules are the ones design §6.2 names:
+
+- **once per program** — a second `use` of the same file, from anywhere,
+  leaves only a marker comment;
+- **cycles refused** — a file that names one still being resolved is an
+  error at the offending `use`;
+- **`pub` marks exports** and is dropped from the lowering (N has no
+  visibility). Enforcing that a user sees only `pub` items is the next
+  rung; today every top-level item of a used file is reachable.
+
+The lowered `.n` keeps `// use "lib.npp" (inlined by nppc)` and
+`// end of "lib.npp"` markers around each inlined file, so the flat unit
+stays reviewable. Diagnostics after a `use` count lines of the combined
+text. [`../examples/modmain.npp`](../examples/modmain.npp) and
+[`../examples/modlib.npp`](../examples/modlib.npp) are the two-file
+program the suite's stage [10i] holds — lowered, agreed on by `ncc` and
+`ngen`, run on the host, with a missing file and a cycle refused.

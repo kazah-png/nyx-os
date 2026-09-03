@@ -330,6 +330,16 @@ static void lex_all(void) {
     if (itop >= 0) die("%s: unterminated interpolation at end of file", FILENAME);
 }
 
+/* Lex `text` as the current file. The lexer's state is reset per call, so
+ * module resolution (M6.5) can lex each file in turn and the generic pass
+ * can lex the resolved program afterwards. */
+static void lex_text(const char* text, long len) {
+    SRC = text; LEN = (int)len;
+    POS = 0; LINE = 1; COL = 1; TOK_START = 0;
+    itop = -1; brace_depth = 0; resume_str = 0;
+    lex_all();
+}
+
 static int tokspan_eq(int a, int b) {      /* two IDENT tokens name the same word */
     return TOKS[a].k == T_IDENT && TOKS[b].k == T_IDENT &&
            TOKS[a].slen == TOKS[b].slen &&
@@ -853,6 +863,156 @@ static int edit_cmp(const void* x, const void* y) {
 }
 
 /* ------------------------------------------------------------------ */
+/* modules (M6.5): `use "file.npp";` and `pub`                         */
+/*                                                                    */
+/* A module is a file. A top-level `use "path";` (the path is relative */
+/* to the using file) inlines that file's resolved text in its place — */
+/* once per program: a second `use` of the same file leaves only a     */
+/* marker comment — and a file still being resolved (a cycle) is       */
+/* refused. Resolution runs BEFORE the generic pass, over the combined  */
+/* text, so a generic declared in one file and instantiated in another  */
+/* monomorphizes and dedups exactly as it would in a single file. `pub` */
+/* marks an exported item and is dropped from the lowering; enforcing   */
+/* visibility across modules is the next rung.                          */
+/* ------------------------------------------------------------------ */
+#define MAXUSE 64
+static const char* USED[MAXUSE]; static int NUSED;    /* files already inlined */
+static const char* CHAIN[MAXUSE]; static int NCHAIN;  /* the use chain being resolved */
+
+static char* read_file(const char* path, long* out_len) {
+    FILE* f = fopen(path, "rb");
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END);
+    long sz = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    char* buf = xmalloc((size_t)sz + 1);
+    if (sz > 0 && fread(buf, 1, (size_t)sz, f) != (size_t)sz) { fclose(f); return NULL; }
+    fclose(f);
+    buf[sz] = 0;
+    *out_len = sz;
+    return buf;
+}
+
+/* `rel` resolved against the directory of `from` (textually — two spellings
+ * of one file are two files to the once-per-program rule). */
+static char* join_path(const char* from, const char* rel) {
+    int dl = 0;
+    for (int i = 0; from[i]; i++)
+        if (from[i] == '/' || from[i] == '\\') dl = i + 1;
+    char* out = xmalloc((size_t)dl + strlen(rel) + 1);
+    memcpy(out, from, (size_t)dl);
+    strcpy(out + dl, rel);
+    return out;
+}
+
+static void app(char** b, size_t* n, size_t* cap, const char* s, size_t l) {
+    if (*n + l + 1 > *cap) {
+        while (*n + l + 1 > *cap) *cap *= 2;
+        *b = realloc(*b, *cap);
+        if (!*b) die("nppc: out of memory");
+    }
+    memcpy(*b + *n, s, l);
+    *n += l;
+    (*b)[*n] = 0;
+}
+
+static char* resolve_file(const char* path, const char* text, long len);
+
+/* The text of one file with every top-level `use` directive replaced by
+ * the used file's resolved text. */
+static char* resolve_text(const char* path, const char* text, long len) {
+    const char* saved = FILENAME;
+    FILENAME = path;
+    lex_text(text, len);
+    /* Collect the directives first: resolving one re-lexes another file. */
+    int us[MAXUSE], ue[MAXUSE], uline[MAXUSE]; char* upath[MAXUSE];
+    int nu = 0, depth = 0;
+    for (int i = 0; i + 2 < NTOK; i++) {
+        if (TOKS[i].k == T_LB) depth++;
+        else if (TOKS[i].k == T_RB) depth--;
+        if (depth != 0 || TOKS[i].k != T_IDENT || TOKS[i].slen != 3 ||
+            memcmp(TOKS[i].s, "use", 3)) continue;
+        if (TOKS[i + 1].k != T_STR || TOKS[i + 2].k != T_SEMI)
+            die("%s:%d: expected use \"file.npp\";", FILENAME, TOKS[i].line);
+        if (nu >= MAXUSE) die("%s: too many use directives", FILENAME);
+        us[nu] = TOKS[i].start;
+        ue[nu] = TOKS[i + 2].end;
+        uline[nu] = TOKS[i].line;
+        upath[nu] = xstrndup(TOKS[i + 1].s, (size_t)TOKS[i + 1].slen);
+        nu++;
+    }
+    FILENAME = saved;
+    if (nu == 0) return xstrndup(text, (size_t)len);
+    /* Splice: verbatim between directives, the used file's text at each. */
+    size_t cap = (size_t)len + 1024, n = 0;
+    char* out = xmalloc(cap);
+    int prev = 0;
+    char mark[600];
+    for (int u = 0; u < nu; u++) {
+        app(&out, &n, &cap, text + prev, (size_t)(us[u] - prev));
+        char* full = join_path(path, upath[u]);
+        /* A file still on the chain is a cycle (checked before the
+         * once-per-program rule, which would otherwise mask it). */
+        for (int k = 0; k < NCHAIN; k++)
+            if (!strcmp(CHAIN[k], full))
+                die("%s:%d: cyclic use of \"%s\"", path, uline[u], upath[u]);
+        int seen = 0;
+        for (int k = 0; k < NUSED; k++)
+            if (!strcmp(USED[k], full)) seen = 1;
+        if (seen) {
+            snprintf(mark, sizeof mark, "// use \"%s\" (already inlined)", upath[u]);
+            app(&out, &n, &cap, mark, strlen(mark));
+        } else {
+            long ilen;
+            char* itext = read_file(full, &ilen);
+            if (!itext)
+                die("%s:%d: cannot open \"%s\" (looked for %s)", path, uline[u], upath[u], full);
+            char* inner = resolve_file(full, itext, ilen);
+            snprintf(mark, sizeof mark, "// use \"%s\" (inlined by nppc)\n", upath[u]);
+            app(&out, &n, &cap, mark, strlen(mark));
+            app(&out, &n, &cap, inner, strlen(inner));
+            if (n > 0 && out[n - 1] != '\n') app(&out, &n, &cap, "\n", 1);
+            snprintf(mark, sizeof mark, "// end of \"%s\"", upath[u]);
+            app(&out, &n, &cap, mark, strlen(mark));
+        }
+        prev = ue[u];
+    }
+    app(&out, &n, &cap, text + prev, (size_t)(len - prev));
+    return out;
+}
+
+/* Resolve one file: it counts as inlined from here on, and sits on the
+ * chain while its own uses resolve (that is what a cycle runs into). */
+static char* resolve_file(const char* path, const char* text, long len) {
+    if (NUSED >= MAXUSE || NCHAIN >= MAXUSE) die("nppc: too many modules");
+    USED[NUSED++] = path;
+    CHAIN[NCHAIN++] = path;
+    char* out = resolve_text(path, text, len);
+    NCHAIN--;
+    return out;
+}
+
+/* `pub` marks an exported item (design §6.2). N has no visibility, so the
+ * lowering drops the marker together with the spacing after it. */
+static void strip_pub(void) {
+    int depth = 0;
+    for (int i = 0; i + 1 < NTOK; i++) {
+        if (TOKS[i].k == T_LB) depth++;
+        else if (TOKS[i].k == T_RB) depth--;
+        if (depth != 0 || TOKS[i].k != T_IDENT || TOKS[i].slen != 3 ||
+            memcmp(TOKS[i].s, "pub", 3)) continue;
+        TK nx = TOKS[i + 1].k;
+        if (nx != T_KW_FN && nx != T_KW_STRUCT && nx != T_KW_ENUM && nx != T_KW_IMPL)
+            die("%s:%d: pub must precede fn, struct, enum, or impl", FILENAME, TOKS[i].line);
+        if (NEDIT >= MAXG + MAXI) die("%s: too many rewrites", FILENAME);
+        EDITS[NEDIT].start = TOKS[i].start;
+        EDITS[NEDIT].end = TOKS[i + 1].start;
+        EDITS[NEDIT].repl = "";
+        NEDIT++;
+    }
+}
+
+/* ------------------------------------------------------------------ */
 /* driver                                                             */
 /* ------------------------------------------------------------------ */
 int main(int argc, char** argv) {
@@ -860,22 +1020,19 @@ int main(int argc, char** argv) {
         die("usage: nppc <file.npp> -o <out.n>");
     FILENAME = argv[1];
 
-    FILE* f = fopen(FILENAME, "rb");
-    if (!f) die("nppc: cannot open '%s'", FILENAME);
-    fseek(f, 0, SEEK_END);
-    long sz = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    char* buf = xmalloc((size_t)sz + 1);
-    if (sz > 0 && fread(buf, 1, (size_t)sz, f) != (size_t)sz)
-        die("nppc: cannot read '%s'", FILENAME);
-    fclose(f);
-    SRC = buf;
-    LEN = (int)sz;
+    long sz;
+    char* buf = read_file(FILENAME, &sz);
+    if (!buf) die("nppc: cannot open '%s'", FILENAME);
 
-    /* The read side is real: the whole file lexes as the N dialect (a file
-     * that fails here would fail identically under ncc), and the token
+    /* Modules first (M6.5): the program is the main file with every `use`
+     * inlined. A file with no directives resolves to itself byte-for-byte. */
+    char* prog = resolve_file(FILENAME, buf, sz);
+    FILENAME = argv[1];
+
+    /* The read side is real: the whole program lexes as the N dialect (a
+     * file that fails here would fail identically under ncc), and the token
      * buffer with source spans is what the generic pass rewrites over. */
-    lex_all();
+    lex_text(prog, (long)strlen(prog));
     collect_generic_decls();
     collect_generic_fns();
     collect_generic_enums();
@@ -914,6 +1071,7 @@ int main(int argc, char** argv) {
         EDITS[NEDIT].repl = mangle(&INSTS[i]);
         NEDIT++;
     }
+    strip_pub();
     qsort(EDITS, (size_t)NEDIT, sizeof(Edit), edit_cmp);
 
     /* Splice: verbatim between edits, replacement at each. With no generics

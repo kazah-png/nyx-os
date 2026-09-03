@@ -1,0 +1,40 @@
+// modmain.npp — N++ modules (M6.5): one program split across files.
+//
+// `use "modlib.npp";` inlines the library's resolved text in its place —
+// once per program, with a second `use` of the same file reduced to a
+// marker and cyclic uses refused — and the generic pass then runs over the
+// whole program: `Maybe<str>` below instantiates the library's template
+// beside `first_even`'s own `Maybe<i64>`. What the N pipeline receives is
+// one flat `.n` unit, the model design §6.2 names. Paths resolve relative
+// to the using file.
+
+use "modlib.npp";
+
+fn pick_name(n: i64) -> Maybe<str> {
+    if n == 8 {
+        return Maybe.Some{ v: "eight" };
+    }
+    Maybe.None
+}
+
+fn show(label: str, m: Maybe<i64>) {
+    match m {
+        Some(v) => { put("{label}: {v}\n"); },
+        None    => { put("{label}: none\n"); },
+    }
+}
+
+fn show_name(n: i64, m: Maybe<str>) {
+    match m {
+        Some(v) => { put("{n} is {v}\n"); },
+        None    => { put("{n} has no name\n"); },
+    }
+}
+
+fn main() -> i64 {
+    show("first even of 3, 8", first_even(3, 8));
+    show("first even of 3, 5", first_even(3, 5));
+    show_name(8, pick_name(8));
+    show_name(9, pick_name(9));
+    0
+}
