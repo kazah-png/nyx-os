@@ -240,8 +240,11 @@ void fb_use_lfb_direct(void) {
     if (fb_hw) fb_addr = fb_hw;
 }
 
+static int clip_pixel_ok(int x, int y);   // defined with the clip machinery below
+
 void fb_put_pixel(uint32_t x, uint32_t y, uint32_t color) {
     if (!fb_addr || x >= fb_width || y >= fb_height) return;
+    if (!clip_pixel_ok((int)x, (int)y)) return;   // honour the round/region clip (round-rect corners, stars)
     if (fb_bpp == 32) {
         ((uint32_t*)fb_addr)[y * fb_width + x] = color;
     } else if (fb_bpp == 24) {
@@ -328,6 +331,14 @@ static void clip_span(int py, int* lo, int* hi) {
                        clip_on, clip_x0, clip_y0, clip_x1, clip_y1, clip_r,
                        region_on, region_x0, region_y0, region_x1, region_y1,
                        lo, hi);
+}
+
+// Is pixel (x,y) inside the active clip(s)? Used by single-pixel writers (fb_put_pixel)
+// so they respect the round/region clip like the rect fillers do. No clip active -> always ok.
+static int clip_pixel_ok(int x, int y) {
+    if (!clip_on && !region_on) return 1;
+    int lo, hi; clip_span(y, &lo, &hi);
+    return x >= lo && x < hi;
 }
 
 // KAT: the pure region/round span intersection. rr=0 keeps the round clip a plain
@@ -476,16 +487,19 @@ void fb_darken_rect(int x, int y, int w, int h, uint8_t shade) {
     if (w <= 0 || h <= 0) return;
 
     uint32_t keep = 255 - shade;   // how much of the original survives, 0..255
-    uint32_t* ptr = (uint32_t*)fb_addr + (uint32_t)y * fb_width + (uint32_t)x;
+    int clipped = (clip_on || region_on);      // honour the round/region clip per row
     for (int row = 0; row < h; row++) {
-        for (int col = 0; col < w; col++) {
+        int py = y + row, a = x, b = x + w;
+        if (clipped) { int lo, hi; clip_span(py, &lo, &hi); if (a < lo) a = lo; if (b > hi) b = hi; }
+        if (a >= b) continue;
+        uint32_t* ptr = (uint32_t*)fb_addr + (uint32_t)py * fb_width + (uint32_t)a;
+        for (int col = 0; col < b - a; col++) {
             uint32_t p = ptr[col];
             uint32_t r = ((p >> 16) & 0xFF) * keep / 255;
             uint32_t g = ((p >>  8) & 0xFF) * keep / 255;
-            uint32_t b = ( p        & 0xFF) * keep / 255;
-            ptr[col] = (p & 0xFF000000) | (r << 16) | (g << 8) | b;
+            uint32_t b2 = ( p       & 0xFF) * keep / 255;
+            ptr[col] = (p & 0xFF000000) | (r << 16) | (g << 8) | b2;
         }
-        ptr += fb_width;
     }
 }
 
