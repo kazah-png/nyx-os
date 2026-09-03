@@ -1,0 +1,31 @@
+// genfn.npp — N++ generic functions (M6.3b): monomorphized per call.
+//
+// `fn id<T>(x: T) -> T` is a template; each explicit call `id<i64>(...)`
+// makes nppc emit one concrete N function (`__g_id_i64`) with the type
+// parameter substituted in the signature, and rewrites the call to that
+// name. Type parameters live in the signature here; body-interior type
+// slots follow in a later rung. Explicit call-site arguments mean no
+// inference is needed.
+
+extern syscall {
+    fn write(fd: i32, buf: *u8, len: isize) -> i64 = 1
+}
+
+fn id<T>(x: T) -> T {
+    x
+}
+
+fn add_one<T>(x: T) -> T {
+    x + 1
+}
+
+fn put(s: str) {
+    write(1, s.ptr as *u8, s.len as isize);
+}
+
+fn main() -> i64 {
+    a := id<i64>(41);
+    b := add_one<i64>(a);
+    put("id gives {a}, add_one gives {b}\n");
+    b - 42
+}

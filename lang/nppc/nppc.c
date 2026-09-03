@@ -356,11 +356,16 @@ static int tokspan_eq(int a, int b) {      /* two IDENT tokens name the same wor
 #define MAXI 2048
 
 typedef struct {
+    int kind;                             /* 0 = struct, 1 = fn */
     int nametok;                          /* the IDENT token of the generic name */
     int ptok[MAXP]; int nparams;          /* type-param IDENT tokens */
-    int declstart, declend;               /* source span of `struct NAME<...> {...}` */
+    int declstart, declend;               /* source span of the whole declaration */
+    /* struct-only: the field templates */
     struct { int fname; int ptrs; int base; } fields[MAXF];
     int nfields;                          /* base: token index of the field type name */
+    /* fn-only: the token bounds the span-splice emit walks */
+    int angleclose;                       /* token index of `>` closing the params */
+    int lasttok;                          /* token index of the body's closing `}` */
 } GStruct;
 static GStruct GS[MAXG];
 static int NGS;
@@ -391,6 +396,7 @@ static void collect_generic_decls(void) {
         if (TOKS[i + 1].k != T_IDENT || TOKS[i + 2].k != T_LT) continue;
         if (NGS >= MAXG) die("%s: too many generic structs", FILENAME);
         GStruct* g = &GS[NGS];
+        g->kind = 0;
         g->nametok = i + 1;
         g->nparams = 0;
         g->declstart = TOKS[i].start;
@@ -441,7 +447,8 @@ static void collect_generic_decls(void) {
 static void collect_instantiations(void) {
     for (int i = 0; i + 1 < NTOK; i++) {
         if (TOKS[i].k != T_IDENT || TOKS[i + 1].k != T_LT) continue;
-        if (i > 0 && TOKS[i - 1].k == T_KW_STRUCT) continue;   /* the decl header */
+        if (i > 0 && (TOKS[i - 1].k == T_KW_STRUCT || TOKS[i - 1].k == T_KW_FN))
+            continue;                      /* the decl header, not a use site */
         int gi = gfind(i);
         if (gi < 0) continue;             /* `<` after a non-generic name: comparison */
         int atok[MAXP], nargs = 0, ok = 1, j = i + 2;
@@ -503,6 +510,117 @@ static char* concrete_struct(int gi, int* atok) {
     return out;
 }
 
+/* Is token t a type-parameter of generic g used in a type position (a base
+ * type after ':' , '->' or '*')? Returns the param index, or -1. */
+static int typaram_at(GStruct* g, int t) {
+    if (TOKS[t].k != T_IDENT || t == 0) return -1;
+    TK p = TOKS[t - 1].k;
+    if (p != T_COLON && p != T_ARROW && p != T_STAR) return -1;
+    for (int q = 0; q < g->nparams; q++)
+        if (tokspan_eq(g->ptok[q], t)) return q;
+    return -1;
+}
+
+/* Collect `fn NAME<params>(...) -> ret { body }` generic functions. Every
+ * type-parameter use must sit in a handled type position; one elsewhere is
+ * refused (M6.3c will lift that), so the emit substitutes every occurrence. */
+static void collect_generic_fns(void) {
+    for (int i = 0; i + 2 < NTOK; i++) {
+        if (TOKS[i].k != T_KW_FN) continue;
+        if (TOKS[i + 1].k != T_IDENT || TOKS[i + 2].k != T_LT) continue;
+        if (NGS >= MAXG) die("%s: too many generics", FILENAME);
+        GStruct* g = &GS[NGS];
+        g->kind = 1;
+        g->nametok = i + 1;
+        g->nparams = 0;
+        g->nfields = 0;
+        g->declstart = TOKS[i].start;
+        int j = i + 3;                    /* first type parameter */
+        for (;;) {
+            if (TOKS[j].k != T_IDENT)
+                die("%s:%d: generic parameter must be a name", FILENAME, TOKS[j].line);
+            if (g->nparams >= MAXP) die("%s: too many type parameters", FILENAME);
+            g->ptok[g->nparams++] = j++;
+            if (TOKS[j].k == T_COMMA) { j++; continue; }
+            if (TOKS[j].k == T_GT) { break; }
+            die("%s:%d: expected ',' or '>' in type-parameter list", FILENAME, TOKS[j].line);
+        }
+        g->angleclose = j;                /* the `>` token */
+        j++;
+        if (TOKS[j].k != T_LP)
+            die("%s:%d: expected '(' after generic function header", FILENAME, TOKS[j].line);
+        /* skip to the body's opening brace */
+        while (TOKS[j].k != T_LB) {
+            if (TOKS[j].k == T_EOF)
+                die("%s:%d: unterminated generic function header", FILENAME, TOKS[i].line);
+            j++;
+        }
+        int depth = 0, body_open = j;
+        for (;;) {
+            if (TOKS[j].k == T_EOF) die("%s: unterminated generic function body", FILENAME);
+            if (TOKS[j].k == T_LB) depth++;
+            else if (TOKS[j].k == T_RB) { depth--; if (depth == 0) break; }
+            j++;
+        }
+        g->lasttok = j;                   /* the body's closing `}` */
+        g->declend = TOKS[j].end;
+        /* Every type-parameter occurrence after the header must be a handled
+         * type position, so the emit rewrites all of them. */
+        for (int t = g->angleclose + 1; t <= g->lasttok; t++) {
+            if (TOKS[t].k != T_IDENT) continue;
+            int isp = 0;
+            for (int q = 0; q < g->nparams; q++)
+                if (tokspan_eq(g->ptok[q], t)) { isp = 1; break; }
+            if (!isp) continue;
+            if (typaram_at(g, t) < 0) {
+                (void)body_open;
+                die("%s:%d: M6.3b: type parameter '%.*s' appears in an unsupported "
+                    "position (only ':' / '->' / '*' type slots are lowered yet)",
+                    FILENAME, TOKS[t].line, TOKS[t].slen, TOKS[t].s);
+            }
+        }
+        NGS++;
+    }
+}
+
+/* The concrete N function for one instantiation: a span-splice of the source
+ * declaration with the header rewritten to the mangled name and every
+ * type-parameter type slot replaced by its argument — the body's exact bytes
+ * (spacing and comments) pass through untouched. */
+static char* concrete_fn(int gi, int* atok) {
+    GStruct* g = &GS[gi];
+    char* mn = mangle(gi, atok);
+    int es[512], ee[512]; char* er[512]; int ne = 0;
+    es[ne] = TOKS[g->nametok].start;      /* `NAME<params>` -> mangled name */
+    ee[ne] = TOKS[g->angleclose].end;
+    er[ne] = mn; ne++;
+    for (int t = g->angleclose + 1; t <= g->lasttok; t++) {
+        int q = typaram_at(g, t);
+        if (q < 0) continue;
+        if (ne >= 512) die("%s: generic function too large", FILENAME);
+        es[ne] = TOKS[t].start;
+        ee[ne] = TOKS[t].end;
+        er[ne] = xstrndup(TOKS[atok[q]].s, (size_t)TOKS[atok[q]].slen);
+        ne++;
+    }
+    /* Edits are already in source order (header first, then increasing token
+     * index), so splice directly. */
+    char* out = xmalloc((size_t)(g->declend - g->declstart) + 512);
+    int n = 0, prev = g->declstart;
+    for (int e = 0; e < ne; e++) {
+        memcpy(out + n, SRC + prev, (size_t)(es[e] - prev)); n += es[e] - prev;
+        n += sprintf(out + n, "%s", er[e]);
+        prev = ee[e];
+    }
+    memcpy(out + n, SRC + prev, (size_t)(g->declend - prev)); n += g->declend - prev;
+    out[n] = 0;
+    return out;
+}
+
+static char* concrete_item(int gi, int* atok) {
+    return GS[gi].kind == 0 ? concrete_struct(gi, atok) : concrete_fn(gi, atok);
+}
+
 static int args_same(Inst* a, Inst* b) {
     if (a->gi != b->gi || a->nargs != b->nargs) return 0;
     for (int i = 0; i < a->nargs; i++)
@@ -539,6 +657,7 @@ int main(int argc, char** argv) {
      * buffer with source spans is what the generic pass rewrites over. */
     lex_all();
     collect_generic_decls();
+    collect_generic_fns();
     collect_instantiations();
 
     /* Build the edit list: each generic declaration is replaced by the
@@ -554,7 +673,7 @@ int main(int argc, char** argv) {
             for (int j = 0; j < i; j++)
                 if (INSTS[j].gi == g && args_same(&INSTS[i], &INSTS[j])) { dup = 1; break; }
             if (dup) continue;
-            char* cs = concrete_struct(g, INSTS[i].atok);
+            char* cs = concrete_item(g, INSTS[i].atok);
             int add = (int)strlen(cs) + 2;
             body = realloc(body, (size_t)blen + (size_t)add + 1);
             if (!body) die("nppc: out of memory");
@@ -589,7 +708,7 @@ int main(int argc, char** argv) {
     fwrite(SRC + prev, 1, (size_t)(LEN - prev), out);
     fclose(out);
 
-    fprintf(stderr, "nppc: OK — %d token(s), %d generic struct(s), %d instantiation(s) -> %s\n",
+    fprintf(stderr, "nppc: OK — %d token(s), %d generic(s), %d instantiation(s) -> %s\n",
             NTOK - 1, NGS, NINST, argv[3]);
     return 0;
 }
