@@ -9706,6 +9706,24 @@ static int snprintf_selftest(void) {
     snprintf(b, sizeof(b), "%zx", (size_t)0x1122334455ULL);     if (strcmp(b, "1122334455") != 0) return 25;
     snprintf(b, sizeof(b), "%zd", (ssize_t)-2147483649LL);      if (strcmp(b, "-2147483649") != 0) return 26; // < INT_MIN
     snprintf(b, sizeof(b), "%td", (long)5000000000LL);          if (strcmp(b, "5000000000") != 0) return 27;
+    // field width + '-'/'0' flags + left-justify (regression: %-Nd/%-Ns printed literally AND
+    // dropped the arg; %Ns/%Nd/%Nu ignored the width — garbling every aligned table in top/ps/size).
+    snprintf(b, sizeof(b), "%5d", 42);        if (strcmp(b, "   42") != 0) return 28;
+    snprintf(b, sizeof(b), "%-5d", 42);       if (strcmp(b, "42   ") != 0) return 29;
+    snprintf(b, sizeof(b), "%05d", 42);       if (strcmp(b, "00042") != 0) return 30;
+    snprintf(b, sizeof(b), "%5d", -42);       if (strcmp(b, "  -42") != 0) return 31;
+    snprintf(b, sizeof(b), "%05d", -42);      if (strcmp(b, "-0042") != 0) return 32;   // sign then zeros
+    snprintf(b, sizeof(b), "%-5d", -42);      if (strcmp(b, "-42  ") != 0) return 33;
+    snprintf(b, sizeof(b), "%-4d", 7);        if (strcmp(b, "7   ")  != 0) return 34;   // the top/ps case
+    snprintf(b, sizeof(b), "%7s", "ab");      if (strcmp(b, "     ab") != 0) return 35;
+    snprintf(b, sizeof(b), "%-7s", "ab");     if (strcmp(b, "ab     ") != 0) return 36;
+    snprintf(b, sizeof(b), "%-10s", "hi");    if (strcmp(b, "hi        ") != 0) return 37;
+    snprintf(b, sizeof(b), "%3s", "hello");   if (strcmp(b, "hello") != 0) return 38;   // width < len: no truncation
+    snprintf(b, sizeof(b), "%.3s", "hello");  if (strcmp(b, "hel") != 0) return 39;     // precision truncates
+    snprintf(b, sizeof(b), "%7u", 42u);       if (strcmp(b, "     42") != 0) return 40; // space-pad, NOT zero
+    snprintf(b, sizeof(b), "%8x", 0xabu);     if (strcmp(b, "      ab") != 0) return 41;
+    snprintf(b, sizeof(b), "[%3c]", 'x');     if (strcmp(b, "[  x]") != 0) return 42;
+    snprintf(b, sizeof(b), "%-3sX%dY", "ab", 9); if (strcmp(b, "ab X9Y") != 0) return 43; // arg after a width spec
     return 0;
 }
 
@@ -10823,6 +10841,20 @@ void load_wifi_firmware(void) {}
 // ============================================================
 // IMPLEMENTACIONES DE snprintf Y strcasestr
 // ============================================================
+// Format an unsigned value into buf (NOT NUL-terminated), at least `minprec` digits (0 = none),
+// in `base`; `upper` selects A-F vs a-f. Returns the digit count. vsnprintf's integer
+// conversions build the digits here, then apply flags/field-width padding around them.
+static int u_fmt(char* buf, unsigned long long v, int base, int upper, int minprec) {
+    char rev[24]; int n = 0;
+    char a = (char)(upper ? 'A' : 'a');
+    unsigned b = (unsigned)base;
+    if (v == 0) rev[n++] = '0';
+    else while (v && n < 24) { int d = (int)(v % b); rev[n++] = d < 10 ? (char)('0'+d) : (char)(a+d-10); v /= b; }
+    while (n < minprec && n < 24) rev[n++] = '0';
+    for (int i = 0; i < n; i++) buf[i] = rev[n-1-i];
+    return n;
+}
+
 int vsnprintf(char *buf, size_t size, const char *fmt, va_list args) {
     int written = 0;
     char *p = buf;
@@ -10832,6 +10864,12 @@ int vsnprintf(char *buf, size_t size, const char *fmt, va_list args) {
             if (*fmt == '%') {
                 *p++ = '%'; written++; fmt++;
                 continue;
+            }
+            int left = 0, zeroflag = 0;
+            for (;;) {                       // flags: '-' left-justify, '0' zero-pad (before the width)
+                if (*fmt == '-') { left = 1; fmt++; }
+                else if (*fmt == '0') { zeroflag = 1; fmt++; }
+                else break;
             }
             int width = 0, precision = -1;
             while (*fmt >= '0' && *fmt <= '9') { width = width * 10 + (*fmt - '0'); fmt++; }
@@ -10844,93 +10882,69 @@ int vsnprintf(char *buf, size_t size, const char *fmt, va_list args) {
                 if (*fmt == 'l' || *fmt == 'z' || *fmt == 't') long_flag = 1;
                 fmt++;
             }
-            if (*fmt == 'c') {
-                char c = (char)va_arg(args, int);
-                if (written < (int)size - 1) { *p++ = c; written++; }
-                fmt++;
-            } else if (*fmt == 's') {
+            #define EMITC(ch) do { if (written < (int)size - 1) { *p++ = (char)(ch); written++; } } while (0)
+            if (*fmt == 's') {                    // streamed inline (a string can exceed any body buffer)
                 const char *s = va_arg(args, const char*);
                 if (!s) s = "(null)";
-                while (*s && written < (int)size - 1) { *p++ = *s++; written++; }
+                int slen = 0; while (s[slen]) slen++;
+                if (precision >= 0 && slen > precision) slen = precision;   // precision caps the string
+                int npad = width > slen ? width - slen : 0;
+                if (!left) while (npad-- > 0) EMITC(' ');                   // %s never zero-pads
+                for (int i = 0; i < slen; i++) EMITC(s[i]);
+                if (left)  while (npad-- > 0) EMITC(' ');
                 fmt++;
-            } else if (*fmt == 'd' || *fmt == 'i') {
-                long long val = long_flag ? va_arg(args, long long ) : (long long)va_arg(args, int);
-                char tmp[24];
-                int neg = 0;
-                if (val < 0) { neg = 1; val = -val; }
-                if (long_flag) { lltoa(val, tmp, 10); }
-                else { itoa((int)val, tmp, 10); }
-                if (neg) { if (written < (int)size - 1) { *p++ = '-'; written++; } }
-                char *t = tmp;
-                int tlen = 0; while (t[tlen]) tlen++;
-                if (precision > tlen) {
-                    int pad = precision - tlen;
-                    while (pad-- > 0 && written < (int)size - 1) { *p++ = '0'; written++; }
-                }
-                while (*t && written < (int)size - 1) { *p++ = *t++; written++; }
-                fmt++;
-            } else if (*fmt == 'u') {
-                unsigned long val = long_flag ? va_arg(args, unsigned long) : (unsigned long)va_arg(args, unsigned int);
-                // 64-bit-safe unsigned decimal + width zero-padding. itoa((int)val)
-                // truncated to 32 bits (and printed a spurious '-' above INT_MAX);
-                // build the digits from the full unsigned value, like %x does (issue #78).
-                char tmp[24]; int ti = 0;
-                if (val == 0) tmp[ti++] = '0';
-                else { char rev[24]; int ri = 0; unsigned long v = val;
-                       while (v) { rev[ri++] = (char)('0' + (int)(v % 10)); v /= 10; }
-                       while (ri) tmp[ti++] = rev[--ri]; }
-                tmp[ti] = '\0';
-                if (width > ti) { int pad = width - ti; while (pad-- > 0 && written < (int)size - 1) { *p++ = '0'; written++; } }
-                char *t = tmp;
-                while (*t && written < (int)size - 1) { *p++ = *t++; written++; }
-                fmt++;
-            } else if (*fmt == 'o') {
-                unsigned long val = long_flag ? va_arg(args, unsigned long) : (unsigned long)va_arg(args, unsigned int);
-                // 64-bit-safe octal + width zero-padding (mirrors %u; no leading-0 prefix).
-                char tmp[24]; int ti = 0;
-                if (val == 0) tmp[ti++] = '0';
-                else { char rev[24]; int ri = 0; unsigned long v = val;
-                       while (v) { rev[ri++] = (char)('0' + (int)(v & 7)); v >>= 3; }
-                       while (ri) tmp[ti++] = rev[--ri]; }
-                tmp[ti] = '\0';
-                if (width > ti) { int pad = width - ti; while (pad-- > 0 && written < (int)size - 1) { *p++ = '0'; written++; } }
-                char *t = tmp;
-                while (*t && written < (int)size - 1) { *p++ = *t++; written++; }
-                fmt++;
-            } else if (*fmt == 'x' || *fmt == 'X') {
-                unsigned long val = long_flag ? va_arg(args, unsigned long) : (unsigned long)va_arg(args, unsigned int);
-                // 64-bit-safe hex (itoa truncates to int) + width zero-padding.
-                char tmp[24]; int ti = 0;
-                if (val == 0) tmp[ti++] = '0';
-                else { char rev[24]; int ri = 0; unsigned long v = val;
-                       while (v) { int d = (int)(v & 0xF); rev[ri++] = d < 10 ? (char)('0'+d) : (char)('a'+d-10); v >>= 4; }
-                       while (ri) tmp[ti++] = rev[--ri]; }
-                tmp[ti] = '\0';
-                if (width > ti) { int pad = width - ti; while (pad-- > 0 && written < (int)size - 1) { *p++ = '0'; written++; } }
-                char *t = tmp;
-                while (*t && written < (int)size - 1) { *p++ = *t++; written++; }
-                fmt++;
-            } else if (*fmt == 'p') {
-                unsigned long val = (unsigned long)va_arg(args, void*);
-                // 64-bit-safe pointer hex. itoa() takes an int, so `itoa((unsigned long)val,...)`
-                // truncated every pointer >= 4 GB to its low 32 bits — i.e. ALL higher-half kernel
-                // addresses (0xFFFFFFFF8...) printed as e.g. 0x80000000. Build the digits from the
-                // full unsigned long, exactly like the %x path above.
-                char tmp[24]; int ti = 0;
-                if (val == 0) tmp[ti++] = '0';
-                else { char rev[24]; int ri = 0; unsigned long v = val;
-                       while (v) { int d = (int)(v & 0xF); rev[ri++] = d < 10 ? (char)('0'+d) : (char)('a'+d-10); v >>= 4; }
-                       while (ri) tmp[ti++] = rev[--ri]; }
-                tmp[ti] = '\0';
-                if (written < (int)size - 1) { *p++ = '0'; written++; }
-                if (written < (int)size - 1) { *p++ = 'x'; written++; }
-                char *t = tmp;
-                while (*t && written < (int)size - 1) { *p++ = *t++; written++; }
-                fmt++;
+            } else if (*fmt != 'c' && *fmt != 'd' && *fmt != 'i' && *fmt != 'u' &&
+                       *fmt != 'o' && *fmt != 'x' && *fmt != 'X' && *fmt != 'p') {
+                EMITC('%');                          // unknown conversion: emit literally, arg untouched
+                if (*fmt) EMITC(*fmt++);
             } else {
-                if (written < (int)size - 1) { *p++ = '%'; written++; }
-                if (*fmt && written < (int)size - 1) { *p++ = *fmt++; written++; }
+                // Build the digits/char into a body buffer (+ a detached sign for %d), then apply the
+                // flags + field width once: %-Nd / %-Ns left-justify, %Nd / %Ns space-pad, %0Nd zero-pad.
+                char body[32]; int blen = 0; char sign = 0; int allow_zero = 1;
+                if (*fmt == 'c') {
+                    body[0] = (char)va_arg(args, int); blen = 1; allow_zero = 0;
+                } else if (*fmt == 'd' || *fmt == 'i') {
+                    long long v = long_flag ? va_arg(args, long long) : (long long)va_arg(args, int);
+                    unsigned long long uv;
+                    if (v < 0) { sign = '-'; uv = (unsigned long long)(-(v + 1)) + 1ULL; } // safe for LLONG_MIN
+                    else uv = (unsigned long long)v;
+                    blen = u_fmt(body, uv, 10, 0, precision >= 0 ? precision : 0);
+                    if (precision >= 0) allow_zero = 0;   // an explicit precision overrides the 0 flag
+                } else if (*fmt == 'u') {
+                    unsigned long long v = long_flag ? va_arg(args, unsigned long) : (unsigned long long)va_arg(args, unsigned int);
+                    blen = u_fmt(body, v, 10, 0, precision >= 0 ? precision : 0);
+                    if (precision >= 0) allow_zero = 0;
+                } else if (*fmt == 'o') {
+                    unsigned long long v = long_flag ? va_arg(args, unsigned long) : (unsigned long long)va_arg(args, unsigned int);
+                    blen = u_fmt(body, v, 8, 0, precision >= 0 ? precision : 0);
+                    if (precision >= 0) allow_zero = 0;
+                } else if (*fmt == 'x' || *fmt == 'X') {
+                    unsigned long long v = long_flag ? va_arg(args, unsigned long) : (unsigned long long)va_arg(args, unsigned int);
+                    blen = u_fmt(body, v, 16, *fmt == 'X', precision >= 0 ? precision : 0);
+                    if (precision >= 0) allow_zero = 0;
+                } else {   // 'p' — "0x" + the full 64-bit pointer hex (higher-half kernel addrs intact)
+                    unsigned long long v = (unsigned long long)(unsigned long)va_arg(args, void*);
+                    body[0] = '0'; body[1] = 'x'; blen = 2 + u_fmt(body + 2, v, 16, 0, 0);
+                    allow_zero = 0;                       // the "0x" prefix pads with spaces, not zeros
+                }
+                int total = blen + (sign ? 1 : 0);
+                int npad = width > total ? width - total : 0;
+                if (left) {                               // body, then trailing spaces
+                    if (sign) EMITC(sign);
+                    for (int i = 0; i < blen; i++) EMITC(body[i]);
+                    while (npad-- > 0) EMITC(' ');
+                } else if (zeroflag && allow_zero) {      // sign, zeros, body
+                    if (sign) EMITC(sign);
+                    while (npad-- > 0) EMITC('0');
+                    for (int i = 0; i < blen; i++) EMITC(body[i]);
+                } else {                                  // leading spaces, sign, body
+                    while (npad-- > 0) EMITC(' ');
+                    if (sign) EMITC(sign);
+                    for (int i = 0; i < blen; i++) EMITC(body[i]);
+                }
+                fmt++;
             }
+            #undef EMITC
         } else {
             *p++ = *fmt++; written++;
         }
