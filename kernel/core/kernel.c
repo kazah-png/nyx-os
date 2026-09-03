@@ -9462,6 +9462,7 @@ extern int path_resolve_selftest(void);  // syscall.c: cwd-relative path normali
 extern int rtc_selftest(void);           // drivers/misc/rtc.c: CMOS BCD/binary + 12h/24h decode
 extern int pf_decode_selftest(void);     // core/isr.c: #PF error-code bit decode for the fault dump
 extern int pipe_selftest(void);          // proc/pipe.c: the pipe ring-buffer read/write path
+extern int vfs_selftest(void);           // fs/vfs.c: ramdisk open/create/O_TRUNC/read/write behaviour
 extern int dhcp_options_selftest(void);
 // http_parse_selftest / ext2_dir_selftest are declared in ../net/http.h / ../fs/ext2.h (included above).
 
@@ -9949,6 +9950,7 @@ static void run_selftests(void) {
         {"paste",        paste_selftest},         {"wc",            wc_selftest},
         {"expand",       expand_selftest},        {"unexpand",      unexpand_selftest},
         {"fold",         fold_selftest},
+        {"vfs",          vfs_selftest},
         {"securezero",   secure_zero_selftest},
         {"chacha20",     chacha20_selftest},        {"siphash",       siphash_selftest},
         {"poly1305",     poly1305_selftest},        {"chachapoly",    chacha20poly1305_selftest},

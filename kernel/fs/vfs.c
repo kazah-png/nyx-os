@@ -1736,3 +1736,69 @@ int vfs_cp(const char* src, const char* dst) {
     kfree(sbuf);
     return rc;
 }
+
+/* VFS ramdisk open/create/trunc/read/write KAT (v6.5.72). Nails down the exact tmpfs
+ * open-flag behaviour the shell pipe stresses (create /tmp/pipe, write, O_TRUNC-reopen,
+ * rewrite, shrink) — a subsystem that had NO self-test. Asserts: O_CREAT makes a missing
+ * file; O_CREAT|O_TRUNC empties an existing one; a write REPLACES the content and sets the
+ * size (a shorter write shrinks it, leaving no stale tail); a read returns exactly `size`
+ * bytes from the head; and opening a missing file WITHOUT O_CREAT fails. Returns 0 on
+ * success, else the failing case number. */
+int vfs_selftest(void) {
+    const char* p = "/tmp/__vfskat";
+    char buf[16];
+    int fd, n;
+    vfs_mkdir("/tmp", 0755);                        /* ensure the parent dir exists (idempotent) */
+
+    /* 1. O_CREAT makes a new file; write 5 bytes into it. */
+    fd = vfs_open(p, O_CREAT, 0);
+    if (fd < 0) return 1;
+    if (vfs_write(fd, "hello", 5) != 5) { vfs_close(fd); return 2; }
+    vfs_close(fd);
+
+    /* 2. Reopen read-only; the 5 bytes read back from the head. */
+    fd = vfs_open(p, O_RDONLY, 0);
+    if (fd < 0) return 3;
+    n = vfs_read(fd, buf, sizeof buf);
+    vfs_close(fd);
+    if (n != 5) return 4;
+    for (int i = 0; i < 5; i++) if (buf[i] != "hello"[i]) return 5;
+
+    /* 3. O_CREAT|O_TRUNC empties the existing file. */
+    fd = vfs_open(p, O_CREAT | O_TRUNC, 0);
+    if (fd < 0) return 6;
+    vfs_close(fd);
+    fd = vfs_open(p, O_RDONLY, 0);
+    if (fd < 0) return 7;
+    n = vfs_read(fd, buf, sizeof buf);
+    vfs_close(fd);
+    if (n != 0) return 8;
+
+    /* 4. A rewrite REPLACES the content (7 bytes). */
+    fd = vfs_open(p, O_CREAT | O_TRUNC, 0);
+    if (fd < 0) return 9;
+    if (vfs_write(fd, "world!!", 7) != 7) { vfs_close(fd); return 10; }
+    vfs_close(fd);
+    fd = vfs_open(p, O_RDONLY, 0);
+    n = vfs_read(fd, buf, sizeof buf);
+    vfs_close(fd);
+    if (n != 7) return 11;
+    for (int i = 0; i < 7; i++) if (buf[i] != "world!!"[i]) return 12;
+
+    /* 5. A SHORTER rewrite shrinks the size — no stale tail from the longer content. */
+    fd = vfs_open(p, O_CREAT | O_TRUNC, 0);
+    if (fd < 0) return 13;
+    if (vfs_write(fd, "ab", 2) != 2) { vfs_close(fd); return 14; }
+    vfs_close(fd);
+    fd = vfs_open(p, O_RDONLY, 0);
+    n = vfs_read(fd, buf, sizeof buf);
+    vfs_close(fd);
+    if (n != 2) return 15;
+    if (buf[0] != 'a' || buf[1] != 'b') return 16;
+
+    /* 6. Opening a missing file WITHOUT O_CREAT fails. */
+    if (vfs_open("/tmp/__vfskat_absent", O_RDONLY, 0) >= 0) return 17;
+
+    vfs_unlink(p);                                  /* cleanup */
+    return 0;
+}
