@@ -1,0 +1,74 @@
+// rinfer.npp — N++ construction-site inference for generic enums (M6.3f).
+//
+// `Result.Ok{ v: n }` names no type arguments. nppc reads them from the
+// enclosing function's declared return type (`-> Result<i64, i64>`) and
+// lowers the construction exactly as the explicit `Result<i64, i64>.Ok{...}`
+// would: the same `__g_Result_i64_i64`, one instantiation shared with the
+// return type. Bare variants (`Maybe.None`) infer the same way. A bare
+// construction in a function that does not return that enum is refused with
+// a pointer to the explicit form — inference never guesses.
+
+extern syscall {
+    fn write(fd: i32, buf: *u8, len: isize) -> i64 = 1
+}
+
+enum Result<T, E> {
+    Ok(v: T),
+    Err(e: E),
+}
+
+enum Maybe<T> {
+    Some(v: T),
+    None,
+}
+
+fn put(s: str) {
+    write(1, s.ptr as *u8, s.len as isize);
+}
+
+// Halve an even number; an odd one comes back as the Err payload.
+fn half(n: i64) -> Result<i64, i64> {
+    if n % 2 != 0 {
+        return Result.Err{ e: n };
+    }
+    Result.Ok{ v: n / 2 }
+}
+
+// `?` composes with the inferred constructions as it did with explicit ones.
+fn quarter(n: i64) -> Result<i64, i64> {
+    h := half(n)?;
+    q := half(h)?;
+    Result.Ok{ v: q }
+}
+
+fn first_even(a: i64, b: i64) -> Maybe<i64> {
+    if a % 2 == 0 {
+        return Maybe.Some{ v: a };
+    }
+    if b % 2 == 0 {
+        return Maybe.Some{ v: b };
+    }
+    Maybe.None
+}
+
+fn show(label: str, r: Result<i64, i64>) {
+    match r {
+        Ok(v)  => { put("{label} = {v}\n"); },
+        Err(e) => { put("{label} failed ({e} is odd)\n"); },
+    }
+}
+
+fn show_maybe(label: str, m: Maybe<i64>) {
+    match m {
+        Some(v) => { put("{label}: {v}\n"); },
+        None    => { put("{label}: none\n"); },
+    }
+}
+
+fn main() -> i64 {
+    show("12 / 4", quarter(12));                       // Ok(3)
+    show("6 / 4", quarter(6));                         // half(3) fails: Err(3)
+    show_maybe("first even of 3, 8", first_even(3, 8)); // Some(8)
+    show_maybe("first even of 3, 5", first_even(3, 5)); // None
+    0
+}

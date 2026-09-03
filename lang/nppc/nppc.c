@@ -546,6 +546,93 @@ static void collect_inferred_calls(void) {
     }
 }
 
+/* Bare generic-enum constructions `NAME.Variant{...}` / `NAME.Variant` with
+ * no `<...>` (M6.3f): the type arguments are read from the enclosing
+ * function's declared return type, which must be an explicit instantiation of
+ * the same enum (`-> NAME<args>`) — the `Result.Ok{ v: n }` idiom inside a
+ * function returning `Result<i64, i64>`. The recorded instantiation rewrites
+ * just the name, so it dedups against the return type's own. A construction
+ * anywhere else — a function returning something different, no enclosing
+ * function, or a generic function's body (emitted per instantiation, so it
+ * cannot carry a global edit yet) — asks for the explicit
+ * `NAME<Type, ...>.Variant` form. */
+static void collect_inferred_constructions(void) {
+    int ret_gi = -1;                      /* the enclosing fn's return instantiation */
+    char* ran[MAXP]; int ral[MAXP];
+    int body_end = -1;                    /* token index of its body's closing `}` */
+    int generic_fn = 0;
+    for (int i = 0; i + 1 < NTOK; i++) {
+        if (TOKS[i].k == T_KW_FN && TOKS[i + 1].k == T_IDENT) {
+            int j = i + 2, depth = 0;
+            ret_gi = -1; body_end = -1; generic_fn = 0;
+            if (TOKS[j].k == T_LT) {      /* fn NAME<params>(...) */
+                generic_fn = 1;
+                while (TOKS[j].k != T_GT && TOKS[j].k != T_EOF) j++;
+                j++;
+            }
+            if (TOKS[j].k != T_LP) continue;
+            for (; TOKS[j].k != T_EOF; j++) {   /* past the parameter list */
+                if (TOKS[j].k == T_LP) depth++;
+                else if (TOKS[j].k == T_RP && --depth == 0) { j++; break; }
+            }
+            if (TOKS[j].k == T_ARROW && TOKS[j + 1].k == T_IDENT && TOKS[j + 2].k == T_LT) {
+                int gi = gfind(j + 1);
+                if (gi >= 0 && GS[gi].kind == 2) {
+                    int n = 0, k = j + 3, ok = 1;
+                    for (;;) {
+                        if (TOKS[k].k != T_IDENT || n >= MAXP) { ok = 0; break; }
+                        ran[n] = TOKS[k].s; ral[n] = TOKS[k].slen; n++; k++;
+                        if (TOKS[k].k == T_COMMA) { k++; continue; }
+                        if (TOKS[k].k == T_GT) break;
+                        ok = 0; break;
+                    }
+                    if (ok && n == GS[gi].nparams) ret_gi = gi;
+                }
+            }
+            /* The body, if the function has one (extern fns end in `= N`). */
+            while (TOKS[j].k != T_LB && TOKS[j].k != T_ASSIGN && TOKS[j].k != T_SEMI &&
+                   TOKS[j].k != T_EOF) j++;
+            if (TOKS[j].k == T_LB) {
+                depth = 0;
+                for (; TOKS[j].k != T_EOF; j++) {
+                    if (TOKS[j].k == T_LB) depth++;
+                    else if (TOKS[j].k == T_RB && --depth == 0) break;
+                }
+                body_end = j;
+            }
+            continue;
+        }
+        if (TOKS[i].k != T_IDENT || TOKS[i + 1].k != T_DOT) continue;
+        if (i > 0 && TOKS[i - 1].k == T_DOT) continue;       /* a field, not a type */
+        int gi = gfind(i);
+        if (gi < 0 || GS[gi].kind != 2) continue;
+        GStruct* g = &GS[gi];
+        if (i > body_end)
+            die("%s:%d: '%.*s.' names no type arguments and has no enclosing function "
+                "to take them from — write %.*s<Type, ...>.Variant",
+                FILENAME, TOKS[i].line, TOKS[i].slen, TOKS[i].s,
+                TOKS[g->nametok].slen, TOKS[g->nametok].s);
+        if (generic_fn)
+            die("%s:%d: M6.3f: inferring '%.*s.' inside a generic function is pending "
+                "— write %.*s<Type, ...>.Variant",
+                FILENAME, TOKS[i].line, TOKS[i].slen, TOKS[i].s,
+                TOKS[g->nametok].slen, TOKS[g->nametok].s);
+        if (ret_gi != gi)
+            die("%s:%d: cannot infer the type arguments of '%.*s.': the enclosing "
+                "function does not return %.*s<...> — write %.*s<Type, ...>.Variant",
+                FILENAME, TOKS[i].line, TOKS[i].slen, TOKS[i].s,
+                TOKS[g->nametok].slen, TOKS[g->nametok].s,
+                TOKS[g->nametok].slen, TOKS[g->nametok].s);
+        if (NINST >= MAXI) die("%s: too many generic instantiations", FILENAME);
+        Inst* n = &INSTS[NINST++];
+        n->gi = gi;
+        n->nargs = g->nparams;
+        for (int p = 0; p < g->nparams; p++) { n->aname[p] = ran[p]; n->alen[p] = ral[p]; }
+        n->start = TOKS[i].start;
+        n->end = TOKS[i].end;              /* rewrite just the name to the mangled name */
+    }
+}
+
 /* "__g_Box_i64" for Box<i64>. Args are bare type names, so the result is a
  * valid N/C identifier by construction. */
 static char* mangle(Inst* it) {
@@ -794,6 +881,7 @@ int main(int argc, char** argv) {
     collect_generic_enums();
     collect_instantiations();
     collect_inferred_calls();
+    collect_inferred_constructions();
 
     /* Build the edit list: each generic declaration is replaced by the
      * concrete structs its distinct instantiations require (in first-use

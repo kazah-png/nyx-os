@@ -1,0 +1,85 @@
+// result.npp — N++ `Result<T, E>`, the flagship generic, end to end (M6.3e).
+//
+// `enum Result<T, E>` is a template. Each concrete use — `Result<i64, i64>`,
+// `Result<str, i64>` — makes nppc emit one plain N enum with the payload
+// types substituted (`__g_Result_i64_i64`, `__g_Result_str_i64`), and every
+// use is rewritten to the concrete name. The concrete enums keep the
+// { Ok, Err } shape, so N's structural `?` (spec §5.9) composes with them
+// unchanged: `x := f()?;` binds the Ok payload or returns the Err from the
+// caller — same-type pass-through, or the Err payload rewrapped when the
+// caller returns a different instantiation. Type arguments are explicit at
+// every use, including construction (`Result<i64, i64>.Ok{ v: 3 }`); the
+// bare `Result.Ok{ ... }` form is the M6.3f rung.
+
+extern syscall {
+    fn write(fd: i32, buf: *u8, len: isize) -> i64 = 1
+}
+
+enum Result<T, E> {
+    Ok(v: T),
+    Err(e: E),
+}
+
+fn put(s: str) {
+    write(1, s.ptr as *u8, s.len as isize);
+}
+
+// A digit character as its value; any other byte is an Err carrying it.
+fn digit(c: u8) -> Result<i64, i64> {
+    n := c as i64;
+    if n < 48 || n > 57 {
+        return Result<i64, i64>.Err{ e: n };
+    }
+    Result<i64, i64>.Ok{ v: n - 48 }
+}
+
+// Same instantiation on both sides: each `?` binds the value or returns
+// the Err unchanged.
+fn add_digits(a: u8, b: u8) -> Result<i64, i64> {
+    x := digit(a)?;
+    y := digit(b)?;
+    Result<i64, i64>.Ok{ v: x + y }
+}
+
+// A second instantiation — a different payload type, so a distinct
+// concrete enum from the same template.
+fn name_of(n: i64) -> Result<str, i64> {
+    if n == 3 {
+        return Result<str, i64>.Ok{ v: "three" };
+    }
+    if n == 7 {
+        return Result<str, i64>.Ok{ v: "seven" };
+    }
+    Result<str, i64>.Err{ e: n }
+}
+
+// Cross-instantiation propagation: digit's Err (i64) is rewrapped into
+// this function's Result<str, i64>.Err — the v0.10 rule, now across two
+// instantiations of one template.
+fn name_of_digit(c: u8) -> Result<str, i64> {
+    n := digit(c)?;
+    name_of(n)
+}
+
+fn show_sum(label: str, r: Result<i64, i64>) {
+    match r {
+        Ok(v)  => { put("{label} = {v}\n"); },
+        Err(e) => { put("{label} failed on byte {e}\n"); },
+    }
+}
+
+fn show_name(c: u8, r: Result<str, i64>) {
+    match r {
+        Ok(v)  => { put("byte {c} is {v}\n"); },
+        Err(e) => { put("byte {c} has no name (got {e})\n"); },
+    }
+}
+
+fn main() -> i64 {
+    show_sum("1 + 2", add_digits(49, 50));    // '1' '2'
+    show_sum("1 + x", add_digits(49, 120));   // 'x' is not a digit: Err propagates
+    show_name(51, name_of_digit(51));         // '3' -> Ok("three")
+    show_name(52, name_of_digit(52));         // '4' -> name_of's own Err(4)
+    show_name(120, name_of_digit(120));       // 'x' -> digit's Err(120), rewrapped
+    0
+}
