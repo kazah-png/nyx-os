@@ -9701,6 +9701,11 @@ static int snprintf_selftest(void) {
     snprintf(b, sizeof(b), "%p", (void*)0xFFFF800000001234ULL); if (strcmp(b, "0xffff800000001234") != 0) return 21;
     snprintf(b, sizeof(b), "%p", (void*)0x1234ULL);             if (strcmp(b, "0x1234") != 0) return 22;
     snprintf(b, sizeof(b), "%p", (void*)0);                     if (strcmp(b, "0x0") != 0) return 23;
+    // %z (size_t) / %t (ptrdiff_t) are 64-bit on x86-64: must NOT truncate to the low 32 bits.
+    snprintf(b, sizeof(b), "%zu", (size_t)0x1FFFFFFFFULL);      if (strcmp(b, "8589934591") != 0) return 24;  // 2^33-1
+    snprintf(b, sizeof(b), "%zx", (size_t)0x1122334455ULL);     if (strcmp(b, "1122334455") != 0) return 25;
+    snprintf(b, sizeof(b), "%zd", (ssize_t)-2147483649LL);      if (strcmp(b, "-2147483649") != 0) return 26; // < INT_MIN
+    snprintf(b, sizeof(b), "%td", (long)5000000000LL);          if (strcmp(b, "5000000000") != 0) return 27;
     return 0;
 }
 
@@ -10832,7 +10837,10 @@ int vsnprintf(char *buf, size_t size, const char *fmt, va_list args) {
             if (*fmt == '.') { fmt++; precision = 0; while (*fmt >= '0' && *fmt <= '9') { precision = precision * 10 + (*fmt - '0'); fmt++; } }
             int long_flag = 0;
             while (*fmt == 'l' || *fmt == 'h' || *fmt == 'z' || *fmt == 't') {
-                if (*fmt == 'l') long_flag = 1;
+                // z (size_t) and t (ptrdiff_t) are 64-bit on x86-64, so treat them like l;
+                // otherwise %zu/%zd/%zx/%td read only the low 32 bits (va_arg(unsigned int))
+                // and truncate any size/offset >= 4 GB (h stays 32-bit).
+                if (*fmt == 'l' || *fmt == 'z' || *fmt == 't') long_flag = 1;
                 fmt++;
             }
             if (*fmt == 'c') {
