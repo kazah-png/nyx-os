@@ -879,6 +879,13 @@ static int edit_cmp(const void* x, const void* y) {
 static const char* USED[MAXUSE]; static int NUSED;    /* files already inlined */
 static const char* CHAIN[MAXUSE]; static int NCHAIN;  /* the use chain being resolved */
 
+/* Where each inlined module landed in the resolved program (byte range),
+ * for the visibility pass: an item is visible in its own file, `pub` makes
+ * it visible program-wide, and a module's private items are renamed so two
+ * modules' privates never meet at the C level. */
+typedef struct { const char* name; int start, end; } Mod;
+static Mod MODS[MAXUSE]; static int NMOD;
+
 static char* read_file(const char* path, long* out_len) {
     FILE* f = fopen(path, "rb");
     if (!f) return NULL;
@@ -967,10 +974,20 @@ static char* resolve_text(const char* path, const char* text, long len) {
             char* itext = read_file(full, &ilen);
             if (!itext)
                 die("%s:%d: cannot open \"%s\" (looked for %s)", path, uline[u], upath[u], full);
+            int before = NMOD;
             char* inner = resolve_file(full, itext, ilen);
             snprintf(mark, sizeof mark, "// use \"%s\" (inlined by nppc)\n", upath[u]);
             app(&out, &n, &cap, mark, strlen(mark));
+            int at = (int)n;
             app(&out, &n, &cap, inner, strlen(inner));
+            /* Modules inlined inside `inner` were recorded relative to it;
+             * shift them to this text, then record `inner` itself. */
+            for (int k = before; k < NMOD; k++) { MODS[k].start += at; MODS[k].end += at; }
+            if (NMOD >= MAXUSE) die("nppc: too many modules");
+            MODS[NMOD].name = upath[u];
+            MODS[NMOD].start = at;
+            MODS[NMOD].end = at + (int)strlen(inner);
+            NMOD++;
             if (n > 0 && out[n - 1] != '\n') app(&out, &n, &cap, "\n", 1);
             snprintf(mark, sizeof mark, "// end of \"%s\"", upath[u]);
             app(&out, &n, &cap, mark, strlen(mark));
@@ -989,6 +1006,139 @@ static char* resolve_file(const char* path, const char* text, long len) {
     CHAIN[NCHAIN++] = path;
     char* out = resolve_text(path, text, len);
     NCHAIN--;
+    return out;
+}
+
+/* The innermost module whose text contains byte `pos`, or -1 for the main
+ * file. */
+static int mod_owner(int pos) {
+    int best = -1;
+    for (int m = 0; m < NMOD; m++)
+        if (pos >= MODS[m].start && pos < MODS[m].end &&
+            (best < 0 || MODS[m].end - MODS[m].start < MODS[best].end - MODS[best].start))
+            best = m;
+    return best;
+}
+
+/* "modlib" for "dir/modlib.npp": the basename without its extension, any
+ * other character replaced by '_', so it can sit inside an identifier. */
+static char* mod_stem(const char* name) {
+    const char* b = name;
+    for (const char* p = name; *p; p++)
+        if (*p == '/' || *p == '\\') b = p + 1;
+    char* out = xmalloc(strlen(b) + 1);
+    int n = 0;
+    for (const char* p = b; *p && *p != '.'; p++)
+        out[n++] = (is_idc(*p) || is_dg(*p)) ? *p : '_';
+    out[n] = 0;
+    return out;
+}
+
+/* Is IDENT token t shaped like a reference to a top-level item — a call
+ * `x(`, a construction or generic use `x.` / `x{` / `x<`, a type slot after
+ * ':' / '->' / '*' / 'as', or the type of an `impl`? A field or method
+ * after '.' is not, nor is a binding or parameter name. */
+static int names_item(int t) {
+    if (TOKS[t].k != T_IDENT) return 0;
+    TK p = t > 0 ? TOKS[t - 1].k : T_EOF, nx = TOKS[t + 1].k;
+    if (p == T_DOT) return 0;
+    if (nx == T_LP || nx == T_DOT || nx == T_LB || nx == T_LT) return 1;
+    if (p == T_COLON || p == T_ARROW || p == T_STAR || p == T_KW_AS || p == T_KW_IMPL) return 1;
+    /* A type argument — `Box<P>`, `Pair<A, B>`: walk back over the argument
+     * list to the `<` and require a generic's name in front of it, so a
+     * comparison `a < b` is not mistaken for one. */
+    if ((p == T_LT || p == T_COMMA) && (nx == T_GT || nx == T_COMMA)) {
+        int j = t - 1;
+        while (j > 0 && (TOKS[j].k == T_COMMA || TOKS[j].k == T_IDENT)) j--;
+        if (TOKS[j].k == T_LT && j > 0 && gfind(j - 1) >= 0) return 1;
+    }
+    return 0;
+}
+
+/* Visibility (M6.5b), over the resolved program before the generic pass.
+ * An item — a top-level fn, struct, or enum — is visible in the file that
+ * declares it; `pub` makes it visible program-wide. A name-shaped
+ * reference (names_item) from another file to a non-pub item is refused.
+ * Every non-pub item of a MODULE is then renamed `__m_<stem>_<name>` at
+ * its declaration and every reference inside the module, so two modules'
+ * private `helper`s stay two functions in the lowered N. The renaming is a
+ * text splice: the generic pass runs on the result and sees the mangled
+ * names as ordinary ones (a private generic, or a private type as a type
+ * argument, works unchanged). Returns the renamed program, or `prog` itself
+ * when nothing needed renaming. */
+#define MAXITEMS 1024
+static struct { int tok; int owner; int pub; } ITEMS[MAXITEMS];
+static int NITEMS;
+
+static char* modules_pass(const char* prog) {
+    if (NMOD == 0) return (char*)prog;
+    /* The generic declarations are needed to tell a type argument from a
+     * comparison (names_item); the generic pass re-collects them after the
+     * re-lex, so the table is emptied again before returning. */
+    collect_generic_decls();
+    collect_generic_fns();
+    collect_generic_enums();
+    /* Every file's top-level items, with their file and `pub` flag. */
+    NITEMS = 0;
+    int depth = 0;
+    for (int i = 0; i + 1 < NTOK; i++) {
+        if (TOKS[i].k == T_LB) depth++;
+        else if (TOKS[i].k == T_RB) depth--;
+        if (depth != 0) continue;
+        if (TOKS[i].k != T_KW_FN && TOKS[i].k != T_KW_STRUCT && TOKS[i].k != T_KW_ENUM) continue;
+        if (TOKS[i + 1].k != T_IDENT) continue;
+        if (NITEMS >= MAXITEMS) die("%s: too many top-level items", FILENAME);
+        ITEMS[NITEMS].tok = i + 1;
+        ITEMS[NITEMS].owner = mod_owner(TOKS[i].start);
+        ITEMS[NITEMS].pub = i > 0 && TOKS[i - 1].k == T_IDENT && TOKS[i - 1].slen == 3 &&
+                            !memcmp(TOKS[i - 1].s, "pub", 3);
+        NITEMS++;
+    }
+    /* References: refuse a cross-file use of a private item; rename a
+     * module's own private items. */
+    int es[MAXITEMS * 4], ee[MAXITEMS * 4]; char* er[MAXITEMS * 4]; int ne = 0;
+    depth = 0;
+    for (int t = 0; t + 1 < NTOK; t++) {
+        if (TOKS[t].k == T_LB) depth++;
+        else if (TOKS[t].k == T_RB) depth--;
+        if (TOKS[t].k != T_IDENT) continue;
+        int isdecl = t > 0 && (TOKS[t - 1].k == T_KW_FN || TOKS[t - 1].k == T_KW_STRUCT ||
+                               TOKS[t - 1].k == T_KW_ENUM);
+        if (isdecl && depth != 0) continue;          /* a method: not an item */
+        if (!isdecl && !names_item(t)) continue;
+        int owner = mod_owner(TOKS[t].start);
+        int local = -1, foreign = -1;
+        for (int k = 0; k < NITEMS; k++) {
+            if (!tokspan_eq(ITEMS[k].tok, t)) continue;
+            if (ITEMS[k].owner == owner) local = k;
+            else if (!ITEMS[k].pub && foreign < 0) foreign = k;
+        }
+        if (local < 0) {
+            if (foreign >= 0 && !isdecl) {
+                int fo = ITEMS[foreign].owner;
+                die("%s:%d: '%.*s' is private to %s (mark it pub to use it here)",
+                    FILENAME, TOKS[t].line, TOKS[t].slen, TOKS[t].s,
+                    fo >= 0 ? MODS[fo].name : FILENAME);
+            }
+            continue;
+        }
+        if (ITEMS[local].pub || owner < 0) continue;  /* exported, or the main file's own */
+        if (ne >= MAXITEMS * 4) die("%s: too many private references", FILENAME);
+        char* mn = xmalloc(strlen(MODS[owner].name) + (size_t)TOKS[t].slen + 8);
+        sprintf(mn, "__m_%s_%.*s", mod_stem(MODS[owner].name), TOKS[t].slen, TOKS[t].s);
+        es[ne] = TOKS[t].start; ee[ne] = TOKS[t].end; er[ne] = mn; ne++;
+    }
+    NGS = 0;
+    if (ne == 0) return (char*)prog;
+    size_t cap = strlen(prog) + (size_t)ne * 64 + 1, n = 0;
+    char* out = xmalloc(cap);
+    int prev = 0;
+    for (int e = 0; e < ne; e++) {      /* in token order already */
+        app(&out, &n, &cap, prog + prev, (size_t)(es[e] - prev));
+        app(&out, &n, &cap, er[e], strlen(er[e]));
+        prev = ee[e];
+    }
+    app(&out, &n, &cap, prog + prev, strlen(prog) - (size_t)prev);
     return out;
 }
 
@@ -1033,6 +1183,11 @@ int main(int argc, char** argv) {
      * file that fails here would fail identically under ncc), and the token
      * buffer with source spans is what the generic pass rewrites over. */
     lex_text(prog, (long)strlen(prog));
+
+    /* Visibility + private-item renaming (M6.5b), then re-lex the result so
+     * the generic pass sees the mangled names as ordinary ones. */
+    char* vis = modules_pass(prog);
+    if (vis != prog) { prog = vis; lex_text(prog, (long)strlen(prog)); }
     collect_generic_decls();
     collect_generic_fns();
     collect_generic_enums();

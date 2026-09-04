@@ -51,7 +51,10 @@ each distinct use becomes one plain N item with a mangled name
 every use is rewritten to that name, and everything else — comments,
 spacing, the bodies themselves — is spliced through verbatim. It is a
 token-span rewrite over the lexed file, no parse tree yet, and the
-lowered `.n` is then held to the N checker like any hand-written N.
+lowered `.n` is then held to the N checker like any hand-written N. A
+concrete item is emitted where its template is declared, so a type a
+template will be instantiated with is declared before the template, as
+any struct used by value would be.
 
 | Rung | Example | What lowers |
 |---|---|---|
@@ -81,14 +84,31 @@ as it would in one file. The rules are the ones design §6.2 names:
   leaves only a marker comment;
 - **cycles refused** — a file that names one still being resolved is an
   error at the offending `use`;
-- **`pub` marks exports** and is dropped from the lowering (N has no
-  visibility). Enforcing that a user sees only `pub` items is the next
-  rung; today every top-level item of a used file is reachable.
+- **an item is visible in its file; `pub` makes it visible program-wide.**
+  A top-level `fn`, `struct`, or `enum` without `pub` is private to the
+  file that declares it — the main file's own items included — and a
+  reference to it from any other file is refused with the file named:
+  `'is_even' is private to modlib.npp (mark it pub to use it here)`.
+  "Reference" means a name-shaped use: a call `x(`, a construction or
+  generic use `x.` / `x{` / `x<`, a type slot, a type argument, an `impl`
+  type. A field or method after `.`, or a binding or parameter name, is
+  not one.
+- **private items never collide.** Each non-`pub` item of a module is
+  renamed `__m_<stem>_<name>` (`__m_modlib_is_even`) at its declaration
+  and at every reference inside the module, so two modules' private
+  `helper`s are two functions in the lowered N. The renaming is a text
+  splice done before the generic pass, which then sees the mangled names
+  as ordinary ones — a private generic, or a private type used as a type
+  argument, needs nothing special. The main file's items keep their
+  names, and `pub` itself is dropped from the lowering (N has no
+  visibility). Each module may declare its own `extern syscall` block.
 
 The lowered `.n` keeps `// use "lib.npp" (inlined by nppc)` and
 `// end of "lib.npp"` markers around each inlined file, so the flat unit
 stays reviewable. Diagnostics after a `use` count lines of the combined
 text. [`../examples/modmain.npp`](../examples/modmain.npp) and
 [`../examples/modlib.npp`](../examples/modlib.npp) are the two-file
-program the suite's stage [10i] holds — lowered, agreed on by `ncc` and
-`ngen`, run on the host, with a missing file and a cycle refused.
+program the suite's stages [10i] and [10j] hold — lowered, agreed on by
+`ncc` and `ngen`, run on the host, with a missing file, a cycle, and a
+private call refused. Still pending: scoping `pub` to the files that
+`use` the module (today a `pub` item is visible program-wide).
