@@ -458,6 +458,104 @@ int putenv(char* string) {
     return env_append(string);                 /* POSIX: stores the caller's pointer, no copy */
 }
 
+/* =========== Calendar time (gmtime / localtime / strftime) =========== */
+/* NyxOS keeps the RTC in UTC, so localtime == gmtime (no timezone database). */
+
+static const char* tm_wd[]  = { "Sunday","Monday","Tuesday","Wednesday","Thursday","Friday","Saturday" };
+static const char* tm_wda[] = { "Sun","Mon","Tue","Wed","Thu","Fri","Sat" };
+static const char* tm_mo[]  = { "January","February","March","April","May","June","July",
+                                "August","September","October","November","December" };
+static const char* tm_moa[] = { "Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec" };
+
+struct tm* gmtime_r(const time_t* tp, struct tm* r) {
+    long t = *tp;
+    long days = t / 86400, rem = t % 86400;
+    if (rem < 0) { rem += 86400; days -= 1; }               /* floor division for pre-epoch times */
+    r->tm_hour = (int)(rem / 3600); rem %= 3600;
+    r->tm_min = (int)(rem / 60); r->tm_sec = (int)(rem % 60);
+    r->tm_wday = (int)(((days % 7) + 4 + 7) % 7);           /* 1970-01-01 was Thursday (4) */
+    /* civil-from-days (Howard Hinnant): valid for the whole range of `long` */
+    long z = days + 719468;
+    long era = (z >= 0 ? z : z - 146096) / 146097;
+    unsigned doe = (unsigned)(z - era * 146097);
+    unsigned yoe = (unsigned)((doe - doe/1460 + doe/36524 - doe/146096) / 365);
+    long y = (long)yoe + era * 400;
+    unsigned doy = doe - (365*yoe + yoe/4 - yoe/100);
+    unsigned mp = (5*doy + 2) / 153;
+    unsigned d = doy - (153*mp + 2)/5 + 1;
+    unsigned m = mp < 10 ? mp + 3 : mp - 9;
+    y += (m <= 2);
+    r->tm_year = (int)(y - 1900);
+    r->tm_mon = (int)m - 1;
+    r->tm_mday = (int)d;
+    static const int mdays[] = { 0,31,59,90,120,151,181,212,243,273,304,334 };
+    int leap = (y%4==0 && (y%100!=0 || y%400==0));
+    r->tm_yday = mdays[r->tm_mon] + (r->tm_mday - 1) + ((r->tm_mon > 1 && leap) ? 1 : 0);
+    r->tm_isdst = 0;
+    return r;
+}
+struct tm* gmtime(const time_t* t)         { static struct tm b; return gmtime_r(t, &b); }
+struct tm* localtime_r(const time_t* t, struct tm* r) { return gmtime_r(t, r); }
+struct tm* localtime(const time_t* t)      { return gmtime(t); }
+
+static char* tmf_str(char* p, char* end, const char* s) { while (*s && p < end) *p++ = *s++; return p; }
+static char* tmf_num(char* p, char* end, long v, int width, char pad) {
+    char tmp[24]; int n = 0; long a = v < 0 ? -v : v;
+    do { tmp[n++] = (char)('0' + (int)(a % 10)); a /= 10; } while (a);
+    if (v < 0 && p < end) *p++ = '-';
+    for (int i = n; i < width && p < end; i++) *p++ = pad;
+    while (n > 0 && p < end) *p++ = tmp[--n];
+    return p;
+}
+
+/* strftime subset: %Y %y %C %m %d %e %H %I %M %S %j %p %P %A %a %B %b %h %w %u
+ * %F %T %R %D %n %t %%. Unknown specifiers are copied literally. Returns the byte
+ * count (excl NUL), or 0 if it does not fit (C semantics). */
+size_t strftime(char* s, size_t max, const char* fmt, const struct tm* tm) {
+    if (max == 0) return 0;
+    char* p = s; char* end = s + max - 1;
+    int y = tm->tm_year + 1900;
+    int h12 = tm->tm_hour % 12; if (h12 == 0) h12 = 12;
+    char b[32];
+    for (const char* f = fmt; *f; f++) {
+        if (*f != '%') { if (p < end) *p++ = *f; else { *s = 0; return 0; } continue; }
+        f++;
+        switch (*f) {
+            case 'Y': p = tmf_num(p, end, y, 0, '0'); break;
+            case 'y': p = tmf_num(p, end, (y % 100 + 100) % 100, 2, '0'); break;
+            case 'C': p = tmf_num(p, end, y / 100, 2, '0'); break;
+            case 'm': p = tmf_num(p, end, tm->tm_mon + 1, 2, '0'); break;
+            case 'd': p = tmf_num(p, end, tm->tm_mday, 2, '0'); break;
+            case 'e': p = tmf_num(p, end, tm->tm_mday, 2, ' '); break;
+            case 'H': p = tmf_num(p, end, tm->tm_hour, 2, '0'); break;
+            case 'I': p = tmf_num(p, end, h12, 2, '0'); break;
+            case 'M': p = tmf_num(p, end, tm->tm_min, 2, '0'); break;
+            case 'S': p = tmf_num(p, end, tm->tm_sec, 2, '0'); break;
+            case 'j': p = tmf_num(p, end, tm->tm_yday + 1, 3, '0'); break;
+            case 'w': p = tmf_num(p, end, tm->tm_wday, 0, '0'); break;
+            case 'u': p = tmf_num(p, end, tm->tm_wday == 0 ? 7 : tm->tm_wday, 0, '0'); break;
+            case 'p': p = tmf_str(p, end, tm->tm_hour < 12 ? "AM" : "PM"); break;
+            case 'P': p = tmf_str(p, end, tm->tm_hour < 12 ? "am" : "pm"); break;
+            case 'A': p = tmf_str(p, end, tm_wd[tm->tm_wday]); break;
+            case 'a': p = tmf_str(p, end, tm_wda[tm->tm_wday]); break;
+            case 'B': p = tmf_str(p, end, tm_mo[tm->tm_mon]); break;
+            case 'b': case 'h': p = tmf_str(p, end, tm_moa[tm->tm_mon]); break;
+            case 'n': if (p < end) *p++ = '\n'; break;
+            case 't': if (p < end) *p++ = '\t'; break;
+            case '%': if (p < end) *p++ = '%'; break;
+            case 'F': snprintf(b, sizeof b, "%04d-%02d-%02d", y, tm->tm_mon+1, tm->tm_mday); p = tmf_str(p, end, b); break;
+            case 'T': snprintf(b, sizeof b, "%02d:%02d:%02d", tm->tm_hour, tm->tm_min, tm->tm_sec); p = tmf_str(p, end, b); break;
+            case 'R': snprintf(b, sizeof b, "%02d:%02d", tm->tm_hour, tm->tm_min); p = tmf_str(p, end, b); break;
+            case 'D': snprintf(b, sizeof b, "%02d/%02d/%02d", tm->tm_mon+1, tm->tm_mday, (y%100+100)%100); p = tmf_str(p, end, b); break;
+            case '\0': if (p < end) *p++ = '%'; f--; break;   /* trailing '%' is literal */
+            default: if (p < end) *p++ = '%'; if (p < end) *p++ = *f; break;   /* unknown: copy literally */
+        }
+    }
+    if (p > end) { *s = 0; return 0; }
+    *p = '\0';
+    return (size_t)(p - s);
+}
+
 /* =========== Stdio =========== */
 
 void putchar(int c) {

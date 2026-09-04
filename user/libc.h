@@ -154,6 +154,21 @@ int setenv(const char* name, const char* value, int overwrite);
 int unsetenv(const char* name);
 int putenv(char* string);
 
+/* Calendar time (C standard). `time_t` is Unix epoch seconds; gmtime/localtime break it
+ * down (NyxOS keeps the RTC in UTC, so localtime == gmtime — no timezone), and strftime
+ * formats a struct tm. Get the epoch from gettimeofday() (see syscall.h). */
+typedef long time_t;
+struct tm {
+    int tm_sec, tm_min, tm_hour;   /* 0-60, 0-59, 0-23 */
+    int tm_mday, tm_mon, tm_year;  /* 1-31, 0-11, years since 1900 */
+    int tm_wday, tm_yday, tm_isdst;/* 0-6 (Sun=0), 0-365, 0 */
+};
+struct tm* gmtime(const time_t* t);
+struct tm* gmtime_r(const time_t* t, struct tm* r);
+struct tm* localtime(const time_t* t);
+struct tm* localtime_r(const time_t* t, struct tm* r);
+size_t strftime(char* s, size_t max, const char* fmt, const struct tm* tm);
+
 /* Non-local jump (fault recovery from a signal handler). setjmp saves the caller's
  * callee-saved regs + RSP + RIP and returns 0; longjmp restores them and makes the
  * matching setjmp return `val` (or 1 if val==0). jmp_buf = {rbx,rbp,r12..r15,rsp,rip}. */

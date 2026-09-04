@@ -177,6 +177,30 @@ int main(int argc, char** argv) {
         if (!ev_ok) ok = 0;
     }
 
+    /* gmtime/localtime/strftime — calendar time (new v6.5.111; UTC). Verified byte-exact
+     * vs glibc gmtime_r/strftime in host-sim; these anchors pin known epochs. */
+    {
+        int tm_ok = 1;
+        char tb[64];
+        time_t t0 = 0;                               /* 1970-01-01 00:00:00 Thu */
+        struct tm r;
+        gmtime_r(&t0, &r);
+        if (r.tm_year != 70 || r.tm_mon != 0 || r.tm_mday != 1 || r.tm_hour != 0 ||
+            r.tm_min != 0 || r.tm_sec != 0 || r.tm_wday != 4 || r.tm_yday != 0) tm_ok = 0;
+        strftime(tb, sizeof tb, "%Y-%m-%d %H:%M:%S", &r);
+        if (strcmp(tb, "1970-01-01 00:00:00")) tm_ok = 0;
+        time_t t1 = 1234567890;                       /* 2009-02-13 23:31:30 Fri */
+        strftime(tb, sizeof tb, "%Y-%m-%d %H:%M:%S %A", gmtime(&t1));
+        if (strcmp(tb, "2009-02-13 23:31:30 Friday")) tm_ok = 0;
+        time_t t2 = 1709164800;                       /* 2024-02-29 (leap day) */
+        strftime(tb, sizeof tb, "%F %a", gmtime(&t2));
+        if (strcmp(tb, "2024-02-29 Thu")) tm_ok = 0;
+        strftime(tb, sizeof tb, "%I:%M %p", gmtime(&t1));   /* 12h clock */
+        if (strcmp(tb, "11:31 PM")) tm_ok = 0;
+        printf("LIBCTEST: gmtime/strftime %s\n", tm_ok ? "PASS" : "FAIL");
+        if (!tm_ok) ok = 0;
+    }
+
     /* string/stdlib extras: memchr, strrchr, strncat, strdup, qsort. */
     {
         int se_ok = 1;
