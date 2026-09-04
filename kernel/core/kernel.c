@@ -397,7 +397,7 @@ static const command_t commands[] = {
     {"crash",     cmd_crash,     "Trigger a kernel panic", false},
     {"layout",    cmd_layout,    "Change keyboard layout: layout <us|es>", false},
     {"ls",        cmd_ls,        "List directory contents: ls [-la] [path]", false},
-    {"cd",        cmd_cd,        "Change directory: cd <path>", false},
+    {"cd",        cmd_cd,        "Change directory: cd <path> (cd - = previous)", false},
     {"pwd",       cmd_pwd,       "Print working directory", false},
     {"pushd",     cmd_pushd,     "Push the current dir and cd to another: pushd <path>", false},
     {"popd",      cmd_popd,      "Pop the directory stack and cd back", false},
@@ -960,7 +960,7 @@ static void cmd_help(int argc, char** argv) {
 typedef struct { const char* name; const char* body; } man_page_t;
 static const man_page_t man_pages[] = {
     {"ls",       "List the contents of a directory. With no path the current directory is listed. -a also shows entries whose name begins with a dot; -l gives a long listing with each entry's type, size and name."},
-    {"cd",       "Change the shell's current working directory to <path>."},
+    {"cd",       "Change the shell's current working directory to <path>. `cd -` returns to the previous directory (and prints it)."},
     {"pwd",      "Print the full path of the current working directory."},
     {"pushd",    "Save the current directory on a stack and change to <path>: `pushd <path>`. With no argument, swap the current directory with the top of the stack. Echoes the stack (current directory first), like bash. Use `popd` to return and `dirs` to view the stack."},
     {"popd",     "Return to the directory on top of the stack (the last one `pushd` saved) and drop it from the stack. Prints the remaining stack."},
@@ -8056,9 +8056,37 @@ static void cmd_ls(int argc, char** argv) {
     vfs_close(fd);
 }
 
+// `cd` with a bash-style OLDPWD toggle. g_oldpwd holds the directory we last left;
+// `cd -` returns to it (and echoes it, like bash). cd_resolve is the pure decision
+// (arg + OLDPWD -> path to chdir, or NULL when `-` but OLDPWD unset); cd_do performs
+// it and updates OLDPWD on success. Both are factored so cd_selftest can drive them.
+static char g_oldpwd[256];
+static const char* cd_resolve(const char* arg, const char* oldpwd, int* print) {
+    *print = 0;
+    if (arg && arg[0] == '-' && arg[1] == '\0') {          // `cd -`
+        *print = 1;
+        return (oldpwd && oldpwd[0]) ? oldpwd : (const char*)0;
+    }
+    return arg;
+}
+static int cd_do(const char* arg, int* echoed) {
+    int doprint = 0;
+    const char* target = cd_resolve(arg, g_oldpwd, &doprint);
+    if (echoed) *echoed = doprint;
+    if (!target) return -2;                                 // `-` but OLDPWD unset
+    char prev[256];
+    strncpy(prev, vfs_getcwd(), sizeof(prev) - 1); prev[sizeof(prev) - 1] = '\0';
+    if (vfs_chdir(target) < 0) return -1;
+    strncpy(g_oldpwd, prev, sizeof(g_oldpwd) - 1); g_oldpwd[sizeof(g_oldpwd) - 1] = '\0';
+    return 0;
+}
 static void cmd_cd(int argc, char** argv) {
     if (argc < 2) { printf("Usage: cd <path>\n"); return; }
-    if (vfs_chdir(argv[1]) < 0) printf("cd: %s: No such directory\n", argv[1]);
+    int echoed = 0;
+    int rc = cd_do(argv[1], &echoed);
+    if      (rc == -2) printf("cd: OLDPWD not set\n");
+    else if (rc == -1) printf("cd: %s: No such directory\n", argv[1]);
+    else if (echoed)   printf("%s\n", vfs_getcwd());        // bash echoes the dir on `cd -`
 }
 
 static void cmd_pwd(int argc, char** argv) {
@@ -8374,6 +8402,26 @@ int mkdir_p_selftest(void) {
     if (fd >= 0) vfs_close(fd);
     if (mkdir_p("/tmp/katmk/f/x", 0755) == 0)        return 6;   // a file blocks descent
     return 0;
+}
+
+// KAT: `cd -` toggles between the current and previous directory (bash OLDPWD), and
+// errors when OLDPWD is unset. Drives the real cd_do (mutates cwd) and restores it. 0=pass.
+int cd_selftest(void) {
+    char save[256];    strncpy(save, vfs_getcwd(), sizeof(save) - 1);    save[sizeof(save) - 1] = '\0';
+    char oldsave[256]; strncpy(oldsave, g_oldpwd, sizeof(oldsave) - 1);  oldsave[sizeof(oldsave) - 1] = '\0';
+    int e, rc = 0;
+    mkdir_p("/tmp/cda", 0755); mkdir_p("/tmp/cdb", 0755);
+    g_oldpwd[0] = '\0';
+    if      (cd_do("/tmp/cda", &e) != 0)              rc = 1;
+    else if (cd_do("/tmp/cdb", &e) != 0)              rc = 2;
+    else if (cd_do("-", &e) != 0 || !e)              rc = 3;   // cd - succeeds + echoes
+    else if (strcmp(vfs_getcwd(), "/tmp/cda") != 0)  rc = 4;   // ...back to cda
+    else if (cd_do("-", &e) != 0)                    rc = 5;
+    else if (strcmp(vfs_getcwd(), "/tmp/cdb") != 0)  rc = 6;   // ...toggles to cdb
+    if (!rc) { g_oldpwd[0] = '\0'; if (cd_do("-", &e) != -2) rc = 7; }   // unset OLDPWD -> error
+    vfs_chdir(save);                                                     // restore
+    strncpy(g_oldpwd, oldsave, sizeof(g_oldpwd) - 1); g_oldpwd[sizeof(g_oldpwd) - 1] = '\0';
+    return rc;
 }
 
 static void cmd_mkdir(int argc, char** argv) {
@@ -10157,6 +10205,7 @@ static void run_selftests(void) {
         {"fontglyph",    font_glyph_selftest},
         {"mkdirp",       mkdir_p_selftest},
         {"rmtree",       rm_r_selftest},
+        {"cddash",       cd_selftest},
         {"catnumber",    cat_number_selftest},
         {"nyxconf",      nyxconf_selftest},
         {"fmnav",        fileman_nav_selftest},
