@@ -64,13 +64,15 @@ any struct used by value would be.
 | M6.3d | [`ginfer.npp`](../examples/ginfer.npp) | call-site inference: `id(41)` is `id<i64>(41)` (literal arguments) |
 | M6.3e | [`genum.npp`](../examples/genum.npp), [`result.npp`](../examples/result.npp) | generic enums; `Result<T, E>` composing with N's structural `?` |
 | M6.3f | [`rinfer.npp`](../examples/rinfer.npp) | construction-site inference: `Result.Ok{ ... }` from the enclosing return type |
+| M6.3g | [`gnest.npp`](../examples/gnest.npp) | generics inside generics: `wrap<T> -> Box<T>` instantiates `Box` per `wrap` instantiation |
 
 Inference never guesses. A call whose argument `nppc` cannot type, or a
 bare construction in a function that does not return that enum, is
-refused with the explicit form spelled out in the diagnostic. Still
-pending: generic uses inside another generic's body — each
-instantiation is emitted from the template's own source span, which
-cannot carry a nested rewrite yet.
+refused with the explicit form spelled out in the diagnostic. A template
+may use other templates with its own parameters (`wrap<T> -> Box<T>`):
+the use is recorded on the template and instantiated, to a fixpoint,
+once per concrete instantiation of it, with the arguments substituted.
+Still pending: a generic type in a generic struct's field.
 
 ## Modules (M6.5), plainly
 

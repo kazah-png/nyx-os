@@ -1,0 +1,47 @@
+// gnest.npp — N++ generics inside generics (M6.3g).
+//
+// A template may use another template with its own type parameters:
+// `wrap<T>` returns a `Box<T>` and builds one, `some<T>` returns a `Maybe<T>`
+// and constructs it bare. Each concrete instantiation of the outer template
+// instantiates the inner one it needs — `wrap<i64>` brings `__g_Box_i64`
+// into being, `wrap<str>` brings `__g_Box_str` — and the uses inside the
+// emitted body are rewritten to those names, so the lowered N holds only
+// plain items. A concrete item is emitted where its template is declared,
+// so the inner templates come first.
+
+extern syscall {
+    fn write(fd: i32, buf: *u8, len: isize) -> i64 = 1
+}
+
+struct Box<T> {
+    val: T,
+}
+
+enum Maybe<T> {
+    Some(v: T),
+    None,
+}
+
+fn put(s: str) {
+    write(1, s.ptr as *u8, s.len as isize);
+}
+
+fn wrap<T>(x: T) -> Box<T> {
+    Box<T>{ val: x }
+}
+
+fn some<T>(x: T) -> Maybe<T> {
+    Maybe.Some{ v: x }
+}
+
+fn main() -> i64 {
+    b := wrap<i64>(41);
+    s := wrap<str>("boxed");
+    put("{s.val} {b.val}\n");
+    m := some<i64>(7);
+    match m {
+        Some(v) => { put("some {v}\n"); },
+        None    => { put("none\n"); },
+    }
+    b.val - 41
+}

@@ -360,9 +360,22 @@ static int tokspan_eq(int a, int b) {      /* two IDENT tokens name the same wor
 #define MAXF 64
 #define MAXG 64
 #define MAXI 2048
+#define MAXNEST 32
+
+/* A generic use inside another generic's template (M6.3g) — `Box<T>` in the
+ * body of `fn wrap<T>`. It denotes one instantiation of the inner generic
+ * per concrete instantiation of the template: each argument is either a
+ * concrete type name or one of the template's type parameters (aparam). */
+typedef struct {
+    int gi;                               /* the inner generic */
+    char* aname[MAXP]; int alen[MAXP];    /* argument names ... */
+    int aparam[MAXP];                     /* ... or the template type-param they name (-1 if concrete) */
+    int nargs;
+    int start, end;                       /* the use's span inside the template */
+} Nest;
 
 typedef struct {
-    int kind;                             /* 0 = struct, 1 = fn */
+    int kind;                             /* 0 = struct, 1 = fn, 2 = enum */
     int nametok;                          /* the IDENT token of the generic name */
     int ptok[MAXP]; int nparams;          /* type-param IDENT tokens */
     int declstart, declend;               /* source span of the whole declaration */
@@ -372,6 +385,9 @@ typedef struct {
     /* fn-only: the token bounds the span-splice emit walks */
     int angleclose;                       /* token index of `>` closing the params */
     int lasttok;                          /* token index of the body's closing `}` */
+    /* generic uses inside this template (M6.3g), instantiated per concrete
+     * instantiation of it */
+    Nest nested[MAXNEST]; int nnested;
 } GStruct;
 static GStruct GS[MAXG];
 static int NGS;
@@ -390,10 +406,19 @@ static int NINST;
 typedef struct { int start, end; char* repl; } Edit;
 static Edit EDITS[MAXG + MAXI];
 static int NEDIT;
+static int edit_cmp(const void* x, const void* y);
 
 static int gfind(int nametok) {           /* generic index whose name == this IDENT */
     for (int i = 0; i < NGS; i++)
         if (tokspan_eq(GS[i].nametok, nametok)) return i;
+    return -1;
+}
+
+/* The template whose declaration contains byte `pos`, or -1. Templates do
+ * not nest, so there is at most one. */
+static int enclosing_template(int pos) {
+    for (int i = 0; i < NGS; i++)
+        if (pos >= GS[i].declstart && pos < GS[i].declend) return i;
     return -1;
 }
 
@@ -408,6 +433,7 @@ static void collect_generic_decls(void) {
         g->kind = 0;
         g->nametok = i + 1;
         g->nparams = 0;
+        g->nnested = 0;
         g->declstart = TOKS[i].start;
         int j = i + 3;                    /* first param */
         for (;;) {
@@ -444,6 +470,9 @@ static void collect_generic_decls(void) {
             g->fields[g->nfields].ptrs = ptrs;
             g->fields[g->nfields].base = j++;
             g->nfields++;
+            if (TOKS[j].k == T_LT)
+                die("%s:%d: M6.3g: a generic type in a generic struct's field is pending "
+                    "(a generic function or enum may use one)", FILENAME, TOKS[j].line);
             if (TOKS[j].k == T_COMMA) j++;
         }
         g->declend = TOKS[j].end;         /* past the closing '}' */
@@ -471,6 +500,27 @@ static void collect_instantiations(void) {
             ok = 0; break;
         }
         if (!ok || nargs != GS[gi].nparams) continue;   /* not this generic's shape */
+        int outer = enclosing_template(TOKS[i].start);
+        if (outer >= 0) {
+            /* Inside another template (M6.3g): instantiated per concrete
+             * instantiation of that template, by expand_nested. */
+            GStruct* og = &GS[outer];
+            if (og->nnested >= MAXNEST) die("%s: too many nested generic uses", FILENAME);
+            Nest* ns = &og->nested[og->nnested++];
+            ns->gi = gi;
+            ns->nargs = nargs;
+            for (int a = 0; a < nargs; a++) {
+                ns->aname[a] = TOKS[atok[a]].s;
+                ns->alen[a] = TOKS[atok[a]].slen;
+                ns->aparam[a] = -1;
+                for (int q = 0; q < og->nparams; q++)
+                    if (tokspan_eq(og->ptok[q], atok[a])) ns->aparam[a] = q;
+            }
+            ns->start = TOKS[i].start;
+            ns->end = TOKS[j - 1].end;
+            i = j - 1;
+            continue;
+        }
         if (NINST >= MAXI) die("%s: too many generic instantiations", FILENAME);
         Inst* n = &INSTS[NINST++];
         n->gi = gi;
@@ -546,6 +596,20 @@ static void collect_inferred_calls(void) {
             if (!bound[p])
                 die("%s:%d: cannot infer every generic parameter of '%.*s' — write them "
                     "explicitly", FILENAME, TOKS[i].line, TOKS[g->nametok].slen, TOKS[g->nametok].s);
+        int outer = enclosing_template(TOKS[i].start);
+        if (outer >= 0) {                  /* inside a template: a nested use (M6.3g) */
+            GStruct* og = &GS[outer];
+            if (og->nnested >= MAXNEST) die("%s: too many nested generic uses", FILENAME);
+            Nest* ns = &og->nested[og->nnested++];
+            ns->gi = gi;
+            ns->nargs = g->nparams;
+            for (int p = 0; p < g->nparams; p++) {
+                ns->aname[p] = an[p]; ns->alen[p] = al[p]; ns->aparam[p] = -1;
+            }
+            ns->start = TOKS[i].start;
+            ns->end = TOKS[i].end;
+            continue;
+        }
         if (NINST >= MAXI) die("%s: too many generic instantiations", FILENAME);
         Inst* n = &INSTS[NINST++];
         n->gi = gi;
@@ -568,15 +632,16 @@ static void collect_inferred_calls(void) {
  * `NAME<Type, ...>.Variant` form. */
 static void collect_inferred_constructions(void) {
     int ret_gi = -1;                      /* the enclosing fn's return instantiation */
-    char* ran[MAXP]; int ral[MAXP];
+    char* ran[MAXP]; int ral[MAXP]; int rparam[MAXP];
     int body_end = -1;                    /* token index of its body's closing `}` */
-    int generic_fn = 0;
+    int generic_fn = 0, outer_gi = -1;    /* a template's own GStruct, when inside one */
     for (int i = 0; i + 1 < NTOK; i++) {
         if (TOKS[i].k == T_KW_FN && TOKS[i + 1].k == T_IDENT) {
             int j = i + 2, depth = 0;
-            ret_gi = -1; body_end = -1; generic_fn = 0;
+            ret_gi = -1; body_end = -1; generic_fn = 0; outer_gi = -1;
             if (TOKS[j].k == T_LT) {      /* fn NAME<params>(...) */
                 generic_fn = 1;
+                outer_gi = gfind(i + 1);
                 while (TOKS[j].k != T_GT && TOKS[j].k != T_EOF) j++;
                 j++;
             }
@@ -591,7 +656,11 @@ static void collect_inferred_constructions(void) {
                     int n = 0, k = j + 3, ok = 1;
                     for (;;) {
                         if (TOKS[k].k != T_IDENT || n >= MAXP) { ok = 0; break; }
-                        ran[n] = TOKS[k].s; ral[n] = TOKS[k].slen; n++; k++;
+                        ran[n] = TOKS[k].s; ral[n] = TOKS[k].slen; rparam[n] = -1;
+                        if (outer_gi >= 0)    /* an argument that is the template's own type-param */
+                            for (int q = 0; q < GS[outer_gi].nparams; q++)
+                                if (tokspan_eq(GS[outer_gi].ptok[q], k)) rparam[n] = q;
+                        n++; k++;
                         if (TOKS[k].k == T_COMMA) { k++; continue; }
                         if (TOKS[k].k == T_GT) break;
                         ok = 0; break;
@@ -622,17 +691,28 @@ static void collect_inferred_constructions(void) {
                 "to take them from — write %.*s<Type, ...>.Variant",
                 FILENAME, TOKS[i].line, TOKS[i].slen, TOKS[i].s,
                 TOKS[g->nametok].slen, TOKS[g->nametok].s);
-        if (generic_fn)
-            die("%s:%d: M6.3f: inferring '%.*s.' inside a generic function is pending "
-                "— write %.*s<Type, ...>.Variant",
-                FILENAME, TOKS[i].line, TOKS[i].slen, TOKS[i].s,
-                TOKS[g->nametok].slen, TOKS[g->nametok].s);
         if (ret_gi != gi)
             die("%s:%d: cannot infer the type arguments of '%.*s.': the enclosing "
                 "function does not return %.*s<...> — write %.*s<Type, ...>.Variant",
                 FILENAME, TOKS[i].line, TOKS[i].slen, TOKS[i].s,
                 TOKS[g->nametok].slen, TOKS[g->nametok].s,
                 TOKS[g->nametok].slen, TOKS[g->nametok].s);
+        if (generic_fn) {
+            /* Inside a template (M6.3g): a nested use carrying the return
+             * type's arguments — some of them the template's own parameters —
+             * instantiated per concrete instantiation of the template. */
+            GStruct* og = &GS[outer_gi];
+            if (og->nnested >= MAXNEST) die("%s: too many nested generic uses", FILENAME);
+            Nest* ns = &og->nested[og->nnested++];
+            ns->gi = gi;
+            ns->nargs = g->nparams;
+            for (int p = 0; p < g->nparams; p++) {
+                ns->aname[p] = ran[p]; ns->alen[p] = ral[p]; ns->aparam[p] = rparam[p];
+            }
+            ns->start = TOKS[i].start;
+            ns->end = TOKS[i].end;
+            continue;
+        }
         if (NINST >= MAXI) die("%s: too many generic instantiations", FILENAME);
         Inst* n = &INSTS[NINST++];
         n->gi = gi;
@@ -653,6 +733,27 @@ static char* mangle(Inst* it) {
     for (int a = 0; a < g->nparams; a++)
         n += sprintf(out + n, "_%.*s", it->alen[a], it->aname[a]);
     return out;
+}
+
+/* The instantiation a nested generic use denotes for one concrete
+ * instantiation of its template: the template's arguments substituted for
+ * the type parameters the use names; concrete names pass through. It has no
+ * use site of its own to rewrite (start = end = -1) — the template's emit
+ * rewrites the use. */
+static void nested_inst(Inst* outer, Nest* ns, Inst* out) {
+    out->gi = ns->gi;
+    out->nargs = ns->nargs;
+    for (int a = 0; a < ns->nargs; a++) {
+        if (ns->aparam[a] >= 0) {
+            out->aname[a] = outer->aname[ns->aparam[a]];
+            out->alen[a] = outer->alen[ns->aparam[a]];
+        } else {
+            out->aname[a] = ns->aname[a];
+            out->alen[a] = ns->alen[a];
+        }
+    }
+    out->start = -1;
+    out->end = -1;
 }
 
 /* The concrete N struct for one instantiation: the template body with each
@@ -689,8 +790,14 @@ static int typaram_at(GStruct* g, int t) {
     TK p = TOKS[t - 1].k;
     /* A base type follows ':' (a param/field type), '->' (a return type),
      * '*' (a pointer type), or 'as' (a cast target — the one type slot that
-     * appears inside a function body, since N locals are always inferred). */
-    if (p != T_COLON && p != T_ARROW && p != T_STAR && p != T_KW_AS) return -1;
+     * appears inside a function body, since N locals are always inferred).
+     * An argument of a generic use — `Box<T>`, `Pair<T, U>` (M6.3g) — is
+     * recognized by walking back to the `<` with a generic's name before it. */
+    if (p == T_LT || p == T_COMMA) {
+        int j = t - 1;
+        while (j > 0 && (TOKS[j].k == T_COMMA || TOKS[j].k == T_IDENT)) j--;
+        if (!(TOKS[j].k == T_LT && j > 0 && gfind(j - 1) >= 0)) return -1;
+    } else if (p != T_COLON && p != T_ARROW && p != T_STAR && p != T_KW_AS) return -1;
     for (int q = 0; q < g->nparams; q++)
         if (tokspan_eq(g->ptok[q], t)) return q;
     return -1;
@@ -730,7 +837,7 @@ static void collect_generic_fns(void) {
                 die("%s:%d: unterminated generic function header", FILENAME, TOKS[i].line);
             j++;
         }
-        int depth = 0, body_open = j;
+        int depth = 0;
         for (;;) {
             if (TOKS[j].k == T_EOF) die("%s: unterminated generic function body", FILENAME);
             if (TOKS[j].k == T_LB) depth++;
@@ -739,21 +846,7 @@ static void collect_generic_fns(void) {
         }
         g->lasttok = j;                   /* the body's closing `}` */
         g->declend = TOKS[j].end;
-        /* Every type-parameter occurrence after the header must be a handled
-         * type position, so the emit rewrites all of them. */
-        for (int t = g->angleclose + 1; t <= g->lasttok; t++) {
-            if (TOKS[t].k != T_IDENT) continue;
-            int isp = 0;
-            for (int q = 0; q < g->nparams; q++)
-                if (tokspan_eq(g->ptok[q], t)) { isp = 1; break; }
-            if (!isp) continue;
-            if (typaram_at(g, t) < 0) {
-                (void)body_open;
-                die("%s:%d: M6.3b: type parameter '%.*s' appears in an unsupported "
-                    "position (only ':' / '->' / '*' type slots are lowered yet)",
-                    FILENAME, TOKS[t].line, TOKS[t].slen, TOKS[t].s);
-            }
-        }
+        g->nnested = 0;                   /* filled by the use collectors */
         NGS++;
     }
 }
@@ -797,6 +890,19 @@ static void collect_generic_enums(void) {
         }
         g->lasttok = j;
         g->declend = TOKS[j].end;
+        g->nnested = 0;
+        NGS++;
+    }
+}
+
+/* Every type-parameter occurrence inside a template must sit in a position
+ * the emit rewrites — a type slot, or an argument of a generic use — so no
+ * parameter survives into a concrete item. Checked once every generic is
+ * known, since a use may name a generic declared later in the file. */
+static void guard_templates(void) {
+    for (int gi = 0; gi < NGS; gi++) {
+        GStruct* g = &GS[gi];
+        if (g->kind == 0) continue;       /* struct fields are parsed, not spliced */
         for (int t = g->angleclose + 1; t <= g->lasttok; t++) {
             if (TOKS[t].k != T_IDENT) continue;
             int isp = 0;
@@ -804,42 +910,53 @@ static void collect_generic_enums(void) {
                 if (tokspan_eq(g->ptok[q], t)) { isp = 1; break; }
             if (!isp) continue;
             if (typaram_at(g, t) < 0)
-                die("%s:%d: M6.3e: type parameter '%.*s' appears in an unsupported "
-                    "position (only payload type slots are lowered)",
-                    FILENAME, TOKS[t].line, TOKS[t].slen, TOKS[t].s);
+                die("%s:%d: type parameter '%.*s' appears in a position the lowering "
+                    "does not rewrite (a type slot after ':' / '->' / '*' / 'as', or a "
+                    "generic's argument)", FILENAME, TOKS[t].line, TOKS[t].slen, TOKS[t].s);
         }
-        NGS++;
     }
 }
 
 /* The concrete N function or enum for one instantiation: a span-splice of the
- * source declaration with the header rewritten to the mangled name and every
- * type-parameter type slot replaced by its argument — the body's exact bytes
- * (spacing and comments) pass through untouched. */
+ * source declaration with the header rewritten to the mangled name, every
+ * type-parameter type slot replaced by its argument, and every generic use
+ * inside the template replaced by the concrete name it denotes for this
+ * instantiation — the body's other bytes (spacing and comments) pass through
+ * untouched. */
 static char* concrete_fn(Inst* it) {
     GStruct* g = &GS[it->gi];
-    char* mn = mangle(it);
-    int es[512], ee[512]; char* er[512]; int ne = 0;
-    es[ne] = TOKS[g->nametok].start;      /* `NAME<params>` -> mangled name */
-    ee[ne] = TOKS[g->angleclose].end;
-    er[ne] = mn; ne++;
+    Edit ed[512]; int ne = 0;
+    ed[ne].start = TOKS[g->nametok].start;    /* `NAME<params>` -> mangled name */
+    ed[ne].end = TOKS[g->angleclose].end;
+    ed[ne].repl = mangle(it); ne++;
+    for (int u = 0; u < g->nnested; u++) {    /* `Box<T>` -> `__g_Box_i64` (M6.3g) */
+        Inst n;
+        nested_inst(it, &g->nested[u], &n);
+        if (ne >= 512) die("%s: generic item too large", FILENAME);
+        ed[ne].start = g->nested[u].start;
+        ed[ne].end = g->nested[u].end;
+        ed[ne].repl = mangle(&n); ne++;
+    }
     for (int t = g->angleclose + 1; t <= g->lasttok; t++) {
         int q = typaram_at(g, t);
         if (q < 0) continue;
-        if (ne >= 512) die("%s: generic function too large", FILENAME);
-        es[ne] = TOKS[t].start;
-        ee[ne] = TOKS[t].end;
-        er[ne] = xstrndup(it->aname[q], (size_t)it->alen[q]);
-        ne++;
+        int covered = 0;                      /* an argument of a nested use: its edit covers it */
+        for (int u = 0; u < g->nnested; u++)
+            if (TOKS[t].start >= g->nested[u].start && TOKS[t].start < g->nested[u].end)
+                covered = 1;
+        if (covered) continue;
+        if (ne >= 512) die("%s: generic item too large", FILENAME);
+        ed[ne].start = TOKS[t].start;
+        ed[ne].end = TOKS[t].end;
+        ed[ne].repl = xstrndup(it->aname[q], (size_t)it->alen[q]); ne++;
     }
-    /* Edits are already in source order (header first, then increasing token
-     * index), so splice directly. */
-    char* out = xmalloc((size_t)(g->declend - g->declstart) + 512);
+    qsort(ed, (size_t)ne, sizeof(Edit), edit_cmp);
+    char* out = xmalloc((size_t)(g->declend - g->declstart) + 512 + (size_t)ne * 64);
     int n = 0, prev = g->declstart;
     for (int e = 0; e < ne; e++) {
-        memcpy(out + n, SRC + prev, (size_t)(es[e] - prev)); n += es[e] - prev;
-        n += sprintf(out + n, "%s", er[e]);
-        prev = ee[e];
+        memcpy(out + n, SRC + prev, (size_t)(ed[e].start - prev)); n += ed[e].start - prev;
+        n += sprintf(out + n, "%s", ed[e].repl);
+        prev = ed[e].end;
     }
     memcpy(out + n, SRC + prev, (size_t)(g->declend - prev)); n += g->declend - prev;
     out[n] = 0;
@@ -860,6 +977,29 @@ static int args_same(Inst* a, Inst* b) {
 
 static int edit_cmp(const void* x, const void* y) {
     return ((const Edit*)x)->start - ((const Edit*)y)->start;
+}
+
+/* Nested uses (M6.3g), to a fixpoint: every concrete instantiation of a
+ * template instantiates the generics its body uses, with the template's
+ * arguments substituted — and those instantiations may use others in turn. */
+static void expand_nested(void) {
+    for (int changed = 1; changed;) {
+        changed = 0;
+        for (int i = 0; i < NINST; i++) {
+            GStruct* g = &GS[INSTS[i].gi];
+            for (int u = 0; u < g->nnested; u++) {
+                Inst n;
+                nested_inst(&INSTS[i], &g->nested[u], &n);
+                int dup = 0;
+                for (int k = 0; k < NINST; k++)
+                    if (args_same(&n, &INSTS[k])) { dup = 1; break; }
+                if (dup) continue;
+                if (NINST >= MAXI) die("%s: too many generic instantiations", FILENAME);
+                INSTS[NINST++] = n;
+                changed = 1;
+            }
+        }
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -1231,9 +1371,11 @@ int main(int argc, char** argv) {
     collect_generic_decls();
     collect_generic_fns();
     collect_generic_enums();
+    guard_templates();
     collect_instantiations();
     collect_inferred_calls();
     collect_inferred_constructions();
+    expand_nested();
 
     /* Build the edit list: each generic declaration is replaced by the
      * concrete structs its distinct instantiations require (in first-use
@@ -1261,6 +1403,7 @@ int main(int argc, char** argv) {
         NEDIT++;
     }
     for (int i = 0; i < NINST; i++) {
+        if (INSTS[i].start < 0) continue;  /* a nested instantiation: rewritten by its template's emit */
         EDITS[NEDIT].start = INSTS[i].start;
         EDITS[NEDIT].end = INSTS[i].end;
         EDITS[NEDIT].repl = mangle(&INSTS[i]);
