@@ -643,7 +643,7 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
                     int chunk = len - done;
                     if (chunk > (int)sizeof(kbuf)) chunk = sizeof(kbuf);
                     if (copy_from_user(kbuf, a2 + done, chunk) != 0) return done;
-                    for (int i = 0; i < chunk; i++) putchar(kbuf[i]);
+                    for (int i = 0; i < chunk; i++) putchar((unsigned char)kbuf[i]);  /* unsigned: high bytes (CP437 block/box glyphs) must not sign-extend to a negative that downstream drops */
                     done += chunk;
                 }
                 return len;

@@ -92,9 +92,10 @@ recorded here for completeness:
   (<https://github.com/Parker0312/tfetch>) — the concept (a bunny system-info fetch
   with per-pride-flag colour palettes) and the flag→colour mappings originate there.
 - **What NyxOS ships:** an **original C reimplementation** in `user/pkg/tfetch/tfetch.c`.
-  The upstream is Rust and is not copied; the bunny is an original ASCII rendition (the
-  upstream Unicode-braille art is not reproduced — the console font is CP437), the
-  colours are remapped to the terminal's 16-colour ANSI set, and the info fields read
+  The upstream is Rust and is not copied. The bunny is the upstream's Unicode-braille
+  art decoded to a dot bitmap and re-rendered with CP437 half-block glyphs (the console
+  font can't draw braille) — a faithful reproduction of its shape, used with permission;
+  the colours are remapped to the terminal's 16-colour ANSI set, and the info fields read
   NyxOS's own `/proc`.
 - **Permission:** the upstream repository carries no license file; this port is included
   with the **author's express permission**, granted to the NyxOS maintainer and recorded

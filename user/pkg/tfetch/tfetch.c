@@ -11,24 +11,30 @@
  *   tfetch --trans      trans-flag colours
  *   tfetch --gay        rainbow, etc.
  *
- * NyxOS adaptations from the original: the bunny is ASCII (the console font has no
- * Unicode braille); colours are the terminal's 16-colour ANSI set (no 24-bit); info
+ * NyxOS adaptations from the original: the bunny is the same art re-rendered in CP437
+ * half-blocks (the console font has no Unicode braille); colours are the terminal's
+ * 16-colour ANSI set (no 24-bit); info
  * comes from NyxOS's /proc (version/cpuinfo/meminfo/uptime), and Disk (which needs a
  * statfs the ring-3 libc doesn't have yet) is shown as Uptime instead. Built INSIDE
  * the OS by `cc`; installs via `xbm install tfetch`.
  */
 
-/* ---- the bunny (ASCII so the 8x16 console font can draw it) ---- */
+/* ---- the bunny ---- The upstream art is Unicode braille, which the CP437 console
+ * font can't draw; this is the SAME bunny decoded to a dot bitmap and re-rendered with
+ * CP437 half-block glyphs (0xDB full, 0xDF upper, 0xDC lower), which the font does have.
+ * Generated from the original braille, so the shape is faithful. */
 static const char* BUNNY[] = {
-    "   (\\_/)   (\\_/)",
-    "    \\ \\_____/ /",
-    "     \\  o o  /",
-    "      \\  ^  /",
-    "      (  ___ )",
-    "      / \\   / \\",
-    "     /   \\_/   \\",
-    "    (  nyxOS ~  )",
-    "     \\_________/",
+    "   \xDC\xDB\xDB\xDB   \xDC\xDC\xDC",
+    "  \xDC\xDB  \xDB \xDC\xDB\xDF \xDB",
+    "  \xDB   \xDB\xDB\xDF  \xDC\xDB\xDB\xDB\xDB\xDC\xDC",
+    "  \xDB \xDB\xDB\xDB\xDF\xDC \xDC\xDB     \xDF\xDF\xDB",
+    " \xDC\xDB\xDB\xDB\xDB\xDC\xDB\xDB\xDB\xDF        \xDF\xDB\xDC\xDC",
+    "\xDC\xDB\xDF   \xDF \xDF           \xDB\xDC\xDB\xDC",
+    "\xDB           \xDF       \xDC\xDB\xDB",
+    "\xDB          \xDC\xDB      \xDC\xDB\xDF",
+    "\xDB\xDB   \xDC\xDC\xDC   \xDF  \xDC\xDC \xDC\xDB\xDB\xDF",
+    "\xDB\xDB\xDC\xDC \xDF\xDB\xDF\xDC\xDC\xDB\xDB\xDC\xDB\xDB\xDB\xDB\xDF\xDF",
+    "  \xDF\xDF\xDF\xDF\xDF\xDF\xDF",
 };
 #define NBUNNY ((int)(sizeof(BUNNY) / sizeof(BUNNY[0])))
 
