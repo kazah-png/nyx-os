@@ -103,4 +103,36 @@ static inline int uwin_text(unsigned int* buf, int w, int h, int x, int y,
             uwin_glyph(buf, w, h, x, y, g, fg);
     return x;
 }
+
+/* --- ring-3 window input state (ergonomic wrapper over win_poll_event) -------
+ * A window app usually wants the CURRENT input state per frame, not a raw event
+ * stream. Zero-init a uwin_input_t, then uwin_input_pump() it once per frame and
+ * read the fields. mouse_x/y + buttons + closed persist across pumps; last_key and
+ * got_click are per-pump transients (reset each pump). */
+typedef struct {
+    int mouse_x, mouse_y;    /* last cursor position (client-relative), persists */
+    int buttons;             /* current button bitmask, persists */
+    int last_key;            /* keycode seen this pump, else 0 */
+    int got_click;           /* a click happened this pump */
+    int click_x, click_y, click_btn;
+    int closed;              /* the window's close box was pressed (sticky) */
+} uwin_input_t;
+
+/* Apply one event to the state — pure (no syscalls), the host-testable core. */
+static inline void uwin_input_apply(uwin_input_t* st, const win_event_t* ev) {
+    if (ev->kind == UWE_MOVE)       { st->mouse_x = (int)ev->a; st->mouse_y = (int)ev->b; st->buttons = (int)ev->c; }
+    else if (ev->kind == UWE_CLICK) { st->mouse_x = (int)ev->a; st->mouse_y = (int)ev->b;
+                                      st->click_x = (int)ev->a; st->click_y = (int)ev->b; st->click_btn = (int)ev->c; st->got_click = 1; }
+    else if (ev->kind == UWE_KEY)   { st->last_key = (int)ev->a; }
+    else if (ev->kind == UWE_CLOSE) { st->closed = 1; }
+}
+
+/* Drain all pending events for window `id` into *st (call once per frame). Returns
+ * the number processed, or -1 if the window is gone. */
+static inline int uwin_input_pump(int id, uwin_input_t* st) {
+    st->last_key = 0; st->got_click = 0;     /* per-pump transients */
+    win_event_t ev; int n = 0, r;
+    while ((r = win_poll_event(id, &ev)) == 1) { uwin_input_apply(st, &ev); n++; }
+    return r < 0 ? -1 : n;
+}
 #endif

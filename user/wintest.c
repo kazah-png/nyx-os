@@ -20,6 +20,7 @@ int main(void) {
     if (!buf) { printf("wintest: malloc FAILED\n"); win_destroy(id); return 1; }
 
     int frames = 0, events = 0;
+    uwin_input_t input = {0};
     for (int i = 0; i < 160; i++) {                 /* ~160 * 30 ms ~= 4.8 s */
         int sqx = (i * 3) % (W - 40);               /* the square marches right */
         for (int y = 0; y < H; y++) {               /* purple: R + B ramp, low G */
@@ -35,15 +36,12 @@ int main(void) {
         if (i == 0) printf("wintest: first present OK\n");
         frames++;
 
-        win_event_t ev;
-        int r;
-        while ((r = win_poll_event(id, &ev)) == 1) {
-            events++;
-            if      (ev.kind == UWE_CLICK) printf("wintest: CLICK x=%ld y=%ld btn=%ld\n", ev.a, ev.b, ev.c);
-            else if (ev.kind == UWE_KEY)   printf("wintest: KEY code=%ld\n", ev.a);
-            else if (ev.kind == UWE_CLOSE) { printf("wintest: CLOSE requested\n"); goto done; }
-        }
+        int r = uwin_input_pump(id, &input);            // drain a frame's input via the uwin helper
         if (r < 0) { printf("wintest: window gone\n"); goto done; }
+        events += r;
+        if (input.got_click) printf("wintest: CLICK x=%d y=%d btn=%d\n", input.click_x, input.click_y, input.click_btn);
+        if (input.last_key)  printf("wintest: KEY code=%d\n", input.last_key);
+        if (input.closed)    { printf("wintest: CLOSE requested\n"); goto done; }
         usleep(30000);
     }
 done:
