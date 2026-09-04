@@ -4118,6 +4118,11 @@ static void apply_nyx_config(void) {
     if (nyxconf_get(buf, "clock", val, sizeof val)) {
         g_clock_12h = (strcmp(val, "12h") == 0 || strcmp(val, "12") == 0);   // else 24-hour
     }
+    if (nyxconf_get(buf, "icons", val, sizeof val)) {
+        // desktop app icons (Files/Terminal/…/Selene): opt-IN (default off = clean desktop)
+        g_desktop_icons_visible = (strcmp(val, "on") == 0 || strcmp(val, "1") == 0 ||
+                                   strcmp(val, "true") == 0 || strcmp(val, "yes") == 0);
+    }
     if (nyxconf_get(buf, "gaps", val, sizeof val)) {
         int gp = 0;                                  // px between tiles + around the screen
         for (const char* p = val; *p >= '0' && *p <= '9'; p++) gp = gp * 10 + (*p - '0');
@@ -4162,13 +4167,15 @@ void save_nyx_config(void) {
         "widget = %s\n"
         "widget_pos = %s\n"
         "clock = %s\n"
-        "gaps = %d\n",
+        "gaps = %d\n"
+        "icons = %s\n",
         wallpaper_style_name(wallpaper_style()),
         acc,
         g_widget_on ? "on" : "off",
         widget_pos_name(g_widget_pos),
         g_clock_12h ? "12h" : "24h",
-        g_gaps);
+        g_gaps,
+        g_desktop_icons_visible ? "on" : "off");
     if (n <= 0) return;
     int fd = vfs_open("/etc/nyx.conf", O_CREAT | O_TRUNC, 0644);
     if (fd >= 0) { vfs_write(fd, buf, (size_t)n); vfs_close(fd); }
