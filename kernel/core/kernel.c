@@ -402,7 +402,7 @@ static const command_t commands[] = {
     {"pushd",     cmd_pushd,     "Push the current dir and cd to another: pushd <path>", false},
     {"popd",      cmd_popd,      "Pop the directory stack and cd back", false},
     {"dirs",      cmd_dirs,      "List the directory stack (current dir first)", false},
-    {"cat",       cmd_cat,       "Display file contents: cat <file>", false},
+    {"cat",       cmd_cat,       "Display file contents: cat [-nb] <file>", false},
     {"open",      cmd_open,      "Open a file in the GUI Text Editor: open <file>", false},
     {"touch",     cmd_touch,     "Create empty file: touch <file>", false},
     {"truncate",  cmd_truncate,  "Set a file's size: truncate -s <size> <file>", false},
@@ -8102,10 +8102,77 @@ static void cmd_popd(int argc, char** argv) {
     cmd_dirs(0, 0);
 }
 
+// Line-numbering core for `cat -n`/`-b`, byte-exact with GNU cat (host-sim verified).
+// mode: 1 = -n (number every line), 2 = -b (number non-blank lines only). Chunk-safe:
+// *line_no and *at_bol persist across calls, so streaming a file in 512B reads matches
+// numbering the whole buffer at once. Appends to out (from *outn), never exceeding cap.
+// The number is right-justified in a field of 6 then a tab, exactly as GNU prints it.
+static void cat_number(const char* in, int len, int mode, long* line_no, int* at_bol,
+                       char* out, int cap, int* outn) {
+    int o = *outn;
+    for (int i = 0; i < len; i++) {
+        char c = in[i];
+        if (*at_bol) {
+            int blank = (c == '\n');
+            if (mode == 1 || (mode == 2 && !blank)) {
+                (*line_no)++;
+                char tmp[16]; int t = 0; long v = *line_no;
+                if (v == 0) tmp[t++] = '0';
+                while (v > 0) { tmp[t++] = (char)('0' + v % 10); v /= 10; }
+                int pad = 6 - t; while (pad-- > 0 && o < cap - 1) out[o++] = ' ';
+                while (t-- > 0 && o < cap - 1) out[o++] = tmp[t];
+                if (o < cap - 1) out[o++] = '\t';
+            }
+            *at_bol = 0;
+        }
+        if (o < cap - 1) out[o++] = c;
+        if (c == '\n') *at_bol = 1;
+    }
+    out[o] = '\0'; *outn = o;
+}
+
+// KAT: cat -n / -b numbering matches GNU byte-for-byte, incl. blank-line handling
+// (-n numbers them, -b skips them), no-trailing-newline, and chunk-split continuity.
+// 0 = pass, else the failing case number.
+static int cat_number_selftest(void) {
+    char out[256]; long ln; int bol, n;
+    #define CATN_RUN(m,s) do{ ln=0; bol=1; n=0; cat_number((s), (int)sizeof(s)-1, (m), &ln,&bol, out,sizeof out,&n); }while(0)
+    CATN_RUN(1, "a\nb\nc\n");   if (strcmp(out, "     1\ta\n     2\tb\n     3\tc\n")) return 1;
+    CATN_RUN(1, "a\nb");        if (strcmp(out, "     1\ta\n     2\tb"))              return 2;  // no trailing nl
+    CATN_RUN(1, "a\n\nb\n");    if (strcmp(out, "     1\ta\n     2\t\n     3\tb\n"))  return 3;  // -n numbers blanks
+    CATN_RUN(2, "a\n\nb\n");    if (strcmp(out, "     1\ta\n\n     2\tb\n"))          return 4;  // -b skips blanks
+    CATN_RUN(1, "");            if (out[0] != '\0')                                   return 5;  // empty
+    // chunk-split continuity: two feeds must equal one whole-buffer pass.
+    ln=0; bol=1; n=0;
+    cat_number("foo\n", 4, 1, &ln,&bol, out,sizeof out,&n);
+    cat_number("bar\n", 4, 1, &ln,&bol, out,sizeof out,&n);
+    if (strcmp(out, "     1\tfoo\n     2\tbar\n")) return 6;
+    #undef CATN_RUN
+    return 0;
+}
+
 static void cmd_cat(int argc, char** argv) {
-    if (argc < 2) { printf("Usage: cat <file>\n"); return; }
-    vfs_cat_file(argv[1]);
-    putchar('\n');
+    int mode = 0, ai = 1;                       // mode: 0 plain, 1 = -n, 2 = -b
+    for (; ai < argc && argv[ai][0] == '-' && argv[ai][1]; ai++)
+        for (const char* f = argv[ai] + 1; *f; f++) {
+            if (*f == 'n')      { if (mode != 2) mode = 1; }
+            else if (*f == 'b') mode = 2;        // -b wins over -n, as in GNU
+            else { printf("cat: unknown option -%c\n", *f); return; }
+        }
+    if (ai >= argc) { printf("Usage: cat [-nb] <file>\n"); return; }
+    if (mode == 0) { vfs_cat_file(argv[ai]); putchar('\n'); return; }   // unchanged fast path
+    int fd = vfs_open(argv[ai], 0, 0);
+    if (fd < 0) { printf("cat: %s: No such file\n", argv[ai]); return; }
+    // vfs_pread is offset-aware (vfs_read is stateless — always the file head), so
+    // this streams the whole file and stops at EOF (pread returns 0).
+    char in[512], out[8192]; long line_no = 0; int at_bol = 1, n; uint32_t off = 0;
+    while ((n = vfs_pread(fd, in, sizeof in, off)) > 0) {
+        off += (uint32_t)n;
+        int outn = 0;
+        cat_number(in, n, mode, &line_no, &at_bol, out, sizeof out, &outn);
+        for (int i = 0; i < outn; i++) putchar(out[i]);
+    }
+    vfs_close(fd);
 }
 
 // Open a file in the GUI Text Editor window. Runs on the compositor thread (the
@@ -10008,6 +10075,7 @@ static void run_selftests(void) {
         {"wallpaperdim", wallpaper_dim_selftest},
         {"regionclip",   region_clip_selftest},
         {"memset32",     memset32_selftest},
+        {"catnumber",    cat_number_selftest},
         {"nyxconf",      nyxconf_selftest},
         {"fmnav",        fileman_nav_selftest},
     };

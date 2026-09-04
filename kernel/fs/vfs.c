@@ -828,6 +828,9 @@ int vfs_open(const char* path, int flags, mode_t mode) {
     return node_to_handle(ino);
 }
 
+// STATELESS whole-file-head read: always copies from offset 0, so it NEVER reaches
+// EOF — a `while (vfs_read(...) > 0)` streaming loop re-reads the head forever. For
+// streaming/EOF use vfs_pread with a caller-tracked offset (as cmd_cat does).
 int vfs_read(int fd, void* buf, size_t count) {
     vfs_node_t* ino = handle_to_node(fd);
     if (!ino || ino->type != 0) return -1;
