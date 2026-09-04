@@ -419,12 +419,18 @@ struct T { pt: i64, us: i64, s: i64, l: i64 }
 fn pty(p: *u8, n: i64, st: *i64) -> T {
     mut us := 0;
     if acc(p, n, st, 31) { us = 1; }       // #[user]
-    if ck(st, 19) { adv(p, n, st); }       // raw (lowers identically)
+    mut israw := 0;
+    if ck(st, 19) { adv(p, n, st); israw = 1; } // raw (lowers identically)
     mut pt := 0;
     mut going := true;
     while going {
         going = false;
         if ck(st, 49) { adv(p, n, st); pt = pt + 1; going = true; }
+    }
+    if ck(st, 10) {                        // fn(A, B) -> R (v0.24)
+        adv(p, n, st);
+        if pt > 0 || us == 1 || israw == 1 { perr(st); return T{ pt: 0, us: 0, s: 0, l: 0 }; }
+        return pfnty(p, n, st);
     }
     if !ck(st, 7) { perr(st); return T{ pt: 0, us: 0, s: 0, l: 0 }; }
     s := st[26];
@@ -433,12 +439,145 @@ fn pty(p: *u8, n: i64, st: *i64) -> T {
     T{ pt: pt, us: us, s: s, l: l }
 }
 
+// A type's name: a source span, or — for a function type (v0.24) — the
+// interned `__nyx_fnN` ncc names it by (s < 0 encodes N as -1 - s, l 0).
+fn put_tyname(p: *u8, s: i64, l: i64) {
+    if s < 0 {
+        idx := 0 - 1 - s;
+        put("__nyx_fn{idx}");
+        return;
+    }
+    put_span(p, s, l);
+}
+
 // " ptrs:is_user:name" — the dump's type rendering, ncc's ast_ty.
 fn put_ty(p: *u8, t: T) {
     pt := t.pt;
     us := t.us;
     put(" {pt}:{us}:");
-    put_span(p, t.s, t.l);
+    put_tyname(p, t.s, t.l);
+}
+
+// ---- function types (v0.24) ------------------------------------- //
+// ncc interns each distinct signature once, in first-seen source order,
+// and names it __nyx_fnN. The table lives in st[44] (32 entries of 72
+// words: np, has_ret, ret T (4), then up to 16 param T's (4 each)) with
+// the count in st[45]; a parse in progress fills a per-depth scratch
+// slot (st[46], depth st[47]) because a parameter may itself be a fn
+// type, interned first — exactly ncc's recursive parse_type.
+
+// Two type quadruples name the same type: same shape, same name bytes;
+// interned names (l 0) compare by their sentinel.
+fn ty_same(p: *u8, pt1: i64, us1: i64, s1: i64, l1: i64, pt2: i64, us2: i64, s2: i64, l2: i64) -> bool {
+    if pt1 != pt2 || us1 != us2 || l1 != l2 { return false; }
+    if l1 == 0 { return s1 == s2; }
+    mut k := 0;
+    while k < l1 {
+        if p[s1 + k] != p[s2 + k] { return false; }
+        k = k + 1;
+    }
+    true
+}
+
+fn fnty_same(p: *u8, a: *i64, b: *i64) -> bool {
+    if a[0] != b[0] { return false; }
+    if a[1] != b[1] { return false; }
+    if a[1] == 1 {
+        if !ty_same(p, a[2], a[3], a[4], a[5], b[2], b[3], b[4], b[5]) { return false; }
+    }
+    mut k := 0;
+    while k < a[0] {
+        o := 6 + k * 4;
+        if !ty_same(p, a[o], a[o + 1], a[o + 2], a[o + 3], b[o], b[o + 1], b[o + 2], b[o + 3]) { return false; }
+        k = k + 1;
+    }
+    true
+}
+
+// The interned index of the signature in scratch slot sc, added on
+// first sight.
+fn fnty_intern(p: *u8, st: *i64, sc: *i64) -> i64 {
+    cnt := st[45];
+    mut i := 0;
+    while i < cnt {
+        e := (st[44] as addr + (i * 576) as addr) as *i64;
+        if fnty_same(p, e, sc) { return i; }
+        i = i + 1;
+    }
+    if cnt >= 32 { perr(st); return 0; }
+    e2 := (st[44] as addr + (cnt * 576) as addr) as *i64;
+    mut k := 0;
+    while k < 72 {
+        e2[k] = sc[k];
+        k = k + 1;
+    }
+    st[45] = cnt + 1;
+    cnt
+}
+
+// fn(A, B) -> R in type position, CUR at '(' (the `fn` is consumed).
+fn pfnty(p: *u8, n: i64, st: *i64) -> T {
+    if !ck(st, 37) { perr(st); return T{ pt: 0, us: 0, s: 0, l: 0 }; }
+    adv(p, n, st);
+    d := st[47];
+    if d >= 4 { perr(st); return T{ pt: 0, us: 0, s: 0, l: 0 }; }
+    st[47] = d + 1;
+    sc := (st[46] as addr + (d * 576) as addr) as *i64;
+    mut np := 0;
+    mut more := !ck(st, 38);
+    while more {
+        more = false;
+        t := pty(p, n, st);
+        if np < 16 {
+            sc[6 + np * 4] = t.pt;
+            sc[7 + np * 4] = t.us;
+            sc[8 + np * 4] = t.s;
+            sc[9 + np * 4] = t.l;
+        }
+        np = np + 1;
+        if acc(p, n, st, 41) { more = true; }
+    }
+    if !ck(st, 38) { perr(st); return T{ pt: 0, us: 0, s: 0, l: 0 }; }
+    adv(p, n, st);
+    sc[0] = np;
+    sc[1] = 0;
+    sc[2] = 0;
+    sc[3] = 0;
+    sc[4] = 0;
+    sc[5] = 0;
+    if acc(p, n, st, 45) {                 // -> R
+        r := pty(p, n, st);
+        sc[1] = 1;
+        sc[2] = r.pt;
+        sc[3] = r.us;
+        sc[4] = r.s;
+        sc[5] = r.l;
+    }
+    st[47] = d;
+    idx := fnty_intern(p, st, sc);
+    T{ pt: 0, us: 0, s: 0 - 1 - idx, l: 0 }
+}
+
+// The numbering pass: ncc interns while it parses the file top to
+// bottom, but this parser dumps by category (five passes), so a fn
+// type first met in a later pass would get the wrong number. `fn`
+// followed by '(' occurs only in type position (declarations and
+// methods have a name after `fn`), so one scan over the tokens interns
+// every fn type in source order before any category pass runs.
+fn prepass_fntys(p: *u8, n: i64, st: *i64) {
+    mut going := true;
+    while going {
+        if ck(st, 0) { going = false; continue; }
+        if ck(st, 10) {
+            adv(p, n, st);
+            if ck(st, 37) {
+                t := pfnty(p, n, st);
+                if t.pt != 0 { perr(st); }
+            }
+            continue;
+        }
+        adv(p, n, st);
+    }
 }
 
 // ---- the expression ladder: parse AND print, postorder ---------- //
@@ -1164,7 +1303,7 @@ fn put_params(p: *u8, ps: *i64, np: i64) {
         pt := ps[q * 6 + 2];
         us := ps[q * 6 + 3];
         put(" {pt}:{us}:");
-        put_span(p, ps[q * 6 + 4], ps[q * 6 + 5]);
+        put_tyname(p, ps[q * 6 + 4], ps[q * 6 + 5]);
         q = q + 1;
     }
 }
@@ -1499,6 +1638,19 @@ fn main() -> i64 {
     if total < 1 { return 0; }
     st := sys_sbrk(512) as *i64;
     ps := sys_sbrk(1024) as *i64;          // the fields/params arena
+    st[44] = sys_sbrk(18432);              // fn-type table, 32 x 72 words
+    st[45] = 0;                            // ... and its count (v0.24)
+    st[46] = sys_sbrk(2304);               // fn-type parse scratch, 4 deep
+    st[47] = 0;
+    st[0] = 0;                             // the numbering pass: intern
+    st[1] = 1;                             // every fn type in source order
+    st[2] = -1;
+    st[3] = 0;
+    st[4] = 0;
+    st[32] = 0;
+    adv(buf, total, st);
+    adv(buf, total, st);
+    prepass_fntys(buf, total, st);
     mut pass := 1;
     while pass <= 5 {                      // structs, enums, externs,
                                            // fns, impl methods

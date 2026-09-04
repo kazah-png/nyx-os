@@ -46,7 +46,13 @@ nyx_bool ck2(nyx_i64* st, nyx_i64 k);
 nyx_bool acc(nyx_u8* p, nyx_i64 n, nyx_i64* st, nyx_i64 k);
 void perr(nyx_i64* st);
 T pty(nyx_u8* p, nyx_i64 n, nyx_i64* st);
+void put_tyname(nyx_u8* p, nyx_i64 s, nyx_i64 l);
 void put_ty(nyx_u8* p, T t);
+nyx_bool ty_same(nyx_u8* p, nyx_i64 pt1, nyx_i64 us1, nyx_i64 s1, nyx_i64 l1, nyx_i64 pt2, nyx_i64 us2, nyx_i64 s2, nyx_i64 l2);
+nyx_bool fnty_same(nyx_u8* p, nyx_i64* a, nyx_i64* b);
+nyx_i64 fnty_intern(nyx_u8* p, nyx_i64* st, nyx_i64* sc);
+T pfnty(nyx_u8* p, nyx_i64 n, nyx_i64* st);
+void prepass_fntys(nyx_u8* p, nyx_i64 n, nyx_i64* st);
 void pexpr(nyx_u8* p, nyx_i64 n, nyx_i64* st);
 void pinterp(nyx_u8* p, nyx_i64 n, nyx_i64* st);
 void pprimary(nyx_u8* p, nyx_i64 n, nyx_i64* st);
@@ -579,8 +585,10 @@ T pty(nyx_u8* p, nyx_i64 n, nyx_i64* st) {
     if (acc(p, n, st, 31)) {
         us = 1;
     }
+    nyx_i64 israw = 0;
     if (ck(st, 19)) {
         adv(p, n, st);
+        israw = 1;
     }
     nyx_i64 pt = 0;
     nyx_bool going = 1;
@@ -592,6 +600,14 @@ T pty(nyx_u8* p, nyx_i64 n, nyx_i64* st) {
             going = 1;
         }
     }
+    if (ck(st, 10)) {
+        adv(p, n, st);
+        if ((((pt > 0) || (us == 1)) || (israw == 1))) {
+            perr(st);
+            return ((T){.pt = 0, .us = 0, .s = 0, .l = 0});
+        }
+        return pfnty(p, n, st);
+    }
     if (!(ck(st, 7))) {
         perr(st);
         return ((T){.pt = 0, .us = 0, .s = 0, .l = 0});
@@ -600,6 +616,19 @@ T pty(nyx_u8* p, nyx_i64 n, nyx_i64* st) {
     nyx_i64 l = st[27];
     adv(p, n, st);
     return ((T){.pt = pt, .us = us, .s = s, .l = l});
+}
+
+void put_tyname(nyx_u8* p, nyx_i64 s, nyx_i64 l) {
+    if ((s < 0)) {
+        nyx_i64 idx = ((0 - 1) - s);
+        char __b0[256];
+        nyx_str __s0 = __nyx_fmt_begin(__b0, 256);
+        __nyx_fmt_str(&__s0, __b0, 256, (nyx_str){"__nyx_fn", 8});
+        __nyx_fmt_i64(&__s0, __b0, 256, (nyx_i64)(idx));
+        put(__s0);
+        return;
+    }
+    put_span(p, s, l);
 }
 
 void put_ty(nyx_u8* p, T t) {
@@ -613,7 +642,145 @@ void put_ty(nyx_u8* p, T t) {
     __nyx_fmt_i64(&__s0, __b0, 256, (nyx_i64)(us));
     __nyx_fmt_str(&__s0, __b0, 256, (nyx_str){":", 1});
     put(__s0);
-    put_span(p, t.s, t.l);
+    put_tyname(p, t.s, t.l);
+}
+
+nyx_bool ty_same(nyx_u8* p, nyx_i64 pt1, nyx_i64 us1, nyx_i64 s1, nyx_i64 l1, nyx_i64 pt2, nyx_i64 us2, nyx_i64 s2, nyx_i64 l2) {
+    if ((((pt1 != pt2) || (us1 != us2)) || (l1 != l2))) {
+        return 0;
+    }
+    if ((l1 == 0)) {
+        return (s1 == s2);
+    }
+    nyx_i64 k = 0;
+    while ((k < l1)) {
+        if ((p[(s1 + k)] != p[(s2 + k)])) {
+            return 0;
+        }
+        k = (k + 1);
+    }
+    return 1;
+}
+
+nyx_bool fnty_same(nyx_u8* p, nyx_i64* a, nyx_i64* b) {
+    if ((a[0] != b[0])) {
+        return 0;
+    }
+    if ((a[1] != b[1])) {
+        return 0;
+    }
+    if ((a[1] == 1)) {
+        if (!(ty_same(p, a[2], a[3], a[4], a[5], b[2], b[3], b[4], b[5]))) {
+            return 0;
+        }
+    }
+    nyx_i64 k = 0;
+    while ((k < a[0])) {
+        nyx_i64 o = (6 + (k * 4));
+        if (!(ty_same(p, a[o], a[(o + 1)], a[(o + 2)], a[(o + 3)], b[o], b[(o + 1)], b[(o + 2)], b[(o + 3)]))) {
+            return 0;
+        }
+        k = (k + 1);
+    }
+    return 1;
+}
+
+nyx_i64 fnty_intern(nyx_u8* p, nyx_i64* st, nyx_i64* sc) {
+    nyx_i64 cnt = st[45];
+    nyx_i64 i = 0;
+    while ((i < cnt)) {
+        nyx_i64* e = (nyx_i64*)(((nyx_addr)(st[44]) + (nyx_addr)((i * 576))));
+        if (fnty_same(p, e, sc)) {
+            return i;
+        }
+        i = (i + 1);
+    }
+    if ((cnt >= 32)) {
+        perr(st);
+        return 0;
+    }
+    nyx_i64* e2 = (nyx_i64*)(((nyx_addr)(st[44]) + (nyx_addr)((cnt * 576))));
+    nyx_i64 k = 0;
+    while ((k < 72)) {
+        e2[k] = sc[k];
+        k = (k + 1);
+    }
+    st[45] = (cnt + 1);
+    return cnt;
+}
+
+T pfnty(nyx_u8* p, nyx_i64 n, nyx_i64* st) {
+    if (!(ck(st, 37))) {
+        perr(st);
+        return ((T){.pt = 0, .us = 0, .s = 0, .l = 0});
+    }
+    adv(p, n, st);
+    nyx_i64 d = st[47];
+    if ((d >= 4)) {
+        perr(st);
+        return ((T){.pt = 0, .us = 0, .s = 0, .l = 0});
+    }
+    st[47] = (d + 1);
+    nyx_i64* sc = (nyx_i64*)(((nyx_addr)(st[46]) + (nyx_addr)((d * 576))));
+    nyx_i64 np = 0;
+    nyx_bool more = !(ck(st, 38));
+    while (more) {
+        more = 0;
+        T t = pty(p, n, st);
+        if ((np < 16)) {
+            sc[(6 + (np * 4))] = t.pt;
+            sc[(7 + (np * 4))] = t.us;
+            sc[(8 + (np * 4))] = t.s;
+            sc[(9 + (np * 4))] = t.l;
+        }
+        np = (np + 1);
+        if (acc(p, n, st, 41)) {
+            more = 1;
+        }
+    }
+    if (!(ck(st, 38))) {
+        perr(st);
+        return ((T){.pt = 0, .us = 0, .s = 0, .l = 0});
+    }
+    adv(p, n, st);
+    sc[0] = np;
+    sc[1] = 0;
+    sc[2] = 0;
+    sc[3] = 0;
+    sc[4] = 0;
+    sc[5] = 0;
+    if (acc(p, n, st, 45)) {
+        T r = pty(p, n, st);
+        sc[1] = 1;
+        sc[2] = r.pt;
+        sc[3] = r.us;
+        sc[4] = r.s;
+        sc[5] = r.l;
+    }
+    st[47] = d;
+    nyx_i64 idx = fnty_intern(p, st, sc);
+    return ((T){.pt = 0, .us = 0, .s = ((0 - 1) - idx), .l = 0});
+}
+
+void prepass_fntys(nyx_u8* p, nyx_i64 n, nyx_i64* st) {
+    nyx_bool going = 1;
+    while (going) {
+        if (ck(st, 0)) {
+            going = 0;
+            continue;
+        }
+        if (ck(st, 10)) {
+            adv(p, n, st);
+            if (ck(st, 37)) {
+                T t = pfnty(p, n, st);
+                if ((t.pt != 0)) {
+                    perr(st);
+                }
+            }
+            continue;
+        }
+        adv(p, n, st);
+    }
 }
 
 void pexpr(nyx_u8* p, nyx_i64 n, nyx_i64* st) {
@@ -1702,7 +1869,7 @@ void put_params(nyx_u8* p, nyx_i64* ps, nyx_i64 np) {
         __nyx_fmt_i64(&__s0, __b0, 256, (nyx_i64)(us));
         __nyx_fmt_str(&__s0, __b0, 256, (nyx_str){":", 1});
         put(__s0);
-        put_span(p, ps[((q * 6) + 4)], ps[((q * 6) + 5)]);
+        put_tyname(p, ps[((q * 6) + 4)], ps[((q * 6) + 5)]);
         q = (q + 1);
     }
 }
@@ -2205,6 +2372,19 @@ nyx_i64 main(nyx_i64 __argc, nyx_u8** __argv) {
     }
     nyx_i64* st = (nyx_i64*)(sys_sbrk(512));
     nyx_i64* ps = (nyx_i64*)(sys_sbrk(1024));
+    st[44] = sys_sbrk(18432);
+    st[45] = 0;
+    st[46] = sys_sbrk(2304);
+    st[47] = 0;
+    st[0] = 0;
+    st[1] = 1;
+    st[2] = -(1);
+    st[3] = 0;
+    st[4] = 0;
+    st[32] = 0;
+    adv(buf, total, st);
+    adv(buf, total, st);
+    prepass_fntys(buf, total, st);
     nyx_i64 pass = 1;
     while ((pass <= 5)) {
         st[0] = 0;

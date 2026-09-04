@@ -284,8 +284,9 @@ Lowering (§7.1): each distinct function type in the program gets one
 `typedef R (*__nyx_fnN)(A, B);` after the type layouts; a struct field of
 function type is spelled out as a declarator (`nyx_i64 (*run)(nyx_i64);`);
 a call through a value is the same C call. The self-hosted toolbox
-(`parse.n`, `check.n`, `gen.n`) catches up with function types in the
-following rungs; until then `fntype.n` compiles with `ncc` alone (§9).
+catches up with function types rung by rung: `parse.n` parses and dumps
+them exactly as `ncc` does; `check.n` and `gen.n` follow, and until they
+do `fntype.n` compiles with `ncc` alone (§9).
 
 ## 4. Items
 
@@ -1182,11 +1183,13 @@ remains:
    itself (functions: 64 → 128 for the checker, 128 → 256 for the
    generator) — the honest expectation is that others will follow as N
    programs grow.
-5. **Function types are `ncc`-only for now** (v0.24, §3.4): the
-   self-hosted toolbox (`parse.n`, `check.n`, `gen.n`) does not parse
-   `fn(...)` types yet, so `fntype.n` sits outside the selfhost
-   differentials until they catch up, rung by rung; the `--ast` dump
-   renders a function type as its typedef name (`0:0:__nyx_fn0`). A bare
+5. **Function types compile with `ncc` only, for now** (v0.24, §3.4):
+   `parse.n` parses `fn(...)` types and dumps them as `ncc` does
+   (`fntype.n` is in its differential), but `check.n` and `gen.n` do
+   not accept them yet, so `fntype.n` sits outside those two
+   differentials until they catch up, rung by rung. The `--ast` dump
+   renders a function type as its typedef name (`0:0:__nyx_fnN`, N
+   numbering distinct signatures in first-seen source order). A bare
    function may be bound to a local only when its function type is
    declared somewhere in the program (§3.4).
 

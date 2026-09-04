@@ -476,7 +476,9 @@ pins both the shape and the order. The format, held stable from here:
   / 10 struct-literal / 11 enum-literal / 12 index) — ints and bools
   by value, strings as `#count` (the --tokens rule), paths and fields
   by name, operators verbatim, casts and every other type as
-  `ptrs:is_user:name`, interp frag specs as `#tlen` (text) or
+  `ptrs:is_user:name` (a function type, since v0.24, renders as
+  `0:0:__nyx_fnN` — its interned name, N counting distinct signatures
+  in first-seen source order), interp frag specs as `#tlen` (text) or
   `@fmt.width.zero` (hole);
 - `S <k> …` statements in SK order (0 let / 1 assign / 2 return /
   3 expr / 4 while / 5 if / 6 break / 7 continue / 8 defer / 9 match
@@ -528,6 +530,27 @@ on-target build, alongside hello.n's and both lexeme streams. The
 parser module stands where the lexer stands: byte-exact against ncc
 on the host and on the OS it is for. `check.n` is the mountain's
 next face.
+
+**Rung 2b (v0.24) — function types**: when ncc learned `fn(A, B) ->
+R` in type position, the parser followed in one rung. ncc interns
+each distinct signature and names it `__nyx_fnN`, so the dump shows a
+function type as `0:0:__nyx_fnN` — a name no source span holds.
+parse.n keeps its span-shaped types and adds one sentinel: a negative
+span start encodes the interned index, and the two type renderers
+resolve it to the synthesized name. The signatures live in a small
+table of quadruples with structural identity (same arity, each
+parameter's ptrs/is_user/name bytes equal, same return), and a nested
+signature interns inner-first through a per-depth scratch slot —
+ncc's recursive `parse_type`, mirrored. The one real wrinkle was
+ORDER: ncc numbers signatures as it meets them, top to bottom, while
+parse.n dumps by category in five passes, so a signature first met in
+a later pass would take the wrong number. `fn` followed by `(` occurs
+only in type position (declarations and methods put a name after
+`fn`), so a numbering pre-pass over the tokens interns every
+signature in source order before the first category pass — the
+passes then find their entries already made. `fntype.n` and
+`structenum.n` joined the differential: **29 targets byte-identical**,
+the four selfhost sources among them.
 
 ### check.n's anchor
 
