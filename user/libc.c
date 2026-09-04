@@ -643,6 +643,100 @@ long strtol(const char* nptr, char** endptr, int base) {
     return neg ? -(long)acc : (long)acc;
 }
 
+/* =========== strtod / atof =========== */
+/* 10^0..10^22 are each exactly representable as a double. */
+static const double POW10[23] = {
+    1e0,1e1,1e2,1e3,1e4,1e5,1e6,1e7,1e8,1e9,1e10,1e11,1e12,
+    1e13,1e14,1e15,1e16,1e17,1e18,1e19,1e20,1e21,1e22
+};
+static double strtod_scale(double r, int e) {   /* r * 10^e (slow path, any sign) */
+    if (e >= 0) { while (e > 22) { r *= 1e22; e -= 22; } r *= POW10[e]; }
+    else        { e = -e; while (e > 22) { r /= 1e22; e -= 22; } r /= POW10[e]; }
+    return r;
+}
+static int strtod_hex(int c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+/* strtod: decimal and 0x hex floats, with sign/exponent/endptr. The common case
+ * (<=15 significant digits and |exp10| <= 22) is CORRECTLY ROUNDED — one IEEE * or
+ * / of exact operands, byte-identical to a reference strtod; extreme magnitudes
+ * (|exp10| > 22) fall back to iterative scaling and may differ by a few ULP. */
+double strtod(const char* s, char** end) {
+    const char* p = s;
+    while (isspace((unsigned char)*p)) p++;
+    int neg = 0;
+    if (*p == '+' || *p == '-') { neg = (*p == '-'); p++; }
+
+    if (p[0] == '0' && (p[1] == 'x' || p[1] == 'X') &&
+        (strtod_hex(p[2]) >= 0 || p[2] == '.')) {         /* hex float */
+        p += 2;
+        double m = 0.0;
+        while (strtod_hex(*p) >= 0) { m = m * 16.0 + strtod_hex(*p); p++; }
+        if (*p == '.') {
+            p++;
+            double f = 1.0 / 16.0;
+            while (strtod_hex(*p) >= 0) { m += strtod_hex(*p) * f; f /= 16.0; p++; }
+        }
+        int e = 0, es = 1;
+        if (*p == 'p' || *p == 'P') {
+            p++;
+            if (*p == '+' || *p == '-') { es = (*p == '-') ? -1 : 1; p++; }
+            while (*p >= '0' && *p <= '9') { e = e * 10 + (*p - '0'); p++; }
+            e *= es;
+        }
+        double r = m;
+        while (e > 0) { r *= 2.0; e--; }
+        while (e < 0) { r *= 0.5; e++; }
+        if (end) *end = (char*)p;
+        return neg ? -r : r;
+    }
+
+    unsigned long mant = 0;                               /* decimal */
+    int sig = 0, exp10 = 0, seen = 0;
+    while (*p >= '0' && *p <= '9') {
+        seen = 1;
+        if (sig < 19) { mant = mant * 10UL + (unsigned)(*p - '0'); sig++; } else exp10++;
+        p++;
+    }
+    if (*p == '.') {
+        p++;
+        while (*p >= '0' && *p <= '9') {
+            seen = 1;
+            if (sig < 19) { mant = mant * 10UL + (unsigned)(*p - '0'); sig++; exp10--; }
+            p++;
+        }
+    }
+    if (!seen) { if (end) *end = (char*)s; return 0.0; }
+    int e = 0, es = 1;
+    if (*p == 'e' || *p == 'E') {
+        const char* q = p + 1;
+        if (*q == '+' || *q == '-') { es = (*q == '-') ? -1 : 1; q++; }
+        if (*q >= '0' && *q <= '9') {                     /* only consume 'e' if a digit follows */
+            p = q;
+            while (*p >= '0' && *p <= '9') { e = e * 10 + (*p - '0'); p++; }
+            e *= es;
+        }
+    }
+    exp10 += e;
+
+    double r;
+    if (sig <= 15 && exp10 >= -22 && exp10 <= 22) {        /* fast path: correctly rounded */
+        r = (double)mant;
+        if (exp10 >= 0) r *= POW10[exp10];
+        else            r /= POW10[-exp10];
+    } else {
+        r = strtod_scale((double)mant, exp10);             /* slow path: approximate */
+    }
+    if (end) *end = (char*)p;
+    return neg ? -r : r;
+}
+
+double atof(const char* s) { return strtod(s, (char**)0); }
+
 /* =========== sscanf / vsscanf =========== */
 /* Copy a plausible numeric field — a prefix of s, capped by `width` (0 = the buffer)
  * — into `buf` for strtol/strtoul to parse. The character class is a superset of
@@ -663,10 +757,11 @@ static int scanf_num_field(const char* s, int width, char* buf, int bufsz) {
     return n;
 }
 
-/* Subset scanf: %d %i %u %o %x %X %c %s %n %% with field width, '*' suppression and
- * h/hh/l/ll/z/j length modifiers. Integers go through strtol/strtoul (`long` is
- * 64-bit here, so it also covers ll/z/j). Float/scanset/%p stop the scan. Returns
- * the count of assigned conversions, or EOF (-1) if input ends before the first. */
+/* Subset scanf: %d %i %u %o %x %X %c %s %f %e %g %n %% with field width, '*'
+ * suppression and h/hh/l/ll/z/j length modifiers. Integers go through strtol/strtoul
+ * (`long` is 64-bit here, so it also covers ll/z/j); floats through strtod (%lf ->
+ * double, %f -> float). Scansets (%[...]) and %p stop the scan. Returns the count of
+ * assigned conversions, or EOF (-1) if input ends before the first. */
 int vsscanf(const char* str, const char* fmt, va_list ap) {
     const char* s = str;
     const char* f = fmt;
@@ -765,7 +860,19 @@ int vsscanf(const char* str, const char* fmt, va_list ap) {
             }
             continue;
         }
-        return assigned;                         /* unsupported conversion (float/scanset/%p) */
+        if (conv == 'f' || conv == 'e' || conv == 'g' || conv == 'E' || conv == 'G' || conv == 'a' || conv == 'A') {
+            char buf[130];
+            if (scanf_num_field(s, width, buf, sizeof buf) == 0) return assigned;
+            char* ep = 0; double dv = strtod(buf, &ep);
+            if (ep == buf) return assigned;      /* matching failure */
+            s += (ep - buf);
+            if (!suppress) {
+                if (lm == 3 || lm == 6) *va_arg(ap, double*) = dv; else *va_arg(ap, float*) = (float)dv;
+                assigned++;
+            }
+            continue;
+        }
+        return assigned;                         /* unsupported conversion (scanset/%p) */
     }
     return assigned;
 }

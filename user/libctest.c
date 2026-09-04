@@ -141,6 +141,28 @@ int main(int argc, char** argv) {
         if (!sc_ok) ok = 0;
     }
 
+    /* strtod / atof — correctly rounded for the common range; the fast path returns
+     * the same double the compiler makes for the literal, so == holds (new v6.5.105).
+     * Also exercises the freshly-wired sscanf %f/%lf. */
+    {
+        int d_ok = 1;
+        char* e = 0;
+        if (strtod("3.14", &e) != 3.14 || *e != '\0') d_ok = 0;
+        if (strtod("0.5", 0) != 0.5) d_ok = 0;
+        if (strtod("2.5e3", 0) != 2500.0) d_ok = 0;
+        if (strtod("-0.001", 0) != -0.001) d_ok = 0;
+        if (strtod("1e10", 0) != 1e10) d_ok = 0;
+        if (strtod("123.456", 0) != 123.456) d_ok = 0;
+        if (strtod("42", 0) != 42.0) d_ok = 0;
+        if (strtod("  2.5xyz", &e) != 2.5 || *e != 'x') d_ok = 0;   /* leading ws + endptr */
+        if (atof("6.25") != 6.25) d_ok = 0;
+        float fv = 0; double dv = 0;
+        if (sscanf("3.14", "%f", &fv) != 1 || fv != 3.14f) d_ok = 0;
+        if (sscanf("2.5e3", "%lf", &dv) != 1 || dv != 2500.0) d_ok = 0;
+        printf("LIBCTEST: strtod/atof %s\n", d_ok ? "PASS" : "FAIL");
+        if (!d_ok) ok = 0;
+    }
+
     /* string/stdlib extras: memchr, strrchr, strncat, strdup, qsort. */
     {
         int se_ok = 1;

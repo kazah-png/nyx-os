@@ -59,10 +59,10 @@ int printf(const char* fmt, ...);
 int sprintf(char* buf, const char* fmt, ...);
 int snprintf(char* buf, size_t size, const char* fmt, ...);
 int vsnprintf(char* buf, size_t size, const char* fmt, va_list ap);
-/* sscanf/vsscanf: %d %i %u %o %x %X %c %s %n %% + width, '*' suppression and
- * h/hh/l/ll/z/j length modifiers. Float (%f/%e/%g), scansets (%[...]) and %p are
- * not supported (the scan stops at such a directive). Returns the assignment count
- * (or EOF if input ends before the first conversion), matching C sscanf. */
+/* sscanf/vsscanf: %d %i %u %o %x %X %c %s %f %e %g %n %% + width, '*' suppression
+ * and h/hh/l/ll/z/j length modifiers. Scansets (%[...]) and %p are not supported
+ * (the scan stops at such a directive). Returns the assignment count (or EOF if
+ * input ends before the first conversion), matching C sscanf. */
 int sscanf(const char* str, const char* fmt, ...);
 int vsscanf(const char* str, const char* fmt, va_list ap);
 
@@ -87,6 +87,11 @@ int tolower(int c);
 /* String -> integer. base 0 auto-detects a 0x (hex) or 0 (octal) prefix. */
 long strtol(const char* nptr, char** endptr, int base);
 unsigned long strtoul(const char* nptr, char** endptr, int base);
+
+/* String -> double. Decimal and 0x hex floats; correctly rounded for the common
+ * range (<=15 significant digits, |exp| <= 22), approximate for extreme magnitudes. */
+double strtod(const char* nptr, char** endptr);
+double atof(const char* nptr);
 
 /* String / stdlib extras a compiler leans on. */
 void* memchr(const void* s, int c, size_t n);
