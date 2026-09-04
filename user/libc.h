@@ -148,6 +148,11 @@ long   ftell(FILE* f);
 /* Process environment (set by crt0 from execve's envp). getenv reads it. */
 extern char** environ;
 char* getenv(const char* name);
+/* Modify the environment (POSIX). setenv copies name+value; putenv stores the caller's
+ * "NAME=VALUE" pointer as-is. The first modification moves environ to a heap array. */
+int setenv(const char* name, const char* value, int overwrite);
+int unsetenv(const char* name);
+int putenv(char* string);
 
 /* Non-local jump (fault recovery from a signal handler). setjmp saves the caller's
  * callee-saved regs + RSP + RIP and returns 0; longjmp restores them and makes the

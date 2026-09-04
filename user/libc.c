@@ -390,6 +390,74 @@ char* getenv(const char* name) {
     return 0;
 }
 
+/* setenv/unsetenv/putenv — modify the process environment. `environ` starts pointing at
+ * the envp the kernel laid on the stack, so the first growth copies it into a heap array
+ * we own (env_owned) and grows that thereafter. execve passes the current `environ` to a
+ * child, so a variable set here is inherited. */
+static int env_owned = 0;      /* environ now points at our heap array */
+static int env_cap = 0;        /* entries the heap array holds before the NULL terminator */
+
+static int env_len(void) { int n = 0; if (environ) while (environ[n]) n++; return n; }
+
+/* Append `entry` ("NAME=VALUE"), adopting/growing the heap array as needed. */
+static int env_append(char* entry) {
+    int n = env_len();
+    if (!env_owned) {
+        env_cap = n + 8;
+        char** v = (char**)malloc((env_cap + 1) * sizeof(char*));
+        if (!v) return -1;
+        for (int i = 0; i < n; i++) v[i] = environ[i];
+        environ = v; env_owned = 1;
+    } else if (n >= env_cap) {
+        env_cap = env_cap * 2 + 8;
+        char** v = (char**)malloc((env_cap + 1) * sizeof(char*));
+        if (!v) return -1;
+        for (int i = 0; i < n; i++) v[i] = environ[i];
+        free(environ); environ = v;
+    }
+    environ[n] = entry;
+    environ[n + 1] = 0;
+    return 0;
+}
+
+int setenv(const char* name, const char* value, int overwrite) {
+    if (!name || !*name || strchr(name, '=')) return -1;
+    if (!value) value = "";
+    size_t nl = strlen(name), vl = strlen(value);
+    int found = -1;
+    if (environ) for (int i = 0; environ[i]; i++)
+        if (strncmp(environ[i], name, nl) == 0 && environ[i][nl] == '=') { found = i; break; }
+    if (found >= 0 && !overwrite) return 0;
+    char* entry = (char*)malloc(nl + 1 + vl + 1);
+    if (!entry) return -1;
+    memcpy(entry, name, nl); entry[nl] = '=';
+    memcpy(entry + nl + 1, value, vl); entry[nl + 1 + vl] = '\0';
+    if (found >= 0) { environ[found] = entry; return 0; }   /* replace the slot (old entry leaks) */
+    return env_append(entry);
+}
+
+int unsetenv(const char* name) {
+    if (!name || !*name || strchr(name, '=')) return -1;
+    if (!environ) return 0;
+    size_t nl = strlen(name);
+    int w = 0;
+    for (int r = 0; environ[r]; r++) {
+        if (strncmp(environ[r], name, nl) == 0 && environ[r][nl] == '=') continue;   /* drop matches */
+        environ[w++] = environ[r];
+    }
+    environ[w] = 0;
+    return 0;
+}
+
+int putenv(char* string) {
+    char* eq = strchr(string, '=');
+    if (!eq) return unsetenv(string);          /* no '=': remove that name */
+    size_t nl = (size_t)(eq - string);
+    if (environ) for (int i = 0; environ[i]; i++)
+        if (strncmp(environ[i], string, nl) == 0 && environ[i][nl] == '=') { environ[i] = string; return 0; }
+    return env_append(string);                 /* POSIX: stores the caller's pointer, no copy */
+}
+
 /* =========== Stdio =========== */
 
 void putchar(int c) {

@@ -163,6 +163,20 @@ int main(int argc, char** argv) {
         if (!d_ok) ok = 0;
     }
 
+    /* setenv/unsetenv/putenv — POSIX environment modification (new in v6.5.110). */
+    {
+        int ev_ok = 1;
+        if (setenv("NYXTEST", "one", 1) != 0 || strcmp(getenv("NYXTEST"), "one")) ev_ok = 0;
+        if (setenv("NYXTEST", "two", 0) != 0 || strcmp(getenv("NYXTEST"), "one")) ev_ok = 0; /* no overwrite */
+        if (setenv("NYXTEST", "two", 1) != 0 || strcmp(getenv("NYXTEST"), "two")) ev_ok = 0; /* overwrite */
+        if (setenv("BAD=NAME", "x", 1) != -1) ev_ok = 0;                                     /* '=' rejected */
+        if (unsetenv("NYXTEST") != 0 || getenv("NYXTEST") != 0) ev_ok = 0;                   /* removed */
+        if (putenv((char*)"NYXPUT=yes") != 0 || strcmp(getenv("NYXPUT"), "yes")) ev_ok = 0;
+        if (putenv((char*)"NYXPUT=no") != 0 || strcmp(getenv("NYXPUT"), "no")) ev_ok = 0;    /* replace */
+        printf("LIBCTEST: setenv/unsetenv/putenv %s\n", ev_ok ? "PASS" : "FAIL");
+        if (!ev_ok) ok = 0;
+    }
+
     /* string/stdlib extras: memchr, strrchr, strncat, strdup, qsort. */
     {
         int se_ok = 1;
