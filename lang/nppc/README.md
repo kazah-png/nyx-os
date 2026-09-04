@@ -128,3 +128,52 @@ private call, and an unreached export refused;
 [`../examples/modreexp.npp`](../examples/modreexp.npp) reaches modlib
 through [`../examples/modutil.npp`](../examples/modutil.npp)'s `pub use`.
 Nothing is pending on the module front.
+
+## Closures (M6.4), plainly
+
+A lambda is a function literal where a value goes:
+
+```
+each(fn(x: i64) -> i64 { x * x }, 1, 2, 3);
+op := Op{ name: "inc", run: fn(x: i64) -> i64 { x + 1 } };
+```
+
+`fn ( params ) [-> type] { body }` in an expression position — a call
+argument, a struct-literal field, the right-hand side of a binding, a
+return value. nppc lifts each one to a top-level function named `__c_N`
+(numbered in the order they are lifted) placed right after the item
+before the one the lambda appears in, and the expression becomes that
+name — a function value, which N v0.24's function types then type
+exactly like a named function passed by name. The body is spliced
+through verbatim; the lowered N of the first line above is
+`fn __c_0(x: i64) -> i64 { x * x }` followed by `each(__c_0, 1, 2, 3)`.
+A lambda is told from a function type by its body: `fn(i64) -> i64` in
+a type slot has none.
+
+The rules at this rung (M6.4a):
+
+- **lambdas capture nothing.** A body may use its own parameters and the
+  program's items (functions, types, syscalls) — never a local of the
+  enclosing function. One that names such a local is refused: `lambda
+  captures 'n', a local of the enclosing function — closures capture
+  nothing yet (M6.4a); pass it as a parameter`. (A local a token scan
+  cannot see, such as a `match` arm's bind, is refused by N instead, as
+  an undeclared variable in the lifted function.) Captures come with
+  M6.4c, as design §6.2 lays them out: a capture struct plus a first
+  parameter.
+- **lambdas nest.** The pass runs to a fixpoint, innermost first, so a
+  lambda inside a lambda is lifted before the one around it copies its
+  text.
+- **not inside a generic template yet.** A lambda in the body of a
+  generic function waits for M6.4b (a lifted `__c_N<T>` per template);
+  it is refused with the rung named.
+- **a `:=`-bound lambda needs a declared function type.** N binds a
+  function value only when its type is declared somewhere in the program
+  (a parameter, a field, or a return type of that signature) — the rule
+  N's spec §3.4 states; the lowering adds nothing to it.
+
+[`../examples/closure.npp`](../examples/closure.npp) is the worked
+example: four lambdas — an argument, a struct field, another argument,
+a binding — lifted to `__c_0`…`__c_3`, held by the suite's stage [10o]
+(lowered, agreed on by `ncc` and `ngen`, run on the host; nested lambdas
+run; a capture and a lambda in a generic body refused).

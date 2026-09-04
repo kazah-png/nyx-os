@@ -1,0 +1,48 @@
+// closure.npp — N++ lambdas (M6.4a): a function literal in expression position.
+//
+// `fn(x: i64) -> i64 { x * x }` written where a value goes — a call
+// argument, a struct-literal field, the right-hand side of a binding — is
+// lifted by nppc to a top-level function `__c_N` and the expression becomes
+// that name: a function value, typed by N v0.24's function types exactly
+// like a named function would be. Lambdas capture nothing yet: a body may
+// use its parameters and the program's items, never a local of the
+// enclosing function (captures come with M6.4c). A lambda bound with `:=`
+// needs its function type declared somewhere in the program (N's binding
+// rule); `each` and `twice` declare `fn(i64) -> i64` here.
+
+extern syscall {
+    fn write(fd: i32, buf: *u8, len: isize) -> i64 = 1
+}
+
+struct Op {
+    name: str,
+    run: fn(i64) -> i64,
+}
+
+fn put(s: str) {
+    write(1, s.ptr as *u8, s.len as isize);
+}
+
+fn each(f: fn(i64) -> i64, a: i64, b: i64, c: i64) {
+    x := f(a);
+    y := f(b);
+    z := f(c);
+    put("{x} {y} {z}\n");
+}
+
+fn twice(f: fn(i64) -> i64, x: i64) -> i64 {
+    f(f(x))
+}
+
+fn main() -> i64 {
+    each(fn(x: i64) -> i64 { x * x }, 1, 2, 3);
+    op := Op{ name: "inc", run: fn(x: i64) -> i64 { x + 1 } };
+    r := op.run(41);
+    put("{op.name}(41) = {r}\n");
+    t := twice(fn(x: i64) -> i64 { x + 1 }, 40);
+    put("twice(+1, 40) = {t}\n");
+    neg := fn(x: i64) -> i64 { 0 - x };
+    n := neg(5);
+    put("neg(5) = {n}\n");
+    0
+}

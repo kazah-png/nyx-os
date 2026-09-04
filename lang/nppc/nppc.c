@@ -1411,6 +1411,228 @@ static void strip_pub(void) {
 }
 
 /* ------------------------------------------------------------------ */
+/* the closure pass (M6.4a): lambda lifting, non-capturing              */
+/*                                                                    */
+/* `fn(x: i64) -> i64 { x * x }` in a VALUE position — a call argument, */
+/* a struct-literal field, a binding's right-hand side, a return — is  */
+/* lifted to a top-level `fn __c_N(x: i64) -> i64 { x * x }` placed     */
+/* right after the item before the one it appears in, and the          */
+/* expression becomes the name `__c_N`: a function value, typed by N   */
+/* v0.24's function types exactly like a named function. The body is   */
+/* spliced through verbatim. Lambdas capture nothing at this rung: a   */
+/* body may use its parameters and the program's items, never a local  */
+/* of the enclosing function (refused here when the local is visible   */
+/* to a token scan; otherwise N refuses the lifted function). The pass */
+/* is a text splice run to a fixpoint, innermost lambdas first, so a   */
+/* lambda inside a lambda lifts before the one around it copies its    */
+/* text. A lambda inside a generic template waits for M6.4b.          */
+/* ------------------------------------------------------------------ */
+static int NLAMBDA;                       /* lifted so far: the __c_N counter */
+
+static int match_brace(int b) {           /* token of the `}` closing `{` at b */
+    int depth = 0;
+    for (int t = b; TOKS[t].k != T_EOF; t++) {
+        if (TOKS[t].k == T_LB) depth++;
+        else if (TOKS[t].k == T_RB && --depth == 0) return t;
+    }
+    die("%s:%d: unbalanced braces", FILENAME, TOKS[b].line);
+    return -1;
+}
+
+/* Skip one type starting at token t — `#[user]? raw? *… NAME<args>?` or a
+ * function type `fn(A, B) -> R` — and return the token after it (-1 if
+ * the tokens do not shape a type). */
+static int skip_type(int t) {
+    if (TOKS[t].k == T_ATTR_USER) t++;
+    if (TOKS[t].k == T_KW_RAW) t++;
+    while (TOKS[t].k == T_STAR) t++;
+    if (TOKS[t].k == T_KW_FN) {
+        if (TOKS[t + 1].k != T_LP) return -1;
+        int depth = 0;
+        for (t++; TOKS[t].k != T_EOF; t++) {
+            if (TOKS[t].k == T_LP) depth++;
+            else if (TOKS[t].k == T_RP && --depth == 0) { t++; break; }
+        }
+        if (TOKS[t].k == T_ARROW) return skip_type(t + 1);
+        return t;
+    }
+    if (TOKS[t].k != T_IDENT) return -1;
+    t++;
+    if (TOKS[t].k == T_LT) {              /* generic arguments */
+        int depth = 0;
+        for (; TOKS[t].k != T_EOF; t++) {
+            if (TOKS[t].k == T_LT) depth++;
+            else if (TOKS[t].k == T_GT && --depth == 0) { t++; break; }
+        }
+    }
+    return t;
+}
+
+/* Is token i the `fn` of a lambda? A lambda reads `fn ( params ) [-> type]
+ * {` in a value position; a function TYPE reads `fn ( types ) [-> type]`
+ * in a type slot (after `->`, `as`, `*`, `raw`, `#[user]`) or with no body
+ * behind it (a parameter or field declaration continues with `,` `)`
+ * `}`). Returns the token of the body's `{`, or -1. */
+static int lambda_body(int i) {
+    if (TOKS[i].k != T_KW_FN || TOKS[i + 1].k != T_LP) return -1;
+    TK p = i > 0 ? TOKS[i - 1].k : T_EOF;
+    if (p == T_ARROW || p == T_KW_AS || p == T_STAR || p == T_KW_RAW || p == T_ATTR_USER)
+        return -1;
+    int t = i + 1, depth = 0;
+    for (; TOKS[t].k != T_EOF; t++) {
+        if (TOKS[t].k == T_LP) depth++;
+        else if (TOKS[t].k == T_RP && --depth == 0) { t++; break; }
+    }
+    if (TOKS[t].k == T_ARROW) { t = skip_type(t + 1); if (t < 0) return -1; }
+    return TOKS[t].k == T_LB ? t : -1;
+}
+
+/* Names bound by a binding form at token t: `x :=`, `mut x :=`, `for x in`,
+ * and — inside a signature's parentheses — `x :`. Returns the IDENT or -1. */
+static int binds_at(int t, int insig) {
+    if (TOKS[t].k != T_IDENT) return -1;
+    TK nx = TOKS[t + 1].k, p = t > 0 ? TOKS[t - 1].k : T_EOF;
+    if (nx == T_WALRUS) return t;
+    if (p == T_KW_FOR && nx == T_KW_IN) return t;
+    if (insig && nx == T_COLON && p != T_DOT) return t;
+    return -1;
+}
+
+/* Refuse a lambda that names a local of the enclosing function: the
+ * function's parameters (its signature's `x :` names) and every binding
+ * before the lambda, minus what the lambda binds itself. A token scan
+ * sees these; what it cannot see (a match arm's binds) N refuses in the
+ * lifted function as an undeclared variable. */
+static void refuse_capture(int itemfirst, int lam, int body, int end) {
+    int locals[512], nl = 0;
+    int t = itemfirst, insig = 0;
+    for (; t < lam; t++) {                /* the item's header parentheses */
+        if (TOKS[t].k == T_LP) insig++;
+        else if (TOKS[t].k == T_RP) insig--;
+        else if (TOKS[t].k == T_LB) break;
+        int b = binds_at(t, insig > 0);
+        if (b >= 0 && nl < 512) locals[nl++] = b;
+    }
+    for (; t < lam; t++) {                /* the body before the lambda */
+        int b = binds_at(t, 0);
+        if (b >= 0 && nl < 512) locals[nl++] = b;
+    }
+    int bound[256], nb = 0;               /* the lambda's own names */
+    int depth = 0;
+    for (int u = lam + 1; u <= end; u++) {
+        if (TOKS[u].k == T_LP) depth++;
+        else if (TOKS[u].k == T_RP) depth--;
+        int b = binds_at(u, u < body && depth > 0);
+        if (b >= 0 && nb < 256) bound[nb++] = b;
+    }
+    for (int u = body + 1; u < end; u++) {
+        if (TOKS[u].k != T_IDENT) continue;
+        if (TOKS[u - 1].k == T_DOT || TOKS[u + 1].k == T_COLON) continue;   /* a field */
+        int captured = 0;
+        for (int k = 0; k < nl && !captured; k++) if (tokspan_eq(locals[k], u)) captured = 1;
+        if (!captured) continue;
+        for (int k = 0; k < nb; k++) if (tokspan_eq(bound[k], u)) { captured = 0; break; }
+        if (!captured) continue;
+        die("%s:%d: lambda captures '%.*s', a local of the enclosing function — closures capture nothing yet (M6.4a); pass it as a parameter",
+            FILENAME, TOKS[u].line, TOKS[u].slen, TOKS[u].s);
+    }
+}
+
+/* The name of a generic item starting at token itemfirst, or -1 for a
+ * plain item: `[pub] [#[...]] fn|struct|enum NAME <`. */
+static int generic_item_name(int itemfirst) {
+    int t = itemfirst;
+    while (TOKS[t].k == T_ATTR_CAPS_SYSCALL || TOKS[t].k == T_ATTR_DROP ||
+           (TOKS[t].k == T_IDENT && TOKS[t].slen == 3 && !memcmp(TOKS[t].s, "pub", 3)))
+        t++;
+    if (TOKS[t].k != T_KW_FN && TOKS[t].k != T_KW_STRUCT && TOKS[t].k != T_KW_ENUM) return -1;
+    if (TOKS[t + 1].k == T_IDENT && TOKS[t + 2].k == T_LT) return t + 1;
+    return -1;
+}
+
+static char* lambda_pass(const char* prog) {
+    static Edit led[MAXI];
+    int ne = 0;
+    int depth = 0, prevclose = -1, itemfirst = 0;
+    int accitem = -1, accprev = -1;       /* the item whose lifted text is accumulating */
+    size_t an = 0, acap = 256;
+    char* acc = xmalloc(acap);
+    acc[0] = 0;
+    for (int i = 0; i < NTOK; i++) {
+        TK k = TOKS[i].k;
+        if (k == T_LB) { depth++; continue; }
+        if (k == T_RB) {
+            if (--depth == 0) { prevclose = i; itemfirst = i + 1; }
+            continue;
+        }
+        if (depth == 0) continue;
+        int body = lambda_body(i);
+        if (body < 0) continue;
+        int end = match_brace(body);
+        int inner = 0;                    /* innermost first: an outer lambda waits a round */
+        for (int j = body + 1; j < end && !inner; j++) if (lambda_body(j) >= 0) inner = 1;
+        if (inner) continue;
+        int gname = generic_item_name(itemfirst);
+        if (gname >= 0)
+            die("%s:%d: a lambda inside generic '%.*s' — closures in generic bodies come with M6.4b; write it as a plain function",
+                FILENAME, TOKS[i].line, TOKS[gname].slen, TOKS[gname].s);
+        refuse_capture(itemfirst, i, body, end);
+        char* name = xmalloc(24);
+        sprintf(name, "__c_%d", NLAMBDA++);
+        if (accitem != itemfirst) {       /* flush the previous item's lifted text */
+            if (accitem >= 0) {
+                if (ne >= MAXI) die("%s: too many lambdas", FILENAME);
+                if (accprev >= 0) {
+                    led[ne].start = led[ne].end = TOKS[accprev].end;
+                    char* r = xmalloc(an + 3); sprintf(r, "\n\n%s", acc); led[ne].repl = r;
+                } else {
+                    led[ne].start = led[ne].end = TOKS[accitem].start;
+                    char* r = xmalloc(an + 3); sprintf(r, "%s\n\n", acc); led[ne].repl = r;
+                }
+                ne++;
+            }
+            an = 0; acap = 256;
+            acc = xmalloc(acap);
+            acc[0] = 0;
+            accitem = itemfirst; accprev = prevclose;
+        }
+        if (an) app(&acc, &an, &acap, "\n\n", 2);
+        app(&acc, &an, &acap, "fn ", 3);
+        app(&acc, &an, &acap, name, strlen(name));
+        app(&acc, &an, &acap, SRC + TOKS[i + 1].start, (size_t)(TOKS[end].end - TOKS[i + 1].start));
+        if (ne >= MAXI) die("%s: too many lambdas", FILENAME);
+        led[ne].start = TOKS[i].start;
+        led[ne].end = TOKS[end].end;
+        led[ne].repl = name;
+        ne++;
+        i = end;                          /* the body's braces are balanced */
+    }
+    if (accitem >= 0) {
+        if (ne >= MAXI) die("%s: too many lambdas", FILENAME);
+        if (accprev >= 0) {
+            led[ne].start = led[ne].end = TOKS[accprev].end;
+            char* r = xmalloc(an + 3); sprintf(r, "\n\n%s", acc); led[ne].repl = r;
+        } else {
+            led[ne].start = led[ne].end = TOKS[accitem].start;
+            char* r = xmalloc(an + 3); sprintf(r, "%s\n\n", acc); led[ne].repl = r;
+        }
+        ne++;
+    }
+    if (ne == 0) return (char*)prog;
+    qsort(led, (size_t)ne, sizeof(Edit), edit_cmp);
+    size_t cap = strlen(prog) + (size_t)ne * 64 + 1, n = 0;
+    char* out = xmalloc(cap);
+    int prev = 0;
+    for (int e = 0; e < ne; e++) {
+        app(&out, &n, &cap, prog + prev, (size_t)(led[e].start - prev));
+        app(&out, &n, &cap, led[e].repl, strlen(led[e].repl));
+        prev = led[e].end;
+    }
+    app(&out, &n, &cap, prog + prev, strlen(prog) - (size_t)prev);
+    return out;
+}
+
+/* ------------------------------------------------------------------ */
 /* driver                                                             */
 /* ------------------------------------------------------------------ */
 int main(int argc, char** argv) {
@@ -1436,6 +1658,16 @@ int main(int argc, char** argv) {
      * the generic pass sees the mangled names as ordinary ones. */
     char* vis = modules_pass(prog);
     if (vis != prog) { prog = vis; lex_text(prog, (long)strlen(prog)); }
+
+    /* Lambdas (M6.4a): lifted to top-level functions by a text splice, to
+     * a fixpoint (innermost first), then re-lexed so the generic pass sees
+     * plain functions. */
+    for (;;) {
+        char* lam = lambda_pass(prog);
+        if (lam == prog) break;
+        prog = lam;
+        lex_text(prog, (long)strlen(prog));
+    }
     collect_generic_decls();
     collect_generic_fns();
     collect_generic_enums();
@@ -1495,7 +1727,7 @@ int main(int argc, char** argv) {
     fwrite(SRC + prev, 1, (size_t)(LEN - prev), out);
     fclose(out);
 
-    fprintf(stderr, "nppc: OK — %d token(s), %d generic(s), %d instantiation(s) -> %s\n",
-            NTOK - 1, NGS, NINST, argv[3]);
+    fprintf(stderr, "nppc: OK — %d token(s), %d generic(s), %d instantiation(s), %d lambda(s) -> %s\n",
+            NTOK - 1, NGS, NINST, NLAMBDA, argv[3]);
     return 0;
 }
