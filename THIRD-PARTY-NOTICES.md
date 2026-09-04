@@ -86,6 +86,21 @@ recorded here for completeness:
   as public domain (in the United States, the bitmap rendering of a typeface is
   not itself protected by copyright). No upstream license terms apply.
 
+## 7. `tfetch` bunny fetch — `user/pkg/tfetch/`
+
+- **Inspired by / ported from:** *tfetch* ("tubular fetch") by Parker0312 / "tman.rs"
+  (<https://github.com/Parker0312/tfetch>) — the concept (a bunny system-info fetch
+  with per-pride-flag colour palettes) and the flag→colour mappings originate there.
+- **What NyxOS ships:** an **original C reimplementation** in `user/pkg/tfetch/tfetch.c`.
+  The upstream is Rust and is not copied; the bunny is an original ASCII rendition (the
+  upstream Unicode-braille art is not reproduced — the console font is CP437), the
+  colours are remapped to the terminal's 16-colour ANSI set, and the info fields read
+  NyxOS's own `/proc`.
+- **Permission:** the upstream repository carries no license file; this port is included
+  with the **author's express permission**, granted to the NyxOS maintainer and recorded
+  here on 2026-09-04. If you are the author and want the attribution or terms adjusted,
+  please open an issue.
+
 ---
 
 ## License compatibility
@@ -100,6 +115,7 @@ work. The bundled components are compatible with it:
 | `armeabi.c` | MIT | Yes (permissive) |
 | Fonts | OFL-1.1 | Yes — applies to the font files only, not the code |
 | Crypto refs, `puff.c`-style inflate, VGA font | Public domain / CC0 | Yes (no restrictions) |
+| `tfetch` port (original C) | GPL-2.0-or-later (concept used with author's permission) | Yes (NyxOS's own code) |
 
 The OFL-1.1 fonts are documentation-site assets, not part of the compiled OS;
 they are redistributed unmodified with their license and copyright per OFL §2.

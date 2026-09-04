@@ -1,0 +1,3 @@
+name: tfetch
+source: tfetch.c
+bin: tfetch
