@@ -883,8 +883,28 @@ static const char* CHAIN[MAXUSE]; static int NCHAIN;  /* the use chain being res
  * for the visibility pass: an item is visible in its own file, `pub` makes
  * it visible program-wide, and a module's private items are renamed so two
  * modules' privates never meet at the C level. */
-typedef struct { const char* name; int start, end; } Mod;
+typedef struct { const char* name; int id; int start, end; } Mod;
 static Mod MODS[MAXUSE]; static int NMOD;
+
+/* The use-graph: one edge per `use` directive, from the using file to the
+ * used one, both by file id — the main file is 0, every other file the
+ * index it was first inlined under (its USED slot). A `pub` item is visible
+ * to the files that use its module directly. */
+#define MAXEDGE 256
+static int EFROM[MAXEDGE], ETO[MAXEDGE]; static int NEDGE;
+
+static void add_edge(int from, int to) {
+    if (NEDGE >= MAXEDGE) die("nppc: too many use directives");
+    EFROM[NEDGE] = from;
+    ETO[NEDGE] = to;
+    NEDGE++;
+}
+
+static int uses(int from, int to) {
+    for (int e = 0; e < NEDGE; e++)
+        if (EFROM[e] == from && ETO[e] == to) return 1;
+    return 0;
+}
 
 static char* read_file(const char* path, long* out_len) {
     FILE* f = fopen(path, "rb");
@@ -927,7 +947,7 @@ static char* resolve_file(const char* path, const char* text, long len);
 
 /* The text of one file with every top-level `use` directive replaced by
  * the used file's resolved text. */
-static char* resolve_text(const char* path, const char* text, long len) {
+static char* resolve_text(const char* path, const char* text, long len, int myid) {
     const char* saved = FILENAME;
     FILENAME = path;
     lex_text(text, len);
@@ -963,10 +983,11 @@ static char* resolve_text(const char* path, const char* text, long len) {
         for (int k = 0; k < NCHAIN; k++)
             if (!strcmp(CHAIN[k], full))
                 die("%s:%d: cyclic use of \"%s\"", path, uline[u], upath[u]);
-        int seen = 0;
+        int seen = -1;
         for (int k = 0; k < NUSED; k++)
-            if (!strcmp(USED[k], full)) seen = 1;
-        if (seen) {
+            if (!strcmp(USED[k], full)) seen = k;
+        if (seen >= 0) {
+            add_edge(myid, seen);
             snprintf(mark, sizeof mark, "// use \"%s\" (already inlined)", upath[u]);
             app(&out, &n, &cap, mark, strlen(mark));
         } else {
@@ -974,7 +995,8 @@ static char* resolve_text(const char* path, const char* text, long len) {
             char* itext = read_file(full, &ilen);
             if (!itext)
                 die("%s:%d: cannot open \"%s\" (looked for %s)", path, uline[u], upath[u], full);
-            int before = NMOD;
+            int before = NMOD, cid = NUSED;   /* the id resolve_file will assign */
+            add_edge(myid, cid);
             char* inner = resolve_file(full, itext, ilen);
             snprintf(mark, sizeof mark, "// use \"%s\" (inlined by nppc)\n", upath[u]);
             app(&out, &n, &cap, mark, strlen(mark));
@@ -985,6 +1007,7 @@ static char* resolve_text(const char* path, const char* text, long len) {
             for (int k = before; k < NMOD; k++) { MODS[k].start += at; MODS[k].end += at; }
             if (NMOD >= MAXUSE) die("nppc: too many modules");
             MODS[NMOD].name = upath[u];
+            MODS[NMOD].id = cid;
             MODS[NMOD].start = at;
             MODS[NMOD].end = at + (int)strlen(inner);
             NMOD++;
@@ -1002,9 +1025,10 @@ static char* resolve_text(const char* path, const char* text, long len) {
  * chain while its own uses resolve (that is what a cycle runs into). */
 static char* resolve_file(const char* path, const char* text, long len) {
     if (NUSED >= MAXUSE || NCHAIN >= MAXUSE) die("nppc: too many modules");
+    int id = NUSED;                        /* the main file is 0 */
     USED[NUSED++] = path;
     CHAIN[NCHAIN++] = path;
-    char* out = resolve_text(path, text, len);
+    char* out = resolve_text(path, text, len, id);
     NCHAIN--;
     return out;
 }
@@ -1107,14 +1131,30 @@ static char* modules_pass(const char* prog) {
         if (isdecl && depth != 0) continue;          /* a method: not an item */
         if (!isdecl && !names_item(t)) continue;
         int owner = mod_owner(TOKS[t].start);
-        int local = -1, foreign = -1;
+        int sid = owner < 0 ? 0 : MODS[owner].id;
+        /* Same-named items elsewhere: a private one, an exported one this
+         * file may see (its module is used here), or an exported one it may
+         * not. */
+        int local = -1, foreign = -1, pubk = -1, pubok = 0;
         for (int k = 0; k < NITEMS; k++) {
             if (!tokspan_eq(ITEMS[k].tok, t)) continue;
-            if (ITEMS[k].owner == owner) local = k;
-            else if (!ITEMS[k].pub && foreign < 0) foreign = k;
+            int ko = ITEMS[k].owner;
+            if (ko == owner) local = k;
+            else if (!ITEMS[k].pub) { if (foreign < 0) foreign = k; }
+            else if (uses(sid, ko < 0 ? 0 : MODS[ko].id)) pubok = 1;
+            else if (pubk < 0) pubk = k;
         }
         if (local < 0) {
-            if (foreign >= 0 && !isdecl) {
+            if (isdecl || pubok) continue;
+            if (pubk >= 0) {
+                int po = ITEMS[pubk].owner;
+                die("%s:%d: '%.*s' is declared by %s, which %s does not use (add use \"%s\";)",
+                    FILENAME, TOKS[t].line, TOKS[t].slen, TOKS[t].s,
+                    po >= 0 ? MODS[po].name : FILENAME,
+                    owner < 0 ? FILENAME : MODS[owner].name,
+                    po >= 0 ? MODS[po].name : FILENAME);
+            }
+            if (foreign >= 0) {
                 int fo = ITEMS[foreign].owner;
                 die("%s:%d: '%.*s' is private to %s (mark it pub to use it here)",
                     FILENAME, TOKS[t].line, TOKS[t].slen, TOKS[t].s,

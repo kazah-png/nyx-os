@@ -84,15 +84,20 @@ as it would in one file. The rules are the ones design §6.2 names:
   leaves only a marker comment;
 - **cycles refused** — a file that names one still being resolved is an
   error at the offending `use`;
-- **an item is visible in its file; `pub` makes it visible program-wide.**
-  A top-level `fn`, `struct`, or `enum` without `pub` is private to the
-  file that declares it — the main file's own items included — and a
-  reference to it from any other file is refused with the file named:
-  `'is_even' is private to modlib.npp (mark it pub to use it here)`.
-  "Reference" means a name-shaped use: a call `x(`, a construction or
-  generic use `x.` / `x{` / `x<`, a type slot, a type argument, an `impl`
-  type. A field or method after `.`, or a binding or parameter name, is
-  not one.
+- **an item is visible in its file; `pub` makes it visible to the files
+  that `use` its module.** A top-level `fn`, `struct`, or `enum` without
+  `pub` is private to the file that declares it — the main file's own
+  items included — and a reference to it from any other file is refused
+  with the file named: `'is_even' is private to modlib.npp (mark it pub
+  to use it here)`. An exported item is visible to the files that `use`
+  its module *directly*: a file that reaches the module only through
+  another `use`, or a sibling that never uses it, is refused with the fix
+  spelled out: `'bee' is declared by bb.npp, which main.npp does not use
+  (add use "bb.npp";)`. A diamond — two modules using the same third —
+  inlines it once and both see it. "Reference" means a name-shaped use:
+  a call `x(`, a construction or generic use `x.` / `x{` / `x<`, a type
+  slot, a type argument, an `impl` type. A field or method after `.`, or
+  a binding or parameter name, is not one.
 - **private items never collide.** Each non-`pub` item of a module is
   renamed `__m_<stem>_<name>` (`__m_modlib_is_even`) at its declaration
   and at every reference inside the module, so two modules' private
@@ -108,7 +113,7 @@ The lowered `.n` keeps `// use "lib.npp" (inlined by nppc)` and
 stays reviewable. Diagnostics after a `use` count lines of the combined
 text. [`../examples/modmain.npp`](../examples/modmain.npp) and
 [`../examples/modlib.npp`](../examples/modlib.npp) are the two-file
-program the suite's stages [10i] and [10j] hold — lowered, agreed on by
-`ncc` and `ngen`, run on the host, with a missing file, a cycle, and a
-private call refused. Still pending: scoping `pub` to the files that
-`use` the module (today a `pub` item is visible program-wide).
+program the suite's stages [10i]–[10k] hold — lowered, agreed on by
+`ncc` and `ngen`, run on the host, with a missing file, a cycle, a
+private call, and an unreached export refused. Still pending: re-exports
+(`pub use "file.npp";`).
