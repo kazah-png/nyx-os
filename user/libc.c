@@ -584,6 +584,12 @@ int tolower(int c) { return isupper(c) ? c + 32 : c; }
  * prefix (hex) or a leading 0 (octal), else decimal. On return *endptr (if non-NULL)
  * points just past the last digit consumed, or at nptr if none were. Wraps on
  * overflow (no errno). A leading '-' negates in the unsigned return type, per C. */
+/* C-standard overflow clamping (no <limits.h> here): strtoul saturates at ULONG_MAX,
+ * strtol at LONG_MAX / LONG_MIN. Both still consume every digit (endptr past them). */
+#define LC_LONG_MAX  0x7FFFFFFFFFFFFFFFL
+#define LC_LONG_MIN  (-LC_LONG_MAX - 1L)
+#define LC_ULONG_MAX 0xFFFFFFFFFFFFFFFFUL
+
 unsigned long strtoul(const char* nptr, char** endptr, int base) {
     const char* s = nptr;
     while (isspace((unsigned char)*s)) s++;
@@ -592,6 +598,8 @@ unsigned long strtoul(const char* nptr, char** endptr, int base) {
     if ((base == 0 || base == 16) && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) { s += 2; base = 16; }
     else if (base == 0 && s[0] == '0') { base = 8; }
     else if (base == 0) { base = 10; }
+    unsigned long cutoff = LC_ULONG_MAX / (unsigned long)base;
+    int cutlim = (int)(LC_ULONG_MAX % (unsigned long)base);
     unsigned long acc = 0; int any = 0;
     for (;;) {
         int c = (unsigned char)*s, d;
@@ -600,15 +608,41 @@ unsigned long strtoul(const char* nptr, char** endptr, int base) {
         else if (c >= 'A' && c <= 'Z') d = c - 'A' + 10;
         else break;
         if (d >= base) break;
-        acc = acc * (unsigned long)base + (unsigned long)d;
-        any = 1; s++;
+        if (any < 0 || acc > cutoff || (acc == cutoff && d > cutlim)) any = -1;   /* overflow -> saturate */
+        else { acc = acc * (unsigned long)base + (unsigned long)d; any = 1; }
+        s++;
     }
     if (endptr) *endptr = (char*)(any ? s : nptr);
+    if (any < 0) return LC_ULONG_MAX;
     return neg ? (unsigned long)(-(long)acc) : acc;
 }
 
 long strtol(const char* nptr, char** endptr, int base) {
-    return (long)strtoul(nptr, endptr, base);   /* strtoul already applied the sign */
+    const char* s = nptr;
+    while (isspace((unsigned char)*s)) s++;
+    int neg = 0;
+    if (*s == '+' || *s == '-') { neg = (*s == '-'); s++; }
+    if ((base == 0 || base == 16) && s[0] == '0' && (s[1] == 'x' || s[1] == 'X')) { s += 2; base = 16; }
+    else if (base == 0 && s[0] == '0') { base = 8; }
+    else if (base == 0) { base = 10; }
+    unsigned long cutoff = neg ? -(unsigned long)LC_LONG_MIN : (unsigned long)LC_LONG_MAX;
+    int cutlim = (int)(cutoff % (unsigned long)base);
+    cutoff /= (unsigned long)base;
+    unsigned long acc = 0; int any = 0;
+    for (;;) {
+        int c = (unsigned char)*s, d;
+        if (c >= '0' && c <= '9') d = c - '0';
+        else if (c >= 'a' && c <= 'z') d = c - 'a' + 10;
+        else if (c >= 'A' && c <= 'Z') d = c - 'A' + 10;
+        else break;
+        if (d >= base) break;
+        if (any < 0 || acc > cutoff || (acc == cutoff && d > cutlim)) any = -1;   /* overflow -> clamp */
+        else { acc = acc * (unsigned long)base + (unsigned long)d; any = 1; }
+        s++;
+    }
+    if (endptr) *endptr = (char*)(any ? s : nptr);
+    if (any < 0) return neg ? LC_LONG_MIN : LC_LONG_MAX;
+    return neg ? -(long)acc : (long)acc;
 }
 
 /* =========== string / stdlib extras (compiler staples) =========== */

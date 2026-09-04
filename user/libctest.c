@@ -92,6 +92,10 @@ int main(int argc, char** argv) {
         int s_ok = (a == -42) && end && (*end == 'x');
         s_ok = s_ok && (strtoul("0x1A", 0, 0) == 26);    /* base 0 auto-detects hex */
         s_ok = s_ok && (strtol("777", 0, 8) == 511);     /* explicit octal */
+        /* overflow saturates like C, instead of wrapping (pre-v6.5.102 bug) */
+        s_ok = s_ok && (strtol("99999999999999999999", 0, 10) == 0x7FFFFFFFFFFFFFFFL);
+        s_ok = s_ok && (strtol("-99999999999999999999", 0, 10) == (-0x7FFFFFFFFFFFFFFFL - 1L));
+        s_ok = s_ok && (strtoul("99999999999999999999999", 0, 10) == 0xFFFFFFFFFFFFFFFFUL);
         printf("LIBCTEST: strtol/strtoul %s\n", s_ok ? "PASS" : "FAIL");
         if (!s_ok) ok = 0;
     }
