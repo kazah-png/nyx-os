@@ -99,7 +99,11 @@ as it would in one file. The rules are the ones design §6.2 names:
   another `use`, or a sibling that never uses it, is refused with the fix
   spelled out: `'bee' is declared by bb.npp, which main.npp does not use
   (add use "bb.npp";)`. A diamond — two modules using the same third —
-  inlines it once and both see it. "Reference" means a name-shaped use:
+  inlines it once and both see it. `pub use "lib.npp";` re-exports: the
+  used module's exports become part of this module's own, so a file that
+  uses this module sees them too, along any chain of `pub use`s; a plain
+  `use` inside the chain exports nothing onward. "Reference" means a
+  name-shaped use:
   a call `x(`, a construction or generic use `x.` / `x{` / `x<`, a type
   slot, a type argument, an `impl` type. A field or method after `.`, or
   a binding or parameter name, is not one.
@@ -118,7 +122,9 @@ The lowered `.n` keeps `// use "lib.npp" (inlined by nppc)` and
 stays reviewable. Diagnostics after a `use` count lines of the combined
 text. [`../examples/modmain.npp`](../examples/modmain.npp) and
 [`../examples/modlib.npp`](../examples/modlib.npp) are the two-file
-program the suite's stages [10i]–[10k] hold — lowered, agreed on by
+program the suite's stages [10i]–[10n] hold — lowered, agreed on by
 `ncc` and `ngen`, run on the host, with a missing file, a cycle, a
-private call, and an unreached export refused. Still pending: re-exports
-(`pub use "file.npp";`).
+private call, and an unreached export refused;
+[`../examples/modreexp.npp`](../examples/modreexp.npp) reaches modlib
+through [`../examples/modutil.npp`](../examples/modutil.npp)'s `pub use`.
+Nothing is pending on the module front.

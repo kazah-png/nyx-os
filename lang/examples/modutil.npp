@@ -1,0 +1,13 @@
+// modutil.npp — a module that re-exports another (M6.5d).
+//
+// `pub use "modlib.npp";` inlines modlib exactly as `use` would — once per
+// program, cycles refused — and makes modlib's exports (put, Maybe<T>,
+// first_even) part of this module's own: a file that uses modutil sees them
+// without ever naming modlib. A plain `use` here would keep them for this
+// file alone. `twice` is modutil's own export.
+
+pub use "modlib.npp";
+
+pub fn twice(n: i64) -> i64 {
+    n * 2
+}

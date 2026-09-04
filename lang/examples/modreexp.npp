@@ -1,0 +1,24 @@
+// modreexp.npp — N++ re-exports (M6.5d): one `use` reaches a module's own
+// exports and everything it re-exports.
+//
+// modutil.npp says `pub use "modlib.npp";`, so using modutil brings put,
+// Maybe<T> and first_even along with modutil's own twice — this file names
+// modlib nowhere. Had modutil said a plain `use`, those names would be
+// refused here with the fix spelled out, exactly as a transitive reach is.
+
+use "modutil.npp";
+
+fn show(label: str, m: Maybe<i64>) {
+    match m {
+        Some(v) => { put("{label}: {v}\n"); },
+        None    => { put("{label}: none\n"); },
+    }
+}
+
+fn main() -> i64 {
+    show("first even of 3, twice(4)", first_even(3, twice(4)));
+    show("first even of 3, 5", first_even(3, 5));
+    d := twice(21);
+    put("twice 21 = {d}\n");
+    d - 42
+}

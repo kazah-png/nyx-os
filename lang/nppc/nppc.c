@@ -1080,18 +1080,33 @@ static Mod MODS[MAXUSE]; static int NMOD;
  * index it was first inlined under (its USED slot). A `pub` item is visible
  * to the files that use its module directly. */
 #define MAXEDGE 256
-static int EFROM[MAXEDGE], ETO[MAXEDGE]; static int NEDGE;
+static int EFROM[MAXEDGE], ETO[MAXEDGE], EPUB[MAXEDGE]; static int NEDGE;
 
-static void add_edge(int from, int to) {
+static void add_edge(int from, int to, int pub) {
     if (NEDGE >= MAXEDGE) die("nppc: too many use directives");
     EFROM[NEDGE] = from;
     ETO[NEDGE] = to;
+    EPUB[NEDGE] = pub;                    /* a `pub use`: re-exported (M6.5d) */
     NEDGE++;
 }
 
-static int uses(int from, int to) {
+/* Does module r re-export module `to` — through a `pub use`, directly or
+ * along a chain of them (M6.5d)? Cycles were refused at resolution; the
+ * depth cap is belt and braces. */
+static int reexports(int r, int to, int depth) {
+    if (depth > 64) return 0;
     for (int e = 0; e < NEDGE; e++)
-        if (EFROM[e] == from && ETO[e] == to) return 1;
+        if (EFROM[e] == r && EPUB[e] && (ETO[e] == to || reexports(ETO[e], to, depth + 1)))
+            return 1;
+    return 0;
+}
+
+/* Is module `to` visible from file `from`: used directly, or re-exported by
+ * a module `from` uses directly? A plain `use` inside a module exports
+ * nothing onward. */
+static int visible(int from, int to) {
+    for (int e = 0; e < NEDGE; e++)
+        if (EFROM[e] == from && (ETO[e] == to || reexports(ETO[e], to, 0))) return 1;
     return 0;
 }
 
@@ -1141,7 +1156,7 @@ static char* resolve_text(const char* path, const char* text, long len, int myid
     FILENAME = path;
     lex_text(text, len);
     /* Collect the directives first: resolving one re-lexes another file. */
-    int us[MAXUSE], ue[MAXUSE], uline[MAXUSE]; char* upath[MAXUSE];
+    int us[MAXUSE], ue[MAXUSE], uline[MAXUSE], upub[MAXUSE]; char* upath[MAXUSE];
     int nu = 0, depth = 0;
     for (int i = 0; i + 2 < NTOK; i++) {
         if (TOKS[i].k == T_LB) depth++;
@@ -1151,7 +1166,11 @@ static char* resolve_text(const char* path, const char* text, long len, int myid
         if (TOKS[i + 1].k != T_STR || TOKS[i + 2].k != T_SEMI)
             die("%s:%d: expected use \"file.npp\";", FILENAME, TOKS[i].line);
         if (nu >= MAXUSE) die("%s: too many use directives", FILENAME);
-        us[nu] = TOKS[i].start;
+        /* `pub use "file";` re-exports the module (M6.5d); the directive then
+         * starts at the `pub`, which is consumed here with it. */
+        upub[nu] = i > 0 && TOKS[i - 1].k == T_IDENT && TOKS[i - 1].slen == 3 &&
+                   !memcmp(TOKS[i - 1].s, "pub", 3);
+        us[nu] = upub[nu] ? TOKS[i - 1].start : TOKS[i].start;
         ue[nu] = TOKS[i + 2].end;
         uline[nu] = TOKS[i].line;
         upath[nu] = xstrndup(TOKS[i + 1].s, (size_t)TOKS[i + 1].slen);
@@ -1176,7 +1195,7 @@ static char* resolve_text(const char* path, const char* text, long len, int myid
         for (int k = 0; k < NUSED; k++)
             if (!strcmp(USED[k], full)) seen = k;
         if (seen >= 0) {
-            add_edge(myid, seen);
+            add_edge(myid, seen, upub[u]);
             snprintf(mark, sizeof mark, "// use \"%s\" (already inlined)", upath[u]);
             app(&out, &n, &cap, mark, strlen(mark));
         } else {
@@ -1185,7 +1204,7 @@ static char* resolve_text(const char* path, const char* text, long len, int myid
             if (!itext)
                 die("%s:%d: cannot open \"%s\" (looked for %s)", path, uline[u], upath[u], full);
             int before = NMOD, cid = NUSED;   /* the id resolve_file will assign */
-            add_edge(myid, cid);
+            add_edge(myid, cid, upub[u]);
             char* inner = resolve_file(full, itext, ilen);
             snprintf(mark, sizeof mark, "// use \"%s\" (inlined by nppc)\n", upath[u]);
             app(&out, &n, &cap, mark, strlen(mark));
@@ -1330,7 +1349,7 @@ static char* modules_pass(const char* prog) {
             int ko = ITEMS[k].owner;
             if (ko == owner) local = k;
             else if (!ITEMS[k].pub) { if (foreign < 0) foreign = k; }
-            else if (uses(sid, ko < 0 ? 0 : MODS[ko].id)) pubok = 1;
+            else if (visible(sid, ko < 0 ? 0 : MODS[ko].id)) pubok = 1;
             else if (pubk < 0) pubk = k;
         }
         if (local < 0) {
