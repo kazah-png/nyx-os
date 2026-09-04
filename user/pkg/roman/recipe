@@ -1,0 +1,3 @@
+name: roman
+source: roman.c
+bin: roman
