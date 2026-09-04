@@ -35,4 +35,32 @@ static inline void uwin_hline(unsigned int* buf, int w, int h,
     if (x1 > w) x1 = w;
     for (int xx = x0; xx < x1; xx++) buf[y * w + xx] = color;
 }
+
+/* Blit one 8x16 glyph bitmap `g` (16 bytes; row 0 = top, MSB = leftmost pixel) at
+ * (x,y): only set bits are written, in `fg` (transparent background), clipped. */
+static inline void uwin_glyph(unsigned int* buf, int w, int h, int x, int y,
+                              const unsigned char* g, unsigned int fg) {
+    for (int row = 0; row < 16; row++) {
+        int py = y + row;
+        if (py < 0 || py >= h) continue;
+        unsigned int bits = g[row];
+        for (int col = 0; col < 8; col++)
+            if ((bits >> (7 - col)) & 1u) {
+                int px = x + col;
+                if (px >= 0 && px < w) buf[py * w + px] = fg;
+            }
+    }
+}
+
+/* Draw a NUL-terminated string at (x,y), fetching each glyph from the ONE kernel
+ * font via font_glyph() (8px advance per char). Returns x just past the last glyph.
+ * The first client-side text primitive for ring-3 window apps. */
+static inline int uwin_text(unsigned int* buf, int w, int h, int x, int y,
+                            const char* s, unsigned int fg) {
+    unsigned char g[16];
+    for (; *s; s++, x += 8)
+        if (font_glyph((unsigned char)*s, g) == 0)
+            uwin_glyph(buf, w, h, x, y, g, fg);
+    return x;
+}
 #endif

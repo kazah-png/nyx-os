@@ -1562,6 +1562,13 @@ uint64_t syscall_handler(uint64_t no, uint64_t a1, uint64_t a2, uint64_t a3,
         case SYS_WIN_RESIZE:
             // win_resize(id, w, h) -> 0/-1. Scalars only, no user pointer to copy.
             return (uint64_t)(int64_t)uwin_resize((int)a1, (uint32_t)a2, (uint32_t)a3);
+        case SYS_FONT_GLYPH: {
+            // font_glyph(c, out16) -> 0/-1. Copy the 16-byte 8x16 bitmap for byte c to
+            // the user buffer so ring-3 window clients render text from the one kernel font.
+            if (!user_ptr_ok(a2, 16) || copy_to_user(a2, font_glyph_bitmap((unsigned char)a1), 16) != 0)
+                return -1;
+            return 0;
+        }
         default:
             printf("[SYSCALL] Unknown syscall %lu\n", no);
             return -1;

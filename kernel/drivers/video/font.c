@@ -350,3 +350,26 @@ void font_draw_string_scaled(uint32_t x, uint32_t y, const char* str,
 
 uint32_t font_get_width(void) { return FONT_WIDTH; }
 uint32_t font_get_height(void) { return FONT_HEIGHT; }
+
+// Return the 16-byte 8x16 bitmap for byte c (row 0 = top; MSB = leftmost pixel).
+// The single kernel font, exposed so ring-3 window clients (SYS_FONT_GLYPH) can
+// render text without each embedding its own copy — one source of truth.
+const uint8_t* font_glyph_bitmap(unsigned char c) { return font_data[c]; }
+
+// KAT: font_glyph_bitmap indexes the right glyph and blank/known cells hold. Space
+// is empty; every glyph is 16 rows of the backing table. 0 = pass, else the case.
+int font_glyph_selftest(void) {
+    const uint8_t* sp = font_glyph_bitmap(' ');
+    for (int r = 0; r < FONT_HEIGHT; r++) if (sp[r] != 0) return 1;   // space is blank
+    // indexing is per-byte: 'A' and 'B' differ and each matches its table row.
+    const uint8_t* A = font_glyph_bitmap('A');
+    const uint8_t* B = font_glyph_bitmap('B');
+    int same = 1;
+    for (int r = 0; r < FONT_HEIGHT; r++) { if (A[r] != font_data['A'][r]) return 2;
+                                            if (B[r] != font_data['B'][r]) return 3;
+                                            if (A[r] != B[r]) same = 0; }
+    if (same) return 4;                                              // 'A' != 'B' bitmaps
+    const uint8_t* full = font_glyph_bitmap(0xFF);                    // top of the table, no OOB
+    if (!full) return 5;
+    return 0;
+}

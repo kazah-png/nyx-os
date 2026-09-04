@@ -65,6 +65,7 @@
 #define SYS_WIN_PRESENT_RECT 61
 #define SYS_WIN_SET_TITLE  62
 #define SYS_WIN_RESIZE     63
+#define SYS_FONT_GLYPH     64
 
 /* Threads (v5.8.87). CLONE_VM makes the new task SHARE this address space — a real
  * thread — instead of getting fork()'s copy-on-write duplicate. */
@@ -311,6 +312,12 @@ static inline int win_set_title(int id, const char* title) {
  * (unknown window / zero or too-large dimensions). */
 static inline int win_resize(int id, unsigned int w, unsigned int h) {
     return (int)syscall3(SYS_WIN_RESIZE, id, (long)w, (long)h);
+}
+/* font_glyph(c, out16): copy the 16-byte 8x16 bitmap for byte c (row 0 = top, MSB =
+ * leftmost) into out16, so a ring-3 window client can render text from the one kernel
+ * font instead of embedding its own. Returns 0, or -1 (bad buffer). See uwin_text(). */
+static inline int font_glyph(unsigned char c, unsigned char* out16) {
+    return (int)syscall2(SYS_FONT_GLYPH, (long)c, (long)out16);
 }
 
 static inline long open(const char* path, int flags, int mode) {

@@ -28,6 +28,7 @@ int main(void) {
             uwin_hline(buf, W, H, 0, y, W, (r << 16) | (0x18u << 8) | b);
         }
         uwin_fill_rect(buf, W, H, sqx, H / 2 - 20, 40, 40, 0x00FFFFFF);   /* white marker */
+        uwin_text(buf, W, H, 8, 8, "wintest ring-3", 0x00FFFFFF);         /* glyphs via SYS_FONT_GLYPH */
         if (win_present(id, buf, W, H) != 0) { printf("wintest: present FAILED at frame %d\n", i); break; }
         if (i == 0) printf("wintest: first present OK\n");
         frames++;

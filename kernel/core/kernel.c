@@ -9542,6 +9542,7 @@ extern int vfs_selftest(void);           // fs/vfs.c: ramdisk open/create/O_TRUN
 extern int region_clip_selftest(void);   // drivers/video/fb.c: region ∩ round clip span math (dirty-rect groundwork)
 extern int memset32_selftest(void);      // drivers/video/fb.c: rep-stosd pixel fill primitive (no over/underrun)
 extern int darken_blend_selftest(void);  // drivers/video/fb.c: shadow-blend table == exact v*keep/255
+extern int font_glyph_selftest(void);     // drivers/video/font.c: font_glyph_bitmap indexing (SYS_FONT_GLYPH source)
 extern int dhcp_options_selftest(void);
 // http_parse_selftest / ext2_dir_selftest are declared in ../net/http.h / ../fs/ext2.h (included above).
 
@@ -10081,6 +10082,7 @@ static void run_selftests(void) {
         {"regionclip",   region_clip_selftest},
         {"memset32",     memset32_selftest},
         {"darkenblend",  darken_blend_selftest},
+        {"fontglyph",    font_glyph_selftest},
         {"catnumber",    cat_number_selftest},
         {"nyxconf",      nyxconf_selftest},
         {"fmnav",        fileman_nav_selftest},

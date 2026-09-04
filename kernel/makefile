@@ -719,7 +719,7 @@ $(USER_DIR)/keyevtest.o: $(USER_DIR)/keyevtest.c $(USER_DIR)/libc.h $(USER_DIR)/
 # wintest: user-space window syscalls test (v6.4.354, #77) — opens a real desktop window
 $(USER_DIR)/wintest.elf: $(USER_DIR)/crt0.o $(USER_DIR)/libc.so $(USER_DIR)/wintest.o
 	$(LD) -nostdlib -m elf_x86_64 -e _start -Ttext 0x10000 -o $@ $(USER_DIR)/crt0.o --just-symbols=$(USER_DIR)/libc.so $(USER_DIR)/wintest.o
-$(USER_DIR)/wintest.o: $(USER_DIR)/wintest.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h
+$(USER_DIR)/wintest.o: $(USER_DIR)/wintest.c $(USER_DIR)/libc.h $(USER_DIR)/syscall.h $(USER_DIR)/uwin.h
 	$(CC) -std=gnu99 -Os -ffreestanding -nostdlib -m64 -mno-red-zone -I$(USER_DIR) -c $< -o $@
 
 # test / [ (POSIX conditional) + true + false: shell-scripting primitives

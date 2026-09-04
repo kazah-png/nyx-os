@@ -18,7 +18,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.5.93"
+#define KERNEL_VERSION "6.5.94"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -134,6 +134,9 @@
 #define SYS_WIN_PRESENT_RECT 61 /* win_present_rect(id, buf, (y<<16)|x, (h<<16)|w) -> blit a w*h XRGB sub-rect at (x,y) of the client area */
 #define SYS_WIN_SET_TITLE 62 /* win_set_title(id, title_ptr, title_len) -> 0/-1 (update the title-bar text after creation) */
 #define SYS_WIN_RESIZE 63 /* win_resize(id, w, h) -> 0/-1 (app-initiated resize of the client area; drops the backing so the next present is at the new size) */
+#define SYS_FONT_GLYPH 64 /* font_glyph(c, out16) -> 0/-1 (copy the 16-byte 8x16 bitmap for byte c to a user buffer, so ring-3 clients render text from the one kernel font) */
+
+const uint8_t* font_glyph_bitmap(unsigned char c);   // drivers/video/font.c: the 16-byte glyph for c
 
 /* ------------------------------------------------------------------ */
 /*  Threads (v5.8.89) — clone(CLONE_VM) + futex                        */
