@@ -818,6 +818,25 @@ static char* concrete_struct(Inst* it) {
 
 /* Is token t a type-parameter of generic g used in a type position (a base
  * type after ':' , '->' or '*')? Returns the param index, or -1. */
+/* Is IDENT token t a parameter type of a function TYPE — `fn(T, *U) -> R`
+ * (N v0.24)? Walk back over what a parameter list holds (types, commas,
+ * nested fn types with their own parentheses and arrows, generic
+ * arguments) to the `(` that opens the list, and require `fn` before it. */
+static int in_fn_type(int t) {
+    int depth = 0;
+    for (int j = t - 1; j > 0; j--) {
+        TK k = TOKS[j].k;
+        if (k == T_RP) depth++;
+        else if (k == T_LP) {
+            if (depth == 0) return TOKS[j - 1].k == T_KW_FN;
+            depth--;
+        } else if (k != T_IDENT && k != T_COMMA && k != T_STAR && k != T_KW_RAW &&
+                   k != T_ATTR_USER && k != T_ARROW && k != T_KW_FN && k != T_LT && k != T_GT)
+            return 0;
+    }
+    return 0;
+}
+
 static int typaram_at(GStruct* g, int t) {
     if (TOKS[t].k != T_IDENT || t == 0) return -1;
     TK p = TOKS[t - 1].k;
@@ -825,12 +844,17 @@ static int typaram_at(GStruct* g, int t) {
      * '*' (a pointer type), or 'as' (a cast target — the one type slot that
      * appears inside a function body, since N locals are always inferred).
      * An argument of a generic use — `Box<T>`, `Pair<T, U>` (M6.3g) — is
-     * recognized by walking back to the `<` with a generic's name before it. */
-    if (p == T_LT || p == T_COMMA) {
+     * recognized by walking back to the `<` with a generic's name before it;
+     * a parameter type of a function type — `fn(T) -> R` (M6.4b) — by
+     * walking back to the `(` with `fn` before it. */
+    int slot = (p == T_COLON || p == T_ARROW || p == T_STAR || p == T_KW_AS);
+    if (!slot && (p == T_LT || p == T_COMMA)) {
         int j = t - 1;
         while (j > 0 && (TOKS[j].k == T_COMMA || TOKS[j].k == T_IDENT)) j--;
-        if (!(TOKS[j].k == T_LT && j > 0 && gfind(j - 1) >= 0)) return -1;
-    } else if (p != T_COLON && p != T_ARROW && p != T_STAR && p != T_KW_AS) return -1;
+        slot = TOKS[j].k == T_LT && j > 0 && gfind(j - 1) >= 0;
+    }
+    if (!slot && (p == T_LP || p == T_COMMA)) slot = in_fn_type(t);
+    if (!slot) return -1;
     for (int q = 0; q < g->nparams; q++)
         if (tokspan_eq(g->ptok[q], t)) return q;
     return -1;
@@ -1572,13 +1596,34 @@ static char* lambda_pass(const char* prog) {
         int inner = 0;                    /* innermost first: an outer lambda waits a round */
         for (int j = body + 1; j < end && !inner; j++) if (lambda_body(j) >= 0) inner = 1;
         if (inner) continue;
+        /* Inside a generic function template (M6.4b): the lambda lifts to a
+         * template of its own over the type parameters it names, and its
+         * use site `__c_N<T>` is a nested generic use — instantiated with
+         * the enclosing template by the generic pass, like `Box<T>`. */
         int gname = generic_item_name(itemfirst);
-        if (gname >= 0)
-            die("%s:%d: a lambda inside generic '%.*s' — closures in generic bodies come with M6.4b; write it as a plain function",
-                FILENAME, TOKS[i].line, TOKS[gname].slen, TOKS[gname].s);
+        int tp[MAXP], ntp = 0;            /* the enclosing template's params */
+        if (gname >= 0) {
+            if (TOKS[gname - 1].k != T_KW_FN)
+                die("%s:%d: a lambda inside generic '%.*s'", FILENAME, TOKS[i].line,
+                    TOKS[gname].slen, TOKS[gname].s);
+            for (int t = gname + 2; TOKS[t].k == T_IDENT; t += 2) {   /* NAME < A , B > */
+                if (ntp < MAXP) tp[ntp++] = t;
+                if (TOKS[t + 1].k != T_COMMA) break;
+            }
+        }
+        int used[MAXP], nused = 0;        /* the ones the lambda mentions, in order */
+        for (int q = 0; q < ntp; q++)
+            for (int u = i + 1; u <= end; u++)
+                if (tokspan_eq(tp[q], u)) { used[nused++] = q; break; }
         refuse_capture(itemfirst, i, body, end);
-        char* name = xmalloc(24);
-        sprintf(name, "__c_%d", NLAMBDA++);
+        char* name = xmalloc(24 + (size_t)nused * 64);
+        int nn = sprintf(name, "__c_%d", NLAMBDA++);
+        if (nused) {                      /* `__c_N<A, B>`: the declaration header and the use */
+            nn += sprintf(name + nn, "<");
+            for (int q = 0; q < nused; q++)
+                nn += sprintf(name + nn, "%s%.*s", q ? ", " : "", TOKS[tp[used[q]]].slen, TOKS[tp[used[q]]].s);
+            sprintf(name + nn, ">");
+        }
         if (accitem != itemfirst) {       /* flush the previous item's lifted text */
             if (accitem >= 0) {
                 if (ne >= MAXI) die("%s: too many lambdas", FILENAME);

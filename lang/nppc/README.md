@@ -164,9 +164,16 @@ The rules at this rung (M6.4a):
 - **lambdas nest.** The pass runs to a fixpoint, innermost first, so a
   lambda inside a lambda is lifted before the one around it copies its
   text.
-- **not inside a generic template yet.** A lambda in the body of a
-  generic function waits for M6.4b (a lifted `__c_N<T>` per template);
-  it is refused with the rung named.
+- **inside a generic template, a lambda is generic too (M6.4b).** A
+  lambda in the body of `fn boxed<T>` that names `T` lifts to a template
+  of its own — `fn __c_N<T>(v: T) -> Box<T> { … }`, over exactly the type
+  parameters it mentions — and the expression becomes the use `__c_N<T>`:
+  a nested generic use like `Box<T>`, instantiated once per concrete
+  instantiation of the enclosing function and rewritten to the concrete
+  name (`__g___c_N_i64`), which N passes as a function value. A lambda
+  that names no type parameter lifts as a plain function. (A type
+  parameter inside a function type, `f: fn(T) -> Box<T>`, is a handled
+  type slot of the generic pass since this rung.)
 - **a `:=`-bound lambda needs a declared function type.** N binds a
   function value only when its type is declared somewhere in the program
   (a parameter, a field, or a return type of that signature) — the rule
@@ -176,4 +183,8 @@ The rules at this rung (M6.4a):
 example: four lambdas — an argument, a struct field, another argument,
 a binding — lifted to `__c_0`…`__c_3`, held by the suite's stage [10o]
 (lowered, agreed on by `ncc` and `ngen`, run on the host; nested lambdas
-run; a capture and a lambda in a generic body refused).
+run; a capture refused).
+[`../examples/gclosure.npp`](../examples/gclosure.npp) is the generic
+case, stage [10p]: a lambda in `boxed<T>` lifts to `__c_0<T>` and comes
+out as `__g___c_0_i64` and `__g___c_0_str`; one in `count<T>` that names
+no type parameter lifts plain; a capture in a generic body refused.

@@ -1,0 +1,47 @@
+// gclosure.npp — N++ lambdas inside generic templates (M6.4b).
+//
+// A lambda in the body of a generic function may name the function's type
+// parameters. nppc lifts it to a generic function of its own, `__c_N<T>`,
+// over exactly the parameters it mentions, and the expression becomes the
+// use `__c_N<T>` — a nested generic use like `Box<T>`, instantiated once per
+// concrete instantiation of the enclosing function and rewritten to the
+// concrete name (`__g___c_0_i64`), which N then passes as a function value.
+// A lambda that names no type parameter lifts as a plain function, as in
+// closure.npp. Box<T> comes first: a concrete item is emitted where its
+// template is declared.
+
+extern syscall {
+    fn write(fd: i32, buf: *u8, len: isize) -> i64 = 1
+}
+
+struct Box<T> {
+    val: T,
+}
+
+fn put(s: str) {
+    write(1, s.ptr as *u8, s.len as isize);
+}
+
+fn make<T>(f: fn(T) -> Box<T>, x: T) -> Box<T> {
+    f(x)
+}
+
+fn boxed<T>(x: T) -> Box<T> {
+    make<T>(fn(v: T) -> Box<T> { Box<T>{ val: v } }, x)
+}
+
+fn tally(f: fn(i64) -> i64, n: i64) -> i64 {
+    f(n)
+}
+
+fn count<T>(x: T) -> i64 {
+    tally(fn(n: i64) -> i64 { n + 1 }, 41)
+}
+
+fn main() -> i64 {
+    a := boxed<i64>(41);
+    b := boxed<str>("boxed");
+    c := count<i64>(0);
+    put("{a.val} {b.val} {c}\n");
+    a.val + 1 - c
+}
