@@ -362,13 +362,11 @@ char* strcasestr(const char* haystack, const char* needle) {
 
 /* =========== Stdlib =========== */
 
+/* atoi is (int)strtol(s, NULL, 10) (C11 7.22.1.2): skip every isspace byte, not
+ * just ' ', and clamp on overflow. Delegating keeps atoi and strtol in step (the
+ * old hand-rolled loop skipped only ' ' and wrapped past INT range). */
 int atoi(const char* s) {
-    int n = 0, sign = 1;
-    while (*s == ' ') s++;
-    if (*s == '-') { sign = -1; s++; }
-    else if (*s == '+') s++;
-    while (*s >= '0' && *s <= '9') { n = n * 10 + (*s - '0'); s++; }
-    return sign * n;
+    return (int)strtol(s, (char**)0, 10);
 }
 
 int abs(int x) {

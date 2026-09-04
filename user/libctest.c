@@ -100,6 +100,18 @@ int main(int argc, char** argv) {
         if (!s_ok) ok = 0;
     }
 
+    /* atoi — must behave as (int)strtol(s,NULL,10): skip ALL whitespace (not
+     * just ' ') and clamp on overflow (pre-v6.5.103 skipped only ' ' + wrapped). */
+    {
+        int a_ok = (atoi("42") == 42) && (atoi("-42") == -42) && (atoi("+42") == 42);
+        a_ok = a_ok && (atoi("\t42") == 42) && (atoi("\n42") == 42);   /* tab/newline */
+        a_ok = a_ok && (atoi(" \t\n\v\f\r 42") == 42);                 /* mixed leading ws */
+        a_ok = a_ok && (atoi("12abc") == 12) && (atoi("abc") == 0);
+        a_ok = a_ok && (atoi("9999999999999999999999") == -1);         /* >LONG_MAX -> clamp+trunc */
+        printf("LIBCTEST: atoi %s\n", a_ok ? "PASS" : "FAIL");
+        if (!a_ok) ok = 0;
+    }
+
     /* string/stdlib extras: memchr, strrchr, strncat, strdup, qsort. */
     {
         int se_ok = 1;
