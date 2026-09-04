@@ -1091,6 +1091,15 @@ fn pty(p: *u8, n: i64, st: *i64) -> T {
         going = false;
         if ck(st, 49) { adv(p, n, st); pt = pt + 1; going = true; }
     }
+    if ck(st, 10) {                        // fn(A, B) -> R (v0.24)
+        adv(p, n, st);
+        if pt > 0 || us == 1 || rw == 1 {
+            put("{tln}: a function type is a value of its own — no pointer, raw or #[user] on it (v0.24)\n");
+            st[41] = 1;
+            return T{ pt: 0, us: 0, s: 0, l: 0 };
+        }
+        return pfnty(p, n, st);
+    }
     if !ck(st, 7) { perr(st); return T{ pt: 0, us: 0, s: 0, l: 0 }; }
     s := st[26];
     l := st[27];
@@ -1103,6 +1112,272 @@ fn pty(p: *u8, n: i64, st: *i64) -> T {
         return T{ pt: 0, us: 0, s: 0, l: 0 };
     }
     T{ pt: pt, us: us, s: s, l: l }
+}
+
+// ---- function types (v0.24) ------------------------------------- //
+// ncc interns each distinct signature once and prints it in its N
+// spelling, "fn(A, B) -> R". check.n extends the intern trick: that
+// spelling IS the type's name — written to the buffer tail on first
+// sight — so a fn type is an ordinary T (ptrs 0, the name's span),
+// span_eq gives structural identity for free (two signatures are the
+// same type exactly when their spellings match byte for byte), and
+// ty_put prints the diagnostic form without knowing. The table
+// (st[57], count st[58]; 72-word entries: np, has_ret, ret T, up to
+// 16 param T's, the spelling's span at 70..71) keeps the shape for
+// calls through values; st[59]/st[60] are the per-depth parse scratch
+// (a parameter may itself be a fn type); st[61] is the tail cursor;
+// st[62] counts the signatures the PARSE declared — ncc emits a
+// typedef for exactly those, so a fn value of any other signature
+// cannot be bound (the S_LET rule).
+
+fn tail_ascii(p: *u8, st: *i64, b: i64) {
+    c := st[61];
+    if c < 524287 {
+        p[c] = b as u8;
+        st[61] = c + 1;
+    }
+}
+
+fn tail_copy(p: *u8, st: *i64, s: i64, l: i64) {
+    mut k := 0;
+    while k < l {
+        tail_ascii(p, st, p[s + k] as i64);
+        k = k + 1;
+    }
+}
+
+// One type in ncc's ty_str spelling: "#[user] ", one '*' per level,
+// the name.
+fn tail_ty(p: *u8, st: *i64, pt: i64, us: i64, s: i64, l: i64) {
+    if us == 1 {
+        tail_ascii(p, st, 35);             // #[user]<space>
+        tail_ascii(p, st, 91);
+        tail_ascii(p, st, 117);
+        tail_ascii(p, st, 115);
+        tail_ascii(p, st, 101);
+        tail_ascii(p, st, 114);
+        tail_ascii(p, st, 93);
+        tail_ascii(p, st, 32);
+    }
+    mut k := 0;
+    while k < pt { tail_ascii(p, st, 42); k = k + 1; }
+    tail_copy(p, st, s, l);
+}
+
+// The interned index of the signature in scratch slot sc, added on
+// first sight: the spelling is written to the tail, then looked up —
+// a repeat rolls the tail back and returns the existing entry.
+#[caps(syscall)]
+fn fnty_intern(p: *u8, st: *i64, sc: *i64) -> i64 {
+    sp0 := st[61];
+    tail_ascii(p, st, 102);                // fn(
+    tail_ascii(p, st, 110);
+    tail_ascii(p, st, 40);
+    mut q := 0;
+    while q < sc[0] {
+        if q > 0 { tail_ascii(p, st, 44); tail_ascii(p, st, 32); }
+        tail_ty(p, st, sc[6 + q * 4], sc[7 + q * 4], sc[8 + q * 4], sc[9 + q * 4]);
+        q = q + 1;
+    }
+    tail_ascii(p, st, 41);                 // )
+    if sc[1] == 1 {
+        tail_ascii(p, st, 32);             // <space>-><space>
+        tail_ascii(p, st, 45);
+        tail_ascii(p, st, 62);
+        tail_ascii(p, st, 32);
+        tail_ty(p, st, sc[2], sc[3], sc[4], sc[5]);
+    }
+    plen := st[61] - sp0;
+    cnt := st[58];
+    mut i := 0;
+    while i < cnt {
+        e := (st[57] as addr + (i * 576) as addr) as *i64;
+        if span_eq(p, e[70], e[71], sp0, plen) {
+            st[61] = sp0;
+            return i;
+        }
+        i = i + 1;
+    }
+    if cnt >= 32 {
+        put(" too many distinct function types\n");
+        st[41] = 1;
+        return 0;
+    }
+    e2 := (st[57] as addr + (cnt * 576) as addr) as *i64;
+    mut k := 0;
+    while k < 70 { e2[k] = sc[k]; k = k + 1; }
+    e2[70] = sp0;
+    e2[71] = plen;
+    st[58] = cnt + 1;
+    cnt
+}
+
+// The fn type a T names, or -1 (ncc's fnty_of).
+fn fnty_of(p: *u8, st: *i64, t: T) -> i64 {
+    if t.pt != 0 || t.l == 0 { return -1; }
+    mut i := 0;
+    while i < st[58] {
+        e := (st[57] as addr + (i * 576) as addr) as *i64;
+        if span_eq(p, e[70], e[71], t.s, t.l) { return i; }
+        i = i + 1;
+    }
+    return -1;
+}
+
+fn fnty_t(st: *i64, fi: i64) -> T {
+    e := (st[57] as addr + (fi * 576) as addr) as *i64;
+    T{ pt: 0, us: 0, s: e[70], l: e[71] }
+}
+
+// The signature's return type (void when it has none).
+fn fnty_ret(st: *i64, fi: i64) -> T {
+    e := (st[57] as addr + (fi * 576) as addr) as *i64;
+    if e[1] == 0 { return t_void(); }
+    T{ pt: e[2], us: e[3], s: e[4], l: e[5] }
+}
+
+fn fnty_pty(st: *i64, fi: i64, q: i64) -> T {
+    e := (st[57] as addr + (fi * 576) as addr) as *i64;
+    T{ pt: e[6 + q * 4], us: e[7 + q * 4], s: e[8 + q * 4], l: e[9 + q * 4] }
+}
+
+// fn(A, B) -> R in type position, CUR at '(' (the `fn` is consumed):
+// the parameter types land in a per-depth scratch slot (one may be a
+// fn type itself, interned first — ncc's recursive parse_type), then
+// the signature is interned.
+fn pfnty(p: *u8, n: i64, st: *i64) -> T {
+    if !ck(st, 37) { perr(st); return T{ pt: 0, us: 0, s: 0, l: 0 }; }
+    adv(p, n, st);
+    d := st[60];
+    if d >= 4 { perr(st); return T{ pt: 0, us: 0, s: 0, l: 0 }; }
+    st[60] = d + 1;
+    sc := (st[59] as addr + (d * 576) as addr) as *i64;
+    mut np := 0;
+    mut more := !ck(st, 38);
+    while more {
+        more = false;
+        t := pty(p, n, st);
+        if np < 16 {
+            sc[6 + np * 4] = t.pt;
+            sc[7 + np * 4] = t.us;
+            sc[8 + np * 4] = t.s;
+            sc[9 + np * 4] = t.l;
+        }
+        np = np + 1;
+        if acc(p, n, st, 41) { more = true; }
+    }
+    if !ck(st, 38) { perr(st); return T{ pt: 0, us: 0, s: 0, l: 0 }; }
+    adv(p, n, st);
+    sc[0] = np;
+    sc[1] = 0;
+    sc[2] = 0;
+    sc[3] = 0;
+    sc[4] = 0;
+    sc[5] = 0;
+    if acc(p, n, st, 45) {                 // -> R
+        r := pty(p, n, st);
+        sc[1] = 1;
+        sc[2] = r.pt;
+        sc[3] = r.us;
+        sc[4] = r.s;
+        sc[5] = r.l;
+    }
+    st[60] = d;
+    idx := fnty_intern(p, st, sc);
+    fnty_t(st, idx)
+}
+
+// ncc's fn_value_ty: the fn type of user function fi — its signature,
+// interned on first sight (a value's type may be one no declaration
+// names; the S_LET rule then refuses to bind it).
+fn fn_value_ty(p: *u8, st: *i64, fi: i64) -> T {
+    ft := st[37] as *i64;
+    sc := (st[59] as addr + (st[60] * 576) as addr) as *i64;
+    np := ft[fi * 8 + 2];
+    sc[0] = np;
+    sc[1] = 0;
+    sc[2] = 0;
+    sc[3] = 0;
+    sc[4] = 0;
+    sc[5] = 0;
+    rt := frty(st, fi);
+    if rt.l > 0 {
+        sc[1] = 1;
+        sc[2] = rt.pt;
+        sc[3] = rt.us;
+        sc[4] = rt.s;
+        sc[5] = rt.l;
+    }
+    mut q := 0;
+    while q < np && q < 16 {
+        pq := fpty(st, fi, q);
+        sc[6 + q * 4] = pq.pt;
+        sc[7 + q * 4] = pq.us;
+        sc[8 + q * 4] = pq.s;
+        sc[9 + q * 4] = pq.l;
+        q = q + 1;
+    }
+    idx := fnty_intern(p, st, sc);
+    fnty_t(st, idx)
+}
+
+// ncc's field_fnty: the fn type of struct field (fs, fl) on a value of
+// type rt, or -1.
+fn field_fnty(p: *u8, st: *i64, rt: T, fs: i64, fl: i64) -> i64 {
+    if rt.pt != 0 || rt.l == 0 { return -1; }
+    si := sfind(p, st, rt.s, rt.l);
+    if si < 0 { return -1; }
+    sa := st[49] as *i64;
+    al := st[35] as *i64;
+    mut q := 0;
+    while q < sa[si * 8 + 2] {
+        r := sa[si * 8 + 3] + q * 6;
+        if span_eq(p, al[r], al[r + 1], fs, fl) { return fnty_of(p, st, sfty(st, si, q)); }
+        q = q + 1;
+    }
+    return -1;
+}
+
+// ncc's check_fn_value_call: a call through a fn value — call node i,
+// the value's signature fi, named (ws, wl) in the messages — checked
+// against the signature exactly like a direct call.
+#[caps(syscall)]
+fn cfnvcall(p: *u8, st: *i64, i: i64, fi: i64, ws: i64, wl: i64) {
+    nd := st[33] as *i64;
+    al := st[35] as *i64;
+    ln := nd[i * 8 + 4];
+    na := nd[i * 8 + 3];
+    e := (st[57] as addr + (fi * 576) as addr) as *i64;
+    np := e[0];
+    if na != np {
+        put("{ln}: '");
+        put_span(p, ws, wl);
+        put("' takes {np} argument(s), got {na}\n");
+        st[41] = 1;
+        return;
+    }
+    mut q := 0;
+    while q < na {
+        cexpr(p, st, al[nd[i * 8 + 2] + q]);
+        if st[41] == 1 { return; }
+        at := cinfer(p, st, al[nd[i * 8 + 2] + q]);
+        pt2 := fnty_pty(st, fi, q);
+        if !tcompat(p, at, pt2) {
+            qq := q + 1;
+            put("{ln}: argument {qq} to '");
+            put_span(p, ws, wl);
+            put("': expected ");
+            ty_put(p, st, pt2);
+            put(", got ");
+            ty_put(p, st, at);
+            put("\n");
+            st[41] = 1;
+            return;
+        }
+        cmove(p, st, al[nd[i * 8 + 2] + q], ln);
+        if st[41] == 1 { return; }
+        q = q + 1;
+    }
 }
 
 // ---- the expression ladder: parse and BUILD, node indexes up ---- //
@@ -2160,6 +2435,16 @@ fn cexpr(p: *u8, st: *i64, i: i64) {
         v := vfind(p, st, nd[i * 8 + 5], nd[i * 8 + 6]);   // pageflags
         if v < 0 {                         // const passes; else resolve
             ln := nd[i * 8 + 4];
+            fi0 := ffind(p, st, nd[i * 8 + 5], nd[i * 8 + 6]);
+            if fi0 >= 0 {                  // v0.24: a fn named without a
+                ft0 := st[37] as *i64;     // call is a value of its fn
+                if ft0[fi0 * 8 + 6] == 1 { return; }   // type; a syscall
+                put("{ln}: syscall '");    // is not
+                put_span(p, nd[i * 8 + 5], nd[i * 8 + 6]);
+                put("' is not a value — only functions declared with fn are (v0.24)\n");
+                st[41] = 1;
+                return;
+            }
             put("{ln}: undeclared variable '");
             put_span(p, nd[i * 8 + 5], nd[i * 8 + 6]);
             put("'\n");
@@ -2205,6 +2490,30 @@ fn cexpr(p: *u8, st: *i64, i: i64) {
                     put("\n");
                     st[41] = 1;
                 }
+                return;
+            }
+            lv := vfind(p, st, nd[cal * 8 + 5], nd[cal * 8 + 6]);
+            if lv >= 0 {                   // v0.24: a local or parameter
+                lt := vty(st, lv);         // of fn type, called through
+                lfi := fnty_of(p, st, lt);
+                if lfi < 0 {
+                    put("{ln}: '");
+                    put_span(p, nd[cal * 8 + 5], nd[cal * 8 + 6]);
+                    put("' is not a function (it is ");
+                    ty_put(p, st, lt);
+                    put(")\n");
+                    st[41] = 1;
+                    return;
+                }
+                va0 := st[39] as *i64;
+                if va0[lv * 10 + 8] == 2 {
+                    put("{ln}: use of '");
+                    put_span(p, nd[cal * 8 + 5], nd[cal * 8 + 6]);
+                    put("' after move\n");
+                    st[41] = 1;
+                    return;
+                }
+                cfnvcall(p, st, i, lfi, nd[cal * 8 + 5], nd[cal * 8 + 6]);
                 return;
             }
             fi := ffind(p, st, nd[cal * 8 + 5], nd[cal * 8 + 6]);
@@ -2264,6 +2573,11 @@ fn cexpr(p: *u8, st: *i64, i: i64) {
                 mi = mfind(p, st, rt8.s, rt8.l, nd[cal * 8 + 5], nd[cal * 8 + 6]);
             }
             if mi < 0 {
+                ffi := field_fnty(p, st, rt8, nd[cal * 8 + 5], nd[cal * 8 + 6]);
+                if ffi >= 0 {              // v0.24: a fn field, called
+                    cfnvcall(p, st, i, ffi, nd[cal * 8 + 5], nd[cal * 8 + 6]);
+                    return;                // through
+                }
                 put("{ln}: ");
                 ty_put(p, st, rt8);
                 put(" has no method '");
@@ -2864,6 +3178,17 @@ fn cstmt(p: *u8, st: *i64, i: i64) {
             put("{ln}: cannot bind '");
             put_span(p, nd[i * 8 + 5], nd[i * 8 + 6]);
             put("' to an expression with no value\n");
+            st[41] = 1;
+            return;
+        }
+        bfi := fnty_of(p, st, rt2);        // v0.24: a fn value binds only
+        if bfi >= st[62] {                 // to a signature the parse
+            ln7 := nd[i * 8 + 4];          // declared (ncc's typedef rule)
+            put("{ln7}: cannot bind '");
+            put_span(p, nd[i * 8 + 5], nd[i * 8 + 6]);
+            put("': the function type ");
+            ty_put(p, st, rt2);
+            put(" is declared nowhere in this program — pass the function as an argument, or store it in a field, of that type\n");
             st[41] = 1;
             return;
         }
@@ -3559,6 +3884,11 @@ fn cinfer(p: *u8, st: *i64, i: i64) -> T {
         }
         v := vfind(p, st, nd[i * 8 + 5], nd[i * 8 + 6]);
         if v >= 0 { return vty(st, v); }
+        fi0 := ffind(p, st, nd[i * 8 + 5], nd[i * 8 + 6]);   // v0.24: a fn
+        if fi0 >= 0 {                      // named without a call is a
+            ft0 := st[37] as *i64;         // value of its fn type
+            if ft0[fi0 * 8 + 6] == 1 { return fn_value_ty(p, st, fi0); }
+        }
         return t_i64(st);
     }
     if k == 6 {                            // call: the callee's return
@@ -3567,6 +3897,11 @@ fn cinfer(p: *u8, st: *i64, i: i64) -> T {
             ab2 := is_argb(p, nd[cal * 8 + 5], nd[cal * 8 + 6]);
             if ab2 == 1 { return t_i64(st); }          // v0.23 builtins
             if ab2 == 2 { return t_str(st); }
+            lv := vfind(p, st, nd[cal * 8 + 5], nd[cal * 8 + 6]);   // v0.24:
+            if lv >= 0 {                   // through a fn value, the
+                lfi := fnty_of(p, st, vty(st, lv));   // signature's return
+                if lfi >= 0 { return fnty_ret(st, lfi); }
+            }
             fi := ffind(p, st, nd[cal * 8 + 5], nd[cal * 8 + 6]);
             if fi >= 0 { return frty(st, fi); }
         }
@@ -3575,6 +3910,8 @@ fn cinfer(p: *u8, st: *i64, i: i64) -> T {
             if rt9.pt == 0 && rt9.l > 0 {
                 mi2 := mfind(p, st, rt9.s, rt9.l, nd[cal * 8 + 5], nd[cal * 8 + 6]);
                 if mi2 >= 0 { return mrty(st, mi2); }
+                ffi := field_fnty(p, st, rt9, nd[cal * 8 + 5], nd[cal * 8 + 6]);
+                if ffi >= 0 { return fnty_ret(st, ffi); }   // v0.24: a fn field
             }
         }
         return t_i64(st);
@@ -3686,6 +4023,12 @@ fn main() -> i64 {
     st[52] = 0;
     st[53] = sys_sbrk(8192);               // the method table
     st[54] = 0;
+    st[57] = sys_sbrk(18432);              // fn-type table: 32 x 72 words
+    st[58] = 0;                            // (v0.24), its count, the
+    st[59] = sys_sbrk(2304);               // per-depth parse scratch, the
+    st[60] = 0;                            // nesting depth, the tail
+    st[61] = total + 37;                   // cursor (after the intern
+    st[62] = 0;                            // tail) and the declared count
     nil0 := st[33] as *i64;                // node 0: an explicit nil
     mut z := 0;
     while z < 8 { nil0[z] = 0; z = z + 1; }
@@ -3699,6 +4042,8 @@ fn main() -> i64 {
     adv(buf, total, st);                   // ... and CUR
     pitems(buf, total, st, ps);            // ONE pass: tables + trees
     if st[41] == 1 { return 1; }           // a parse-time refusal (cname)
+    st[62] = st[58];                       // the signatures declarations
+                                           // named: ncc's typedef set
     cdecls(buf, st);                       // ncc: validate_drops + the
     if st[41] == 1 { return 1; }           // containment preamble
     mut m2 := 0;                           // METHOD bodies first — ncc's

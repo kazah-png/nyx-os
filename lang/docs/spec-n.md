@@ -270,8 +270,9 @@ returning `R`; without `-> R` the function returns nothing. Rules:
 - **Identity.** Two function types are the same type exactly when their
   signatures are identical — parameter types and return type, position by
   position; there is no conversion between `fn(i32) -> i64` and
-  `fn(i64) -> i64`. Function values take part in no operator: they are
-  passed, stored and called.
+  `fn(i64) -> i64`. Diagnostics spell a function type as it is written,
+  `fn(A, B) -> R`, a nested one in full. Function values take part in no
+  operator: they are passed, stored and called.
 - **No pointers to them.** `*fn(...)`, `raw` and `#[user]` do not apply: a
   function value is already a pointer in the C sense, and stays opaque.
 - **Binding a bare function.** `g := dbl;` is allowed only when the
@@ -1184,10 +1185,12 @@ remains:
    generator) — the honest expectation is that others will follow as N
    programs grow.
 5. **Function types compile with `ncc` only, for now** (v0.24, §3.4):
-   `parse.n` parses `fn(...)` types and dumps them as `ncc` does
-   (`fntype.n` is in its differential), but `check.n` and `gen.n` do
-   not accept them yet, so `fntype.n` sits outside those two
-   differentials until they catch up, rung by rung. The `--ast` dump
+   `parse.n` parses `fn(...)` types and dumps them as `ncc` does, and
+   `check.n` checks them — values, calls through parameters, locals and
+   fields, the binding rule — in `ncc`'s words (`fntype.n` is in both
+   differentials, the five function-type refusals are manifest rows),
+   but `gen.n` does not emit them yet, so `fntype.n` sits outside the
+   generator's differential until it catches up. The `--ast` dump
    renders a function type as its typedef name (`0:0:__nyx_fnN`, N
    numbering distinct signatures in first-seen source order). A bare
    function may be bound to a local only when its function type is

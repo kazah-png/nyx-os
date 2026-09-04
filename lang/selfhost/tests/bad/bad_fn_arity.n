@@ -1,0 +1,2 @@
+fn apply(f: fn(i64) -> i64) -> i64 { f(1, 2) }
+fn main() -> i64 { 0 }

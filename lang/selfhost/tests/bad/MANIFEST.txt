@@ -16,6 +16,11 @@ bad_fmt_str.n	bad_fmt_str.n:5: format specs apply to integers — a str interpol
 bad_fmt_trail.n	bad_fmt_trail.n:5: unknown format spec ':w4q' — the format specs are :x, :X (hex), :wN (width), :zN (zero-pad), and wN/zN composed with a trailing x or X
 bad_fmt_unknown.n	bad_fmt_unknown.n:5: unknown format spec ':q' — the format specs are :x, :X (hex), :wN (width), :zN (zero-pad), and wN/zN composed with a trailing x or X
 bad_fmt_width_str.n	bad_fmt_width_str.n:5: format specs apply to integers — a str interpolates as text
+bad_fn_arity.n	bad_fn_arity.n:1: 'f' takes 1 argument(s), got 2
+bad_fn_bind.n	bad_fn_bind.n:3: cannot bind 'g': the function type fn(i64) -> i64 is declared nowhere in this program — pass the function as an argument, or store it in a field, of that type
+bad_fn_notfn.n	bad_fn_notfn.n:3: 'x' is not a function (it is i64)
+bad_fn_sig.n	bad_fn_sig.n:3: argument 1 to 'apply': expected fn(i64) -> i64, got fn(i64, i64) -> i64
+bad_fn_syscall.n	bad_fn_syscall.n:5: syscall 'write' is not a value — only functions declared with fn are (v0.24)
 bad_for_mut.n	bad_for_mut.n:3: cannot assign to immutable 'i' (declare it with 'mut')
 bad_for_range.n	bad_for_range.n:2: for range bounds must be integers (got str .. str)
 bad_index_idx.n	bad_index_idx.n:4: index must be an integer (got str)

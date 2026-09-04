@@ -1,0 +1,5 @@
+fn dbl(x: i64) -> i64 { x * 2 }
+fn main() -> i64 {
+    g := dbl;
+    g(2)
+}

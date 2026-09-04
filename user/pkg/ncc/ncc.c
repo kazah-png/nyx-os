@@ -596,6 +596,15 @@ static int ty_same(Ty a, Ty b) {
     return a.ptrs == b.ptrs && a.is_user == b.is_user && !strcmp(a.name, b.name);
 }
 
+/* A type inside a signature's spelling: a nested function type reads as
+ * its own spelling, never as its typedef name. */
+static const char* fnty_name_in(Ty t) {
+    if (t.name && !t.ptrs)
+        for (int i = 0; i < NFNTYS; i++)
+            if (!strcmp(FNTYS[i].cname, t.name)) return FNTYS[i].pretty;
+    return t.name;
+}
+
 /* The interned index of this signature, added on first sight. */
 static int fnty_intern(Ty* ps, int np, Ty ret) {
     for (int i = 0; i < NFNTYS; i++) {
@@ -619,14 +628,14 @@ static int fnty_intern(Ty* ps, int np, Ty ret) {
         if (p) n += sprintf(b + n, ", ");
         if (ps[p].is_user) n += sprintf(b + n, "#[user] ");
         for (int k = 0; k < ps[p].ptrs; k++) b[n++] = '*';
-        n += sprintf(b + n, "%s", ps[p].name);
+        n += sprintf(b + n, "%s", fnty_name_in(ps[p]));
     }
     n += sprintf(b + n, ")");
-    if (ret.name) {
+    if (ret.name && n < 900) {
         n += sprintf(b + n, " -> ");
         if (ret.is_user) n += sprintf(b + n, "#[user] ");
         for (int k = 0; k < ret.ptrs; k++) b[n++] = '*';
-        n += sprintf(b + n, "%s", ret.name);
+        n += sprintf(b + n, "%s", fnty_name_in(ret));
     }
     b[n] = 0;
     f->pretty = b;
