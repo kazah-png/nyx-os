@@ -4829,83 +4829,95 @@ fn gfn(p: *u8, st: *i64, fi: i64) {
     put("\n\n");
 }
 
-// Struct layouts (ncc: C-layout typedefs, fields in order).
-fn estructs(p: *u8, st: *i64) {
+// One struct's layout (ncc: a C-layout typedef, fields in order).
+fn estruct(p: *u8, st: *i64, i: i64) {
     sa := st[49] as *i64;
     al := st[35] as *i64;
-    mut i := 0;
-    while i < st[50] {
-        put("typedef struct \{\n");
-        mut q := 0;
-        while q < sa[i * 8 + 2] {
-            r := sa[i * 8 + 3] + q * 6;
-            t := T{ pt: al[r + 2], us: al[r + 3], s: al[r + 4], l: al[r + 5] };
-            put("    ");
-            ety(p, st, t);
-            put(" ");
-            put_span(p, al[r], al[r + 1]);
-            put(";\n");
-            q = q + 1;
-        }
-        put("\} ");
-        put_span(p, sa[i * 8], sa[i * 8 + 1]);
-        put(";\n\n");
-        i = i + 1;
+    put("typedef struct \{\n");
+    mut q := 0;
+    while q < sa[i * 8 + 2] {
+        r := sa[i * 8 + 3] + q * 6;
+        t := T{ pt: al[r + 2], us: al[r + 3], s: al[r + 4], l: al[r + 5] };
+        put("    ");
+        ety(p, st, t);
+        put(" ");
+        put_span(p, al[r], al[r + 1]);
+        put(";\n");
+        q = q + 1;
     }
+    put("\} ");
+    put_span(p, sa[i * 8], sa[i * 8 + 1]);
+    put(";\n\n");
 }
 
-// Enum layouts (ncc: tagged unions — int tag + a union of payload
+// One enum's layout (ncc: a tagged union — int tag + a union of payload
 // structs; an empty union is not valid C, so payload-less enums get
 // the tag alone. The tag comment names every variant's number).
-fn eenums(p: *u8, st: *i64) {
+fn eenum(p: *u8, st: *i64, i: i64) {
     ea := st[51] as *i64;
     al := st[35] as *i64;
-    mut i := 0;
-    while i < st[52] {
-        nv := ea[i * 4 + 2];
-        vb := ea[i * 4 + 3];
-        mut hasp := 0;
-        mut v := 0;
-        while v < nv {
-            if al[vb + v * 4 + 2] > 0 { hasp = 1; }
-            v = v + 1;
-        }
-        put("typedef struct \{\n    int tag;    /*");
-        mut v2 := 0;
-        while v2 < nv {
-            put(" {v2}=");
-            put_span(p, al[vb + v2 * 4], al[vb + v2 * 4 + 1]);
-            v2 = v2 + 1;
-        }
-        put(" */\n");
-        if hasp == 1 {
-            put("    union \{\n");
-            mut v3 := 0;
-            while v3 < nv {
-                if al[vb + v3 * 4 + 2] > 0 {
-                    put("        struct \{ ");
-                    mut q := 0;
-                    while q < al[vb + v3 * 4 + 2] {
-                        r := al[vb + v3 * 4 + 3] + q * 6;
-                        t := T{ pt: al[r + 2], us: al[r + 3], s: al[r + 4], l: al[r + 5] };
-                        ety(p, st, t);
-                        put(" ");
-                        put_span(p, al[r], al[r + 1]);
-                        put("; ");
-                        q = q + 1;
-                    }
-                    put("\} ");
-                    put_span(p, al[vb + v3 * 4], al[vb + v3 * 4 + 1]);
-                    put(";\n");
+    nv := ea[i * 4 + 2];
+    vb := ea[i * 4 + 3];
+    mut hasp := 0;
+    mut v := 0;
+    while v < nv {
+        if al[vb + v * 4 + 2] > 0 { hasp = 1; }
+        v = v + 1;
+    }
+    put("typedef struct \{\n    int tag;    /*");
+    mut v2 := 0;
+    while v2 < nv {
+        put(" {v2}=");
+        put_span(p, al[vb + v2 * 4], al[vb + v2 * 4 + 1]);
+        v2 = v2 + 1;
+    }
+    put(" */\n");
+    if hasp == 1 {
+        put("    union \{\n");
+        mut v3 := 0;
+        while v3 < nv {
+            if al[vb + v3 * 4 + 2] > 0 {
+                put("        struct \{ ");
+                mut q := 0;
+                while q < al[vb + v3 * 4 + 2] {
+                    r := al[vb + v3 * 4 + 3] + q * 6;
+                    t := T{ pt: al[r + 2], us: al[r + 3], s: al[r + 4], l: al[r + 5] };
+                    ety(p, st, t);
+                    put(" ");
+                    put_span(p, al[r], al[r + 1]);
+                    put("; ");
+                    q = q + 1;
                 }
-                v3 = v3 + 1;
+                put("\} ");
+                put_span(p, al[vb + v3 * 4], al[vb + v3 * 4 + 1]);
+                put(";\n");
             }
-            put("    \} u;\n");
+            v3 = v3 + 1;
         }
-        put("\} ");
-        put_span(p, ea[i * 4], ea[i * 4 + 1]);
-        put(";\n\n");
-        i = i + 1;
+        put("    \} u;\n");
+    }
+    put("\} ");
+    put_span(p, ea[i * 4], ea[i * 4 + 1]);
+    put(";\n\n");
+}
+
+// Type layouts in declaration order (v0.24, ncc's merged walk): a struct
+// may hold an enum by value when the enum is declared first, as C
+// requires. Both tables are in source order and a record's name span
+// starts where it was declared, so the spans order the merge.
+fn elayouts(p: *u8, st: *i64) {
+    sa := st[49] as *i64;
+    ea := st[51] as *i64;
+    mut si := 0;
+    mut ei := 0;
+    while si < st[50] || ei < st[52] {
+        if ei >= st[52] || (si < st[50] && sa[si * 8] < ea[ei * 4]) {
+            estruct(p, st, si);
+            si = si + 1;
+        } else {
+            eenum(p, st, ei);
+            ei = ei + 1;
+        }
     }
 }
 
@@ -4915,8 +4927,7 @@ fn egen(p: *u8, st: *i64, path: str) {
     put("/* Generated by ncc from ");     // ncc names its argv input
     put(path);                             // verbatim -- so does ngen
     put(" */\n#include \"nyxrt.h\"\n\n");
-    estructs(p, st);
-    eenums(p, st);
+    elayouts(p, st);
     exfns(p, st);
     eprotos(p, st);
     mut mi := 0;

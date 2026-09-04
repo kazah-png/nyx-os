@@ -1,6 +1,6 @@
 # The N Language — Specification
 
-**Version:** v0.23 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
+**Version:** v0.24 (bootstrap) · **Implementation:** [`lang/ncc/ncc.c`](../ncc/ncc.c) · **Target:** NyxOS x86_64
 
 This document specifies N exactly as implemented by the bootstrap compiler
 `ncc`. It is a *descriptive* spec: everything here compiles today. Planned
@@ -313,8 +313,12 @@ structures). Rules:
   requires the *root binding* to be `mut` (mutating a field mutates the
   whole value).
 - Structs are **values**: they pass to and return from functions by copy,
-  and assignment copies. Field types may be any N type, including `str` and
-  other structs.
+  and assignment copies. Field types may be any N type, including `str`,
+  other structs and — since v0.24 — enums (§4.4), held by value.
+- **Declare a type before using it by value.** Type layouts are emitted in
+  declaration order (v0.24; earlier every struct preceded every enum), so a
+  struct may hold an enum, or another struct, only if that type was declared
+  first — the rule C itself has.
 - In an `if`/`while` condition (or a `match` subject), `{` always opens the
   body — parenthesize the literal (`if (Rect{ … }.w > 0) { … }`, since
   v0.9) or bind it on its own line first if you need one there (the same
@@ -988,6 +992,7 @@ This section specifies what C the compiler is *required* to emit, because N's
 | `for i in a..b { … }` (§5.10) | `{ nyx_i64 __fs = a'; nyx_i64 __fe = b'; for (nyx_i64 i = __fs; i < __fe; i++) { … } }` |
 | `fn main() -> i64 { … }` (§4.2, v0.23) | `nyx_i64 main(nyx_i64 __argc, nyx_u8** __argv) { __nyx_args_set(__argc, __argv); … }` — the SysV frame reaches the runtime before any user statement |
 | `arg_count()` / `arg(i)` (§6.7, v0.23) | `nyx_arg_count()` / `nyx_arg(i')` — runtime accessors over the stashed frame |
+| `struct` / `enum` layouts (§4.3, §4.4; v0.24) | one `typedef struct { … } Name;` per declaration, **in declaration order** — a struct holding an enum by value compiles when the enum was declared first (before v0.24 every struct layout preceded every enum layout) |
 
 ### 7.2 The runtime
 
@@ -1091,7 +1096,7 @@ String interpolation is handled lexically: the lexer emits
 `HEAD { expr } [MID { expr }]* TAIL` token runs with a brace-depth stack, so
 interpolated expressions are parsed by the ordinary expression grammar.
 
-## 9. Limitations (honest list, current as of v0.23)
+## 9. Limitations (honest list, current as of v0.24)
 
 The bootstrap grew through the staged N++ plan until nearly all of it
 shipped in `ncc` itself — the static checker (v0.3–0.4), `struct` (v0.5),
@@ -1128,8 +1133,9 @@ Early-bootstrap gaps that are simply gone: `:=` bindings get concrete
 types with `i64` as the integer default; interpolation dispatches by type
 and carries format controls (hex in v0.20, width and zero-padding in
 v0.21); `mut` is enforced; v0.22 added missing-return flow analysis; v0.23
-added program arguments (§6.7); and the generated C is strict C99 with no
-GNU extensions (TinyCC-compatible).
+added program arguments (§6.7); v0.24 emits type layouts in declaration
+order, so a struct may hold an enum by value (§4.3); and the generated C is
+strict C99 with no GNU extensions (TinyCC-compatible).
 
 ## 10. Toolchain
 

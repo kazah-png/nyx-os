@@ -149,8 +149,9 @@ void gdefs(nyx_u8* p, nyx_i64* st, nyx_i64 d);
 void gstmt(nyx_u8* p, nyx_i64* st, nyx_i64 i, nyx_i64 d);
 void gblock(nyx_u8* p, nyx_i64* st, nyx_i64 b, nyx_i64 d, nyx_i64 ftail);
 void gfn(nyx_u8* p, nyx_i64* st, nyx_i64 fi);
-void estructs(nyx_u8* p, nyx_i64* st);
-void eenums(nyx_u8* p, nyx_i64* st);
+void estruct(nyx_u8* p, nyx_i64* st, nyx_i64 i);
+void eenum(nyx_u8* p, nyx_i64* st, nyx_i64 i);
+void elayouts(nyx_u8* p, nyx_i64* st);
 void egen(nyx_u8* p, nyx_i64* st, nyx_str path);
 nyx_i64 main(nyx_i64 __argc, nyx_u8** __argv);
 
@@ -6524,86 +6525,94 @@ void gfn(nyx_u8* p, nyx_i64* st, nyx_i64 fi) {
     put(((nyx_str){"\n\n", 2}));
 }
 
-void estructs(nyx_u8* p, nyx_i64* st) {
+void estruct(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
     nyx_i64* sa = (nyx_i64*)(st[49]);
     nyx_i64* al = (nyx_i64*)(st[35]);
-    nyx_i64 i = 0;
-    while ((i < st[50])) {
-        put(((nyx_str){"typedef struct {\n", 17}));
-        nyx_i64 q = 0;
-        while ((q < sa[((i * 8) + 2)])) {
-            nyx_i64 r = (sa[((i * 8) + 3)] + (q * 6));
-            T t = ((T){.pt = al[(r + 2)], .us = al[(r + 3)], .s = al[(r + 4)], .l = al[(r + 5)]});
-            put(((nyx_str){"    ", 4}));
-            ety(p, st, t);
-            put(((nyx_str){" ", 1}));
-            put_span(p, al[r], al[(r + 1)]);
-            put(((nyx_str){";\n", 2}));
-            q = (q + 1);
-        }
-        put(((nyx_str){"} ", 2}));
-        put_span(p, sa[(i * 8)], sa[((i * 8) + 1)]);
-        put(((nyx_str){";\n\n", 3}));
-        i = (i + 1);
+    put(((nyx_str){"typedef struct {\n", 17}));
+    nyx_i64 q = 0;
+    while ((q < sa[((i * 8) + 2)])) {
+        nyx_i64 r = (sa[((i * 8) + 3)] + (q * 6));
+        T t = ((T){.pt = al[(r + 2)], .us = al[(r + 3)], .s = al[(r + 4)], .l = al[(r + 5)]});
+        put(((nyx_str){"    ", 4}));
+        ety(p, st, t);
+        put(((nyx_str){" ", 1}));
+        put_span(p, al[r], al[(r + 1)]);
+        put(((nyx_str){";\n", 2}));
+        q = (q + 1);
     }
+    put(((nyx_str){"} ", 2}));
+    put_span(p, sa[(i * 8)], sa[((i * 8) + 1)]);
+    put(((nyx_str){";\n\n", 3}));
 }
 
-void eenums(nyx_u8* p, nyx_i64* st) {
+void eenum(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
     nyx_i64* ea = (nyx_i64*)(st[51]);
     nyx_i64* al = (nyx_i64*)(st[35]);
-    nyx_i64 i = 0;
-    while ((i < st[52])) {
-        nyx_i64 nv = ea[((i * 4) + 2)];
-        nyx_i64 vb = ea[((i * 4) + 3)];
-        nyx_i64 hasp = 0;
-        nyx_i64 v = 0;
-        while ((v < nv)) {
-            if ((al[((vb + (v * 4)) + 2)] > 0)) {
-                hasp = 1;
-            }
-            v = (v + 1);
+    nyx_i64 nv = ea[((i * 4) + 2)];
+    nyx_i64 vb = ea[((i * 4) + 3)];
+    nyx_i64 hasp = 0;
+    nyx_i64 v = 0;
+    while ((v < nv)) {
+        if ((al[((vb + (v * 4)) + 2)] > 0)) {
+            hasp = 1;
         }
-        put(((nyx_str){"typedef struct {\n    int tag;    /*", 35}));
-        nyx_i64 v2 = 0;
-        while ((v2 < nv)) {
-            char __b0[256];
-            nyx_str __s0 = __nyx_fmt_begin(__b0, 256);
-            __nyx_fmt_str(&__s0, __b0, 256, (nyx_str){" ", 1});
-            __nyx_fmt_i64(&__s0, __b0, 256, (nyx_i64)(v2));
-            __nyx_fmt_str(&__s0, __b0, 256, (nyx_str){"=", 1});
-            put(__s0);
-            put_span(p, al[(vb + (v2 * 4))], al[((vb + (v2 * 4)) + 1)]);
-            v2 = (v2 + 1);
-        }
-        put(((nyx_str){" */\n", 4}));
-        if ((hasp == 1)) {
-            put(((nyx_str){"    union {\n", 12}));
-            nyx_i64 v3 = 0;
-            while ((v3 < nv)) {
-                if ((al[((vb + (v3 * 4)) + 2)] > 0)) {
-                    put(((nyx_str){"        struct { ", 17}));
-                    nyx_i64 q = 0;
-                    while ((q < al[((vb + (v3 * 4)) + 2)])) {
-                        nyx_i64 r = (al[((vb + (v3 * 4)) + 3)] + (q * 6));
-                        T t = ((T){.pt = al[(r + 2)], .us = al[(r + 3)], .s = al[(r + 4)], .l = al[(r + 5)]});
-                        ety(p, st, t);
-                        put(((nyx_str){" ", 1}));
-                        put_span(p, al[r], al[(r + 1)]);
-                        put(((nyx_str){"; ", 2}));
-                        q = (q + 1);
-                    }
-                    put(((nyx_str){"} ", 2}));
-                    put_span(p, al[(vb + (v3 * 4))], al[((vb + (v3 * 4)) + 1)]);
-                    put(((nyx_str){";\n", 2}));
+        v = (v + 1);
+    }
+    put(((nyx_str){"typedef struct {\n    int tag;    /*", 35}));
+    nyx_i64 v2 = 0;
+    while ((v2 < nv)) {
+        char __b0[256];
+        nyx_str __s0 = __nyx_fmt_begin(__b0, 256);
+        __nyx_fmt_str(&__s0, __b0, 256, (nyx_str){" ", 1});
+        __nyx_fmt_i64(&__s0, __b0, 256, (nyx_i64)(v2));
+        __nyx_fmt_str(&__s0, __b0, 256, (nyx_str){"=", 1});
+        put(__s0);
+        put_span(p, al[(vb + (v2 * 4))], al[((vb + (v2 * 4)) + 1)]);
+        v2 = (v2 + 1);
+    }
+    put(((nyx_str){" */\n", 4}));
+    if ((hasp == 1)) {
+        put(((nyx_str){"    union {\n", 12}));
+        nyx_i64 v3 = 0;
+        while ((v3 < nv)) {
+            if ((al[((vb + (v3 * 4)) + 2)] > 0)) {
+                put(((nyx_str){"        struct { ", 17}));
+                nyx_i64 q = 0;
+                while ((q < al[((vb + (v3 * 4)) + 2)])) {
+                    nyx_i64 r = (al[((vb + (v3 * 4)) + 3)] + (q * 6));
+                    T t = ((T){.pt = al[(r + 2)], .us = al[(r + 3)], .s = al[(r + 4)], .l = al[(r + 5)]});
+                    ety(p, st, t);
+                    put(((nyx_str){" ", 1}));
+                    put_span(p, al[r], al[(r + 1)]);
+                    put(((nyx_str){"; ", 2}));
+                    q = (q + 1);
                 }
-                v3 = (v3 + 1);
+                put(((nyx_str){"} ", 2}));
+                put_span(p, al[(vb + (v3 * 4))], al[((vb + (v3 * 4)) + 1)]);
+                put(((nyx_str){";\n", 2}));
             }
-            put(((nyx_str){"    } u;\n", 9}));
+            v3 = (v3 + 1);
         }
-        put(((nyx_str){"} ", 2}));
-        put_span(p, ea[(i * 4)], ea[((i * 4) + 1)]);
-        put(((nyx_str){";\n\n", 3}));
-        i = (i + 1);
+        put(((nyx_str){"    } u;\n", 9}));
+    }
+    put(((nyx_str){"} ", 2}));
+    put_span(p, ea[(i * 4)], ea[((i * 4) + 1)]);
+    put(((nyx_str){";\n\n", 3}));
+}
+
+void elayouts(nyx_u8* p, nyx_i64* st) {
+    nyx_i64* sa = (nyx_i64*)(st[49]);
+    nyx_i64* ea = (nyx_i64*)(st[51]);
+    nyx_i64 si = 0;
+    nyx_i64 ei = 0;
+    while (((si < st[50]) || (ei < st[52]))) {
+        if (((ei >= st[52]) || ((si < st[50]) && (sa[(si * 8)] < ea[(ei * 4)])))) {
+            estruct(p, st, si);
+            si = (si + 1);
+        } else {
+            eenum(p, st, ei);
+            ei = (ei + 1);
+        }
     }
 }
 
@@ -6611,8 +6620,7 @@ void egen(nyx_u8* p, nyx_i64* st, nyx_str path) {
     put(((nyx_str){"/* Generated by ncc from ", 25}));
     put(path);
     put(((nyx_str){" */\n#include \"nyxrt.h\"\n\n", 24}));
-    estructs(p, st);
-    eenums(p, st);
+    elayouts(p, st);
     exfns(p, st);
     eprotos(p, st);
     nyx_i64 mi = 0;

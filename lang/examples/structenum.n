@@ -1,0 +1,37 @@
+// structenum.n — N v0.24: a struct holds an enum by value.
+//
+// Type layouts are emitted in declaration order, so an enum declared first
+// may sit inside a struct's field — exactly as C requires. The rule is the
+// one C has always had: declare a type before using it by value; ncc keeps
+// the layouts in that order instead of grouping structs ahead of enums.
+
+extern syscall {
+    fn write(fd: i32, buf: *u8, len: isize) -> i64 = 1
+}
+
+fn put(s: str) {
+    write(1, s.ptr as *u8, s.len as isize);
+}
+
+enum State {
+    Idle,
+    Running(pid: i64),
+}
+
+struct Job {
+    name: str,
+    state: State,
+}
+
+fn describe(j: Job) {
+    match j.state {
+        Idle         => { put("{j.name}: idle\n"); },
+        Running(pid) => { put("{j.name}: running as pid {pid}\n"); },
+    }
+}
+
+fn main() -> i64 {
+    describe(Job{ name: "build", state: State.Running{ pid: 42 } });
+    describe(Job{ name: "deploy", state: State.Idle });
+    0
+}
