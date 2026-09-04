@@ -1,20 +1,25 @@
 #include "wc.h"
 
 // Extracted verbatim from the `wc` builtin so the count is defined ONCE and can be unit-tested
-// off the kernel stack. The three character rules and the tab-stop math match GNU wc:
+// off the kernel stack. The character rules and the tab-stop math match GNU wc byte-for-byte:
 //   - bytes  = len (raw, unaffected by content)
-//   - words  = count of transitions into a non-separator run (space/tab/'\n'/'\r' separate)
-//   - -L     = the widest line, tabs advancing cur to the next multiple of 8, and a final
-//              unterminated line still measured.
+//   - words  = count of transitions into a non-separator run; a separator is any isspace()
+//              byte, i.e. space, '\t', '\n', '\v' (0x0B), '\f' (0x0C) and '\r'.
+//   - -L     = the widest line. '\n', '\r' and '\f' all end the current line and reset the
+//              column; '\t' advances to the next multiple of 8; '\v' leaves the column
+//              unchanged; every other byte advances it by one. A final unterminated line is
+//              still measured. (Verified against GNU wc across the \v/\f/\r edge cases.)
 void wc_count(const char* buf, int len, int* lines, int* words, int* chars, int* max_len) {
     int l = 0, w = 0, in_word = 0, cur = 0, mx = 0;
     if (len < 0) len = 0;
     for (int i = 0; i < len; i++) {
         char c = buf[i];
-        if (c == '\n')      { l++; if (cur > mx) mx = cur; cur = 0; }
+        if (c == '\n' || c == '\r' || c == '\f') { if (cur > mx) mx = cur; cur = 0; }
         else if (c == '\t') cur += 8 - (cur % 8);          // advance to the next 8-column tab stop
+        else if (c == '\v') { /* vertical tab: no column change (matches GNU wc) */ }
         else                cur++;
-        if (c == ' ' || c == '\n' || c == '\t' || c == '\r') in_word = 0;
+        if (c == '\n') l++;
+        if (c == ' ' || c == '\t' || c == '\n' || c == '\v' || c == '\f' || c == '\r') in_word = 0;
         else if (!in_word) { in_word = 1; w++; }
     }
     if (cur > mx) mx = cur;                                 // a final line with no trailing '\n'
@@ -45,11 +50,17 @@ int wc_selftest(void) {
     if (!wc_check("a\tb\n",        1, 2, 4, 9))   return 4;
     // runs of spaces separate words but count toward the line length
     if (!wc_check("  a  b  ",      0, 2, 8, 8))   return 5;
-    // CR is a word separator and counts as a column; two lines
-    if (!wc_check("a b\r\nc\n",    2, 3, 7, 4))   return 6;
+    // CR ends the line for -L (resets the column): "a b"(3) '\r' then '\n' => max_len 3, two lines
+    if (!wc_check("a b\r\nc\n",    2, 3, 7, 3))   return 6;
     // several blank lines: 3 newlines, no words, longest line is 0
     if (!wc_check("\n\n\n",        3, 0, 3, 0))   return 7;
     // leading tab then text: '\t'(->8) 'x'(9) => max_len 9, one word
     if (!wc_check("\tx\n",         1, 1, 3, 9))   return 8;
+    // vertical tab separates words and does NOT advance the column: 'a'(1) '\v' 'b'(2) => -L 2
+    if (!wc_check("a\vb",          0, 2, 3, 2))   return 9;
+    // form feed separates words and ends the line: 'a'(1) '\f'(reset) 'b'(1) => -L 1
+    if (!wc_check("a\fb",          0, 2, 3, 1))   return 10;
+    // mixed whitespace: a b c d e are five words; '\v'/'\f' both separate
+    if (!wc_check("a b\tc\vd\fe\n", 1, 5, 10, 10)) return 11;
     return 0;
 }
