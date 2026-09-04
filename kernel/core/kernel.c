@@ -786,6 +786,64 @@ static const char* alias_lookup(const char* name) {
         if (strcmp(aliases[i].name, name) == 0) return aliases[i].value;
     return NULL;
 }
+extern int glob_match(const char* pat, const char* str);   // core/fnmatch.c (hardened, already KAT'd)
+static int glob_has_magic(const char* s) {
+    for (; *s; s++) if (*s == '*' || *s == '?' || *s == '[') return 1;
+    return 0;
+}
+// Append the glob expansion of `tok` to out[] from index `start` (cap MAX_CMD_ARGS);
+// returns the new count, or -1 on overflow. The dir part before the last '/' is read
+// and each basename matched against the pattern part; matches are sorted and carry the
+// dir prefix. Dotfiles need an explicit leading '.', and "."/".." are never matched. A
+// token with no wildcard in its basename, or that matches nothing, is kept verbatim
+// (POSIX sh: an unmatched pattern stays literal).
+static int shell_glob_token(const char* tok, char (*out)[256], int start) {
+    const char* slash = 0;
+    for (const char* p = tok; *p; p++) if (*p == '/') slash = p;
+    char dir[256]; const char* pat;
+    if (slash) {
+        int dl = (int)(slash - tok);
+        if (dl == 0) { dir[0] = '/'; dir[1] = '\0'; }
+        else { if (dl > 255) dl = 255; memcpy(dir, tok, (uint32_t)dl); dir[dl] = '\0'; }
+        pat = slash + 1;
+    } else { dir[0] = '.'; dir[1] = '\0'; pat = tok; }
+    if (!glob_has_magic(pat)) {                         // wildcard only in the dir part: no expansion
+        if (start >= MAX_CMD_ARGS) return -1;
+        strncpy(out[start], tok, 255); out[start][255] = '\0'; return start + 1;
+    }
+    int fd = vfs_open(dir, 0, 0);
+    if (fd < 0) {                                        // unreadable dir -> literal
+        if (start >= MAX_CMD_ARGS) return -1;
+        strncpy(out[start], tok, 255); out[start][255] = '\0'; return start + 1;
+    }
+    int n0 = start, dlen = slash ? (int)(slash - tok + 1) : 0;
+    dirent_t* de = vfs_readdir(fd);
+    while (de) {
+        const char* nm = de->name;
+        int dot = (nm[0] == '.');
+        if (!(dot && pat[0] != '.') && strcmp(nm, ".") && strcmp(nm, "..") && glob_match(pat, nm)) {
+            if (start >= MAX_CMD_ARGS) { vfs_close(fd); return -1; }
+            int k = 0;
+            for (int x = 0; x < dlen && k < 255; x++) out[start][k++] = tok[x];   // dir prefix + '/'
+            for (const char* q = nm; *q && k < 255; q++) out[start][k++] = *q;
+            out[start][k] = '\0';
+            start++;
+        }
+        de = vfs_readdir(fd);
+    }
+    vfs_close(fd);
+    if (start == n0) {                                   // no matches -> keep the literal
+        if (start >= MAX_CMD_ARGS) return -1;
+        strncpy(out[start], tok, 255); out[start][255] = '\0'; return start + 1;
+    }
+    for (int i = n0 + 1; i < start; i++) {               // insertion sort the matches (bash order)
+        char tmp[256]; strncpy(tmp, out[i], 255); tmp[255] = '\0';
+        int j = i - 1;
+        while (j >= n0 && strcmp(out[j], tmp) > 0) { strncpy(out[j + 1], out[j], 255); out[j + 1][255] = '\0'; j--; }
+        strncpy(out[j + 1], tmp, 255); out[j + 1][255] = '\0';
+    }
+    return start;
+}
 void execute_command(const char* cmd_line) {
     if (!cmd_line || !*cmd_line) return;
     // Alias expansion (ITERATIVE, before tokenizing — no recursion, so the 4 KB kernel
@@ -841,10 +899,29 @@ void execute_command(const char* cmd_line) {
         return;
     }
     if (argc == 0) { if (argbuf) kfree(argbuf); return; }
+    // Filesystem glob: expand any arg with a wildcard (*,?,[) into the matching files.
+    // Guarded — a command with NO wildcard token is byte-for-byte unchanged (so the cc
+    // self-host and every existing flow are untouched); an unmatched pattern stays literal.
+    char (*globbuf)[256] = NULL;
+    int any_glob = 0;
+    for (int i = 0; i < argc; i++) if (glob_has_magic(argv[i])) { any_glob = 1; break; }
+    if (any_glob && (globbuf = (char (*)[256])kmalloc(MAX_CMD_ARGS * 256)) != NULL) {
+        int gargc = 0, ovf = 0;
+        for (int i = 0; i < argc && !ovf; i++) {
+            if (glob_has_magic(argv[i])) {
+                int r = shell_glob_token(argv[i], globbuf, gargc);
+                if (r < 0) ovf = 1; else gargc = r;
+            } else if (gargc < MAX_CMD_ARGS) {
+                strncpy(globbuf[gargc], argv[i], 255); globbuf[gargc][255] = '\0'; gargc++;
+            } else ovf = 1;
+        }
+        if (!ovf) { for (int i = 0; i < gargc; i++) argv[i] = globbuf[i]; argc = gargc; }
+    }
     for (int i = 0; commands[i].name != NULL; i++) {
         if (strcmp(argv[0], commands[i].name) == 0) {
             commands[i].func(argc, argv);
             if (argbuf) kfree(argbuf);
+            if (globbuf) kfree(globbuf);
             return;
         }
     }
@@ -873,11 +950,13 @@ void execute_command(const char* cmd_line) {
         }
         run_foreground_elf_redir(path, argv, rargc, out_p, out_ap, err_p, err_ap);
         if (argbuf) kfree(argbuf);
+        if (globbuf) kfree(globbuf);
         return;
     }
     // Command not found - output will be captured by putchar hook
     printf("Command not found: %s\n", argv[0]);
     if (argbuf) kfree(argbuf);
+    if (globbuf) kfree(globbuf);
 }
 
 // ------------------------------------------------------------
@@ -8424,6 +8503,29 @@ int cd_selftest(void) {
     return rc;
 }
 
+// KAT: shell filesystem glob expands wildcards against real /tmp files — sorted, with
+// the dir prefix, dotfiles only on an explicit leading '.', and an unmatched pattern
+// kept literal. (Distinct from fnmatch.c's glob_selftest, which pins the matcher.)
+// Runs at the login anchor (vfs up). 0 = pass, else the failing case.
+int shell_glob_selftest(void) {
+    if (mkdir_p("/tmp/gl", 0755) != 0) return 1;
+    const char* mk[] = { "/tmp/gl/a.txt", "/tmp/gl/b.txt", "/tmp/gl/c.log", "/tmp/gl/.hidden" };
+    for (int i = 0; i < 4; i++) { int fd = vfs_open(mk[i], O_CREAT | O_TRUNC, 0); if (fd < 0) return 2; vfs_close(fd); }
+    static char out[MAX_CMD_ARGS][256];
+    int n;
+    n = shell_glob_token("/tmp/gl/*.txt", out, 0);                        // sorted, dir-prefixed
+    if (n != 2 || strcmp(out[0], "/tmp/gl/a.txt") || strcmp(out[1], "/tmp/gl/b.txt")) return 3;
+    n = shell_glob_token("/tmp/gl/*.log", out, 0);
+    if (n != 1 || strcmp(out[0], "/tmp/gl/c.log")) return 4;
+    n = shell_glob_token("/tmp/gl/*", out, 0);                            // no dotfiles, no . / ..
+    if (n != 3 || strcmp(out[0], "/tmp/gl/a.txt") || strcmp(out[1], "/tmp/gl/b.txt") || strcmp(out[2], "/tmp/gl/c.log")) return 5;
+    n = shell_glob_token("/tmp/gl/*.md", out, 0);                         // no match -> literal
+    if (n != 1 || strcmp(out[0], "/tmp/gl/*.md")) return 6;
+    n = shell_glob_token("/tmp/gl/.*", out, 0);                           // explicit dot: .hidden only
+    if (n != 1 || strcmp(out[0], "/tmp/gl/.hidden")) return 7;
+    return 0;
+}
+
 static void cmd_mkdir(int argc, char** argv) {
     int pflag = 0, ai = 1;
     for (; ai < argc && argv[ai][0] == '-' && argv[ai][1]; ai++)
@@ -10206,6 +10308,7 @@ static void run_selftests(void) {
         {"mkdirp",       mkdir_p_selftest},
         {"rmtree",       rm_r_selftest},
         {"cddash",       cd_selftest},
+        {"globexp",      shell_glob_selftest},
         {"catnumber",    cat_number_selftest},
         {"nyxconf",      nyxconf_selftest},
         {"fmnav",        fileman_nav_selftest},
