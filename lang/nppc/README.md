@@ -65,14 +65,17 @@ any struct used by value would be.
 | M6.3e | [`genum.npp`](../examples/genum.npp), [`result.npp`](../examples/result.npp) | generic enums; `Result<T, E>` composing with N's structural `?` |
 | M6.3f | [`rinfer.npp`](../examples/rinfer.npp) | construction-site inference: `Result.Ok{ ... }` from the enclosing return type |
 | M6.3g | [`gnest.npp`](../examples/gnest.npp) | generics inside generics: `wrap<T> -> Box<T>` instantiates `Box` per `wrap` instantiation |
+| M6.3h | [`gfield.npp`](../examples/gfield.npp) | generic struct fields of generic type: `Pair<T> { a: Box<T> }` instantiates `Box` per `Pair` instantiation |
 
 Inference never guesses. A call whose argument `nppc` cannot type, or a
 bare construction in a function that does not return that enum, is
 refused with the explicit form spelled out in the diagnostic. A template
 may use other templates with its own parameters (`wrap<T> -> Box<T>`):
 the use is recorded on the template and instantiated, to a fixpoint,
-once per concrete instantiation of it, with the arguments substituted.
-Still pending: a generic type in a generic struct's field.
+once per concrete instantiation of it, with the arguments substituted —
+in a function's signature or body, an enum's payload, or a struct's
+field (`Pair<T> { a: Box<T> }`) alike. Generics compose; nothing is
+pending on that front.
 
 ## Modules (M6.5), plainly
 

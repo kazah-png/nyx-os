@@ -380,8 +380,9 @@ typedef struct {
     int ptok[MAXP]; int nparams;          /* type-param IDENT tokens */
     int declstart, declend;               /* source span of the whole declaration */
     /* struct-only: the field templates */
-    struct { int fname; int ptrs; int base; } fields[MAXF];
-    int nfields;                          /* base: token index of the field type name */
+    struct { int fname; int ptrs; int base; int nest; } fields[MAXF];
+    int nfields;                          /* base: token index of the field type name;
+                                           * nest: its nested generic use, or -1 (M6.3h) */
     /* fn-only: the token bounds the span-splice emit walks */
     int angleclose;                       /* token index of `>` closing the params */
     int lasttok;                          /* token index of the body's closing `}` */
@@ -468,11 +469,39 @@ static void collect_generic_decls(void) {
             if (g->nfields >= MAXF) die("%s: too many fields", FILENAME);
             g->fields[g->nfields].fname = fname;
             g->fields[g->nfields].ptrs = ptrs;
-            g->fields[g->nfields].base = j++;
+            g->fields[g->nfields].base = j;
+            g->fields[g->nfields].nest = -1;
+            int base = j++;
+            if (TOKS[j].k == T_LT) {
+                /* A generic type — `a: Box<T>` (M6.3h): a nested use of the
+                 * struct, instantiated per concrete instantiation of it. The
+                 * generic it names is resolved by guard_templates, once every
+                 * generic (an enum, say) is known. */
+                if (g->nnested >= MAXNEST) die("%s: too many nested generic uses", FILENAME);
+                Nest* ns = &g->nested[g->nnested];
+                ns->gi = -1;
+                ns->nargs = 0;
+                ns->start = TOKS[base].start;
+                j++;
+                for (;;) {
+                    if (TOKS[j].k != T_IDENT || ns->nargs >= MAXP)
+                        die("%s:%d: expected a type argument", FILENAME, TOKS[j].line);
+                    ns->aname[ns->nargs] = TOKS[j].s;
+                    ns->alen[ns->nargs] = TOKS[j].slen;
+                    ns->aparam[ns->nargs] = -1;
+                    for (int q = 0; q < g->nparams; q++)
+                        if (tokspan_eq(g->ptok[q], j)) ns->aparam[ns->nargs] = q;
+                    ns->nargs++;
+                    j++;
+                    if (TOKS[j].k == T_COMMA) { j++; continue; }
+                    if (TOKS[j].k == T_GT) break;
+                    die("%s:%d: expected ',' or '>' in type-argument list", FILENAME, TOKS[j].line);
+                }
+                ns->end = TOKS[j].end;
+                j++;
+                g->fields[g->nfields].nest = g->nnested++;
+            }
             g->nfields++;
-            if (TOKS[j].k == T_LT)
-                die("%s:%d: M6.3g: a generic type in a generic struct's field is pending "
-                    "(a generic function or enum may use one)", FILENAME, TOKS[j].line);
             if (TOKS[j].k == T_COMMA) j++;
         }
         g->declend = TOKS[j].end;         /* past the closing '}' */
@@ -773,7 +802,11 @@ static char* concrete_struct(Inst* it) {
         n += sprintf(out + n, "    %.*s: ", TOKS[g->fields[fi].fname].slen,
                      TOKS[g->fields[fi].fname].s);
         for (int s = 0; s < stars; s++) out[n++] = '*';
-        if (sub >= 0)
+        if (g->fields[fi].nest >= 0) {    /* `Box<T>` -> `__g_Box_i64` (M6.3h) */
+            Inst ni;
+            nested_inst(it, &g->nested[g->fields[fi].nest], &ni);
+            n += sprintf(out + n, "%s", mangle(&ni));
+        } else if (sub >= 0)
             n += sprintf(out + n, "%.*s", it->alen[sub], it->aname[sub]);
         else
             n += sprintf(out + n, "%.*s", TOKS[bt].slen, TOKS[bt].s);
@@ -902,7 +935,23 @@ static void collect_generic_enums(void) {
 static void guard_templates(void) {
     for (int gi = 0; gi < NGS; gi++) {
         GStruct* g = &GS[gi];
-        if (g->kind == 0) continue;       /* struct fields are parsed, not spliced */
+        if (g->kind == 0) {               /* struct fields are parsed, not spliced: resolve
+                                           * the generic each generic-typed field names */
+            for (int f = 0; f < g->nfields; f++) {
+                int ne = g->fields[f].nest;
+                if (ne < 0) continue;
+                int b = g->fields[f].base;
+                int inner = gfind(b);
+                if (inner < 0)
+                    die("%s:%d: '%.*s' is not a generic type", FILENAME, TOKS[b].line,
+                        TOKS[b].slen, TOKS[b].s);
+                if (g->nested[ne].nargs != GS[inner].nparams)
+                    die("%s:%d: '%.*s' takes %d type argument(s)", FILENAME, TOKS[b].line,
+                        TOKS[b].slen, TOKS[b].s, GS[inner].nparams);
+                g->nested[ne].gi = inner;
+            }
+            continue;
+        }
         for (int t = g->angleclose + 1; t <= g->lasttok; t++) {
             if (TOKS[t].k != T_IDENT) continue;
             int isp = 0;
