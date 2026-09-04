@@ -1,0 +1,3 @@
+name: cal
+source: cal.c
+bin: cal
