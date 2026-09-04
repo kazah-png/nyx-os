@@ -2075,10 +2075,14 @@ static uint8_t* enc_read_file(const char* path, int* out_n, uint32_t extra) {
     uint32_t cap = ENC_MAXSZ + extra;
     uint8_t* buf = (uint8_t*)kmalloc(cap);
     if (!buf) { vfs_close(fd); return NULL; }
-    int n = 0, r;
-    while (n < (int)cap && (r = vfs_read(fd, buf + n, (int)cap - n)) > 0) n += r;
+    // vfs_read is STATELESS (always the file head) — a read loop over it duplicates
+    // the head to fill `cap` and never reaches EOF, so encrypt sealed 4 MB of garbage
+    // and decrypt got the wrong length. Use vfs_pread with a running offset: it reads
+    // the file once through and returns 0 at real EOF, so n is the true byte count.
+    uint32_t n = 0; int r;
+    while (n < cap && (r = vfs_pread(fd, buf + n, cap - n, n)) > 0) n += (uint32_t)r;
     vfs_close(fd);
-    *out_n = (n < 0) ? 0 : n;
+    *out_n = (int)n;
     return buf;
 }
 
