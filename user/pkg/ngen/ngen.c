@@ -91,6 +91,19 @@ nyx_bool is_int_ty(nyx_u8* p, T t);
 nyx_bool tcompat(nyx_u8* p, T a, T b);
 void ty_put(nyx_u8* p, nyx_i64* st, T t);
 T pty(nyx_u8* p, nyx_i64 n, nyx_i64* st);
+void tail_ascii(nyx_u8* p, nyx_i64* st, nyx_i64 b);
+void tail_copy(nyx_u8* p, nyx_i64* st, nyx_i64 s, nyx_i64 l);
+void tail_ty(nyx_u8* p, nyx_i64* st, nyx_i64 pt, nyx_i64 us, nyx_i64 s, nyx_i64 l);
+nyx_i64 fnty_intern(nyx_u8* p, nyx_i64* st, nyx_i64* sc);
+nyx_i64 fnty_of(nyx_u8* p, nyx_i64* st, T t);
+T fnty_t(nyx_i64* st, nyx_i64 fi);
+T fnty_ret(nyx_i64* st, nyx_i64 fi);
+T fnty_pty(nyx_i64* st, nyx_i64 fi, nyx_i64 q);
+T pfnty(nyx_u8* p, nyx_i64 n, nyx_i64* st);
+T fn_value_ty(nyx_u8* p, nyx_i64* st, nyx_i64 fi);
+nyx_i64 field_fnty(nyx_u8* p, nyx_i64* st, T rt, nyx_i64 fs, nyx_i64 fl);
+void cfnvcall(nyx_u8* p, nyx_i64* st, nyx_i64 i, nyx_i64 fi, nyx_i64 ws, nyx_i64 wl);
+void efndecl(nyx_u8* p, nyx_i64* st, nyx_i64 fi, nyx_i64 ns, nyx_i64 nl);
 nyx_i64 pexpr(nyx_u8* p, nyx_i64 n, nyx_i64* st);
 nyx_i64 pinterp(nyx_u8* p, nyx_i64 n, nyx_i64* st);
 nyx_i64 pprimary(nyx_u8* p, nyx_i64 n, nyx_i64* st);
@@ -1500,6 +1513,19 @@ T pty(nyx_u8* p, nyx_i64 n, nyx_i64* st) {
             going = 1;
         }
     }
+    if (ck(st, 10)) {
+        adv(p, n, st);
+        if ((((pt > 0) || (us == 1)) || (rw == 1))) {
+            char __b1[256];
+            nyx_str __s1 = __nyx_fmt_begin(__b1, 256);
+            __nyx_fmt_i64(&__s1, __b1, 256, (nyx_i64)(tln));
+            __nyx_fmt_str(&__s1, __b1, 256, (nyx_str){": a function type is a value of its own \xe2\x80\x94 no pointer, raw or #[user] on it (v0.24)\n", 85});
+            put(__s1);
+            st[41] = 1;
+            return ((T){.pt = 0, .us = 0, .s = 0, .l = 0});
+        }
+        return pfnty(p, n, st);
+    }
     if (!(ck(st, 7))) {
         perr(st);
         return ((T){.pt = 0, .us = 0, .s = 0, .l = 0});
@@ -1508,17 +1534,337 @@ T pty(nyx_u8* p, nyx_i64 n, nyx_i64* st) {
     nyx_i64 l = st[27];
     adv(p, n, st);
     if (((us == 1) && (pt == 0))) {
-        char __b1[256];
-        nyx_str __s1 = __nyx_fmt_begin(__b1, 256);
-        __nyx_fmt_i64(&__s1, __b1, 256, (nyx_i64)(tln));
-        __nyx_fmt_str(&__s1, __b1, 256, (nyx_str){": #[user] applies only to pointer types (got ", 45});
-        put(__s1);
+        char __b2[256];
+        nyx_str __s2 = __nyx_fmt_begin(__b2, 256);
+        __nyx_fmt_i64(&__s2, __b2, 256, (nyx_i64)(tln));
+        __nyx_fmt_str(&__s2, __b2, 256, (nyx_str){": #[user] applies only to pointer types (got ", 45});
+        put(__s2);
         put_span(p, s, l);
         put(((nyx_str){")\n", 2}));
         st[41] = 1;
         return ((T){.pt = 0, .us = 0, .s = 0, .l = 0});
     }
     return ((T){.pt = pt, .us = us, .s = s, .l = l});
+}
+
+void tail_ascii(nyx_u8* p, nyx_i64* st, nyx_i64 b) {
+    nyx_i64 c = st[68];
+    if ((c < 524287)) {
+        p[c] = (nyx_u8)(b);
+        st[68] = (c + 1);
+    }
+}
+
+void tail_copy(nyx_u8* p, nyx_i64* st, nyx_i64 s, nyx_i64 l) {
+    nyx_i64 k = 0;
+    while ((k < l)) {
+        tail_ascii(p, st, (nyx_i64)(p[(s + k)]));
+        k = (k + 1);
+    }
+}
+
+void tail_ty(nyx_u8* p, nyx_i64* st, nyx_i64 pt, nyx_i64 us, nyx_i64 s, nyx_i64 l) {
+    if ((us == 1)) {
+        tail_ascii(p, st, 35);
+        tail_ascii(p, st, 91);
+        tail_ascii(p, st, 117);
+        tail_ascii(p, st, 115);
+        tail_ascii(p, st, 101);
+        tail_ascii(p, st, 114);
+        tail_ascii(p, st, 93);
+        tail_ascii(p, st, 32);
+    }
+    nyx_i64 k = 0;
+    while ((k < pt)) {
+        tail_ascii(p, st, 42);
+        k = (k + 1);
+    }
+    tail_copy(p, st, s, l);
+}
+
+nyx_i64 fnty_intern(nyx_u8* p, nyx_i64* st, nyx_i64* sc) {
+    nyx_i64 sp0 = st[68];
+    tail_ascii(p, st, 102);
+    tail_ascii(p, st, 110);
+    tail_ascii(p, st, 40);
+    nyx_i64 q = 0;
+    while ((q < sc[0])) {
+        if ((q > 0)) {
+            tail_ascii(p, st, 44);
+            tail_ascii(p, st, 32);
+        }
+        tail_ty(p, st, sc[(6 + (q * 4))], sc[(7 + (q * 4))], sc[(8 + (q * 4))], sc[(9 + (q * 4))]);
+        q = (q + 1);
+    }
+    tail_ascii(p, st, 41);
+    if ((sc[1] == 1)) {
+        tail_ascii(p, st, 32);
+        tail_ascii(p, st, 45);
+        tail_ascii(p, st, 62);
+        tail_ascii(p, st, 32);
+        tail_ty(p, st, sc[2], sc[3], sc[4], sc[5]);
+    }
+    nyx_i64 plen = (st[68] - sp0);
+    nyx_i64 cnt = st[65];
+    nyx_i64 i = 0;
+    while ((i < cnt)) {
+        nyx_i64* e = (nyx_i64*)(((nyx_addr)(st[64]) + (nyx_addr)((i * 576))));
+        if (span_eq(p, e[70], e[71], sp0, plen)) {
+            st[68] = sp0;
+            return i;
+        }
+        i = (i + 1);
+    }
+    if ((cnt >= 32)) {
+        put(((nyx_str){" too many distinct function types\n", 34}));
+        st[41] = 1;
+        return 0;
+    }
+    nyx_i64* e2 = (nyx_i64*)(((nyx_addr)(st[64]) + (nyx_addr)((cnt * 576))));
+    nyx_i64 k = 0;
+    while ((k < 70)) {
+        e2[k] = sc[k];
+        k = (k + 1);
+    }
+    e2[70] = sp0;
+    e2[71] = plen;
+    st[65] = (cnt + 1);
+    return cnt;
+}
+
+nyx_i64 fnty_of(nyx_u8* p, nyx_i64* st, T t) {
+    if (((t.pt != 0) || (t.l == 0))) {
+        return -(1);
+    }
+    nyx_i64 i = 0;
+    while ((i < st[65])) {
+        nyx_i64* e = (nyx_i64*)(((nyx_addr)(st[64]) + (nyx_addr)((i * 576))));
+        if (span_eq(p, e[70], e[71], t.s, t.l)) {
+            return i;
+        }
+        i = (i + 1);
+    }
+    return -(1);
+}
+
+T fnty_t(nyx_i64* st, nyx_i64 fi) {
+    nyx_i64* e = (nyx_i64*)(((nyx_addr)(st[64]) + (nyx_addr)((fi * 576))));
+    return ((T){.pt = 0, .us = 0, .s = e[70], .l = e[71]});
+}
+
+T fnty_ret(nyx_i64* st, nyx_i64 fi) {
+    nyx_i64* e = (nyx_i64*)(((nyx_addr)(st[64]) + (nyx_addr)((fi * 576))));
+    if ((e[1] == 0)) {
+        return t_void();
+    }
+    return ((T){.pt = e[2], .us = e[3], .s = e[4], .l = e[5]});
+}
+
+T fnty_pty(nyx_i64* st, nyx_i64 fi, nyx_i64 q) {
+    nyx_i64* e = (nyx_i64*)(((nyx_addr)(st[64]) + (nyx_addr)((fi * 576))));
+    return ((T){.pt = e[(6 + (q * 4))], .us = e[(7 + (q * 4))], .s = e[(8 + (q * 4))], .l = e[(9 + (q * 4))]});
+}
+
+T pfnty(nyx_u8* p, nyx_i64 n, nyx_i64* st) {
+    if (!(ck(st, 37))) {
+        perr(st);
+        return ((T){.pt = 0, .us = 0, .s = 0, .l = 0});
+    }
+    adv(p, n, st);
+    nyx_i64 d = st[67];
+    if ((d >= 4)) {
+        perr(st);
+        return ((T){.pt = 0, .us = 0, .s = 0, .l = 0});
+    }
+    st[67] = (d + 1);
+    nyx_i64* sc = (nyx_i64*)(((nyx_addr)(st[66]) + (nyx_addr)((d * 576))));
+    nyx_i64 np = 0;
+    nyx_bool more = !(ck(st, 38));
+    while (more) {
+        more = 0;
+        T t = pty(p, n, st);
+        if ((np < 16)) {
+            sc[(6 + (np * 4))] = t.pt;
+            sc[(7 + (np * 4))] = t.us;
+            sc[(8 + (np * 4))] = t.s;
+            sc[(9 + (np * 4))] = t.l;
+        }
+        np = (np + 1);
+        if (acc(p, n, st, 41)) {
+            more = 1;
+        }
+    }
+    if (!(ck(st, 38))) {
+        perr(st);
+        return ((T){.pt = 0, .us = 0, .s = 0, .l = 0});
+    }
+    adv(p, n, st);
+    sc[0] = np;
+    sc[1] = 0;
+    sc[2] = 0;
+    sc[3] = 0;
+    sc[4] = 0;
+    sc[5] = 0;
+    if (acc(p, n, st, 45)) {
+        T r = pty(p, n, st);
+        sc[1] = 1;
+        sc[2] = r.pt;
+        sc[3] = r.us;
+        sc[4] = r.s;
+        sc[5] = r.l;
+    }
+    st[67] = d;
+    nyx_i64 idx = fnty_intern(p, st, sc);
+    return fnty_t(st, idx);
+}
+
+T fn_value_ty(nyx_u8* p, nyx_i64* st, nyx_i64 fi) {
+    nyx_i64* ft = (nyx_i64*)(st[37]);
+    nyx_i64* sc = (nyx_i64*)(((nyx_addr)(st[66]) + (nyx_addr)((st[67] * 576))));
+    nyx_i64 np = ft[((fi * 8) + 2)];
+    sc[0] = np;
+    sc[1] = 0;
+    sc[2] = 0;
+    sc[3] = 0;
+    sc[4] = 0;
+    sc[5] = 0;
+    T rt = frty(st, fi);
+    if ((rt.l > 0)) {
+        sc[1] = 1;
+        sc[2] = rt.pt;
+        sc[3] = rt.us;
+        sc[4] = rt.s;
+        sc[5] = rt.l;
+    }
+    nyx_i64 q = 0;
+    while (((q < np) && (q < 16))) {
+        T pq = fpty(st, fi, q);
+        sc[(6 + (q * 4))] = pq.pt;
+        sc[(7 + (q * 4))] = pq.us;
+        sc[(8 + (q * 4))] = pq.s;
+        sc[(9 + (q * 4))] = pq.l;
+        q = (q + 1);
+    }
+    nyx_i64 idx = fnty_intern(p, st, sc);
+    return fnty_t(st, idx);
+}
+
+nyx_i64 field_fnty(nyx_u8* p, nyx_i64* st, T rt, nyx_i64 fs, nyx_i64 fl) {
+    if (((rt.pt != 0) || (rt.l == 0))) {
+        return -(1);
+    }
+    nyx_i64 si = sfind(p, st, rt.s, rt.l);
+    if ((si < 0)) {
+        return -(1);
+    }
+    nyx_i64* sa = (nyx_i64*)(st[49]);
+    nyx_i64* al = (nyx_i64*)(st[35]);
+    nyx_i64 q = 0;
+    while ((q < sa[((si * 8) + 2)])) {
+        nyx_i64 r = (sa[((si * 8) + 3)] + (q * 6));
+        if (span_eq(p, al[r], al[(r + 1)], fs, fl)) {
+            return fnty_of(p, st, sfty(st, si, q));
+        }
+        q = (q + 1);
+    }
+    return -(1);
+}
+
+void cfnvcall(nyx_u8* p, nyx_i64* st, nyx_i64 i, nyx_i64 fi, nyx_i64 ws, nyx_i64 wl) {
+    nyx_i64* nd = (nyx_i64*)(st[33]);
+    nyx_i64* al = (nyx_i64*)(st[35]);
+    nyx_i64 ln = nd[((i * 8) + 4)];
+    nyx_i64 na = nd[((i * 8) + 3)];
+    nyx_i64* e = (nyx_i64*)(((nyx_addr)(st[64]) + (nyx_addr)((fi * 576))));
+    nyx_i64 np = e[0];
+    if ((na != np)) {
+        char __b0[256];
+        nyx_str __s0 = __nyx_fmt_begin(__b0, 256);
+        __nyx_fmt_i64(&__s0, __b0, 256, (nyx_i64)(ln));
+        __nyx_fmt_str(&__s0, __b0, 256, (nyx_str){": '", 3});
+        put(__s0);
+        put_span(p, ws, wl);
+        char __b1[256];
+        nyx_str __s1 = __nyx_fmt_begin(__b1, 256);
+        __nyx_fmt_str(&__s1, __b1, 256, (nyx_str){"' takes ", 8});
+        __nyx_fmt_i64(&__s1, __b1, 256, (nyx_i64)(np));
+        __nyx_fmt_str(&__s1, __b1, 256, (nyx_str){" argument(s), got ", 18});
+        __nyx_fmt_i64(&__s1, __b1, 256, (nyx_i64)(na));
+        __nyx_fmt_str(&__s1, __b1, 256, (nyx_str){"\n", 1});
+        put(__s1);
+        st[41] = 1;
+        return;
+    }
+    nyx_i64 q = 0;
+    while ((q < na)) {
+        cexpr(p, st, al[(nd[((i * 8) + 2)] + q)]);
+        if ((st[41] == 1)) {
+            return;
+        }
+        T at = cinfer(p, st, al[(nd[((i * 8) + 2)] + q)]);
+        T pt2 = fnty_pty(st, fi, q);
+        if (!(tcompat(p, at, pt2))) {
+            nyx_i64 qq = (q + 1);
+            char __b2[256];
+            nyx_str __s2 = __nyx_fmt_begin(__b2, 256);
+            __nyx_fmt_i64(&__s2, __b2, 256, (nyx_i64)(ln));
+            __nyx_fmt_str(&__s2, __b2, 256, (nyx_str){": argument ", 11});
+            __nyx_fmt_i64(&__s2, __b2, 256, (nyx_i64)(qq));
+            __nyx_fmt_str(&__s2, __b2, 256, (nyx_str){" to '", 5});
+            put(__s2);
+            put_span(p, ws, wl);
+            put(((nyx_str){"': expected ", 12}));
+            ty_put(p, st, pt2);
+            put(((nyx_str){", got ", 6}));
+            ty_put(p, st, at);
+            put(((nyx_str){"\n", 1}));
+            st[41] = 1;
+            return;
+        }
+        cmove(p, st, al[(nd[((i * 8) + 2)] + q)], ln);
+        if ((st[41] == 1)) {
+            return;
+        }
+        q = (q + 1);
+    }
+}
+
+void efndecl(nyx_u8* p, nyx_i64* st, nyx_i64 fi, nyx_i64 ns, nyx_i64 nl) {
+    nyx_i64* e = (nyx_i64*)(((nyx_addr)(st[64]) + (nyx_addr)((fi * 576))));
+    T rt = fnty_ret(st, fi);
+    nyx_bool nvr = ((rt.l == 5) && eq5(p, rt.s, 110, 101, 118, 101, 114));
+    if (((rt.l == 0) || nvr)) {
+        put(((nyx_str){"void", 4}));
+    }
+    if (((rt.l > 0) && !(nvr))) {
+        ety(p, st, rt);
+    }
+    put(((nyx_str){" (*", 3}));
+    if ((nl == 0)) {
+        char __b0[256];
+        nyx_str __s0 = __nyx_fmt_begin(__b0, 256);
+        __nyx_fmt_str(&__s0, __b0, 256, (nyx_str){"__nyx_fn", 8});
+        __nyx_fmt_i64(&__s0, __b0, 256, (nyx_i64)(ns));
+        put(__s0);
+    }
+    if ((nl > 0)) {
+        put_span(p, ns, nl);
+    }
+    put(((nyx_str){")(", 2}));
+    nyx_i64 np = e[0];
+    if ((np == 0)) {
+        put(((nyx_str){"void", 4}));
+    }
+    nyx_i64 q = 0;
+    while ((q < np)) {
+        if ((q > 0)) {
+            put(((nyx_str){", ", 2}));
+        }
+        T pq = fnty_pty(st, fi, q);
+        ety(p, st, pq);
+        q = (q + 1);
+    }
+    put(((nyx_str){")", 1}));
 }
 
 nyx_i64 pexpr(nyx_u8* p, nyx_i64 n, nyx_i64* st) {
@@ -3040,11 +3386,27 @@ void cexpr(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
         nyx_i64 v = vfind(p, st, nd[((i * 8) + 5)], nd[((i * 8) + 6)]);
         if ((v < 0)) {
             nyx_i64 ln = nd[((i * 8) + 4)];
-            char __b0[256];
-            nyx_str __s0 = __nyx_fmt_begin(__b0, 256);
-            __nyx_fmt_i64(&__s0, __b0, 256, (nyx_i64)(ln));
-            __nyx_fmt_str(&__s0, __b0, 256, (nyx_str){": undeclared variable '", 23});
-            put(__s0);
+            nyx_i64 fi0 = ffind(p, st, nd[((i * 8) + 5)], nd[((i * 8) + 6)]);
+            if ((fi0 >= 0)) {
+                nyx_i64* ft0 = (nyx_i64*)(st[37]);
+                if ((ft0[((fi0 * 8) + 6)] == 1)) {
+                    return;
+                }
+                char __b0[256];
+                nyx_str __s0 = __nyx_fmt_begin(__b0, 256);
+                __nyx_fmt_i64(&__s0, __b0, 256, (nyx_i64)(ln));
+                __nyx_fmt_str(&__s0, __b0, 256, (nyx_str){": syscall '", 11});
+                put(__s0);
+                put_span(p, nd[((i * 8) + 5)], nd[((i * 8) + 6)]);
+                put(((nyx_str){"' is not a value \xe2\x80\x94 only functions declared with fn are (v0.24)\n", 65}));
+                st[41] = 1;
+                return;
+            }
+            char __b1[256];
+            nyx_str __s1 = __nyx_fmt_begin(__b1, 256);
+            __nyx_fmt_i64(&__s1, __b1, 256, (nyx_i64)(ln));
+            __nyx_fmt_str(&__s1, __b1, 256, (nyx_str){": undeclared variable '", 23});
+            put(__s1);
             put_span(p, nd[((i * 8) + 5)], nd[((i * 8) + 6)]);
             put(((nyx_str){"'\n", 2}));
             st[41] = 1;
@@ -3053,11 +3415,11 @@ void cexpr(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
             nyx_i64* va = (nyx_i64*)(st[39]);
             if ((va[((v * 10) + 8)] == 2)) {
                 nyx_i64 ln2 = nd[((i * 8) + 4)];
-                char __b1[256];
-                nyx_str __s1 = __nyx_fmt_begin(__b1, 256);
-                __nyx_fmt_i64(&__s1, __b1, 256, (nyx_i64)(ln2));
-                __nyx_fmt_str(&__s1, __b1, 256, (nyx_str){": use of '", 10});
-                put(__s1);
+                char __b2[256];
+                nyx_str __s2 = __nyx_fmt_begin(__b2, 256);
+                __nyx_fmt_i64(&__s2, __b2, 256, (nyx_i64)(ln2));
+                __nyx_fmt_str(&__s2, __b2, 256, (nyx_str){": use of '", 10});
+                put(__s2);
                 put_span(p, nd[((i * 8) + 5)], nd[((i * 8) + 6)]);
                 put(((nyx_str){"' after move\n", 13}));
                 st[41] = 1;
@@ -3073,26 +3435,26 @@ void cexpr(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
             nyx_i64 ab = is_argb(p, nd[((cal * 8) + 5)], nd[((cal * 8) + 6)]);
             if ((ab == 1)) {
                 if ((na != 0)) {
-                    char __b2[256];
-                    nyx_str __s2 = __nyx_fmt_begin(__b2, 256);
-                    __nyx_fmt_i64(&__s2, __b2, 256, (nyx_i64)(ln));
-                    __nyx_fmt_str(&__s2, __b2, 256, (nyx_str){": 'arg_count' takes 0 arguments, got ", 37});
-                    __nyx_fmt_i64(&__s2, __b2, 256, (nyx_i64)(na));
-                    __nyx_fmt_str(&__s2, __b2, 256, (nyx_str){"\n", 1});
-                    put(__s2);
+                    char __b3[256];
+                    nyx_str __s3 = __nyx_fmt_begin(__b3, 256);
+                    __nyx_fmt_i64(&__s3, __b3, 256, (nyx_i64)(ln));
+                    __nyx_fmt_str(&__s3, __b3, 256, (nyx_str){": 'arg_count' takes 0 arguments, got ", 37});
+                    __nyx_fmt_i64(&__s3, __b3, 256, (nyx_i64)(na));
+                    __nyx_fmt_str(&__s3, __b3, 256, (nyx_str){"\n", 1});
+                    put(__s3);
                     st[41] = 1;
                 }
                 return;
             }
             if ((ab == 2)) {
                 if ((na != 1)) {
-                    char __b3[256];
-                    nyx_str __s3 = __nyx_fmt_begin(__b3, 256);
-                    __nyx_fmt_i64(&__s3, __b3, 256, (nyx_i64)(ln));
-                    __nyx_fmt_str(&__s3, __b3, 256, (nyx_str){": 'arg' takes 1 argument, got ", 30});
-                    __nyx_fmt_i64(&__s3, __b3, 256, (nyx_i64)(na));
-                    __nyx_fmt_str(&__s3, __b3, 256, (nyx_str){"\n", 1});
-                    put(__s3);
+                    char __b4[256];
+                    nyx_str __s4 = __nyx_fmt_begin(__b4, 256);
+                    __nyx_fmt_i64(&__s4, __b4, 256, (nyx_i64)(ln));
+                    __nyx_fmt_str(&__s4, __b4, 256, (nyx_str){": 'arg' takes 1 argument, got ", 30});
+                    __nyx_fmt_i64(&__s4, __b4, 256, (nyx_i64)(na));
+                    __nyx_fmt_str(&__s4, __b4, 256, (nyx_str){"\n", 1});
+                    put(__s4);
                     st[41] = 1;
                     return;
                 }
@@ -3102,24 +3464,56 @@ void cexpr(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
                 }
                 T at9 = cinfer(p, st, al[nd[((i * 8) + 2)]]);
                 if (!(tcompat(p, at9, t_i64(st)))) {
-                    char __b4[256];
-                    nyx_str __s4 = __nyx_fmt_begin(__b4, 256);
-                    __nyx_fmt_i64(&__s4, __b4, 256, (nyx_i64)(ln));
-                    __nyx_fmt_str(&__s4, __b4, 256, (nyx_str){": 'arg' index must be an integer, got ", 38});
-                    put(__s4);
+                    char __b5[256];
+                    nyx_str __s5 = __nyx_fmt_begin(__b5, 256);
+                    __nyx_fmt_i64(&__s5, __b5, 256, (nyx_i64)(ln));
+                    __nyx_fmt_str(&__s5, __b5, 256, (nyx_str){": 'arg' index must be an integer, got ", 38});
+                    put(__s5);
                     ty_put(p, st, at9);
                     put(((nyx_str){"\n", 1}));
                     st[41] = 1;
                 }
                 return;
             }
+            nyx_i64 lv = vfind(p, st, nd[((cal * 8) + 5)], nd[((cal * 8) + 6)]);
+            if ((lv >= 0)) {
+                T lt = vty(st, lv);
+                nyx_i64 lfi = fnty_of(p, st, lt);
+                if ((lfi < 0)) {
+                    char __b6[256];
+                    nyx_str __s6 = __nyx_fmt_begin(__b6, 256);
+                    __nyx_fmt_i64(&__s6, __b6, 256, (nyx_i64)(ln));
+                    __nyx_fmt_str(&__s6, __b6, 256, (nyx_str){": '", 3});
+                    put(__s6);
+                    put_span(p, nd[((cal * 8) + 5)], nd[((cal * 8) + 6)]);
+                    put(((nyx_str){"' is not a function (it is ", 27}));
+                    ty_put(p, st, lt);
+                    put(((nyx_str){")\n", 2}));
+                    st[41] = 1;
+                    return;
+                }
+                nyx_i64* va0 = (nyx_i64*)(st[39]);
+                if ((va0[((lv * 10) + 8)] == 2)) {
+                    char __b7[256];
+                    nyx_str __s7 = __nyx_fmt_begin(__b7, 256);
+                    __nyx_fmt_i64(&__s7, __b7, 256, (nyx_i64)(ln));
+                    __nyx_fmt_str(&__s7, __b7, 256, (nyx_str){": use of '", 10});
+                    put(__s7);
+                    put_span(p, nd[((cal * 8) + 5)], nd[((cal * 8) + 6)]);
+                    put(((nyx_str){"' after move\n", 13}));
+                    st[41] = 1;
+                    return;
+                }
+                cfnvcall(p, st, i, lfi, nd[((cal * 8) + 5)], nd[((cal * 8) + 6)]);
+                return;
+            }
             nyx_i64 fi = ffind(p, st, nd[((cal * 8) + 5)], nd[((cal * 8) + 6)]);
             if ((fi < 0)) {
-                char __b5[256];
-                nyx_str __s5 = __nyx_fmt_begin(__b5, 256);
-                __nyx_fmt_i64(&__s5, __b5, 256, (nyx_i64)(ln));
-                __nyx_fmt_str(&__s5, __b5, 256, (nyx_str){": unknown function '", 20});
-                put(__s5);
+                char __b8[256];
+                nyx_str __s8 = __nyx_fmt_begin(__b8, 256);
+                __nyx_fmt_i64(&__s8, __b8, 256, (nyx_i64)(ln));
+                __nyx_fmt_str(&__s8, __b8, 256, (nyx_str){": unknown function '", 20});
+                put(__s8);
                 put_span(p, nd[((cal * 8) + 5)], nd[((cal * 8) + 6)]);
                 put(((nyx_str){"'\n", 2}));
                 st[41] = 1;
@@ -3127,11 +3521,11 @@ void cexpr(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
             }
             nyx_i64* ft = (nyx_i64*)(st[37]);
             if ((((ft[((fi * 8) + 6)] == 0) && (ft[((fi * 8) + 3)] == 1)) && (st[42] == 0))) {
-                char __b6[256];
-                nyx_str __s6 = __nyx_fmt_begin(__b6, 256);
-                __nyx_fmt_i64(&__s6, __b6, 256, (nyx_i64)(ln));
-                __nyx_fmt_str(&__s6, __b6, 256, (nyx_str){": '", 3});
-                put(__s6);
+                char __b9[256];
+                nyx_str __s9 = __nyx_fmt_begin(__b9, 256);
+                __nyx_fmt_i64(&__s9, __b9, 256, (nyx_i64)(ln));
+                __nyx_fmt_str(&__s9, __b9, 256, (nyx_str){": '", 3});
+                put(__s9);
                 put_span(p, nd[((cal * 8) + 5)], nd[((cal * 8) + 6)]);
                 put(((nyx_str){"' requires the syscall capability \xe2\x80\x94 mark the calling function #[caps(syscall)]\n", 81}));
                 st[41] = 1;
@@ -3139,20 +3533,20 @@ void cexpr(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
             }
             nyx_i64 np = ft[((fi * 8) + 2)];
             if ((na != np)) {
-                char __b7[256];
-                nyx_str __s7 = __nyx_fmt_begin(__b7, 256);
-                __nyx_fmt_i64(&__s7, __b7, 256, (nyx_i64)(ln));
-                __nyx_fmt_str(&__s7, __b7, 256, (nyx_str){": '", 3});
-                put(__s7);
+                char __b10[256];
+                nyx_str __s10 = __nyx_fmt_begin(__b10, 256);
+                __nyx_fmt_i64(&__s10, __b10, 256, (nyx_i64)(ln));
+                __nyx_fmt_str(&__s10, __b10, 256, (nyx_str){": '", 3});
+                put(__s10);
                 put_span(p, nd[((cal * 8) + 5)], nd[((cal * 8) + 6)]);
-                char __b8[256];
-                nyx_str __s8 = __nyx_fmt_begin(__b8, 256);
-                __nyx_fmt_str(&__s8, __b8, 256, (nyx_str){"' takes ", 8});
-                __nyx_fmt_i64(&__s8, __b8, 256, (nyx_i64)(np));
-                __nyx_fmt_str(&__s8, __b8, 256, (nyx_str){" argument(s), got ", 18});
-                __nyx_fmt_i64(&__s8, __b8, 256, (nyx_i64)(na));
-                __nyx_fmt_str(&__s8, __b8, 256, (nyx_str){"\n", 1});
-                put(__s8);
+                char __b11[256];
+                nyx_str __s11 = __nyx_fmt_begin(__b11, 256);
+                __nyx_fmt_str(&__s11, __b11, 256, (nyx_str){"' takes ", 8});
+                __nyx_fmt_i64(&__s11, __b11, 256, (nyx_i64)(np));
+                __nyx_fmt_str(&__s11, __b11, 256, (nyx_str){" argument(s), got ", 18});
+                __nyx_fmt_i64(&__s11, __b11, 256, (nyx_i64)(na));
+                __nyx_fmt_str(&__s11, __b11, 256, (nyx_str){"\n", 1});
+                put(__s11);
                 st[41] = 1;
                 return;
             }
@@ -3166,13 +3560,13 @@ void cexpr(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
                 T pt2 = fpty(st, fi, q);
                 if (!(tcompat(p, at, pt2))) {
                     nyx_i64 qq = (q + 1);
-                    char __b9[256];
-                    nyx_str __s9 = __nyx_fmt_begin(__b9, 256);
-                    __nyx_fmt_i64(&__s9, __b9, 256, (nyx_i64)(ln));
-                    __nyx_fmt_str(&__s9, __b9, 256, (nyx_str){": argument ", 11});
-                    __nyx_fmt_i64(&__s9, __b9, 256, (nyx_i64)(qq));
-                    __nyx_fmt_str(&__s9, __b9, 256, (nyx_str){" to '", 5});
-                    put(__s9);
+                    char __b12[256];
+                    nyx_str __s12 = __nyx_fmt_begin(__b12, 256);
+                    __nyx_fmt_i64(&__s12, __b12, 256, (nyx_i64)(ln));
+                    __nyx_fmt_str(&__s12, __b12, 256, (nyx_str){": argument ", 11});
+                    __nyx_fmt_i64(&__s12, __b12, 256, (nyx_i64)(qq));
+                    __nyx_fmt_str(&__s12, __b12, 256, (nyx_str){" to '", 5});
+                    put(__s12);
                     put_span(p, nd[((cal * 8) + 5)], nd[((cal * 8) + 6)]);
                     put(((nyx_str){"': expected ", 12}));
                     ty_put(p, st, pt2);
@@ -3201,11 +3595,16 @@ void cexpr(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
                 mi = mfind(p, st, rt8.s, rt8.l, nd[((cal * 8) + 5)], nd[((cal * 8) + 6)]);
             }
             if ((mi < 0)) {
-                char __b10[256];
-                nyx_str __s10 = __nyx_fmt_begin(__b10, 256);
-                __nyx_fmt_i64(&__s10, __b10, 256, (nyx_i64)(ln));
-                __nyx_fmt_str(&__s10, __b10, 256, (nyx_str){": ", 2});
-                put(__s10);
+                nyx_i64 ffi = field_fnty(p, st, rt8, nd[((cal * 8) + 5)], nd[((cal * 8) + 6)]);
+                if ((ffi >= 0)) {
+                    cfnvcall(p, st, i, ffi, nd[((cal * 8) + 5)], nd[((cal * 8) + 6)]);
+                    return;
+                }
+                char __b13[256];
+                nyx_str __s13 = __nyx_fmt_begin(__b13, 256);
+                __nyx_fmt_i64(&__s13, __b13, 256, (nyx_i64)(ln));
+                __nyx_fmt_str(&__s13, __b13, 256, (nyx_str){": ", 2});
+                put(__s13);
                 ty_put(p, st, rt8);
                 put(((nyx_str){" has no method '", 16}));
                 put_span(p, nd[((cal * 8) + 5)], nd[((cal * 8) + 6)]);
@@ -3216,22 +3615,22 @@ void cexpr(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
             nyx_i64* ma = (nyx_i64*)(st[53]);
             nyx_i64 mnp = ma[((mi * 8) + 4)];
             if ((na != mnp)) {
-                char __b11[256];
-                nyx_str __s11 = __nyx_fmt_begin(__b11, 256);
-                __nyx_fmt_i64(&__s11, __b11, 256, (nyx_i64)(ln));
-                __nyx_fmt_str(&__s11, __b11, 256, (nyx_str){": method '", 10});
-                put(__s11);
+                char __b14[256];
+                nyx_str __s14 = __nyx_fmt_begin(__b14, 256);
+                __nyx_fmt_i64(&__s14, __b14, 256, (nyx_i64)(ln));
+                __nyx_fmt_str(&__s14, __b14, 256, (nyx_str){": method '", 10});
+                put(__s14);
                 put_span(p, ma[(mi * 8)], ma[((mi * 8) + 1)]);
                 put(((nyx_str){".", 1}));
                 put_span(p, ma[((mi * 8) + 2)], ma[((mi * 8) + 3)]);
-                char __b12[256];
-                nyx_str __s12 = __nyx_fmt_begin(__b12, 256);
-                __nyx_fmt_str(&__s12, __b12, 256, (nyx_str){"' takes ", 8});
-                __nyx_fmt_i64(&__s12, __b12, 256, (nyx_i64)(mnp));
-                __nyx_fmt_str(&__s12, __b12, 256, (nyx_str){" argument(s), got ", 18});
-                __nyx_fmt_i64(&__s12, __b12, 256, (nyx_i64)(na));
-                __nyx_fmt_str(&__s12, __b12, 256, (nyx_str){"\n", 1});
-                put(__s12);
+                char __b15[256];
+                nyx_str __s15 = __nyx_fmt_begin(__b15, 256);
+                __nyx_fmt_str(&__s15, __b15, 256, (nyx_str){"' takes ", 8});
+                __nyx_fmt_i64(&__s15, __b15, 256, (nyx_i64)(mnp));
+                __nyx_fmt_str(&__s15, __b15, 256, (nyx_str){" argument(s), got ", 18});
+                __nyx_fmt_i64(&__s15, __b15, 256, (nyx_i64)(na));
+                __nyx_fmt_str(&__s15, __b15, 256, (nyx_str){"\n", 1});
+                put(__s15);
                 st[41] = 1;
                 return;
             }
@@ -3245,13 +3644,13 @@ void cexpr(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
                 T pt3 = mpty(st, mi, q3);
                 if (!(tcompat(p, at7, pt3))) {
                     nyx_i64 qq2 = (q3 + 1);
-                    char __b13[256];
-                    nyx_str __s13 = __nyx_fmt_begin(__b13, 256);
-                    __nyx_fmt_i64(&__s13, __b13, 256, (nyx_i64)(ln));
-                    __nyx_fmt_str(&__s13, __b13, 256, (nyx_str){": argument ", 11});
-                    __nyx_fmt_i64(&__s13, __b13, 256, (nyx_i64)(qq2));
-                    __nyx_fmt_str(&__s13, __b13, 256, (nyx_str){" to '", 5});
-                    put(__s13);
+                    char __b16[256];
+                    nyx_str __s16 = __nyx_fmt_begin(__b16, 256);
+                    __nyx_fmt_i64(&__s16, __b16, 256, (nyx_i64)(ln));
+                    __nyx_fmt_str(&__s16, __b16, 256, (nyx_str){": argument ", 11});
+                    __nyx_fmt_i64(&__s16, __b16, 256, (nyx_i64)(qq2));
+                    __nyx_fmt_str(&__s16, __b16, 256, (nyx_str){" to '", 5});
+                    put(__s16);
                     put_span(p, ma[(mi * 8)], ma[((mi * 8) + 1)]);
                     put(((nyx_str){".", 1}));
                     put_span(p, ma[((mi * 8) + 2)], ma[((mi * 8) + 3)]);
@@ -3287,11 +3686,11 @@ void cexpr(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
             if ((ei1 >= 0)) {
                 nyx_i64 vi0 = vfindx(p, st, ei1, nd[((i * 8) + 5)], nd[((i * 8) + 6)]);
                 if ((vi0 < 0)) {
-                    char __b14[256];
-                    nyx_str __s14 = __nyx_fmt_begin(__b14, 256);
-                    __nyx_fmt_i64(&__s14, __b14, 256, (nyx_i64)(ln2));
-                    __nyx_fmt_str(&__s14, __b14, 256, (nyx_str){": enum '", 8});
-                    put(__s14);
+                    char __b17[256];
+                    nyx_str __s17 = __nyx_fmt_begin(__b17, 256);
+                    __nyx_fmt_i64(&__s17, __b17, 256, (nyx_i64)(ln2));
+                    __nyx_fmt_str(&__s17, __b17, 256, (nyx_str){": enum '", 8});
+                    put(__s17);
                     put_span(p, nd[((b1 * 8) + 5)], nd[((b1 * 8) + 6)]);
                     put(((nyx_str){"' has no variant '", 18}));
                     put_span(p, nd[((i * 8) + 5)], nd[((i * 8) + 6)]);
@@ -3301,11 +3700,11 @@ void cexpr(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
                 }
                 nyx_i64* ea0 = (nyx_i64*)(st[51]);
                 if ((al[((ea0[((ei1 * 4) + 3)] + (vi0 * 4)) + 2)] != 0)) {
-                    char __b15[256];
-                    nyx_str __s15 = __nyx_fmt_begin(__b15, 256);
-                    __nyx_fmt_i64(&__s15, __b15, 256, (nyx_i64)(ln2));
-                    __nyx_fmt_str(&__s15, __b15, 256, (nyx_str){": variant '", 11});
-                    put(__s15);
+                    char __b18[256];
+                    nyx_str __s18 = __nyx_fmt_begin(__b18, 256);
+                    __nyx_fmt_i64(&__s18, __b18, 256, (nyx_i64)(ln2));
+                    __nyx_fmt_str(&__s18, __b18, 256, (nyx_str){": variant '", 11});
+                    put(__s18);
                     put_span(p, nd[((b1 * 8) + 5)], nd[((b1 * 8) + 6)]);
                     put(((nyx_str){".", 1}));
                     put_span(p, nd[((i * 8) + 5)], nd[((i * 8) + 6)]);
@@ -3329,11 +3728,11 @@ void cexpr(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
             nyx_bool isp = ((nd[((i * 8) + 6)] == 3) && eq3(p, nd[((i * 8) + 5)], 112, 116, 114));
             nyx_bool isl = ((nd[((i * 8) + 6)] == 3) && eq3(p, nd[((i * 8) + 5)], 108, 101, 110));
             if ((!(isp) && !(isl))) {
-                char __b16[256];
-                nyx_str __s16 = __nyx_fmt_begin(__b16, 256);
-                __nyx_fmt_i64(&__s16, __b16, 256, (nyx_i64)(ln2));
-                __nyx_fmt_str(&__s16, __b16, 256, (nyx_str){": str has no field '", 20});
-                put(__s16);
+                char __b19[256];
+                nyx_str __s19 = __nyx_fmt_begin(__b19, 256);
+                __nyx_fmt_i64(&__s19, __b19, 256, (nyx_i64)(ln2));
+                __nyx_fmt_str(&__s19, __b19, 256, (nyx_str){": str has no field '", 20});
+                put(__s19);
                 put_span(p, nd[((i * 8) + 5)], nd[((i * 8) + 6)]);
                 put(((nyx_str){"' (only .ptr and .len)\n", 23}));
                 st[41] = 1;
@@ -3354,11 +3753,11 @@ void cexpr(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
                     q5 = (q5 + 1);
                 }
                 if ((ok == 0)) {
-                    char __b17[256];
-                    nyx_str __s17 = __nyx_fmt_begin(__b17, 256);
-                    __nyx_fmt_i64(&__s17, __b17, 256, (nyx_i64)(ln2));
-                    __nyx_fmt_str(&__s17, __b17, 256, (nyx_str){": struct '", 10});
-                    put(__s17);
+                    char __b20[256];
+                    nyx_str __s20 = __nyx_fmt_begin(__b20, 256);
+                    __nyx_fmt_i64(&__s20, __b20, 256, (nyx_i64)(ln2));
+                    __nyx_fmt_str(&__s20, __b20, 256, (nyx_str){": struct '", 10});
+                    put(__s20);
                     put_span(p, bt.s, bt.l);
                     put(((nyx_str){"' has no field '", 16}));
                     put_span(p, nd[((i * 8) + 5)], nd[((i * 8) + 6)]);
@@ -3368,11 +3767,11 @@ void cexpr(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
                 return;
             }
         }
-        char __b18[256];
-        nyx_str __s18 = __nyx_fmt_begin(__b18, 256);
-        __nyx_fmt_i64(&__s18, __b18, 256, (nyx_i64)(ln2));
-        __nyx_fmt_str(&__s18, __b18, 256, (nyx_str){": ", 2});
-        put(__s18);
+        char __b21[256];
+        nyx_str __s21 = __nyx_fmt_begin(__b21, 256);
+        __nyx_fmt_i64(&__s21, __b21, 256, (nyx_i64)(ln2));
+        __nyx_fmt_str(&__s21, __b21, 256, (nyx_str){": ", 2});
+        put(__s21);
         ty_put(p, st, bt);
         put(((nyx_str){" has no fields\n", 15}));
         st[41] = 1;
@@ -3403,11 +3802,11 @@ void cexpr(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
                 bd = 1;
             }
             if ((bd == 1)) {
-                char __b19[256];
-                nyx_str __s19 = __nyx_fmt_begin(__b19, 256);
-                __nyx_fmt_i64(&__s19, __b19, 256, (nyx_i64)(ln8));
-                __nyx_fmt_str(&__s19, __b19, 256, (nyx_str){": pageflags compose only with '|' between pageflags values (got ", 64});
-                put(__s19);
+                char __b22[256];
+                nyx_str __s22 = __nyx_fmt_begin(__b22, 256);
+                __nyx_fmt_i64(&__s22, __b22, 256, (nyx_i64)(ln8));
+                __nyx_fmt_str(&__s22, __b22, 256, (nyx_str){": pageflags compose only with '|' between pageflags values (got ", 64});
+                put(__s22);
                 ty_put(p, st, lt);
                 put(((nyx_str){" ", 1}));
                 op_put(c);
@@ -3419,20 +3818,20 @@ void cexpr(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
             }
             nyx_i64 m = cpfmask(p, st, i);
             if ((m < 0)) {
-                char __b20[256];
-                nyx_str __s20 = __nyx_fmt_begin(__b20, 256);
-                __nyx_fmt_i64(&__s20, __b20, 256, (nyx_i64)(ln8));
-                __nyx_fmt_str(&__s20, __b20, 256, (nyx_str){": compose pageflags from the PROT_* constants \xe2\x80\x94 a parameter's flags are opaque here (fixed at its call sites)\n", 112});
-                put(__s20);
+                char __b23[256];
+                nyx_str __s23 = __nyx_fmt_begin(__b23, 256);
+                __nyx_fmt_i64(&__s23, __b23, 256, (nyx_i64)(ln8));
+                __nyx_fmt_str(&__s23, __b23, 256, (nyx_str){": compose pageflags from the PROT_* constants \xe2\x80\x94 a parameter's flags are opaque here (fixed at its call sites)\n", 112});
+                put(__s23);
                 st[41] = 1;
                 return;
             }
             if ((((m & 2) > 0) && ((m & 4) > 0))) {
-                char __b21[256];
-                nyx_str __s21 = __nyx_fmt_begin(__b21, 256);
-                __nyx_fmt_i64(&__s21, __b21, 256, (nyx_i64)(ln8));
-                __nyx_fmt_str(&__s21, __b21, 256, (nyx_str){": W^X violation: a mapping cannot be both writable and executable\n", 66});
-                put(__s21);
+                char __b24[256];
+                nyx_str __s24 = __nyx_fmt_begin(__b24, 256);
+                __nyx_fmt_i64(&__s24, __b24, 256, (nyx_i64)(ln8));
+                __nyx_fmt_str(&__s24, __b24, 256, (nyx_str){": W^X violation: a mapping cannot be both writable and executable\n", 66});
+                put(__s24);
                 st[41] = 1;
             }
             return;
@@ -3440,11 +3839,11 @@ void cexpr(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
         nyx_bool lstr = span_is(p, lt, (st[44] + 7), 3);
         nyx_bool rstr = span_is(p, rt, (st[44] + 7), 3);
         if ((lstr || rstr)) {
-            char __b22[256];
-            nyx_str __s22 = __nyx_fmt_begin(__b22, 256);
-            __nyx_fmt_i64(&__s22, __b22, 256, (nyx_i64)(ln8));
-            __nyx_fmt_str(&__s22, __b22, 256, (nyx_str){": operator '", 12});
-            put(__s22);
+            char __b25[256];
+            nyx_str __s25 = __nyx_fmt_begin(__b25, 256);
+            __nyx_fmt_i64(&__s25, __b25, 256, (nyx_i64)(ln8));
+            __nyx_fmt_str(&__s25, __b25, 256, (nyx_str){": operator '", 12});
+            put(__s25);
             op_put(c);
             put(((nyx_str){"' cannot be applied to str values (build strings with interpolation)\n", 69}));
             st[41] = 1;
@@ -3457,11 +3856,11 @@ void cexpr(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
                 okp = 1;
             }
             if ((okp == 0)) {
-                char __b23[256];
-                nyx_str __s23 = __nyx_fmt_begin(__b23, 256);
-                __nyx_fmt_i64(&__s23, __b23, 256, (nyx_i64)(ln8));
-                __nyx_fmt_str(&__s23, __b23, 256, (nyx_str){": operator '", 12});
-                put(__s23);
+                char __b26[256];
+                nyx_str __s26 = __nyx_fmt_begin(__b26, 256);
+                __nyx_fmt_i64(&__s26, __b26, 256, (nyx_i64)(ln8));
+                __nyx_fmt_str(&__s26, __b26, 256, (nyx_str){": operator '", 12});
+                put(__s26);
                 op_put(c);
                 put(((nyx_str){"': pointers only support comparison against a compatible pointer (cast to addr for arithmetic)\n", 95}));
                 st[41] = 1;
@@ -3469,11 +3868,11 @@ void cexpr(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
             return;
         }
         if ((!(is_int_ty(p, lt)) || !(is_int_ty(p, rt)))) {
-            char __b24[256];
-            nyx_str __s24 = __nyx_fmt_begin(__b24, 256);
-            __nyx_fmt_i64(&__s24, __b24, 256, (nyx_i64)(ln8));
-            __nyx_fmt_str(&__s24, __b24, 256, (nyx_str){": operator '", 12});
-            put(__s24);
+            char __b27[256];
+            nyx_str __s27 = __nyx_fmt_begin(__b27, 256);
+            __nyx_fmt_i64(&__s27, __b27, 256, (nyx_i64)(ln8));
+            __nyx_fmt_str(&__s27, __b27, 256, (nyx_str){": operator '", 12});
+            put(__s27);
             op_put(c);
             put(((nyx_str){"' expects integer operands (got ", 32}));
             ty_put(p, st, lt);
@@ -3492,22 +3891,22 @@ void cexpr(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
         T ct = ((T){.pt = nd[((i * 8) + 2)], .us = nd[((i * 8) + 3)], .s = nd[((i * 8) + 5)], .l = nd[((i * 8) + 6)]});
         if (span_is(p, ct, (st[44] + 28), 9)) {
             nyx_i64 ln9 = nd[((i * 8) + 4)];
-            char __b25[256];
-            nyx_str __s25 = __nyx_fmt_begin(__b25, 256);
-            __nyx_fmt_i64(&__s25, __b25, 256, (nyx_i64)(ln9));
-            __nyx_fmt_str(&__s25, __b25, 256, (nyx_str){": cannot cast into pageflags \xe2\x80\x94 build it from the PROT_* constants (the W^X proof needs static flag sets)\n", 107});
-            put(__s25);
+            char __b28[256];
+            nyx_str __s28 = __nyx_fmt_begin(__b28, 256);
+            __nyx_fmt_i64(&__s28, __b28, 256, (nyx_i64)(ln9));
+            __nyx_fmt_str(&__s28, __b28, 256, (nyx_str){": cannot cast into pageflags \xe2\x80\x94 build it from the PROT_* constants (the W^X proof needs static flag sets)\n", 107});
+            put(__s28);
             st[41] = 1;
             return;
         }
         T sty2 = cinfer(p, st, nd[((i * 8) + 1)]);
         if ((span_is(p, sty2, (st[44] + 28), 9) && !(is_int_ty(p, ct)))) {
             nyx_i64 ln10 = nd[((i * 8) + 4)];
-            char __b26[256];
-            nyx_str __s26 = __nyx_fmt_begin(__b26, 256);
-            __nyx_fmt_i64(&__s26, __b26, 256, (nyx_i64)(ln10));
-            __nyx_fmt_str(&__s26, __b26, 256, (nyx_str){": pageflags may only be cast to an integer type (for a syscall argument), got ", 78});
-            put(__s26);
+            char __b29[256];
+            nyx_str __s29 = __nyx_fmt_begin(__b29, 256);
+            __nyx_fmt_i64(&__s29, __b29, 256, (nyx_i64)(ln10));
+            __nyx_fmt_str(&__s29, __b29, 256, (nyx_str){": pageflags may only be cast to an integer type (for a syscall argument), got ", 78});
+            put(__s29);
             ty_put(p, st, ct);
             put(((nyx_str){"\n", 1}));
             st[41] = 1;
@@ -3523,11 +3922,11 @@ void cexpr(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
         T bt = cinfer(p, st, nd[((i * 8) + 1)]);
         if (((bt.pt == 0) && !(span_is(p, bt, (st[44] + 7), 3)))) {
             nyx_i64 ln = nd[((i * 8) + 4)];
-            char __b27[256];
-            nyx_str __s27 = __nyx_fmt_begin(__b27, 256);
-            __nyx_fmt_i64(&__s27, __b27, 256, (nyx_i64)(ln));
-            __nyx_fmt_str(&__s27, __b27, 256, (nyx_str){": cannot index a ", 17});
-            put(__s27);
+            char __b30[256];
+            nyx_str __s30 = __nyx_fmt_begin(__b30, 256);
+            __nyx_fmt_i64(&__s30, __b30, 256, (nyx_i64)(ln));
+            __nyx_fmt_str(&__s30, __b30, 256, (nyx_str){": cannot index a ", 17});
+            put(__s30);
             ty_put(p, st, bt);
             put(((nyx_str){" value (only pointers and str)\n", 31}));
             st[41] = 1;
@@ -3536,11 +3935,11 @@ void cexpr(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
         T it = cinfer(p, st, nd[((i * 8) + 2)]);
         if (!(is_int_ty(p, it))) {
             nyx_i64 ln2 = nd[((i * 8) + 4)];
-            char __b28[256];
-            nyx_str __s28 = __nyx_fmt_begin(__b28, 256);
-            __nyx_fmt_i64(&__s28, __b28, 256, (nyx_i64)(ln2));
-            __nyx_fmt_str(&__s28, __b28, 256, (nyx_str){": index must be an integer (got ", 32});
-            put(__s28);
+            char __b31[256];
+            nyx_str __s31 = __nyx_fmt_begin(__b31, 256);
+            __nyx_fmt_i64(&__s31, __b31, 256, (nyx_i64)(ln2));
+            __nyx_fmt_str(&__s31, __b31, 256, (nyx_str){": index must be an integer (got ", 32});
+            put(__s31);
             ty_put(p, st, it);
             put(((nyx_str){")\n", 2}));
             st[41] = 1;
@@ -3564,22 +3963,22 @@ void cexpr(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
             nyx_bool hstr = span_is(p, ht, (st[44] + 7), 3);
             nyx_bool hint = is_int_ty(p, ht);
             if ((!(hstr) && !(hint))) {
-                char __b29[256];
-                nyx_str __s29 = __nyx_fmt_begin(__b29, 256);
-                __nyx_fmt_i64(&__s29, __b29, 256, (nyx_i64)(ln7));
-                __nyx_fmt_str(&__s29, __b29, 256, (nyx_str){": cannot interpolate a ", 23});
-                put(__s29);
+                char __b32[256];
+                nyx_str __s32 = __nyx_fmt_begin(__b32, 256);
+                __nyx_fmt_i64(&__s32, __b32, 256, (nyx_i64)(ln7));
+                __nyx_fmt_str(&__s32, __b32, 256, (nyx_str){": cannot interpolate a ", 23});
+                put(__s32);
                 ty_put(p, st, ht);
                 put(((nyx_str){" value (only str and integers)\n", 31}));
                 st[41] = 1;
                 return;
             }
             if (((al[((nd[((i * 8) + 1)] + (q3 * 8)) + 3)] == 1) && !(hint))) {
-                char __b30[256];
-                nyx_str __s30 = __nyx_fmt_begin(__b30, 256);
-                __nyx_fmt_i64(&__s30, __b30, 256, (nyx_i64)(ln7));
-                __nyx_fmt_str(&__s30, __b30, 256, (nyx_str){": format specs apply to integers \xe2\x80\x94 a str interpolates as text\n", 64});
-                put(__s30);
+                char __b33[256];
+                nyx_str __s33 = __nyx_fmt_begin(__b33, 256);
+                __nyx_fmt_i64(&__s33, __b33, 256, (nyx_i64)(ln7));
+                __nyx_fmt_str(&__s33, __b33, 256, (nyx_str){": format specs apply to integers \xe2\x80\x94 a str interpolates as text\n", 64});
+                put(__s33);
                 st[41] = 1;
                 return;
             }
@@ -3592,11 +3991,11 @@ void cexpr(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
         nyx_i64 na2 = nd[((i * 8) + 3)];
         nyx_i64 si2 = sfind(p, st, nd[((i * 8) + 5)], nd[((i * 8) + 6)]);
         if ((si2 < 0)) {
-            char __b31[256];
-            nyx_str __s31 = __nyx_fmt_begin(__b31, 256);
-            __nyx_fmt_i64(&__s31, __b31, 256, (nyx_i64)(ln3));
-            __nyx_fmt_str(&__s31, __b31, 256, (nyx_str){": unknown struct '", 18});
-            put(__s31);
+            char __b34[256];
+            nyx_str __s34 = __nyx_fmt_begin(__b34, 256);
+            __nyx_fmt_i64(&__s34, __b34, 256, (nyx_i64)(ln3));
+            __nyx_fmt_str(&__s34, __b34, 256, (nyx_str){": unknown struct '", 18});
+            put(__s34);
             put_span(p, nd[((i * 8) + 5)], nd[((i * 8) + 6)]);
             put(((nyx_str){"'\n", 2}));
             st[41] = 1;
@@ -3617,11 +4016,11 @@ void cexpr(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
                 j = (j + 1);
             }
             if ((seen != 1)) {
-                char __b32[256];
-                nyx_str __s32 = __nyx_fmt_begin(__b32, 256);
-                __nyx_fmt_i64(&__s32, __b32, 256, (nyx_i64)(ln3));
-                __nyx_fmt_str(&__s32, __b32, 256, (nyx_str){": literal for '", 15});
-                put(__s32);
+                char __b35[256];
+                nyx_str __s35 = __nyx_fmt_begin(__b35, 256);
+                __nyx_fmt_i64(&__s35, __b35, 256, (nyx_i64)(ln3));
+                __nyx_fmt_str(&__s35, __b35, 256, (nyx_str){": literal for '", 15});
+                put(__s35);
                 put_span(p, nd[((i * 8) + 5)], nd[((i * 8) + 6)]);
                 put(((nyx_str){"' must initialize field '", 25}));
                 put_span(p, al[r2], al[(r2 + 1)]);
@@ -3632,11 +4031,11 @@ void cexpr(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
             q4 = (q4 + 1);
         }
         if ((na2 != nf)) {
-            char __b33[256];
-            nyx_str __s33 = __nyx_fmt_begin(__b33, 256);
-            __nyx_fmt_i64(&__s33, __b33, 256, (nyx_i64)(ln3));
-            __nyx_fmt_str(&__s33, __b33, 256, (nyx_str){": literal for '", 15});
-            put(__s33);
+            char __b36[256];
+            nyx_str __s36 = __nyx_fmt_begin(__b36, 256);
+            __nyx_fmt_i64(&__s36, __b36, 256, (nyx_i64)(ln3));
+            __nyx_fmt_str(&__s36, __b36, 256, (nyx_str){": literal for '", 15});
+            put(__s36);
             put_span(p, nd[((i * 8) + 5)], nd[((i * 8) + 6)]);
             put(((nyx_str){"' names a field it does not have\n", 33}));
             st[41] = 1;
@@ -3660,11 +4059,11 @@ void cexpr(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
                 q6 = (q6 + 1);
             }
             if (!(tcompat(p, at2, dt))) {
-                char __b34[256];
-                nyx_str __s34 = __nyx_fmt_begin(__b34, 256);
-                __nyx_fmt_i64(&__s34, __b34, 256, (nyx_i64)(ln3));
-                __nyx_fmt_str(&__s34, __b34, 256, (nyx_str){": field '", 9});
-                put(__s34);
+                char __b37[256];
+                nyx_str __s37 = __nyx_fmt_begin(__b37, 256);
+                __nyx_fmt_i64(&__s37, __b37, 256, (nyx_i64)(ln3));
+                __nyx_fmt_str(&__s37, __b37, 256, (nyx_str){": field '", 9});
+                put(__s37);
                 put_span(p, al[(lst + (j2 * 3))], al[((lst + (j2 * 3)) + 1)]);
                 put(((nyx_str){"' of '", 6}));
                 put_span(p, nd[((i * 8) + 5)], nd[((i * 8) + 6)]);
@@ -3685,11 +4084,11 @@ void cexpr(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
         nyx_i64 na6 = nd[((i * 8) + 3)];
         nyx_i64 ei2 = efind(p, st, nd[((i * 8) + 5)], nd[((i * 8) + 6)]);
         if ((ei2 < 0)) {
-            char __b35[256];
-            nyx_str __s35 = __nyx_fmt_begin(__b35, 256);
-            __nyx_fmt_i64(&__s35, __b35, 256, (nyx_i64)(ln6));
-            __nyx_fmt_str(&__s35, __b35, 256, (nyx_str){": unknown enum '", 16});
-            put(__s35);
+            char __b38[256];
+            nyx_str __s38 = __nyx_fmt_begin(__b38, 256);
+            __nyx_fmt_i64(&__s38, __b38, 256, (nyx_i64)(ln6));
+            __nyx_fmt_str(&__s38, __b38, 256, (nyx_str){": unknown enum '", 16});
+            put(__s38);
             put_span(p, nd[((i * 8) + 5)], nd[((i * 8) + 6)]);
             put(((nyx_str){"'\n", 2}));
             st[41] = 1;
@@ -3697,11 +4096,11 @@ void cexpr(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
         }
         nyx_i64 vi5 = vfindx(p, st, ei2, nd[((i * 8) + 2)], nd[((i * 8) + 7)]);
         if ((vi5 < 0)) {
-            char __b36[256];
-            nyx_str __s36 = __nyx_fmt_begin(__b36, 256);
-            __nyx_fmt_i64(&__s36, __b36, 256, (nyx_i64)(ln6));
-            __nyx_fmt_str(&__s36, __b36, 256, (nyx_str){": enum '", 8});
-            put(__s36);
+            char __b39[256];
+            nyx_str __s39 = __nyx_fmt_begin(__b39, 256);
+            __nyx_fmt_i64(&__s39, __b39, 256, (nyx_i64)(ln6));
+            __nyx_fmt_str(&__s39, __b39, 256, (nyx_str){": enum '", 8});
+            put(__s39);
             put_span(p, nd[((i * 8) + 5)], nd[((i * 8) + 6)]);
             put(((nyx_str){"' has no variant '", 18}));
             put_span(p, nd[((i * 8) + 2)], nd[((i * 8) + 7)]);
@@ -3726,11 +4125,11 @@ void cexpr(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
                 j3 = (j3 + 1);
             }
             if ((seen2 != 1)) {
-                char __b37[256];
-                nyx_str __s37 = __nyx_fmt_begin(__b37, 256);
-                __nyx_fmt_i64(&__s37, __b37, 256, (nyx_i64)(ln6));
-                __nyx_fmt_str(&__s37, __b37, 256, (nyx_str){": literal for '", 15});
-                put(__s37);
+                char __b40[256];
+                nyx_str __s40 = __nyx_fmt_begin(__b40, 256);
+                __nyx_fmt_i64(&__s40, __b40, 256, (nyx_i64)(ln6));
+                __nyx_fmt_str(&__s40, __b40, 256, (nyx_str){": literal for '", 15});
+                put(__s40);
                 put_span(p, nd[((i * 8) + 5)], nd[((i * 8) + 6)]);
                 put(((nyx_str){".", 1}));
                 put_span(p, nd[((i * 8) + 2)], nd[((i * 8) + 7)]);
@@ -3743,11 +4142,11 @@ void cexpr(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
             q7 = (q7 + 1);
         }
         if ((na6 != nf4)) {
-            char __b38[256];
-            nyx_str __s38 = __nyx_fmt_begin(__b38, 256);
-            __nyx_fmt_i64(&__s38, __b38, 256, (nyx_i64)(ln6));
-            __nyx_fmt_str(&__s38, __b38, 256, (nyx_str){": literal for '", 15});
-            put(__s38);
+            char __b41[256];
+            nyx_str __s41 = __nyx_fmt_begin(__b41, 256);
+            __nyx_fmt_i64(&__s41, __b41, 256, (nyx_i64)(ln6));
+            __nyx_fmt_str(&__s41, __b41, 256, (nyx_str){": literal for '", 15});
+            put(__s41);
             put_span(p, nd[((i * 8) + 5)], nd[((i * 8) + 6)]);
             put(((nyx_str){".", 1}));
             put_span(p, nd[((i * 8) + 2)], nd[((i * 8) + 7)]);
@@ -3773,11 +4172,11 @@ void cexpr(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
                 q8 = (q8 + 1);
             }
             if (!(tcompat(p, at6, dt2))) {
-                char __b39[256];
-                nyx_str __s39 = __nyx_fmt_begin(__b39, 256);
-                __nyx_fmt_i64(&__s39, __b39, 256, (nyx_i64)(ln6));
-                __nyx_fmt_str(&__s39, __b39, 256, (nyx_str){": field '", 9});
-                put(__s39);
+                char __b42[256];
+                nyx_str __s42 = __nyx_fmt_begin(__b42, 256);
+                __nyx_fmt_i64(&__s42, __b42, 256, (nyx_i64)(ln6));
+                __nyx_fmt_str(&__s42, __b42, 256, (nyx_str){": field '", 9});
+                put(__s42);
                 put_span(p, al[(lst3 + (j4 * 3))], al[((lst3 + (j4 * 3)) + 1)]);
                 put(((nyx_str){"' of '", 6}));
                 put_span(p, nd[((i * 8) + 5)], nd[((i * 8) + 6)]);
@@ -4026,17 +4425,32 @@ void cstmt(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
             st[41] = 1;
             return;
         }
+        nyx_i64 bfi = fnty_of(p, st, rt2);
+        if ((bfi >= st[69])) {
+            nyx_i64 ln7 = nd[((i * 8) + 4)];
+            char __b1[256];
+            nyx_str __s1 = __nyx_fmt_begin(__b1, 256);
+            __nyx_fmt_i64(&__s1, __b1, 256, (nyx_i64)(ln7));
+            __nyx_fmt_str(&__s1, __b1, 256, (nyx_str){": cannot bind '", 15});
+            put(__s1);
+            put_span(p, nd[((i * 8) + 5)], nd[((i * 8) + 6)]);
+            put(((nyx_str){"': the function type ", 21}));
+            ty_put(p, st, rt2);
+            put(((nyx_str){" is declared nowhere in this program \xe2\x80\x94 pass the function as an argument, or store it in a field, of that type\n", 112}));
+            st[41] = 1;
+            return;
+        }
         cmove(p, st, nd[((i * 8) + 1)], nd[((i * 8) + 4)]);
         if ((st[41] == 1)) {
             return;
         }
         if ((tyown(p, st, rt2) && (nd[((i * 8) + 3)] == 1))) {
             nyx_i64 ln6 = nd[((i * 8) + 4)];
-            char __b1[256];
-            nyx_str __s1 = __nyx_fmt_begin(__b1, 256);
-            __nyx_fmt_i64(&__s1, __b1, 256, (nyx_i64)(ln6));
-            __nyx_fmt_str(&__s1, __b1, 256, (nyx_str){": own bindings are immutable \xe2\x80\x94 ownership transfers by move (v0.17)\n", 69});
-            put(__s1);
+            char __b2[256];
+            nyx_str __s2 = __nyx_fmt_begin(__b2, 256);
+            __nyx_fmt_i64(&__s2, __b2, 256, (nyx_i64)(ln6));
+            __nyx_fmt_str(&__s2, __b2, 256, (nyx_str){": own bindings are immutable \xe2\x80\x94 ownership transfers by move (v0.17)\n", 69});
+            put(__s2);
             st[41] = 1;
             return;
         }
@@ -4065,11 +4479,11 @@ void cstmt(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
             T ibt = cinfer(p, st, nd[((r * 8) + 1)]);
             if (span_is(p, ibt, (st[44] + 7), 3)) {
                 nyx_i64 ln = nd[((i * 8) + 4)];
-                char __b2[256];
-                nyx_str __s2 = __nyx_fmt_begin(__b2, 256);
-                __nyx_fmt_i64(&__s2, __b2, 256, (nyx_i64)(ln));
-                __nyx_fmt_str(&__s2, __b2, 256, (nyx_str){": cannot write through a str index \xe2\x80\x94 str is an immutable view of its text\n", 76});
-                put(__s2);
+                char __b3[256];
+                nyx_str __s3 = __nyx_fmt_begin(__b3, 256);
+                __nyx_fmt_i64(&__s3, __b3, 256, (nyx_i64)(ln));
+                __nyx_fmt_str(&__s3, __b3, 256, (nyx_str){": cannot write through a str index \xe2\x80\x94 str is an immutable view of its text\n", 76});
+                put(__s3);
                 st[41] = 1;
                 return;
             }
@@ -4079,11 +4493,11 @@ void cstmt(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
             nyx_i64* va = (nyx_i64*)(st[39]);
             if (((v >= 0) && (va[((v * 10) + 2)] == 0))) {
                 nyx_i64 ln = nd[((i * 8) + 4)];
-                char __b3[256];
-                nyx_str __s3 = __nyx_fmt_begin(__b3, 256);
-                __nyx_fmt_i64(&__s3, __b3, 256, (nyx_i64)(ln));
-                __nyx_fmt_str(&__s3, __b3, 256, (nyx_str){": cannot assign to immutable '", 30});
-                put(__s3);
+                char __b4[256];
+                nyx_str __s4 = __nyx_fmt_begin(__b4, 256);
+                __nyx_fmt_i64(&__s4, __b4, 256, (nyx_i64)(ln));
+                __nyx_fmt_str(&__s4, __b4, 256, (nyx_str){": cannot assign to immutable '", 30});
+                put(__s4);
                 put_span(p, nd[((r * 8) + 5)], nd[((r * 8) + 6)]);
                 put(((nyx_str){"' (declare it with 'mut')\n", 26}));
                 st[41] = 1;
@@ -4094,11 +4508,11 @@ void cstmt(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
         T rt3 = cinfer(p, st, nd[((i * 8) + 2)]);
         if (!(tcompat(p, rt3, lt))) {
             nyx_i64 ln2 = nd[((i * 8) + 4)];
-            char __b4[256];
-            nyx_str __s4 = __nyx_fmt_begin(__b4, 256);
-            __nyx_fmt_i64(&__s4, __b4, 256, (nyx_i64)(ln2));
-            __nyx_fmt_str(&__s4, __b4, 256, (nyx_str){": cannot assign ", 16});
-            put(__s4);
+            char __b5[256];
+            nyx_str __s5 = __nyx_fmt_begin(__b5, 256);
+            __nyx_fmt_i64(&__s5, __b5, 256, (nyx_i64)(ln2));
+            __nyx_fmt_str(&__s5, __b5, 256, (nyx_str){": cannot assign ", 16});
+            put(__s5);
             ty_put(p, st, rt3);
             put(((nyx_str){" to a ", 6}));
             ty_put(p, st, lt);
@@ -4108,11 +4522,11 @@ void cstmt(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
         }
         if (((nd[((i * 8) + 3)] != 0) && !(is_int_ty(p, lt)))) {
             nyx_i64 ln3 = nd[((i * 8) + 4)];
-            char __b5[256];
-            nyx_str __s5 = __nyx_fmt_begin(__b5, 256);
-            __nyx_fmt_i64(&__s5, __b5, 256, (nyx_i64)(ln3));
-            __nyx_fmt_str(&__s5, __b5, 256, (nyx_str){": '", 3});
-            put(__s5);
+            char __b6[256];
+            nyx_str __s6 = __nyx_fmt_begin(__b6, 256);
+            __nyx_fmt_i64(&__s6, __b6, 256, (nyx_i64)(ln3));
+            __nyx_fmt_str(&__s6, __b6, 256, (nyx_str){": '", 3});
+            put(__s6);
             if ((nd[((i * 8) + 3)] == 1)) {
                 put(((nyx_str){"+=", 2}));
             }
@@ -4148,22 +4562,22 @@ void cstmt(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
         if ((nd[((i * 8) + 1)] > 0)) {
             if (((rt4.l == 0) || nvr)) {
                 nyx_i64 ln = nd[((i * 8) + 4)];
-                char __b6[256];
-                nyx_str __s6 = __nyx_fmt_begin(__b6, 256);
-                __nyx_fmt_i64(&__s6, __b6, 256, (nyx_i64)(ln));
-                __nyx_fmt_str(&__s6, __b6, 256, (nyx_str){": 'return' with a value in a function with no return type\n", 58});
-                put(__s6);
+                char __b7[256];
+                nyx_str __s7 = __nyx_fmt_begin(__b7, 256);
+                __nyx_fmt_i64(&__s7, __b7, 256, (nyx_i64)(ln));
+                __nyx_fmt_str(&__s7, __b7, 256, (nyx_str){": 'return' with a value in a function with no return type\n", 58});
+                put(__s7);
                 st[41] = 1;
                 return;
             }
             T vt = cinfer(p, st, nd[((i * 8) + 1)]);
             if (!(tcompat(p, vt, rt4))) {
                 nyx_i64 ln2 = nd[((i * 8) + 4)];
-                char __b7[256];
-                nyx_str __s7 = __nyx_fmt_begin(__b7, 256);
-                __nyx_fmt_i64(&__s7, __b7, 256, (nyx_i64)(ln2));
-                __nyx_fmt_str(&__s7, __b7, 256, (nyx_str){": return type mismatch: expected ", 33});
-                put(__s7);
+                char __b8[256];
+                nyx_str __s8 = __nyx_fmt_begin(__b8, 256);
+                __nyx_fmt_i64(&__s8, __b8, 256, (nyx_i64)(ln2));
+                __nyx_fmt_str(&__s8, __b8, 256, (nyx_str){": return type mismatch: expected ", 33});
+                put(__s8);
                 ty_put(p, st, rt4);
                 put(((nyx_str){", got ", 6}));
                 ty_put(p, st, vt);
@@ -4177,11 +4591,11 @@ void cstmt(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
         }
         if (((rt4.l > 0) && !(nvr))) {
             nyx_i64 ln3 = nd[((i * 8) + 4)];
-            char __b8[256];
-            nyx_str __s8 = __nyx_fmt_begin(__b8, 256);
-            __nyx_fmt_i64(&__s8, __b8, 256, (nyx_i64)(ln3));
-            __nyx_fmt_str(&__s8, __b8, 256, (nyx_str){": 'return' without a value in a function returning ", 51});
-            put(__s8);
+            char __b9[256];
+            nyx_str __s9 = __nyx_fmt_begin(__b9, 256);
+            __nyx_fmt_i64(&__s9, __b9, 256, (nyx_i64)(ln3));
+            __nyx_fmt_str(&__s9, __b9, 256, (nyx_str){": 'return' without a value in a function returning ", 51});
+            put(__s9);
             ty_put(p, st, rt4);
             put(((nyx_str){"\n", 1}));
             st[41] = 1;
@@ -4197,11 +4611,11 @@ void cstmt(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
         }
         if (tyown(p, st, cinfer(p, st, nd[((i * 8) + 1)]))) {
             nyx_i64 ln7 = nd[((i * 8) + 4)];
-            char __b9[256];
-            nyx_str __s9 = __nyx_fmt_begin(__b9, 256);
-            __nyx_fmt_i64(&__s9, __b9, 256, (nyx_i64)(ln7));
-            __nyx_fmt_str(&__s9, __b9, 256, (nyx_str){": own result discarded \xe2\x80\x94 bind it so someone owns it\n", 54});
-            put(__s9);
+            char __b10[256];
+            nyx_str __s10 = __nyx_fmt_begin(__b10, 256);
+            __nyx_fmt_i64(&__s10, __b10, 256, (nyx_i64)(ln7));
+            __nyx_fmt_str(&__s10, __b10, 256, (nyx_str){": own result discarded \xe2\x80\x94 bind it so someone owns it\n", 54});
+            put(__s10);
             st[41] = 1;
         }
         return;
@@ -4256,11 +4670,11 @@ void cstmt(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
             }
             if ((((tr == 0) && (er == 0)) && (tv != va7[((j3 * 10) + 8)]))) {
                 nyx_i64 ln8 = nd[((i * 8) + 4)];
-                char __b10[256];
-                nyx_str __s10 = __nyx_fmt_begin(__b10, 256);
-                __nyx_fmt_i64(&__s10, __b10, 256, (nyx_i64)(ln8));
-                __nyx_fmt_str(&__s10, __b10, 256, (nyx_str){": own value '", 13});
-                put(__s10);
+                char __b11[256];
+                nyx_str __s11 = __nyx_fmt_begin(__b11, 256);
+                __nyx_fmt_i64(&__s11, __b11, 256, (nyx_i64)(ln8));
+                __nyx_fmt_str(&__s11, __b11, 256, (nyx_str){": own value '", 13});
+                put(__s11);
                 put_span(p, va7[(j3 * 10)], va7[((j3 * 10) + 1)]);
                 put(((nyx_str){"' is consumed in only one branch of this if \xe2\x80\x94 both branches must agree (v0.18)\n", 81}));
                 st[41] = 1;
@@ -4273,11 +4687,11 @@ void cstmt(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
     if ((k == 28)) {
         if ((st[43] != 1)) {
             nyx_i64 ln = nd[((i * 8) + 4)];
-            char __b11[256];
-            nyx_str __s11 = __nyx_fmt_begin(__b11, 256);
-            __nyx_fmt_i64(&__s11, __b11, 256, (nyx_i64)(ln));
-            __nyx_fmt_str(&__s11, __b11, 256, (nyx_str){": defer is only allowed in the function's outermost block\n", 58});
-            put(__s11);
+            char __b12[256];
+            nyx_str __s12 = __nyx_fmt_begin(__b12, 256);
+            __nyx_fmt_i64(&__s12, __b12, 256, (nyx_i64)(ln));
+            __nyx_fmt_str(&__s12, __b12, 256, (nyx_str){": defer is only allowed in the function's outermost block\n", 58});
+            put(__s12);
             st[41] = 1;
             return;
         }
@@ -4294,11 +4708,11 @@ void cstmt(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
         T bt2 = cinfer(p, st, nd[((i * 8) + 2)]);
         if ((!(is_int_ty(p, at2)) || !(is_int_ty(p, bt2)))) {
             nyx_i64 ln5 = nd[((i * 8) + 4)];
-            char __b12[256];
-            nyx_str __s12 = __nyx_fmt_begin(__b12, 256);
-            __nyx_fmt_i64(&__s12, __b12, 256, (nyx_i64)(ln5));
-            __nyx_fmt_str(&__s12, __b12, 256, (nyx_str){": for range bounds must be integers (got ", 41});
-            put(__s12);
+            char __b13[256];
+            nyx_str __s13 = __nyx_fmt_begin(__b13, 256);
+            __nyx_fmt_i64(&__s13, __b13, 256, (nyx_i64)(ln5));
+            __nyx_fmt_str(&__s13, __b13, 256, (nyx_str){": for range bounds must be integers (got ", 41});
+            put(__s13);
             ty_put(p, st, at2);
             put(((nyx_str){" .. ", 4}));
             ty_put(p, st, bt2);
@@ -4329,11 +4743,11 @@ void cstmt(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
             ei = efind(p, st, sty.s, sty.l);
         }
         if ((ei < 0)) {
-            char __b13[256];
-            nyx_str __s13 = __nyx_fmt_begin(__b13, 256);
-            __nyx_fmt_i64(&__s13, __b13, 256, (nyx_i64)(ln4));
-            __nyx_fmt_str(&__s13, __b13, 256, (nyx_str){": match subject must be an enum value (got ", 43});
-            put(__s13);
+            char __b14[256];
+            nyx_str __s14 = __nyx_fmt_begin(__b14, 256);
+            __nyx_fmt_i64(&__s14, __b14, 256, (nyx_i64)(ln4));
+            __nyx_fmt_str(&__s14, __b14, 256, (nyx_str){": match subject must be an enum value (got ", 43});
+            put(__s14);
             ty_put(p, st, sty);
             put(((nyx_str){")\n", 2}));
             st[41] = 1;
@@ -4354,11 +4768,11 @@ void cstmt(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
                 a2 = (a2 + 1);
             }
             if ((seen != 1)) {
-                char __b14[256];
-                nyx_str __s14 = __nyx_fmt_begin(__b14, 256);
-                __nyx_fmt_i64(&__s14, __b14, 256, (nyx_i64)(ln4));
-                __nyx_fmt_str(&__s14, __b14, 256, (nyx_str){": match must cover variant '", 28});
-                put(__s14);
+                char __b15[256];
+                nyx_str __s15 = __nyx_fmt_begin(__b15, 256);
+                __nyx_fmt_i64(&__s15, __b15, 256, (nyx_i64)(ln4));
+                __nyx_fmt_str(&__s15, __b15, 256, (nyx_str){": match must cover variant '", 28});
+                put(__s15);
                 put_span(p, al[(vbase + (v2 * 4))], al[((vbase + (v2 * 4)) + 1)]);
                 put(((nyx_str){"' exactly once\n", 15}));
                 st[41] = 1;
@@ -4367,11 +4781,11 @@ void cstmt(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
             v2 = (v2 + 1);
         }
         if ((na3 != nv)) {
-            char __b15[256];
-            nyx_str __s15 = __nyx_fmt_begin(__b15, 256);
-            __nyx_fmt_i64(&__s15, __b15, 256, (nyx_i64)(ln4));
-            __nyx_fmt_str(&__s15, __b15, 256, (nyx_str){": match names a variant '", 25});
-            put(__s15);
+            char __b16[256];
+            nyx_str __s16 = __nyx_fmt_begin(__b16, 256);
+            __nyx_fmt_i64(&__s16, __b16, 256, (nyx_i64)(ln4));
+            __nyx_fmt_str(&__s16, __b16, 256, (nyx_str){": match names a variant '", 25});
+            put(__s16);
             put_span(p, ea[(ei * 4)], ea[((ei * 4) + 1)]);
             put(((nyx_str){"' does not have\n", 16}));
             st[41] = 1;
@@ -4384,20 +4798,20 @@ void cstmt(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
                 nyx_i64 arl = al[((armb + (a3 * 6)) + 5)];
                 nyx_i64 nb2 = al[((armb + (a3 * 6)) + 2)];
                 nyx_i64 pf = al[((vbase + (vix * 4)) + 2)];
-                char __b16[256];
-                nyx_str __s16 = __nyx_fmt_begin(__b16, 256);
-                __nyx_fmt_i64(&__s16, __b16, 256, (nyx_i64)(arl));
-                __nyx_fmt_str(&__s16, __b16, 256, (nyx_str){": arm '", 7});
-                put(__s16);
-                put_span(p, al[(armb + (a3 * 6))], al[((armb + (a3 * 6)) + 1)]);
                 char __b17[256];
                 nyx_str __s17 = __nyx_fmt_begin(__b17, 256);
-                __nyx_fmt_str(&__s17, __b17, 256, (nyx_str){"' binds ", 8});
-                __nyx_fmt_i64(&__s17, __b17, 256, (nyx_i64)(nb2));
-                __nyx_fmt_str(&__s17, __b17, 256, (nyx_str){" name(s), but the payload has ", 30});
-                __nyx_fmt_i64(&__s17, __b17, 256, (nyx_i64)(pf));
-                __nyx_fmt_str(&__s17, __b17, 256, (nyx_str){" field(s)\n", 10});
+                __nyx_fmt_i64(&__s17, __b17, 256, (nyx_i64)(arl));
+                __nyx_fmt_str(&__s17, __b17, 256, (nyx_str){": arm '", 7});
                 put(__s17);
+                put_span(p, al[(armb + (a3 * 6))], al[((armb + (a3 * 6)) + 1)]);
+                char __b18[256];
+                nyx_str __s18 = __nyx_fmt_begin(__b18, 256);
+                __nyx_fmt_str(&__s18, __b18, 256, (nyx_str){"' binds ", 8});
+                __nyx_fmt_i64(&__s18, __b18, 256, (nyx_i64)(nb2));
+                __nyx_fmt_str(&__s18, __b18, 256, (nyx_str){" name(s), but the payload has ", 30});
+                __nyx_fmt_i64(&__s18, __b18, 256, (nyx_i64)(pf));
+                __nyx_fmt_str(&__s18, __b18, 256, (nyx_str){" field(s)\n", 10});
+                put(__s18);
                 st[41] = 1;
                 return;
             }
@@ -4436,11 +4850,11 @@ void cstmt(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
             nyx_i64 arl2 = al[((armb + (a5 * 6)) + 5)];
             nyx_bool nvr2 = ((at5.l == 5) && eq5(p, at5.s, 110, 101, 118, 101, 114));
             if (((at5.l == 0) || nvr2)) {
-                char __b18[256];
-                nyx_str __s18 = __nyx_fmt_begin(__b18, 256);
-                __nyx_fmt_i64(&__s18, __b18, 256, (nyx_i64)(arl2));
-                __nyx_fmt_str(&__s18, __b18, 256, (nyx_str){": match arm '", 13});
-                put(__s18);
+                char __b19[256];
+                nyx_str __s19 = __nyx_fmt_begin(__b19, 256);
+                __nyx_fmt_i64(&__s19, __b19, 256, (nyx_i64)(arl2));
+                __nyx_fmt_str(&__s19, __b19, 256, (nyx_str){": match arm '", 13});
+                put(__s19);
                 put_span(p, al[(armb + (a5 * 6))], al[((armb + (a5 * 6)) + 1)]);
                 put(((nyx_str){"' must yield a value\n", 21}));
                 st[41] = 1;
@@ -4450,11 +4864,11 @@ void cstmt(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
                 res = at5;
             }
             if (((a5 > 0) && !(tcompat(p, at5, res)))) {
-                char __b19[256];
-                nyx_str __s19 = __nyx_fmt_begin(__b19, 256);
-                __nyx_fmt_i64(&__s19, __b19, 256, (nyx_i64)(arl2));
-                __nyx_fmt_str(&__s19, __b19, 256, (nyx_str){": match arms disagree: arm '", 28});
-                put(__s19);
+                char __b20[256];
+                nyx_str __s20 = __nyx_fmt_begin(__b20, 256);
+                __nyx_fmt_i64(&__s20, __b20, 256, (nyx_i64)(arl2));
+                __nyx_fmt_str(&__s20, __b20, 256, (nyx_str){": match arms disagree: arm '", 28});
+                put(__s20);
                 put_span(p, al[(armb + (a5 * 6))], al[((armb + (a5 * 6)) + 1)]);
                 put(((nyx_str){"' yields ", 9}));
                 ty_put(p, st, at5);
@@ -4467,11 +4881,11 @@ void cstmt(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
             a5 = (a5 + 1);
         }
         if (tyown(p, st, res)) {
-            char __b20[256];
-            nyx_str __s20 = __nyx_fmt_begin(__b20, 256);
-            __nyx_fmt_i64(&__s20, __b20, 256, (nyx_i64)(ln4));
-            __nyx_fmt_str(&__s20, __b20, 256, (nyx_str){": own values cannot flow through a match expression (v0.17)\n", 60});
-            put(__s20);
+            char __b21[256];
+            nyx_str __s21 = __nyx_fmt_begin(__b21, 256);
+            __nyx_fmt_i64(&__s21, __b21, 256, (nyx_i64)(ln4));
+            __nyx_fmt_str(&__s21, __b21, 256, (nyx_str){": own values cannot flow through a match expression (v0.17)\n", 60});
+            put(__s21);
             st[41] = 1;
             return;
         }
@@ -4488,11 +4902,11 @@ void cstmt(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
             if ((nd[(r6 * 8)] == 13)) {
                 T ibt2 = cinfer(p, st, nd[((r6 * 8) + 1)]);
                 if (span_is(p, ibt2, (st[44] + 7), 3)) {
-                    char __b21[256];
-                    nyx_str __s21 = __nyx_fmt_begin(__b21, 256);
-                    __nyx_fmt_i64(&__s21, __b21, 256, (nyx_i64)(ln4));
-                    __nyx_fmt_str(&__s21, __b21, 256, (nyx_str){": cannot write through a str index \xe2\x80\x94 str is an immutable view of its text\n", 76});
-                    put(__s21);
+                    char __b22[256];
+                    nyx_str __s22 = __nyx_fmt_begin(__b22, 256);
+                    __nyx_fmt_i64(&__s22, __b22, 256, (nyx_i64)(ln4));
+                    __nyx_fmt_str(&__s22, __b22, 256, (nyx_str){": cannot write through a str index \xe2\x80\x94 str is an immutable view of its text\n", 76});
+                    put(__s22);
                     st[41] = 1;
                     return;
                 }
@@ -4501,11 +4915,11 @@ void cstmt(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
                 nyx_i64 v6 = vfind(p, st, nd[((r6 * 8) + 5)], nd[((r6 * 8) + 6)]);
                 nyx_i64* va2 = (nyx_i64*)(st[39]);
                 if (((v6 >= 0) && (va2[((v6 * 10) + 2)] == 0))) {
-                    char __b22[256];
-                    nyx_str __s22 = __nyx_fmt_begin(__b22, 256);
-                    __nyx_fmt_i64(&__s22, __b22, 256, (nyx_i64)(ln4));
-                    __nyx_fmt_str(&__s22, __b22, 256, (nyx_str){": cannot assign to immutable '", 30});
-                    put(__s22);
+                    char __b23[256];
+                    nyx_str __s23 = __nyx_fmt_begin(__b23, 256);
+                    __nyx_fmt_i64(&__s23, __b23, 256, (nyx_i64)(ln4));
+                    __nyx_fmt_str(&__s23, __b23, 256, (nyx_str){": cannot assign to immutable '", 30});
+                    put(__s23);
                     put_span(p, nd[((r6 * 8) + 5)], nd[((r6 * 8) + 6)]);
                     put(((nyx_str){"' (declare it with 'mut')\n", 26}));
                     st[41] = 1;
@@ -4514,11 +4928,11 @@ void cstmt(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
             }
             T lt3 = cinfer(p, st, lhs2);
             if (!(tcompat(p, res, lt3))) {
-                char __b23[256];
-                nyx_str __s23 = __nyx_fmt_begin(__b23, 256);
-                __nyx_fmt_i64(&__s23, __b23, 256, (nyx_i64)(ln4));
-                __nyx_fmt_str(&__s23, __b23, 256, (nyx_str){": cannot assign ", 16});
-                put(__s23);
+                char __b24[256];
+                nyx_str __s24 = __nyx_fmt_begin(__b24, 256);
+                __nyx_fmt_i64(&__s24, __b24, 256, (nyx_i64)(ln4));
+                __nyx_fmt_str(&__s24, __b24, 256, (nyx_str){": cannot assign ", 16});
+                put(__s24);
                 ty_put(p, st, res);
                 put(((nyx_str){" to a ", 6}));
                 ty_put(p, st, lt3);
@@ -4528,11 +4942,11 @@ void cstmt(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
             }
             nyx_i64 aop2 = al[(hd + 2)];
             if (((aop2 > 1) && !(is_int_ty(p, lt3)))) {
-                char __b24[256];
-                nyx_str __s24 = __nyx_fmt_begin(__b24, 256);
-                __nyx_fmt_i64(&__s24, __b24, 256, (nyx_i64)(ln4));
-                __nyx_fmt_str(&__s24, __b24, 256, (nyx_str){": '", 3});
-                put(__s24);
+                char __b25[256];
+                nyx_str __s25 = __nyx_fmt_begin(__b25, 256);
+                __nyx_fmt_i64(&__s25, __b25, 256, (nyx_i64)(ln4));
+                __nyx_fmt_str(&__s25, __b25, 256, (nyx_str){": '", 3});
+                put(__s25);
                 if ((aop2 == 2)) {
                     put(((nyx_str){"+=", 2}));
                 }
@@ -4550,20 +4964,20 @@ void cstmt(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
             T rt6 = ((T){.pt = st[45], .us = st[46], .s = st[47], .l = st[48]});
             nyx_bool nvr3 = ((rt6.l == 5) && eq5(p, rt6.s, 110, 101, 118, 101, 114));
             if (((rt6.l == 0) || nvr3)) {
-                char __b25[256];
-                nyx_str __s25 = __nyx_fmt_begin(__b25, 256);
-                __nyx_fmt_i64(&__s25, __b25, 256, (nyx_i64)(ln4));
-                __nyx_fmt_str(&__s25, __b25, 256, (nyx_str){": 'return' with a value in a function with no return type\n", 58});
-                put(__s25);
+                char __b26[256];
+                nyx_str __s26 = __nyx_fmt_begin(__b26, 256);
+                __nyx_fmt_i64(&__s26, __b26, 256, (nyx_i64)(ln4));
+                __nyx_fmt_str(&__s26, __b26, 256, (nyx_str){": 'return' with a value in a function with no return type\n", 58});
+                put(__s26);
                 st[41] = 1;
                 return;
             }
             if (!(tcompat(p, res, rt6))) {
-                char __b26[256];
-                nyx_str __s26 = __nyx_fmt_begin(__b26, 256);
-                __nyx_fmt_i64(&__s26, __b26, 256, (nyx_i64)(ln4));
-                __nyx_fmt_str(&__s26, __b26, 256, (nyx_str){": return type mismatch: expected ", 33});
-                put(__s26);
+                char __b27[256];
+                nyx_str __s27 = __nyx_fmt_begin(__b27, 256);
+                __nyx_fmt_i64(&__s27, __b27, 256, (nyx_i64)(ln4));
+                __nyx_fmt_str(&__s27, __b27, 256, (nyx_str){": return type mismatch: expected ", 33});
+                put(__s27);
                 ty_put(p, st, rt6);
                 put(((nyx_str){", got ", 6}));
                 ty_put(p, st, res);
@@ -4867,6 +5281,13 @@ T cinfer(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
         if ((v >= 0)) {
             return vty(st, v);
         }
+        nyx_i64 fi0 = ffind(p, st, nd[((i * 8) + 5)], nd[((i * 8) + 6)]);
+        if ((fi0 >= 0)) {
+            nyx_i64* ft0 = (nyx_i64*)(st[37]);
+            if ((ft0[((fi0 * 8) + 6)] == 1)) {
+                return fn_value_ty(p, st, fi0);
+            }
+        }
         return t_i64(st);
     }
     if ((k == 6)) {
@@ -4879,6 +5300,13 @@ T cinfer(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
             if ((ab2 == 2)) {
                 return t_str(st);
             }
+            nyx_i64 lv = vfind(p, st, nd[((cal * 8) + 5)], nd[((cal * 8) + 6)]);
+            if ((lv >= 0)) {
+                nyx_i64 lfi = fnty_of(p, st, vty(st, lv));
+                if ((lfi >= 0)) {
+                    return fnty_ret(st, lfi);
+                }
+            }
             nyx_i64 fi = ffind(p, st, nd[((cal * 8) + 5)], nd[((cal * 8) + 6)]);
             if ((fi >= 0)) {
                 return frty(st, fi);
@@ -4890,6 +5318,10 @@ T cinfer(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
                 nyx_i64 mi2 = mfind(p, st, rt9.s, rt9.l, nd[((cal * 8) + 5)], nd[((cal * 8) + 6)]);
                 if ((mi2 >= 0)) {
                     return mrty(st, mi2);
+                }
+                nyx_i64 ffi = field_fnty(p, st, rt9, nd[((cal * 8) + 5)], nd[((cal * 8) + 6)]);
+                if ((ffi >= 0)) {
+                    return fnty_ret(st, ffi);
                 }
             }
         }
@@ -5097,6 +5529,15 @@ void ebase(nyx_u8* p, nyx_i64* st, T t) {
 void ety(nyx_u8* p, nyx_i64* st, T t) {
     if ((t.l == 0)) {
         put(((nyx_str){"void", 4}));
+        return;
+    }
+    nyx_i64 fi = fnty_of(p, st, t);
+    if ((fi >= 0)) {
+        char __b0[256];
+        nyx_str __s0 = __nyx_fmt_begin(__b0, 256);
+        __nyx_fmt_str(&__s0, __b0, 256, (nyx_str){"__nyx_fn", 8});
+        __nyx_fmt_i64(&__s0, __b0, 256, (nyx_i64)(fi));
+        put(__s0);
         return;
     }
     ebase(p, st, t);
@@ -6534,6 +6975,13 @@ void estruct(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
         nyx_i64 r = (sa[((i * 8) + 3)] + (q * 6));
         T t = ((T){.pt = al[(r + 2)], .us = al[(r + 3)], .s = al[(r + 4)], .l = al[(r + 5)]});
         put(((nyx_str){"    ", 4}));
+        nyx_i64 fi = fnty_of(p, st, t);
+        if ((fi >= 0)) {
+            efndecl(p, st, fi, al[r], al[(r + 1)]);
+            put(((nyx_str){";\n", 2}));
+            q = (q + 1);
+            continue;
+        }
         ety(p, st, t);
         put(((nyx_str){" ", 1}));
         put_span(p, al[r], al[(r + 1)]);
@@ -6621,6 +7069,16 @@ void egen(nyx_u8* p, nyx_i64* st, nyx_str path) {
     put(path);
     put(((nyx_str){" */\n#include \"nyxrt.h\"\n\n", 24}));
     elayouts(p, st);
+    nyx_i64 ti = 0;
+    while ((ti < st[69])) {
+        put(((nyx_str){"typedef ", 8}));
+        efndecl(p, st, ti, ti, 0);
+        put(((nyx_str){";\n", 2}));
+        ti = (ti + 1);
+    }
+    if ((st[69] > 0)) {
+        put(((nyx_str){"\n", 1}));
+    }
     exfns(p, st);
     eprotos(p, st);
     nyx_i64 mi = 0;
@@ -6668,7 +7126,7 @@ nyx_i64 main(nyx_i64 __argc, nyx_u8** __argv) {
         buf[(total + z2)] = ((nyx_u8*)inb.ptr)[z2];
         z2 = (z2 + 1);
     }
-    nyx_i64* st = (nyx_i64*)(sys_sbrk(512));
+    nyx_i64* st = (nyx_i64*)(sys_sbrk(1024));
     nyx_i64* ps = (nyx_i64*)(sys_sbrk(1024));
     st[33] = sys_sbrk(4194304);
     st[34] = 1;
@@ -6690,6 +7148,12 @@ nyx_i64 main(nyx_i64 __argc, nyx_u8** __argv) {
     st[52] = 0;
     st[53] = sys_sbrk(8192);
     st[54] = 0;
+    st[64] = sys_sbrk(18432);
+    st[65] = 0;
+    st[66] = sys_sbrk(2304);
+    st[67] = 0;
+    st[68] = (total + 37);
+    st[69] = 0;
     nyx_i64* nil0 = (nyx_i64*)(st[33]);
     nyx_i64 z = 0;
     while ((z < 8)) {
@@ -6708,6 +7172,7 @@ nyx_i64 main(nyx_i64 __argc, nyx_u8** __argv) {
     if ((st[41] == 1)) {
         return 1;
     }
+    st[69] = st[65];
     cdecls(buf, st);
     if ((st[41] == 1)) {
         return 1;

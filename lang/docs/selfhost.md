@@ -1457,6 +1457,34 @@ refusal stands documented on the checker side too: `==` over two enum
 tags stays an error, because ncc's own enums have no `==` either —
 `match` is the eliminator in both worlds.
 
+### gen.n — function types (v0.24): the toolbox is caught up
+
+Three rungs after ncc learned function types, the generator closed
+the ladder. gen.n is check.n accreted, so the checker half arrived
+verbatim — the spelling-as-name representation, the signature table,
+calls through parameters, locals and fields, the binding rule — and
+the generator half needed exactly three touches. ncc's codegen wants
+one thing the checker never did: each signature's INDEX, because the
+C name is the typedef `__nyx_fnN`; gen.n's single parse pass interns
+in source order, nested inner-first, which is ncc's numbering to the
+digit. From there, `ety` renders a fn type as its typedef name
+wherever a type is printed — parameters, locals, returns; a struct
+field spells the declarator instead, `nyx_i64 (*run)(nyx_i64)`,
+because the layouts precede the typedefs that may mention them; and
+`egen` emits the typedef block after the layouts and before the
+syscall wrappers, one line per signature the PARSE declared — the
+count is taken right after the parse, so a signature first met while
+checking (a bare function named as a value, which the binding rule
+already refused to bind) gets no typedef, exactly ncc's cut. Calls
+through values needed nothing: `f(x)` is `f(x)`, and `op.run(x)` was
+already the fall-through of the method dispatch. `fntype.n` joined
+the generator's differential — **25 examples and the four selfhost
+sources byte-identical, the summit intact** — and three probes beyond
+it (nested signatures, a fn value bound to a declared type, `#[user]`
+pointers inside a signature) matched ncc's C and ran. Every module of
+the toolbox speaks v0.24 now, and the ngen package is regenerated
+from the generator that does.
+
 ## The struct arc — rung 1 landed
 
 With the lexer effectively at parity, the big remaining ✗ was the

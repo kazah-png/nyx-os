@@ -285,9 +285,8 @@ Lowering (§7.1): each distinct function type in the program gets one
 `typedef R (*__nyx_fnN)(A, B);` after the type layouts; a struct field of
 function type is spelled out as a declarator (`nyx_i64 (*run)(nyx_i64);`);
 a call through a value is the same C call. The self-hosted toolbox
-catches up with function types rung by rung: `parse.n` parses and dumps
-them exactly as `ncc` does; `check.n` and `gen.n` follow, and until they
-do `fntype.n` compiles with `ncc` alone (§9).
+(`parse.n`, `check.n`, `gen.n`) speaks function types as well, each
+module held byte-faithful to `ncc` (§9).
 
 ## 4. Items
 
@@ -1184,17 +1183,15 @@ remains:
    itself (functions: 64 → 128 for the checker, 128 → 256 for the
    generator) — the honest expectation is that others will follow as N
    programs grow.
-5. **Function types compile with `ncc` only, for now** (v0.24, §3.4):
-   `parse.n` parses `fn(...)` types and dumps them as `ncc` does, and
-   `check.n` checks them — values, calls through parameters, locals and
-   fields, the binding rule — in `ncc`'s words (`fntype.n` is in both
-   differentials, the five function-type refusals are manifest rows),
-   but `gen.n` does not emit them yet, so `fntype.n` sits outside the
-   generator's differential until it catches up. The `--ast` dump
-   renders a function type as its typedef name (`0:0:__nyx_fnN`, N
-   numbering distinct signatures in first-seen source order). A bare
-   function may be bound to a local only when its function type is
-   declared somewhere in the program (§3.4).
+5. **Function types, in the toolbox too** (v0.24, §3.4): the
+   self-hosted `parse.n`, `check.n` and `gen.n` parse, check and emit
+   `fn(...)` types exactly as `ncc` does — `fntype.n` is in every
+   differential, and the five function-type refusals are rows of the
+   negative corpus. The `--ast` dump renders a function type as its
+   typedef name (`0:0:__nyx_fnN`, N numbering distinct signatures in
+   first-seen source order). A bare function may be bound to a local
+   only when its function type is declared somewhere in the program
+   (§3.4).
 
 Early-bootstrap gaps that are simply gone: `:=` bindings get concrete
 types with `i64` as the integer default; interpolation dispatches by type
