@@ -411,7 +411,7 @@ static const command_t commands[] = {
     {"ln",        cmd_ln,        "Create a symbolic link: ln -s <target> <linkname>", false},
     {"readlink",  cmd_readlink,  "Print a symlink's target: readlink <symlink>", false},
     {"chmod",     cmd_chmod,     "Change permission bits: chmod <octal|symbolic> <file>", false},
-    {"rm",        cmd_rm,        "Remove file or directory: rm <path>", false},
+    {"rm",        cmd_rm,        "Remove files/dirs: rm [-rf] <path>...", false},
     {"shred",     cmd_shred,     "Overwrite a file's data, then optionally remove it: shred [-n N] [-u] <file>", false},
     {"cp",        cmd_cp,        "Copy a file (cp <src> <dst>) or a tree (cp -r <srcdir> <dstdir>)", false},
     {"mv",        cmd_mv,        "Move/rename file: mv <src> <dst>", false},
@@ -8528,9 +8528,34 @@ static void cmd_chmod(int argc, char** argv) {
     printf("mode of '%s' -> %s (%o)\n", argv[2], b, (unsigned)m);
 }
 
+// KAT: rm -r removes a populated directory tree that plain unlink refuses, leaving
+// nothing behind. Uses the real vfs at the login anchor (proven pattern). 0 = pass.
+int rm_r_selftest(void) {
+    if (mkdir_p("/tmp/katrm/a/b", 0755) != 0) return 1;
+    int fd = vfs_open("/tmp/katrm/a/b/f", O_CREAT | O_TRUNC, 0);
+    if (fd >= 0) { vfs_write(fd, "x", 1); vfs_close(fd); }
+    if (!vfs_isdir("/tmp/katrm/a/b")) return 2;
+    if (vfs_unlink("/tmp/katrm") == 0) return 3;          // plain unlink REFUSES a non-empty dir
+    if (vfs_rmtree("/tmp/katrm") != 0) return 4;          // recursive remove succeeds
+    if (vfs_isdir("/tmp/katrm")) return 5;
+    uint32_t sz; int isd;
+    if (vfs_stat("/tmp/katrm", &sz, &isd) == 0) return 6; // whole subtree gone
+    return 0;
+}
+
 static void cmd_rm(int argc, char** argv) {
-    if (argc < 2) { printf("Usage: rm <path>\n"); return; }
-    if (vfs_unlink(argv[1]) < 0) printf("rm: failed to remove %s\n", argv[1]);
+    int rflag = 0, fflag = 0, ai = 1;
+    for (; ai < argc && argv[ai][0] == '-' && argv[ai][1]; ai++)
+        for (const char* f = argv[ai] + 1; *f; f++) {
+            if      (*f == 'r' || *f == 'R') rflag = 1;
+            else if (*f == 'f')              fflag = 1;   // ignore missing / suppress errors
+            else { printf("rm: unknown option -%c\n", *f); return; }
+        }
+    if (ai >= argc) { if (!fflag) printf("Usage: rm [-rf] <path>...\n"); return; }
+    for (int i = ai; i < argc; i++) {
+        int rc = rflag ? vfs_rmtree(argv[i]) : vfs_unlink(argv[i]);
+        if (rc < 0 && !fflag) printf("rm: failed to remove %s\n", argv[i]);
+    }
 }
 
 // shred [-n N] [-u] <file> — overwrite the file's bytes with cryptographic random
@@ -10131,6 +10156,7 @@ static void run_selftests(void) {
         {"darkenblend",  darken_blend_selftest},
         {"fontglyph",    font_glyph_selftest},
         {"mkdirp",       mkdir_p_selftest},
+        {"rmtree",       rm_r_selftest},
         {"catnumber",    cat_number_selftest},
         {"nyxconf",      nyxconf_selftest},
         {"fmnav",        fileman_nav_selftest},

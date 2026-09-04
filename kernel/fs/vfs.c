@@ -1156,6 +1156,51 @@ int vfs_unlink(const char* path) {
     return -1;
 }
 
+// Post-order recursive removal of a node and its whole subtree — the engine behind
+// `rm -r`. Children are released before their parent, so no subtree is ever left
+// orphaned (the leak vfs_unlink's refuse-nonempty rule guards against). A symlink
+// (type 2) or file (type 0) is a LEAF — released without following its target, so
+// `rm -r` on a symlink-to-dir removes the link, not the target's contents. Depth is
+// bounded (pathological nesting is refused, not stack-overflowed). 0 ok, -1 refused.
+static int rmtree_node(vfs_node_t* n, int depth) {
+    if (!n) return -1;
+    if (depth > 64) return -1;                       // pathological nesting; refuse cleanly
+    if (n->type == 1) {                              // directory: remove children first
+        while (n->child_count > 0)
+            if (rmtree_node(n->children[n->child_count - 1], depth + 1) != 0) return -1;
+    }
+    vfs_node_t* p = n->parent;                       // detach from parent
+    if (p) {
+        for (uint32_t i = 0; i < p->child_count; i++)
+            if (p->children[i] == n) {
+                for (uint32_t j = i; j + 1 < p->child_count; j++) p->children[j] = p->children[j + 1];
+                p->child_count--;
+                break;
+            }
+    }
+    n->parent = NULL;
+    release_node(n);                                 // honours open_refs (orphans if held)
+    return 0;
+}
+
+// Recursively remove `path` and, if it is a directory, its entire subtree. RAM tree
+// only; a mount-backed path falls back to a single unlink (errors on a non-empty dir,
+// as before). Returns 0, or -1 (not found / mount non-empty / too deep).
+int vfs_rmtree(const char* path) {
+    char _absbuf[256]; path = vfs_abs(path, _absbuf, sizeof(_absbuf));
+    mount_entry_t* me = vfs_find_mount(path);
+    if (me && me->unlink) {
+        const char* subpath = path + strlen(me->mount_point);
+        return me->unlink(subpath);
+    }
+    char child_name[MAX_NAME];
+    vfs_node_t* parent = resolve_parent(path, child_name);
+    if (!parent || parent->type != 1) return -1;
+    vfs_node_t* victim = find_child(parent, child_name);
+    if (!victim) return -1;
+    return rmtree_node(victim, 0);
+}
+
 void hide_file(const char* path) {
     (void)path;
 }

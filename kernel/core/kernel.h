@@ -18,7 +18,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.5.95"
+#define KERNEL_VERSION "6.5.96"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -940,6 +940,7 @@ int vfs_stat(const char* path, uint32_t* size, int* is_dir);  // 0 ok / -1 not f
 int vfs_fstat(int fd, uint32_t* size, int* is_dir);           // by internal vfs fd
 int vfs_mkdir(const char* path, mode_t mode);
 int vfs_unlink(const char* path);
+int vfs_rmtree(const char* path);   // recursive remove (rm -r): path + its whole subtree
 dirent_t* vfs_readdir(int fd);
 int vfs_isdir(const char* path);   // 1 if `path` resolves to a directory, else 0
 uint32_t vfs_fsize(int fd);
