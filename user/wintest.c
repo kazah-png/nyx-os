@@ -1,4 +1,5 @@
 #include "libc.h"
+#include "uwin.h"
 
 /* wintest — the first ring-3 program to open a REAL desktop window through the
  * v6.4.354 window syscalls (#77). It creates a 320x200 window, fills a Nyx-purple
@@ -21,17 +22,12 @@ int main(void) {
     int frames = 0, events = 0;
     for (int i = 0; i < 160; i++) {                 /* ~160 * 30 ms ~= 4.8 s */
         int sqx = (i * 3) % (W - 40);               /* the square marches right */
-        for (int y = 0; y < H; y++) {
-            unsigned int r = 40 + (unsigned int)(y * 130 / H);   /* purple: R + B ramp, low G */
+        for (int y = 0; y < H; y++) {               /* purple: R + B ramp, low G */
+            unsigned int r = 40 + (unsigned int)(y * 130 / H);
             unsigned int b = 70 + (unsigned int)(y * 150 / H);
-            unsigned int col = (r << 16) | (0x18u << 8) | b;
-            for (int x = 0; x < W; x++) {
-                unsigned int c = col;
-                if (x >= sqx && x < sqx + 40 && y >= H / 2 - 20 && y < H / 2 + 20)
-                    c = 0x00FFFFFF;                 /* white marker so motion is obvious */
-                buf[y * W + x] = c;
-            }
+            uwin_hline(buf, W, H, 0, y, W, (r << 16) | (0x18u << 8) | b);
         }
+        uwin_fill_rect(buf, W, H, sqx, H / 2 - 20, 40, 40, 0x00FFFFFF);   /* white marker */
         if (win_present(id, buf, W, H) != 0) { printf("wintest: present FAILED at frame %d\n", i); break; }
         if (i == 0) printf("wintest: first present OK\n");
         frames++;
