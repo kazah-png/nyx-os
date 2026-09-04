@@ -28,7 +28,9 @@ int main(void) {
             uwin_hline(buf, W, H, 0, y, W, (r << 16) | (0x18u << 8) | b);
         }
         uwin_fill_rect(buf, W, H, sqx, H / 2 - 20, 40, 40, 0x00FFFFFF);   /* white marker */
+        uwin_line(buf, W, H, sqx, H / 2 - 20, sqx + 39, H / 2 + 19, 0);   /* diagonal across it */
         uwin_text(buf, W, H, 8, 8, "wintest ring-3", 0x00FFFFFF);         /* glyphs via SYS_FONT_GLYPH */
+        uwin_rect_outline(buf, W, H, 0, 0, W, H, 0x00FFFFFF);             /* 1px window frame */
         if (win_present(id, buf, W, H) != 0) { printf("wintest: present FAILED at frame %d\n", i); break; }
         if (i == 0) printf("wintest: first present OK\n");
         frames++;

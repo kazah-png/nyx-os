@@ -36,6 +36,46 @@ static inline void uwin_hline(unsigned int* buf, int w, int h,
     for (int xx = x0; xx < x1; xx++) buf[y * w + xx] = color;
 }
 
+/* One vertical run of `len` pixels starting at (x,y), clipped. */
+static inline void uwin_vline(unsigned int* buf, int w, int h,
+                              int x, int y, int len, unsigned int color) {
+    if (x < 0 || x >= w || len <= 0) return;
+    int y0 = y < 0 ? 0 : y, y1 = y + len;
+    if (y1 > h) y1 = h;
+    for (int yy = y0; yy < y1; yy++) buf[yy * w + x] = color;
+}
+
+/* Draw the 1px outline (frame) of a rectangle — the common window/panel/button
+ * border. Built from the clipped h/v line runs, so an off-buffer frame is trimmed. */
+static inline void uwin_rect_outline(unsigned int* buf, int w, int h,
+                                     int x, int y, int rw, int rh, unsigned int color) {
+    if (rw <= 0 || rh <= 0) return;
+    uwin_hline(buf, w, h, x, y,          rw, color);   /* top    */
+    uwin_hline(buf, w, h, x, y + rh - 1, rw, color);   /* bottom */
+    uwin_vline(buf, w, h, x,          y, rh, color);   /* left   */
+    uwin_vline(buf, w, h, x + rw - 1, y, rh, color);   /* right  */
+}
+
+/* Draw a 1px line from (x0,y0) to (x1,y1) in `color` (integer Bresenham — no FP),
+ * clipped per pixel so any part off the buffer is simply skipped. For chart traces,
+ * separators and diagonals a ring-3 window app draws itself. */
+static inline void uwin_line(unsigned int* buf, int w, int h,
+                             int x0, int y0, int x1, int y1, unsigned int color) {
+    int dx = x1 - x0, dy = y1 - y0;
+    int adx = dx < 0 ? -dx : dx;
+    int ady = dy < 0 ? -dy : dy;
+    int sx = dx < 0 ? -1 : 1;
+    int sy = dy < 0 ? -1 : 1;
+    int err = (adx > ady ? adx : -ady) / 2;
+    for (;;) {
+        if (x0 >= 0 && x0 < w && y0 >= 0 && y0 < h) buf[y0 * w + x0] = color;
+        if (x0 == x1 && y0 == y1) break;
+        int e2 = err;
+        if (e2 > -adx) { err -= ady; x0 += sx; }
+        if (e2 <  ady) { err += adx; y0 += sy; }
+    }
+}
+
 /* Blit one 8x16 glyph bitmap `g` (16 bytes; row 0 = top, MSB = leftmost pixel) at
  * (x,y): only set bits are written, in `fg` (transparent background), clipped. */
 static inline void uwin_glyph(unsigned int* buf, int w, int h, int x, int y,
