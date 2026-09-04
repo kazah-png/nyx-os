@@ -407,7 +407,7 @@ static const command_t commands[] = {
     {"touch",     cmd_touch,     "Create empty file: touch <file>", false},
     {"truncate",  cmd_truncate,  "Set a file's size: truncate -s <size> <file>", false},
     {"mktemp",    cmd_mktemp,    "Create a uniquely-named temp file/dir: mktemp [-d] [-u] [template]", false},
-    {"mkdir",     cmd_mkdir,     "Create directory: mkdir <dir>", false},
+    {"mkdir",     cmd_mkdir,     "Create directory: mkdir [-p] <dir>...", false},
     {"ln",        cmd_ln,        "Create a symbolic link: ln -s <target> <linkname>", false},
     {"readlink",  cmd_readlink,  "Print a symlink's target: readlink <symlink>", false},
     {"chmod",     cmd_chmod,     "Change permission bits: chmod <octal|symbolic> <file>", false},
@@ -975,7 +975,7 @@ static const man_page_t man_pages[] = {
     {"mv",       "Move or rename <src> to <dst>. Within one filesystem this only rewrites the directory entry."},
     {"rm",       "Remove <path>. There is no recycle bin, so a removed file is gone for good."},
     {"shred",    "Destroy a file's contents by overwriting every byte with cryptographic random data before it can be recovered: shred [-n N] [-u] <file>. -n sets the number of overwrite passes (default 3); -u also removes the file afterwards (like shred -u on Linux). The overwrite is in place — on the ramdisk it rewrites the bytes directly, and on the EXT2 mount it is flushed back to the same disk blocks at close — so unlike rm alone, the old contents are actually gone. Operates on one file (not a directory)."},
-    {"mkdir",    "Create a new, empty directory named <dir>."},
+    {"mkdir",    "Create a new, empty directory: `mkdir [-p] <dir>...`. With -p, create any missing parent directories too (and don't error if it already exists)."},
     {"ln",       "Create a symbolic link: `ln -s <target> <linkname>` makes <linkname> a symlink pointing at <target>. Opening/`cat`/`cd` through the link transparently reaches the target (resolve_path follows it, bounded to 8 hops so a cyclic link can't loop); `readlink <linkname>` shows the raw target without following. Hard links aren't supported by the ramdisk node model, so `-s` is required."},
     {"readlink", "Print the target path a symbolic link points at, without following it: `readlink <symlink>`."},
     {"chmod",    "Change a file's permission bits, octal or symbolic: `chmod <octal|symbolic> <file>` (e.g. `chmod 644 f`, `chmod +x f`, `chmod u+w f`, `chmod go-rwx f`, `chmod a=r f`, `chmod u+w,go-w f`). Symbolic: who `[ugoa]` (default all) + op `+`/`-`/`=` + perms `[rwx]`, comma-separated clauses. Clearing the owner-write bit (`chmod 444 f` or `chmod -w f`) makes the file read-only — `vfs_write_file`/overwrites are refused until you make it writable again. Applies to the ramdisk tree; new files default to 644, directories to 755."},
@@ -8341,10 +8341,57 @@ static void cmd_touch(int argc, char** argv) {
     if (vfs_touch(argv[1]) < 0) printf("touch: failed to create %s\n", argv[1]);
 }
 
+// mkdir -p: create `path` and every missing parent directory, idempotently (an
+// existing directory is fine). Walks each "/"-prefix in turn. Returns 0, or -1 if a
+// component can't be made — e.g. a non-directory file is in the way (vfs_mkdir fails).
+static int mkdir_p(const char* path, mode_t mode) {
+    char buf[256];
+    int n = 0;
+    while (path[n] && n < (int)sizeof(buf) - 1) { buf[n] = path[n]; n++; }
+    buf[n] = '\0';
+    if (n == 0) return -1;
+    for (int i = 1; i < n; i++) {                 // create each intermediate prefix
+        if (buf[i] != '/' || buf[i - 1] == '/') continue;   // skip non-sep and empty (//) parts
+        buf[i] = '\0';
+        int ok = vfs_isdir(buf) || vfs_mkdir(buf, mode) == 0;
+        buf[i] = '/';
+        if (!ok) return -1;
+    }
+    if (buf[n - 1] != '/' && !vfs_isdir(buf))     // finally the full path (no trailing slash)
+        if (vfs_mkdir(buf, mode) < 0) return -1;
+    return 0;
+}
+
+// KAT: mkdir -p creates every missing parent, is idempotent, and refuses to descend
+// through a non-directory. Runs at the login anchor (vfs is up). 0 = pass.
+int mkdir_p_selftest(void) {
+    if (mkdir_p("/tmp/katmk/a/b/c", 0755) != 0)      return 1;
+    if (!vfs_isdir("/tmp/katmk"))                    return 2;
+    if (!vfs_isdir("/tmp/katmk/a/b"))                return 3;
+    if (!vfs_isdir("/tmp/katmk/a/b/c"))              return 4;
+    if (mkdir_p("/tmp/katmk/a/b/c", 0755) != 0)      return 5;   // idempotent
+    int fd = vfs_open("/tmp/katmk/f", O_CREAT | O_TRUNC, 0);
+    if (fd >= 0) vfs_close(fd);
+    if (mkdir_p("/tmp/katmk/f/x", 0755) == 0)        return 6;   // a file blocks descent
+    return 0;
+}
+
 static void cmd_mkdir(int argc, char** argv) {
-    if (argc < 2) { printf("Usage: mkdir <dir>\n"); return; }
-    if (!path_last_component_ok(argv[1])) { printf("mkdir: invalid directory name '%s'\n", argv[1]); return; }
-    if (vfs_mkdir(argv[1], 0755) < 0) printf("mkdir: failed to create %s\n", argv[1]);
+    int pflag = 0, ai = 1;
+    for (; ai < argc && argv[ai][0] == '-' && argv[ai][1]; ai++)
+        for (const char* f = argv[ai] + 1; *f; f++) {
+            if (*f == 'p') pflag = 1;
+            else { printf("mkdir: unknown option -%c\n", *f); return; }
+        }
+    if (ai >= argc) { printf("Usage: mkdir [-p] <dir>...\n"); return; }
+    for (int i = ai; i < argc; i++) {
+        if (pflag) {
+            if (mkdir_p(argv[i], 0755) < 0) printf("mkdir: cannot create %s\n", argv[i]);
+        } else {
+            if (!path_last_component_ok(argv[i])) { printf("mkdir: invalid directory name '%s'\n", argv[i]); continue; }
+            if (vfs_mkdir(argv[i], 0755) < 0) printf("mkdir: failed to create %s\n", argv[i]);
+        }
+    }
 }
 
 // ln -s <target> <linkname> — create a symbolic link. Hard links aren't supported by the
@@ -10083,6 +10130,7 @@ static void run_selftests(void) {
         {"memset32",     memset32_selftest},
         {"darkenblend",  darken_blend_selftest},
         {"fontglyph",    font_glyph_selftest},
+        {"mkdirp",       mkdir_p_selftest},
         {"catnumber",    cat_number_selftest},
         {"nyxconf",      nyxconf_selftest},
         {"fmnav",        fileman_nav_selftest},

@@ -53,7 +53,7 @@ SELFTEST-BEGIN
 [SELFTEST] aes_gcm      PASS
 ...
 [SELFTEST] join         PASS
-SELFTEST-SUMMARY passed=203 failed=0 total=203
+SELFTEST-SUMMARY passed=204 failed=0 total=204
 SELFTEST-END
 ```
 
