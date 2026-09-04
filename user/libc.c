@@ -643,6 +643,140 @@ long strtol(const char* nptr, char** endptr, int base) {
     return neg ? -(long)acc : (long)acc;
 }
 
+/* =========== sscanf / vsscanf =========== */
+/* Copy a plausible numeric field — a prefix of s, capped by `width` (0 = the buffer)
+ * — into `buf` for strtol/strtoul to parse. The character class is a superset of
+ * every integer form (sign, decimal + hex digits, 0x prefix), so strtol's endptr,
+ * not this copy, decides where the number really ends. */
+static int scanf_num_field(const char* s, int width, char* buf, int bufsz) {
+    int n = 0;
+    int cap = (width > 0 && width < bufsz - 1) ? width : bufsz - 1;
+    while (s[n] && n < cap) {
+        char c = s[n];
+        int ok = (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f') || (c >= 'A' && c <= 'F') ||
+                 c == '.' || c == 'x' || c == 'X' || c == '+' || c == '-' ||
+                 c == 'p' || c == 'P' || c == 'e' || c == 'E';
+        if (!ok) break;
+        buf[n] = c; n++;
+    }
+    buf[n] = '\0';
+    return n;
+}
+
+/* Subset scanf: %d %i %u %o %x %X %c %s %n %% with field width, '*' suppression and
+ * h/hh/l/ll/z/j length modifiers. Integers go through strtol/strtoul (`long` is
+ * 64-bit here, so it also covers ll/z/j). Float/scanset/%p stop the scan. Returns
+ * the count of assigned conversions, or EOF (-1) if input ends before the first. */
+int vsscanf(const char* str, const char* fmt, va_list ap) {
+    const char* s = str;
+    const char* f = fmt;
+    int assigned = 0;
+    for (; *f; ) {
+        if (isspace((unsigned char)*f)) {
+            while (isspace((unsigned char)*f)) f++;
+            while (isspace((unsigned char)*s)) s++;
+            continue;
+        }
+        if (*f != '%') {                       /* literal must match */
+            if (*s == '\0') return assigned ? assigned : -1;
+            if (*s != *f) return assigned;
+            s++; f++; continue;
+        }
+        f++;                                   /* past '%' */
+        if (*f == '%') {                        /* %% : skip ws, match '%' */
+            while (isspace((unsigned char)*s)) s++;
+            if (*s == '\0') return assigned ? assigned : -1;
+            if (*s != '%') return assigned;
+            s++; f++; continue;
+        }
+        int suppress = 0; if (*f == '*') { suppress = 1; f++; }
+        int width = 0;    while (*f >= '0' && *f <= '9') { width = width * 10 + (*f - '0'); f++; }
+        int lm = 0;  /* 0 none, 1 h, 2 hh, 3 l, 4 ll, 5 z, 6 L */
+        if (*f == 'h') { f++; if (*f == 'h') { lm = 2; f++; } else lm = 1; }
+        else if (*f == 'l') { f++; if (*f == 'l') { lm = 4; f++; } else lm = 3; }
+        else if (*f == 'z') { lm = 5; f++; }
+        else if (*f == 'j' || *f == 't') { lm = 4; f++; }
+        else if (*f == 'L') { lm = 6; f++; }
+        char conv = *f; if (conv) f++;
+
+        if (conv == 'c') {                      /* width chars (default 1), no ws skip */
+            int cnt = width > 0 ? width : 1;
+            char* dst = suppress ? 0 : va_arg(ap, char*);
+            int got = 0;
+            while (got < cnt && *s) { if (dst) dst[got] = *s; s++; got++; }
+            if (got < cnt) return assigned ? assigned : -1;
+            if (dst) assigned++;
+            continue;
+        }
+        if (conv == 's') {                      /* non-ws run; skips leading ws */
+            while (isspace((unsigned char)*s)) s++;
+            if (*s == '\0') return assigned ? assigned : -1;
+            char* dst = suppress ? 0 : va_arg(ap, char*);
+            int got = 0, cap = width > 0 ? width : 0x7fffffff;
+            while (*s && !isspace((unsigned char)*s) && got < cap) { if (dst) dst[got] = *s; s++; got++; }
+            if (dst) dst[got] = '\0';
+            if (!suppress) assigned++;
+            continue;
+        }
+        if (conv == 'n') {                      /* chars consumed so far; not an assignment */
+            if (!suppress) {
+                int v = (int)(s - str);
+                switch (lm) {
+                    case 2: *va_arg(ap, signed char*) = (signed char)v; break;
+                    case 1: *va_arg(ap, short*) = (short)v; break;
+                    case 3: *va_arg(ap, long*) = v; break;
+                    case 4: *va_arg(ap, long long*) = v; break;
+                    case 5: *va_arg(ap, size_t*) = (size_t)v; break;
+                    default: *va_arg(ap, int*) = v;
+                }
+            }
+            continue;
+        }
+        /* numeric conversions skip leading ws */
+        while (isspace((unsigned char)*s)) s++;
+        if (*s == '\0') return assigned ? assigned : -1;
+        if (conv == 'd' || conv == 'i' || conv == 'u' || conv == 'o' || conv == 'x' || conv == 'X') {
+            char buf[130];
+            if (scanf_num_field(s, width, buf, sizeof buf) == 0) return assigned;
+            int base = (conv == 'd' || conv == 'u') ? 10 : (conv == 'o') ? 8 : (conv == 'x' || conv == 'X') ? 16 : 0;
+            int isuns = (conv == 'u' || conv == 'o' || conv == 'x' || conv == 'X');
+            char* ep = 0;
+            unsigned long uv = 0; long sv = 0;
+            if (isuns) uv = strtoul(buf, &ep, base); else sv = strtol(buf, &ep, base);
+            if (ep == buf) return assigned;      /* matching failure */
+            s += (ep - buf);
+            if (!suppress) {
+                if (isuns) { switch (lm) {
+                    case 2: *va_arg(ap, unsigned char*) = (unsigned char)uv; break;
+                    case 1: *va_arg(ap, unsigned short*) = (unsigned short)uv; break;
+                    case 3: *va_arg(ap, unsigned long*) = (unsigned long)uv; break;
+                    case 4: *va_arg(ap, unsigned long long*) = uv; break;
+                    case 5: *va_arg(ap, size_t*) = (size_t)uv; break;
+                    default: *va_arg(ap, unsigned*) = (unsigned)uv;
+                } } else { switch (lm) {
+                    case 2: *va_arg(ap, signed char*) = (signed char)sv; break;
+                    case 1: *va_arg(ap, short*) = (short)sv; break;
+                    case 3: *va_arg(ap, long*) = (long)sv; break;
+                    case 4: *va_arg(ap, long long*) = sv; break;
+                    case 5: *va_arg(ap, size_t*) = (size_t)sv; break;
+                    default: *va_arg(ap, int*) = (int)sv;
+                } }
+                assigned++;
+            }
+            continue;
+        }
+        return assigned;                         /* unsupported conversion (float/scanset/%p) */
+    }
+    return assigned;
+}
+
+int sscanf(const char* str, const char* fmt, ...) {
+    va_list ap; va_start(ap, fmt);
+    int r = vsscanf(str, fmt, ap);
+    va_end(ap);
+    return r;
+}
+
 /* =========== string / stdlib extras (compiler staples) =========== */
 
 /* Find the first byte equal to c in the first n bytes of s (NUL is not special). */

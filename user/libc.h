@@ -59,6 +59,12 @@ int printf(const char* fmt, ...);
 int sprintf(char* buf, const char* fmt, ...);
 int snprintf(char* buf, size_t size, const char* fmt, ...);
 int vsnprintf(char* buf, size_t size, const char* fmt, va_list ap);
+/* sscanf/vsscanf: %d %i %u %o %x %X %c %s %n %% + width, '*' suppression and
+ * h/hh/l/ll/z/j length modifiers. Float (%f/%e/%g), scansets (%[...]) and %p are
+ * not supported (the scan stops at such a directive). Returns the assignment count
+ * (or EOF if input ends before the first conversion), matching C sscanf. */
+int sscanf(const char* str, const char* fmt, ...);
+int vsscanf(const char* str, const char* fmt, va_list ap);
 
 int atoi(const char* s);
 int abs(int x);

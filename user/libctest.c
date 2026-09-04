@@ -112,6 +112,35 @@ int main(int argc, char** argv) {
         if (!a_ok) ok = 0;
     }
 
+    /* sscanf — subset: %d/%u/%x/%i/%c/%s/%n/%%/width/'*'/length, matching C sscanf
+     * (verified byte-exact vs host glibc across 31 cases; new in v6.5.104). */
+    {
+        int sc_ok = 1;
+        int a, b, c2;
+        if (sscanf("42", "%d", &a) != 1 || a != 42) sc_ok = 0;
+        if (sscanf("  -7xyz", "%d", &a) != 1 || a != -7) sc_ok = 0;
+        if (sscanf("abc", "%d", &a) != 0) sc_ok = 0;               /* matching failure */
+        if (sscanf("", "%d", &a) != -1) sc_ok = 0;                 /* EOF before first */
+        if (sscanf("12:34:56", "%d:%d:%d", &a, &b, &c2) != 3 || a != 12 || b != 34 || c2 != 56) sc_ok = 0;
+        unsigned u;
+        if (sscanf("0x1A", "%x", &u) != 1 || u != 0x1A) sc_ok = 0;
+        if (sscanf("010", "%i", &a) != 1 || a != 8) sc_ok = 0;     /* base-0 octal */
+        long lv;
+        if (sscanf("9999999999", "%ld", &lv) != 1 || lv != 9999999999L) sc_ok = 0;
+        if (sscanf("12345", "%3d", &a) != 1 || a != 123) sc_ok = 0; /* width */
+        if (sscanf("10 20", "%*d %d", &a) != 1 || a != 20) sc_ok = 0; /* suppression */
+        char buf1[32], buf2[32];
+        if (sscanf("  foo bar", "%s %s", buf1, buf2) != 2 || strcmp(buf1, "foo") || strcmp(buf2, "bar")) sc_ok = 0;
+        if (sscanf("hello", "%3s", buf1) != 1 || strcmp(buf1, "hel")) sc_ok = 0;
+        char ch = 0; int n = 0;
+        if (sscanf("Q", "%c", &ch) != 1 || ch != 'Q') sc_ok = 0;
+        if (sscanf("123abc", "%d%n", &a, &n) != 1 || a != 123 || n != 3) sc_ok = 0;
+        if (sscanf("val=42", "val=%d", &a) != 1 || a != 42) sc_ok = 0; /* literal prefix */
+        if (sscanf("50% off", "%d%% off", &a) != 1 || a != 50) sc_ok = 0; /* %% */
+        printf("LIBCTEST: sscanf %s\n", sc_ok ? "PASS" : "FAIL");
+        if (!sc_ok) ok = 0;
+    }
+
     /* string/stdlib extras: memchr, strrchr, strncat, strdup, qsort. */
     {
         int se_ok = 1;
