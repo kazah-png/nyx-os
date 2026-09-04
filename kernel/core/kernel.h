@@ -18,7 +18,7 @@
 // Constantes
 // ============================================================
 #define KERNEL_NAME    "NyxOS"
-#define KERNEL_VERSION "6.5.88"
+#define KERNEL_VERSION "6.5.89"
 #define KERNEL_CODENAME "GUI Suite"
 #define KERNEL_DATE    "2026"
 
@@ -607,6 +607,7 @@ extern uint64_t kernel_pml4_phys;
 // ============================================================
 extern void memcpy_asm(void* dest, const void* src, size_t n);
 extern void memset_asm(void* dest, uint8_t val, size_t n);
+extern void memset32_asm(void* dest, uint32_t val, size_t count);   // fill `count` 32bpp pixels (rep stosd)
 extern void _gdt_flush(uint64_t gdt_ptr);
 extern void _idt_flush(uint64_t idt_ptr);
 

@@ -375,6 +375,23 @@ int region_clip_selftest(void) {
     return 0;
 }
 
+// KAT: memset32_asm fills EXACTLY `count` 32bpp pixels — no overrun/underrun, and
+// count==0 is a no-op. This is the fb fill/blit fast-path primitive (rep stosd), so
+// a stray write past the run would corrupt whatever sits after it. 0 = pass.
+int memset32_selftest(void) {
+    static uint32_t buf[64];
+    for (int i = 0; i < 64; i++) buf[i] = 0xA5A5A5A5u;          // sentinel guards
+    memset32_asm(&buf[8], 0x11223344u, 32);                     // fill [8,40)
+    for (int i = 0;  i < 8;  i++) if (buf[i] != 0xA5A5A5A5u) return 1;   // underrun
+    for (int i = 8;  i < 40; i++) if (buf[i] != 0x11223344u) return 2;   // body
+    for (int i = 40; i < 64; i++) if (buf[i] != 0xA5A5A5A5u) return 3;   // overrun
+    memset32_asm(&buf[40], 0xDEADBEEFu, 0);                     // count==0 writes nothing
+    if (buf[40] != 0xA5A5A5A5u) return 4;
+    memset32_asm(&buf[40], 0xDEADBEEFu, 1);                     // exactly one dword
+    if (buf[40] != 0xDEADBEEFu || buf[41] != 0xA5A5A5A5u) return 5;
+    return 0;
+}
+
 void fb_fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color) {
     if (!fb_addr) return;
     if (x >= fb_width || y >= fb_height) return;
@@ -383,10 +400,12 @@ void fb_fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color
 
     if (fb_bpp == 32) {
         if (!clip_on && !region_on) {
+            // A solid row is a run of identical pixels: one rep-stosd per row beats
+            // the scalar per-pixel store loop ~2x (measured), and this fills the
+            // desktop background + every window body/taskbar each recomposite.
             uint32_t* ptr = (uint32_t*)fb_addr + y * fb_width + x;
             for (uint32_t row = 0; row < h; row++) {
-                for (uint32_t col = 0; col < w; col++)
-                    ptr[col] = color;
+                memset32_asm(ptr, color, w);
                 ptr += fb_width;
             }
         } else {
@@ -398,8 +417,7 @@ void fb_fill_rect(uint32_t x, uint32_t y, uint32_t w, uint32_t h, uint32_t color
                 if (b > hi) b = hi;
                 if (a >= b) continue;
                 uint32_t* ptr = (uint32_t*)fb_addr + (uint32_t)py * fb_width + (uint32_t)a;
-                for (int col = 0; col < b - a; col++)
-                    ptr[col] = color;
+                memset32_asm(ptr, color, (size_t)(b - a));
             }
         }
     } else if (fb_bpp == 8) {
@@ -434,8 +452,7 @@ void fb_blit(const void* src, uint32_t sx, uint32_t sy, uint32_t w, uint32_t h,
         uint32_t* src32 = (uint32_t*)src + sy * src_stride + sx;
         for (uint32_t row = 0; row < h; row++) {
             if (!clip_on && !region_on) {
-                for (uint32_t col = 0; col < w; col++)
-                    dst[col] = src32[col];
+                memcpy_asm(dst, src32, (size_t)w * 4);   // contiguous row copy (rep movsb)
             } else {
                 int lo, hi;
                 clip_span((int)(dy + row), &lo, &hi);
