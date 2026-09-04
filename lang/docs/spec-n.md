@@ -238,6 +238,55 @@ This is N++ P4's PageFlags (design doc §2.3) in bootstrap form; mapping
 the same discipline onto kernel-side PTE bits (NX inversion included)
 lands with the ring-0 capability work.
 
+### 3.4 Function types (since v0.24)
+
+```n
+fn dbl(x: i64) -> i64 { x * 2 }
+
+fn apply(f: fn(i64) -> i64, x: i64) -> i64 {
+    f(x)                            // a call through the value
+}
+
+struct Op {
+    name: str,
+    run: fn(i64) -> i64,            // a field of function type
+}
+
+a := apply(dbl, 21);                // dbl, named without a call, is a value
+op := Op{ name: "dbl", run: dbl };
+r := op.run(8);                     // the field, called through
+```
+
+`fn(A, B) -> R` is a type: the type of a function taking `A` and `B` and
+returning `R`; without `-> R` the function returns nothing. Rules:
+
+- **Values.** A function declared with `fn` may be named without a call;
+  the expression has the function type of its signature. Extern syscalls
+  are not values (their capability check is a call-site property), and
+  neither are methods.
+- **Calls.** A parameter, local or struct field of function type is called
+  with the ordinary call syntax, checked against the signature exactly like
+  a direct call (arity, argument types).
+- **Identity.** Two function types are the same type exactly when their
+  signatures are identical — parameter types and return type, position by
+  position; there is no conversion between `fn(i32) -> i64` and
+  `fn(i64) -> i64`. Function values take part in no operator: they are
+  passed, stored and called.
+- **No pointers to them.** `*fn(...)`, `raw` and `#[user]` do not apply: a
+  function value is already a pointer in the C sense, and stays opaque.
+- **Binding a bare function.** `g := dbl;` is allowed only when the
+  function type `fn(i64) -> i64` is declared somewhere in the program (a
+  parameter, return or field of that type): the generated C names the
+  type's typedef, which exists only for declared function types. Pass the
+  function as an argument, or store it in a field, of that type otherwise.
+
+Lowering (§7.1): each distinct function type in the program gets one
+`typedef R (*__nyx_fnN)(A, B);` after the type layouts; a struct field of
+function type is spelled out as a declarator (`nyx_i64 (*run)(nyx_i64);`);
+a call through a value is the same C call. The self-hosted toolbox
+(`parse.n`, `check.n`, `gen.n`) catches up with function types in the
+following rungs; until then `fntype.n` compiles with `ncc` alone (§9).
+
 ## 4. Items
 
 ### 4.1 `extern syscall` — kernel bindings
@@ -946,7 +995,9 @@ binding it without a cast — `p := s.ptr;` — is well-formed.
 
 ### 6.6 Calls and fields
 
-Function calls take positional arguments. Field access uses `.` and applies to
+Function calls take positional arguments; the callee is a function name or —
+since v0.24 — a parameter, local or field of function type (§3.4), called
+through with the same syntax. Field access uses `.` and applies to
 `str` values today (`.ptr`, `.len`); it generalizes to user types in N++.
 Method-call syntax (`value.method()`) is reserved for N++ and rejected by
 `ncc` with a clear error.
@@ -993,6 +1044,7 @@ This section specifies what C the compiler is *required* to emit, because N's
 | `fn main() -> i64 { … }` (§4.2, v0.23) | `nyx_i64 main(nyx_i64 __argc, nyx_u8** __argv) { __nyx_args_set(__argc, __argv); … }` — the SysV frame reaches the runtime before any user statement |
 | `arg_count()` / `arg(i)` (§6.7, v0.23) | `nyx_arg_count()` / `nyx_arg(i')` — runtime accessors over the stashed frame |
 | `struct` / `enum` layouts (§4.3, §4.4; v0.24) | one `typedef struct { … } Name;` per declaration, **in declaration order** — a struct holding an enum by value compiles when the enum was declared first (before v0.24 every struct layout preceded every enum layout) |
+| `fn(A, B) -> R` (§3.4, v0.24) | `typedef R' (*__nyx_fnN)(A', B');` once per distinct signature, after the layouts; a struct field of function type is the declarator `R' (*name)(A', B');`; a function named as a value is the C function designator; a call through a value is the plain C call |
 
 ### 7.2 The runtime
 
@@ -1045,8 +1097,10 @@ param        = ident ":" type ;
 struct_decl  = "struct" ident "{" field { "," field } [ "," ] "}" ;
 field        = ident ":" type ;
 
-type         = [ "#[user]" ] [ "raw" ] { "*" } ident ;
-             (* #[user] requires at least one "*", excludes "raw" *)
+type         = [ "#[user]" ] [ "raw" ] { "*" } ident
+             | "fn" "(" [ type { "," type } ] ")" [ "->" type ] ;   (* v0.24 *)
+             (* #[user] requires at least one "*", excludes "raw";
+                a fn type takes no "*", "raw" or "#[user]" *)
 
 block        = "{" { stmt } [ expr ] "}" ;          (* trailing expr = tail *)
 stmt         = [ "mut" ] ident ":=" ( expr [ "?" ] | match_val ) ";"
@@ -1128,14 +1182,22 @@ remains:
    itself (functions: 64 → 128 for the checker, 128 → 256 for the
    generator) — the honest expectation is that others will follow as N
    programs grow.
+5. **Function types are `ncc`-only for now** (v0.24, §3.4): the
+   self-hosted toolbox (`parse.n`, `check.n`, `gen.n`) does not parse
+   `fn(...)` types yet, so `fntype.n` sits outside the selfhost
+   differentials until they catch up, rung by rung; the `--ast` dump
+   renders a function type as its typedef name (`0:0:__nyx_fn0`). A bare
+   function may be bound to a local only when its function type is
+   declared somewhere in the program (§3.4).
 
 Early-bootstrap gaps that are simply gone: `:=` bindings get concrete
 types with `i64` as the integer default; interpolation dispatches by type
 and carries format controls (hex in v0.20, width and zero-padding in
 v0.21); `mut` is enforced; v0.22 added missing-return flow analysis; v0.23
 added program arguments (§6.7); v0.24 emits type layouts in declaration
-order, so a struct may hold an enum by value (§4.3); and the generated C is
-strict C99 with no GNU extensions (TinyCC-compatible).
+order, so a struct may hold an enum by value (§4.3), and adds function
+types (§3.4); and the generated C is strict C99 with no GNU extensions
+(TinyCC-compatible).
 
 ## 10. Toolchain
 

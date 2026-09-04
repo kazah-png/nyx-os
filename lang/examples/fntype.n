@@ -1,0 +1,55 @@
+// fntype.n — N v0.24: function types.
+//
+// `fn(A, B) -> R` is a type. A function declared with `fn` may be named
+// without a call — that is a value of its function type — passed to another
+// function, stored in a struct field, and called through the value with the
+// ordinary call syntax. Two function types are the same type exactly when
+// their signatures are identical. Extern syscalls are not values; only
+// functions declared with `fn` are. The C is a function pointer, nothing
+// more: `typedef nyx_i64 (*__nyx_fn0)(nyx_i64);`.
+
+extern syscall {
+    fn write(fd: i32, buf: *u8, len: isize) -> i64 = 1
+}
+
+fn put(s: str) {
+    write(1, s.ptr as *u8, s.len as isize);
+}
+
+fn dbl(x: i64) -> i64 {
+    x * 2
+}
+
+fn inc(x: i64) -> i64 {
+    x + 1
+}
+
+// A function taking a function: `f` is a parameter of type fn(i64) -> i64.
+fn apply(f: fn(i64) -> i64, x: i64) -> i64 {
+    f(x)
+}
+
+fn twice(f: fn(i64) -> i64, x: i64) -> i64 {
+    f(f(x))
+}
+
+// A struct holding one: the field is called through like any function.
+struct Op {
+    name: str,
+    run: fn(i64) -> i64,
+}
+
+fn show(op: Op, x: i64) {
+    r := op.run(x);
+    put("{op.name}({x}) = {r}\n");
+}
+
+fn main() -> i64 {
+    a := apply(dbl, 21);
+    b := twice(inc, 40);
+    put("apply(dbl, 21) = {a}\n");
+    put("twice(inc, 40) = {b}\n");
+    show(Op{ name: "dbl", run: dbl }, 8);
+    show(Op{ name: "inc", run: inc }, 8);
+    a + b - 84
+}

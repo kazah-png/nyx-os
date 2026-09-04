@@ -579,6 +579,70 @@ static int NO_SLIT;
 static Expr* newe(EK k) { Expr* e = xmalloc(sizeof(Expr)); e->k = k; e->line = CUR.line; return e; }
 static Stmt* news(SK k) { Stmt* s = xmalloc(sizeof(Stmt)); s->k = k; s->line = CUR.line; return s; }
 
+/* --- function types (v0.24) ------------------------------------------- */
+/* `fn(A, B) -> R` is a type. Each distinct signature is interned once and
+ * named `__nyx_fn<N>` — the C typedef of the matching function pointer —
+ * so a fn type travels through Ty as an ordinary type name: two fn types
+ * are the same type exactly when their signatures are identical, and the
+ * places that render or compare types (emit_type, ty_compat) need no new
+ * case. `pretty` is the N spelling, for diagnostics. */
+typedef struct { char* cname; char* pretty; Ty* ps; int np; Ty ret; } FnTy;
+static FnTy FNTYS[32];
+static int NFNTYS;
+static int EMITTED_FNTYS;                 /* typedefs already written to the C */
+
+static int ty_same(Ty a, Ty b) {
+    if (!a.name || !b.name) return !a.name && !b.name;
+    return a.ptrs == b.ptrs && a.is_user == b.is_user && !strcmp(a.name, b.name);
+}
+
+/* The interned index of this signature, added on first sight. */
+static int fnty_intern(Ty* ps, int np, Ty ret) {
+    for (int i = 0; i < NFNTYS; i++) {
+        if (FNTYS[i].np != np || !ty_same(FNTYS[i].ret, ret)) continue;
+        int same = 1;
+        for (int p = 0; p < np; p++)
+            if (!ty_same(FNTYS[i].ps[p], ps[p])) { same = 0; break; }
+        if (same) return i;
+    }
+    if (NFNTYS >= 32) die("%s: too many distinct function types", FILENAME);
+    FnTy* f = &FNTYS[NFNTYS];
+    f->np = np;
+    f->ps = xmalloc(sizeof(Ty) * (size_t)(np ? np : 1));
+    for (int p = 0; p < np; p++) f->ps[p] = ps[p];
+    f->ret = ret;
+    f->cname = xmalloc(24);
+    sprintf(f->cname, "__nyx_fn%d", NFNTYS);
+    char* b = xmalloc(1024);
+    int n = sprintf(b, "fn(");
+    for (int p = 0; p < np && n < 900; p++) {
+        if (p) n += sprintf(b + n, ", ");
+        if (ps[p].is_user) n += sprintf(b + n, "#[user] ");
+        for (int k = 0; k < ps[p].ptrs; k++) b[n++] = '*';
+        n += sprintf(b + n, "%s", ps[p].name);
+    }
+    n += sprintf(b + n, ")");
+    if (ret.name) {
+        n += sprintf(b + n, " -> ");
+        if (ret.is_user) n += sprintf(b + n, "#[user] ");
+        for (int k = 0; k < ret.ptrs; k++) b[n++] = '*';
+        n += sprintf(b + n, "%s", ret.name);
+    }
+    b[n] = 0;
+    f->pretty = b;
+    return NFNTYS++;
+}
+
+/* The fn type a Ty names, or -1. */
+static int fnty_of(Ty t) {
+    if (!t.name || t.ptrs) return -1;
+    for (int i = 0; i < NFNTYS; i++)
+        if (!strcmp(FNTYS[i].cname, t.name)) return i;
+    return -1;
+}
+
+static Ty fnty_ty(int i) { Ty t; t.name = FNTYS[i].cname; t.ptrs = 0; t.is_user = 0; return t; }
+
 static Ty parse_type(void) {
     Ty t; t.ptrs = 0; t.name = NULL; t.is_user = 0;
     int line = CUR.line;
@@ -588,6 +652,24 @@ static Ty parse_type(void) {
         die("%s:%d: #[user] and raw are mutually exclusive — raw is the explicit opt-out",
             FILENAME, line);
     while (pacc(T_STAR)) t.ptrs++;
+    if (pchk(T_KW_FN)) {                  /* fn(A, B) -> R: a function type (v0.24) */
+        padv();
+        if (t.ptrs || t.is_user || got_raw)
+            die("%s:%d: a function type is a value of its own — no pointer, raw or #[user] on it (v0.24)",
+                FILENAME, line);
+        pexp(T_LP, "'(' after fn in a type");
+        Ty ps[16]; int np = 0;
+        if (!pchk(T_RP)) {
+            do {
+                if (np >= 16) die("%s:%d: too many parameters in a function type", FILENAME, line);
+                ps[np++] = parse_type();
+            } while (pacc(T_COMMA));
+        }
+        pexp(T_RP, "')' closing the function type's parameters");
+        Ty ret; ret.name = NULL; ret.ptrs = 0; ret.is_user = 0;
+        if (pacc(T_ARROW)) ret = parse_type();
+        return fnty_ty(fnty_intern(ps, np, ret));
+    }
     Tok id = pexp(T_IDENT, "type name");
     t.name = id.s;
     if (t.is_user && t.ptrs == 0)
@@ -1475,6 +1557,34 @@ static Ty ret_type_of(const char* name) {
     return ty_named("i64");    /* soft fallback; check_expr rejects unknowns */
 }
 
+/* v0.24 function values. A function declared with `fn` (never an extern
+ * syscall) may be named without a call: its type is the fn type of its
+ * signature. A struct field of fn type may be called through. */
+static int ufn_lookup(const char* name, Param** ps, int* np, Ty* ret) {
+    for (int i = 0; i < NFN; i++)
+        if (!strcmp(FNS[i].name, name)) {
+            *ps = FNS[i].ps; *np = FNS[i].np; *ret = FNS[i].ret;
+            return 1;
+        }
+    return 0;
+}
+
+static Ty fn_value_ty(Param* ps, int np, Ty ret) {
+    Ty tys[16];
+    for (int p = 0; p < np && p < 16; p++) tys[p] = ps[p].ty;
+    return fnty_ty(fnty_intern(tys, np, ret));
+}
+
+/* The fn type of struct field `field` on a value of type recv, or -1. */
+static int field_fnty(Ty recv, const char* field) {
+    if (!recv.name || recv.ptrs) return -1;
+    StructDef* sd = struct_lookup(recv.name);
+    if (!sd) return -1;
+    for (int i = 0; i < sd->nf; i++)
+        if (!strcmp(sd->fs[i].name, field)) return fnty_of(sd->fs[i].ty);
+    return -1;
+}
+
 /* Infer the N type of an expression. Integer literals default to i64 (the
  * language rule); comparisons and logic yield bool; `as` is authoritative. */
 static Ty infer_type(Expr* e) {
@@ -1486,19 +1596,33 @@ static Ty infer_type(Expr* e) {
         case E_PATH: {
             if (pf_const(e->name, NULL)) return ty_named("pageflags");
             VarInfo* v = vars_find(e->name);
-            return v ? v->ty : ty_named("i64");
+            if (v) return v->ty;
+            {   /* v0.24: a function named without a call is a value */
+                Param* ps; int np; Ty ret;
+                if (ufn_lookup(e->name, &ps, &np, &ret)) return fn_value_ty(ps, np, ret);
+            }
+            return ty_named("i64");
         }
         case E_CALL:
             if (e->callee->k == E_PATH && !strcmp(e->callee->name, "arg_count"))
                 return ty_named("i64");
             if (e->callee->k == E_PATH && !strcmp(e->callee->name, "arg"))
                 return ty_named("str");
-            if (e->callee->k == E_PATH) return ret_type_of(e->callee->name);
+            if (e->callee->k == E_PATH) {
+                VarInfo* v = vars_find(e->callee->name);   /* v0.24: through a fn value */
+                if (v) {
+                    int fi = fnty_of(v->ty);
+                    if (fi >= 0) return FNTYS[fi].ret;
+                }
+                return ret_type_of(e->callee->name);
+            }
             if (e->callee->k == E_FIELD) {      /* method: type from the receiver */
                 Ty rt = infer_type(e->callee->base);
                 if (rt.name && rt.ptrs == 0) {
                     Method* m = method_lookup(rt.name, e->callee->field);
                     if (m) return m->ret;
+                    int fi = field_fnty(rt, e->callee->field);   /* v0.24: a fn field */
+                    if (fi >= 0) return FNTYS[fi].ret;
                 }
             }
             return ty_named("i64");
@@ -1553,6 +1677,8 @@ static Ty infer_type(Expr* e) {
 static const char* ty_str(Ty t) {
     static char buf[2][48];
     static int flip;
+    int fi = fnty_of(t);                  /* v0.24: a fn type reads as its N spelling */
+    if (fi >= 0) return FNTYS[fi].pretty;
     char* b = buf[flip ^= 1];
     int n = 0;
     if (t.is_user) { memcpy(b, "#[user] ", 8); n = 8; }
@@ -1595,14 +1721,38 @@ static int ty_compat(Ty a, Ty p) {
  * symbol table right before the enclosing statement is emitted. Rejects
  * undeclared variables, unknown callees, arity errors, and argument type
  * mismatches — each with a file:line diagnostic. */
+static void check_expr(Expr* e);
+
+/* v0.24: a call through a function value — a local, parameter or field of
+ * fn type — checked against the signature exactly like a direct call. */
+static void check_fn_value_call(Expr* e, int fi, const char* what) {
+    FnTy* f = &FNTYS[fi];
+    if (e->nargs != f->np)
+        die("%s:%d: '%s' takes %d argument(s), got %d", FILENAME, e->line, what, f->np, e->nargs);
+    for (int i = 0; i < e->nargs; i++) {
+        check_expr(e->args[i]);
+        Ty at = infer_type(e->args[i]);
+        if (!ty_compat(at, f->ps[i]))
+            die("%s:%d: argument %d to '%s': expected %s, got %s",
+                FILENAME, e->line, i + 1, what, ty_str(f->ps[i]), ty_str(at));
+        own_move_expr(e->args[i], e->line);
+    }
+}
+
 static void check_expr(Expr* e) {
     if (!e) return;
     switch (e->k) {
         case E_PATH: {
             if (pf_const(e->name, NULL)) break;   /* predeclared pageflags const */
             VarInfo* v = vars_find(e->name);
-            if (!v)
+            if (!v) {
+                Param* ps; int np; Ty ret;
+                if (ufn_lookup(e->name, &ps, &np, &ret)) break;   /* v0.24: a fn value */
+                if (fn_lookup(e->name, &ps, &np, &ret))
+                    die("%s:%d: syscall '%s' is not a value — only functions declared with fn are (v0.24)",
+                        FILENAME, e->line, e->name);
                 die("%s:%d: undeclared variable '%s'", FILENAME, e->line, e->name);
+            }
             if (v->own_state == OWN_MOVED)        /* v0.17: no life after move */
                 die("%s:%d: use of '%s' after move", FILENAME, e->line, e->name);
             break;
@@ -1614,9 +1764,12 @@ static void check_expr(Expr* e) {
                 Ty rt = infer_type(recv);
                 Method* m = (rt.name && rt.ptrs == 0)
                             ? method_lookup(rt.name, e->callee->field) : NULL;
-                if (!m)
+                if (!m) {
+                    int fi = field_fnty(rt, e->callee->field);   /* v0.24: a fn field */
+                    if (fi >= 0) { check_fn_value_call(e, fi, e->callee->field); break; }
                     die("%s:%d: %s has no method '%s'",
                         FILENAME, e->line, ty_str(rt), e->callee->field);
+                }
                 if (e->nargs != m->np)
                     die("%s:%d: method '%s.%s' takes %d argument(s), got %d",
                         FILENAME, e->line, m->type, m->name, m->np, e->nargs);
@@ -1651,6 +1804,19 @@ static void check_expr(Expr* e) {
                     die("%s:%d: 'arg' index must be an integer, got %s",
                         FILENAME, e->line, ty_str(at0));
                 break;
+            }
+            {   /* v0.24: a local or parameter of fn type, called through */
+                VarInfo* lv = vars_find(e->callee->name);
+                if (lv) {
+                    int fi = fnty_of(lv->ty);
+                    if (fi < 0)
+                        die("%s:%d: '%s' is not a function (it is %s)",
+                            FILENAME, e->line, e->callee->name, ty_str(lv->ty));
+                    if (lv->own_state == OWN_MOVED)
+                        die("%s:%d: use of '%s' after move", FILENAME, e->line, e->callee->name);
+                    check_fn_value_call(e, fi, e->callee->name);
+                    break;
+                }
             }
             Param* ps; int np; Ty ret;
             if (!fn_lookup(e->callee->name, &ps, &np, &ret))
@@ -1950,6 +2116,17 @@ static void gen_expr(Expr* e) {
             break;
         }
         case E_CALL:
+            if (e->callee->k == E_FIELD &&      /* v0.24: recv.f(a) through a fn field */
+                field_fnty(infer_type(e->callee->base), e->callee->field) >= 0) {
+                gen_expr(e->callee);
+                fputc('(', OUT);
+                for (int i = 0; i < e->nargs; i++) {
+                    if (i) fputs(", ", OUT);
+                    gen_expr(e->args[i]);
+                }
+                fputc(')', OUT);
+                break;
+            }
             if (e->callee->k == E_FIELD) {      /* recv.m(a) -> Type_m(recv, a) */
                 Ty rt = infer_type(e->callee->base);
                 fprintf(OUT, "%s_%s(", rt.name, e->callee->field);
@@ -2315,6 +2492,10 @@ static void gen_stmt(Stmt* s, int ind) {
             if (!t.name || is_never(t))
                 die("%s:%d: cannot bind '%s' to an expression with no value",
                     FILENAME, s->line, s->name);
+            if (fnty_of(t) >= EMITTED_FNTYS)  /* v0.24: no typedef exists for it */
+                die("%s:%d: cannot bind '%s': the function type %s is declared nowhere in this "
+                    "program — pass the function as an argument, or store it in a field, of that type",
+                    FILENAME, s->line, s->name, ty_str(t));
             own_move_expr(s->e, s->line);         /* v0.17: init consumes its source */
             if (ty_is_own(t) && s->is_mut)
                 die("%s:%d: own bindings are immutable — ownership transfers by move (v0.17)",
@@ -2861,9 +3042,31 @@ static void validate_ty(Ty t, const char* where) {
     if (t.ptrs > 0 && ty_is_own(ty_named(t.name)))   /* v0.17: no aliasing an owner */
         die("%s: pointers to own type '%s' are not allowed (in %s)",
             FILENAME, t.name, where);
+    int fi = fnty_of(t);                  /* v0.24: a fn type — check its signature */
+    if (fi >= 0) {
+        for (int p = 0; p < FNTYS[fi].np; p++) validate_ty(FNTYS[fi].ps[p], where);
+        validate_ty(FNTYS[fi].ret, where);
+        return;
+    }
     if (strcmp(base_ctype(t.name), t.name) != 0) return;   /* mapped: primitive */
     if (!struct_lookup(t.name) && !enum_lookup(t.name))
         die("%s: unknown type '%s' in %s", FILENAME, t.name, where);
+}
+
+/* v0.24: `R (*name)(A, B)` — the C declarator of a fn type around a name.
+ * Struct fields spell it out (their layout precedes the typedefs, which
+ * may mention the structs); everything else uses the typedef name. */
+static void emit_fn_declarator(int fi, const char* name) {
+    FnTy* f = &FNTYS[fi];
+    if (!f->ret.name || is_never(f->ret)) fputs("void", OUT);
+    else emit_type(f->ret);
+    fprintf(OUT, " (*%s)(", name);
+    if (!f->np) fputs("void", OUT);
+    for (int p = 0; p < f->np; p++) {
+        if (p) fputs(", ", OUT);
+        emit_type(f->ps[p]);
+    }
+    fputc(')', OUT);
 }
 
 /* One struct's C layout: a typedef with the fields in order. */
@@ -2871,6 +3074,12 @@ static void gen_struct_layout(int i) {
     fprintf(OUT, "typedef struct {\n");
     for (int f = 0; f < STRUCTS[i].nf; f++) {
         fputs("    ", OUT);
+        int fi = fnty_of(STRUCTS[i].fs[f].ty);
+        if (fi >= 0) {                    /* v0.24: a fn field, as a declarator */
+            emit_fn_declarator(fi, STRUCTS[i].fs[f].name);
+            fputs(";\n", OUT);
+            continue;
+        }
         emit_type(STRUCTS[i].fs[f].ty);
         fprintf(OUT, " %s;\n", STRUCTS[i].fs[f].name);
     }
@@ -2962,6 +3171,17 @@ static void gen_program(const char* srcname) {
                 gen_enum_layout(ei++);
         }
     }
+    /* Function-pointer typedefs for the fn types the program declares
+     * (v0.24) — after the layouts they may mention, before anything that
+     * names them. A signature interned later (a bare fn value with no
+     * declared type anywhere) has no typedef, and binding one is refused. */
+    for (int i = 0; i < NFNTYS; i++) {
+        fputs("typedef ", OUT);
+        emit_fn_declarator(i, FNTYS[i].cname);
+        fputs(";\n", OUT);
+    }
+    if (NFNTYS) fputc('\n', OUT);
+    EMITTED_FNTYS = NFNTYS;
     gen_extern_fns();
     for (int i = 0; i < NFN; i++) { gen_fn_sig(&FNS[i]); fputs(";\n", OUT); }
     for (int i = 0; i < NMETHODS; i++) {        /* method prototypes */
