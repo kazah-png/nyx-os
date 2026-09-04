@@ -877,13 +877,13 @@ void execute_command(const char* cmd_line) {
     strncpy(cmd_copy, cmd_line, 255);
     cmd_copy[255] = '\0';
     char* argv[MAX_CMD_ARGS];
-    // Expand $VAR / ${VAR} only when the line actually contains a '$'. Non-'$' commands take
-    // the original path byte-for-byte, so nothing the shell already ran changes behaviour
+    // Expand $VAR / ${VAR} / $((..)) / leading ~ only when the line contains a '$' or '~'.
+    // Other commands take the original path byte-for-byte, so nothing the shell already ran changes behaviour
     // (including the cc self-host, which runs `cc …` through here). The expansion scratch
     // (MAX_CMD_ARGS*256 = 8 KB) is kmalloc'd per call — off the 4 KB kernel stack, and
     // re-entrant when a command runs another via execute_command; a failed alloc harmlessly
     // falls back to no expansion.
-    char (*argbuf)[256] = (strchr(cmd_copy, '$') != NULL)
+    char (*argbuf)[256] = (strchr(cmd_copy, '$') != NULL || strchr(cmd_copy, '~') != NULL)
                           ? (char (*)[256])kmalloc(MAX_CMD_ARGS * 256) : NULL;
     int argc = 0;
     char* token = strtok(cmd_copy, " ");
@@ -4959,6 +4959,13 @@ static const char* shell_lookup_var(const char* name, int namelen) {
 static void shell_expand_vars(const char* in, char* out, int outsz) {
     int o = 0;
     for (int i = 0; in[i] && o < outsz - 1; ) {
+        if (i == 0 && in[0] == '~' && (in[1] == '\0' || in[1] == '/')) {
+            // Leading `~` (bare or before '/') expands to $HOME, like a shell. Only at
+            // the token start — a '~' elsewhere (e.g. a backup name "a~") stays literal.
+            const char* home = shell_lookup_var("HOME", 4);
+            if (home) { for (int k = 0; home[k] && o < outsz - 1; k++) out[o++] = home[k]; i = 1; continue; }
+            // HOME unset -> fall through, '~' copied literally below
+        }
         if (in[i] == '$' && in[i + 1] == '(' && in[i + 2] == '(') {
             // $((EXPR)) — arithmetic expansion via the KAT'd calc_eval. Find the
             // matching "))" by tracking inner-paren depth (a ')' at depth 0 whose
@@ -5011,7 +5018,7 @@ static void shell_expand_vars(const char* in, char* out, int outsz) {
 static int shell_expand_selftest(void) {
     int saved = env_count;
     static char v1[] = "FOO=bar";
-    static char v2[] = "HOME=/mnt/home/nyx";
+    static char v2[] = "HOME=/home/user";
     if (env_count + 2 > 16) return 99;
     env_vars[env_count++] = v1;
     env_vars[env_count++] = v2;
@@ -5022,8 +5029,8 @@ static int shell_expand_selftest(void) {
     SX("$FOO",         "bar");            // 1  bare
     SX("${FOO}",       "bar");            // 2  braced
     SX("pre$FOO/post", "prebar/post");    // 3  embedded, delimited by '/'
-    SX("$HOME/x",      "/mnt/home/nyx/x");// 4  value with slashes
-    SX("${HOME}s",     "/mnt/home/nyxs"); // 5  braced lets a name char follow
+    SX("$HOME/x",      "/home/user/x");   // 4  value with slashes
+    SX("${HOME}s",     "/home/users");    // 5  braced lets a name char follow
     SX("$FOO$FOO",     "barbar");         // 6  adjacent
     SX("$UNDEF",       "");               // 7  undefined -> empty
     SX("a${UNDEF}b",   "ab");             // 8  undefined braced -> empty
@@ -5038,6 +5045,10 @@ static int shell_expand_selftest(void) {
     SX("$(((2+3)*4))", "20");             // 17 nested parens inside
     SX("$((1+))",      "$((1+))");        // 18 calc error -> left verbatim
     SX("$((2+2",       "$((2+2");         // 19 unterminated -> left verbatim
+    SX("~",            "/home/user");     // 20 bare ~ -> HOME
+    SX("~/docs",       "/home/user/docs");// 21 ~/path -> HOME/path
+    SX("a~b",          "a~b");            // 22 ~ not at start -> literal
+    SX("~foo",         "~foo");           // 23 ~name (not ~ or ~/) -> literal (no user db)
     #undef SX
 done:
     env_count = saved;
@@ -10527,6 +10538,9 @@ void kernel_main(uint64_t magic, void* mboot_ptr) {
         set_kernel_rsp((uint64_t)syscall_stack + 4096 + KERNEL_BASE);
     }
     printf("[INIT] Virtual File System...\n"); init_vfs();
+    // Seed HOME so `~` expands out of the box (the RAM home dir is /home/user).
+    strncpy(env_buf[env_count], "HOME=/home/user", 63); env_buf[env_count][63] = '\0';
+    env_vars[env_count] = env_buf[env_count]; env_count++;
     bootsplash_update(8, 23, "Mounting virtual file system...");
     printf("[INIT] Loading GRUB modules...\n"); init_load_modules();
     bootsplash_update(9, 23, "Loading kernel modules...");
