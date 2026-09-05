@@ -149,6 +149,7 @@ static void cmd_mkdir(int argc, char** argv);
 static void cmd_ln(int argc, char** argv);
 static void cmd_readlink(int argc, char** argv);
 static void cmd_chmod(int argc, char** argv);
+static void cmd_stat(int argc, char** argv);
 static void cmd_rm(int argc, char** argv);
 static void cmd_shred(int argc, char** argv);
 static void cmd_cp(int argc, char** argv);
@@ -411,6 +412,7 @@ static const command_t commands[] = {
     {"ln",        cmd_ln,        "Create a symbolic link: ln -s <target> <linkname>", false},
     {"readlink",  cmd_readlink,  "Print a symlink's target: readlink <symlink>", false},
     {"chmod",     cmd_chmod,     "Change permission bits: chmod <octal|symbolic> <file>", false},
+    {"stat",      cmd_stat,      "Show file metadata: stat <file>", false},
     {"rm",        cmd_rm,        "Remove files/dirs: rm [-rf] <path>...", false},
     {"shred",     cmd_shred,     "Overwrite a file's data, then optionally remove it: shred [-n N] [-u] <file>", false},
     {"cp",        cmd_cp,        "Copy a file (cp <src> <dst>) or a tree (cp -r <srcdir> <dstdir>)", false},
@@ -968,7 +970,7 @@ void execute_command(const char* cmd_line) {
 // ever dropped even if a new command isn't categorised here yet.
 typedef struct { const char* title; const char* const* names; } help_cat_t;
 static const char* const HC_shell[] = {"help","man","version","clear","history","alias","unalias","exec","spawn","jobs","wait","nice","renice","taskset",0};
-static const char* const HC_files[] = {"ls","cd","pwd","pushd","popd","dirs","cat","file","identify","tar","iniget","open","touch","mkdir","rm","shred","cp","mv","tree","find","which","basename","dirname","realpath","files","df","du","disks","lsblk","lspci","nvme","nyxpart","mkfs","nyxinstall","nyxgrub","mount","ext2ls","ext2cat",0};
+static const char* const HC_files[] = {"ls","cd","pwd","pushd","popd","dirs","cat","file","identify","tar","iniget","open","touch","mkdir","rm","shred","cp","mv","tree","find","which","basename","dirname","realpath","stat","files","df","du","disks","lsblk","lspci","nvme","nyxpart","mkfs","nyxinstall","nyxgrub","mount","ext2ls","ext2cat",0};
 static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","sed","patch","fold","fmt","nl","expand","unexpand","factor","isprime","strings","sha256sum","sha512sum","sha1sum","md5sum","seq","paste","clip","cut","uniq","join","comm","printf","wc","write","hexdump",0};
 static const char* const HC_sys[]   = {"ps","top","time","kill","pgrep","pkill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat","screenshot","stackcheck",0};
 static const char* const HC_user[]  = {"useradd","users",0};
@@ -1058,6 +1060,7 @@ static const man_page_t man_pages[] = {
     {"ln",       "Create a symbolic link: `ln -s <target> <linkname>` makes <linkname> a symlink pointing at <target>. Opening/`cat`/`cd` through the link transparently reaches the target (resolve_path follows it, bounded to 8 hops so a cyclic link can't loop); `readlink <linkname>` shows the raw target without following. Hard links aren't supported by the ramdisk node model, so `-s` is required."},
     {"readlink", "Print the target path a symbolic link points at, without following it: `readlink <symlink>`."},
     {"chmod",    "Change a file's permission bits, octal or symbolic: `chmod <octal|symbolic> <file>` (e.g. `chmod 644 f`, `chmod +x f`, `chmod u+w f`, `chmod go-rwx f`, `chmod a=r f`, `chmod u+w,go-w f`, `chmod u+x-w f`). Symbolic: who `[ugoa]` (default all) + one or more op `+`/`-`/`=` + perms `[rwx]` groups per clause, comma-separated clauses. Clearing the owner-write bit (`chmod 444 f` or `chmod -w f`) makes the file read-only — `vfs_write_file`/overwrites are refused until you make it writable again. Applies to the ramdisk tree; new files default to 644, directories to 755."},
+    {"stat",     "Show a file's metadata: its type (regular file / directory), size in bytes, and permission bits in both octal and `rwx` form (e.g. `Mode: 0644 (-rw-r--r--)`). Read-only companion to `chmod` and `ls -l`; accepts several paths."},
     {"echo",     "Write the arguments to standard output separated by spaces and followed by a newline. `echo text > file` writes to a file instead of the screen."},
     {"grep",     "Print the lines of <file> that match <pattern>. -i ignores letter case, -n prefixes each match with its line number, -v inverts the search to print the lines that do NOT match, and -c prints only the COUNT of matching lines (honouring -i/-v) instead of the lines themselves."},
     {"sort",     "Sort the lines of <file>. -r reverses the result; -n sorts numerically by the integer at the start of each line instead of alphabetically; -f folds case (compare case-insensitively); -u drops duplicate lines (keep one per equal key, like GNU sort -u). Flags combine, e.g. sort -fu."},
@@ -8776,6 +8779,29 @@ static void cmd_chmod(int argc, char** argv) {
     if (vfs_chmod(argv[2], (uint16_t)m) != 0) { printf("chmod: cannot access '%s'\n", argv[2]); return; }
     char b[10]; mode_to_rwx(m, b);
     printf("mode of '%s' -> %s (%o)\n", argv[2], b, (unsigned)m);
+}
+
+// stat <file> — show a file's metadata (type, size, permission bits) via the vfs stat/mode
+// APIs. A read-only companion to chmod and `ls -l`; there are no GNU-stat block/inode/time
+// fields because the ramdisk vfs doesn't track them. Each path prints its own block.
+static void cmd_stat(int argc, char** argv) {
+    if (argc < 2) { printf("Usage: stat <file> [file ...]\n"); return; }
+    for (int a = 1; a < argc; a++) {
+        const char* path = argv[a];
+        uint32_t size = 0; int is_dir = 0;
+        if (vfs_stat(path, &size, &is_dir) != 0) {
+            printf("stat: cannot stat '%s': No such file or directory\n", path);
+            continue;
+        }
+        int mode = vfs_getmode(path);
+        if (mode < 0) mode = is_dir ? 0755 : 0644;   // vfs default when a node has no explicit mode
+        mode &= 0777;
+        char rwx[10]; mode_to_rwx(mode, rwx);
+        printf("  File: %s\n", path);
+        printf("  Type: %s\n", is_dir ? "directory" : "regular file");
+        if (!is_dir) printf("  Size: %u\n", size);
+        printf("  Mode: 0%o (%c%s)\n", (unsigned)mode, is_dir ? 'd' : '-', rwx);
+    }
 }
 
 // KAT: rm -r removes a populated directory tree that plain unlink refuses, leaving
