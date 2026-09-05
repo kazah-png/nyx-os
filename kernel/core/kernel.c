@@ -1064,7 +1064,7 @@ static const man_page_t man_pages[] = {
     {"rev",      "Print each line of <file> with the order of its characters reversed."},
     {"sed",      "Substitute text with the s command: sed s/old/new/[g] <file> replaces the literal string <old> with <new> on each line (the first match per line, or every match with the g flag) and prints the result — the file itself is not changed. Any character right after the s works as the delimiter, so s|a|b|g is the same as s/a/b/g. Matching is literal (NyxOS has no regex engine); unlike tr, which works one character at a time, sed replaces whole strings."},
     {"patch",    "Apply a unified diff to a file IN PLACE: `patch <file> <diff>` reads the unified diff in <diff> (the format `diff -u` and git produce) and edits <file> accordingly — added (`+`) lines inserted, removed (`-`) lines dropped, context (` `) lines kept. It is fail-safe: every hunk's context and removed lines must match <file> exactly at the hunk's position, or the whole patch is rejected with a reason and the file is left completely unchanged (no partial application). `---`/`+++` headers and `\\ No newline` markers are ignored. The read side of the existing `diff` — together they let you produce a diff, ship it, and apply it in-OS. Pinned by the `patch` self-test (insert/delete/change hunks + context-mismatch rejection)."},
-    {"tr",       "Translate, delete or squeeze characters read from <file>. With two sets, each character of <file> that appears in SET1 is replaced by the character at the same position in SET2 (a shorter SET2 repeats its last character). -d deletes every SET1 character instead; -s collapses each run of a repeated result character into one. Sets may use ascending ranges such as a-z or 0-9."},
+    {"tr",       "Translate, delete or squeeze characters read from <file>. With two sets, each character of <file> that appears in SET1 is replaced by the character at the same position in SET2 (a shorter SET2 repeats its last character). -d deletes every SET1 character instead; -s collapses each run of a repeated result character into one. Sets may use ascending ranges such as a-z or 0-9 and C-style escapes \\n \\t \\r \\\\ and \\NNN (octal), so e.g. `tr '\\n' ' '` or `tr -d '\\r'`."},
     {"fold",     "Wrap the lines of <file> so no output line is longer than the given width (80 by default, or -w width). A line longer than the width is broken with a hard newline at exactly that many characters; shorter lines and existing line breaks are left alone."},
     {"pr",       "Paginate a text file for printing: `pr [-l lines] <file>` splits it into pages of `lines` content lines (56 by default) and prints a `--- Page N ---` header before each. Useful for chunking long output into page-sized sections."},
     {"fmt",      "Reflow (rewrap) the prose in <file> to fill lines up to a width (75 by default, or -w width) -- the paragraph formatter. Unlike `fold`, which only hard-breaks over-long lines at a fixed column, fmt COLLAPSES each paragraph's internal whitespace and repacks its words greedily, so short lines are joined and long ones split at word boundaries. A blank line separates paragraphs and is preserved as a single blank line; a word longer than the width is left whole on its own line rather than broken. Reads one bounded chunk of the file (like head/fold)."},
@@ -3278,6 +3278,43 @@ static int tr_map(int del, int sqz, const unsigned char* set1, int n1,
     return out;
 }
 
+// Interpret C-style escapes in a `tr` SET before range expansion, matching GNU tr:
+// \\ \a \b \f \n \r \t \v and \NNN (1-3 octal digits). An unrecognized escape \X yields
+// X (the backslash is dropped, as GNU does). Writes a NUL-terminated result to out[max]
+// (a \0 escape terminates the set — an accepted edge; sets rarely contain NUL). Lets the
+// common daily-use forms work: `tr '\n' ' '`, `tr -d '\r'`, `tr '\t' ' '`. Pinned by tr_selftest.
+static int tr_unescape(const char* s, char* out, int max) {
+    int o = 0;
+    while (*s && o < max - 1) {
+        if (*s == '\\' && s[1]) {
+            s++;
+            switch (*s) {
+                case '\\': out[o++] = '\\'; s++; break;
+                case 'a': out[o++] = '\a'; s++; break;
+                case 'b': out[o++] = '\b'; s++; break;
+                case 'f': out[o++] = '\f'; s++; break;
+                case 'n': out[o++] = '\n'; s++; break;
+                case 'r': out[o++] = '\r'; s++; break;
+                case 't': out[o++] = '\t'; s++; break;
+                case 'v': out[o++] = '\v'; s++; break;
+                default:
+                    if (*s >= '0' && *s <= '7') {          // \NNN octal, up to 3 digits
+                        int v = 0, k = 0;
+                        while (k < 3 && *s >= '0' && *s <= '7') { v = v * 8 + (*s - '0'); s++; k++; }
+                        out[o++] = (char)v;
+                    } else {
+                        out[o++] = *s++;                   // unknown escape \X -> X
+                    }
+                    break;
+            }
+        } else {
+            out[o++] = *s++;
+        }
+    }
+    out[o] = '\0';
+    return o;
+}
+
 // tr [-d] [-s] SET1 [SET2] <file> — translate, delete or squeeze characters read
 // from <file>. NyxOS shell builtins are file-oriented (there is no stdin into a
 // kernel builtin), so tr takes a file argument like rev/sort/wc rather than the
@@ -3307,8 +3344,11 @@ static void cmd_tr(int argc, char** argv) {
     if (!fname) { printf("Usage: tr [-s] SET1 SET2 <file>  |  tr -d[s] SET1 [SET2] <file>\n"); return; }
 
     unsigned char set1[256], set2[256];
-    int n1 = tr_expand(s1, set1, 256);
-    int n2 = s2 ? tr_expand(s2, set2, 256) : 0;
+    char e1[256], e2[256];                        // escape-interpreted SETs (\n \t \NNN ...)
+    tr_unescape(s1, e1, sizeof(e1));
+    int n1 = tr_expand(e1, set1, 256);
+    int n2 = 0;
+    if (s2) { tr_unescape(s2, e2, sizeof(e2)); n2 = tr_expand(e2, set2, 256); }
 
     int fd = vfs_open(fname, 0, 0);
     if (fd < 0) { printf("tr: cannot open '%s'\n", fname); return; }
@@ -3349,6 +3389,12 @@ int tr_selftest(void) {
     in = "a    b  c"; TR_RUN(0,1," ",0);       if (strcmp(out,"a b c")) return 7;    // squeeze spaces
     in = "aabbcc";    TR_RUN(0,1,"abc","xxx"); if (strcmp(out,"x")) return 8;        // translate then squeeze
     #undef TR_RUN
+    // tr_unescape: named escapes, octal, dropped-backslash for an unknown escape (GNU rules)
+    char u[16];
+    if (tr_unescape("\\n\\t\\r", u, sizeof u) != 3 || u[0] != '\n' || u[1] != '\t' || u[2] != '\r') return 9;
+    if (tr_unescape("\\101", u, sizeof u) != 1 || u[0] != 'A') return 10;        // \101 octal = 'A'
+    if (tr_unescape("\\\\", u, sizeof u) != 1 || u[0] != '\\') return 11;        // \\ -> backslash
+    if (tr_unescape("\\z", u, sizeof u) != 1 || u[0] != 'z') return 12;          // unknown -> drop backslash
     return 0;
 }
 
