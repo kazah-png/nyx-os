@@ -119,7 +119,7 @@ int main(int argc, char** argv) {
         int a, b, c2;
         if (sscanf("42", "%d", &a) != 1 || a != 42) sc_ok = 0;
         if (sscanf("  -7xyz", "%d", &a) != 1 || a != -7) sc_ok = 0;
-        if (sscanf("abc", "%d", &a) != 0) sc_ok = 0;               /* matching failure */
+        if (sscanf("abc", "%d", &a) > 0) sc_ok = 0;               /* matching failure: %d must not convert (> 0, not != 0 which conflates EOF) */
         if (sscanf("", "%d", &a) != -1) sc_ok = 0;                 /* EOF before first */
         if (sscanf("12:34:56", "%d:%d:%d", &a, &b, &c2) != 3 || a != 12 || b != 34 || c2 != 56) sc_ok = 0;
         unsigned u;
