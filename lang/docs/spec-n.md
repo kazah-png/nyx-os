@@ -557,6 +557,61 @@ is a compile error. The choice is per-type: **must-consume** (the
 compiler makes you finish the story) or **auto-close** (the compiler
 finishes it for you) — both zero-cost.
 
+#### Own fields inside own structs — designed, planned as v0.25
+
+The containment rule above keeps every own value in exactly one
+binding, and today that means an own value cannot sit inside another
+type at all. The one nesting that keeps the invariant is an own value
+inside an **own** container: the container is the binding, and the
+container's own move-not-copy, must-consume discipline carries its
+fields along. v0.25 admits exactly that, under these rules:
+
+```n
+own struct File { fd: i64 }
+#[drop(close_file)] own struct Log { name: str, file: File }
+
+fn open_log(fd: i64) -> Log { Log{ name: "boot", file: File{ fd: fd } } }
+fn close_file(f: File) { put("closing {f.fd}\n"); }
+fn close_log(l: Log) { put("closing {l.name}\n"); }   // then l.file drops
+```
+
+- **Only an `own struct` may hold `own` fields.** A plain struct or an
+  enum payload still may not (`own type in field … cannot nest`): a
+  copyable container would copy its owner.
+- **Construction moves.** `Log{ file: f }` consumes `f` exactly as a
+  bind, an argument or a return does; `f` is dead afterwards.
+- **A field never moves out on its own.** `l.file` may be read
+  through — `l.file.fd` peeks — but binding, passing or returning
+  `l.file` is refused: *cannot move field 'file' out of own value 'l'
+  — consume 'l' as a whole*. Partial moves would need per-field
+  states the flat tracker does not keep, and the container's one
+  obligation stays one.
+- **The container's consumption consumes its fields.** Wherever a
+  held container ends its body — a sink such as `close_log`, the
+  container's own `#[drop]` function included — the compiler drops
+  its own fields in **reverse declaration order** after the body's
+  last statement, each through its type's `#[drop]`; a field whose
+  type has no destructor makes that end a leak error, as a live
+  binding would. Held parameters still never re-run their own
+  destructor, so drop recursion stays impossible. A LIVE local
+  container auto-drops as any own value: through its `#[drop]` when it
+  has one (whose body end then drops the fields), else — when every
+  own field has a destructor — through the field drops alone.
+- **Moving the container moves everything.** A container passed on,
+  returned or bound elsewhere takes its fields with it; nothing is
+  dropped at that point.
+- **Unchanged:** own bindings stay immutable, so a field cannot be
+  reassigned; own values still cannot be pointed to (`*Log` is refused),
+  cross into syscalls, flow through a match expression, or appear in a
+  defer; `impl` on an own type stays refused.
+
+Everything a program can observe is the drop order: in the example,
+`close_log(l)` prints `closing boot`, then `closing 3`. What the rule
+does not yet give is a way to keep an own value **behind a pointer** —
+the shape a heap-allocated closure environment needs — and that stays
+an open question for the N++ closure work, recorded in
+[design-npp.md](design-npp.md) §6.2.
+
 Everything above is erased at codegen: an own struct lowers to the same
 plain C struct as any other, and every drop is a visible, statically
 placed call in the generated C — the ownership discipline is free.
