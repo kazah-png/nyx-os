@@ -206,7 +206,11 @@ uint64_t do_dlsym(long handle, const char* name) {
         (uint64_t)h->e_shnum * sizeof(elf64_shdr_t) > lib->elf_size - h->e_shoff) return 0;
     elf64_shdr_t* sh = (elf64_shdr_t*)(lib->elf + h->e_shoff);
     for (int i = 0; i < h->e_shnum; i++) {
-        if (sh[i].sh_type != SHT_SYMTAB || sh[i].sh_entsize == 0) continue;
+        // Require the exact symbol-entry size: nsyms = sh_size/sh_entsize below, but the loop
+        // strides by sizeof(elf64_sym_t), so a smaller entsize (e.g. 1) makes syms[s] walk far
+        // past the section into adjacent heap (an OOB read). elf_validate checks e_phentsize
+        // the same way; this also keeps the sh_size/sh_entsize divide away from zero.
+        if (sh[i].sh_type != SHT_SYMTAB || sh[i].sh_entsize != sizeof(elf64_sym_t)) continue;
         if (sh[i].sh_link >= h->e_shnum) continue;
 
         /* Everything below comes from a file a user can write, so bound it all.
