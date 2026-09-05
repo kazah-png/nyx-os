@@ -12,6 +12,9 @@
 #define CUT_MAXPOS 1024   // highest explicit 1-based position kept in the bitmap; "N-" open
                           // ranges are unbounded and handled separately, so common uses like
                           // "cut -f2-" have no ceiling.
+#define CUT_MAXHI  64     // closed ranges whose upper bound exceeds CUT_MAXPOS are kept exactly
+                          // here (not collapsed to open-ended), so "cut -c1025-1027" on a long
+                          // line selects only 1025..1027 — GNU parity past the bitmap ceiling.
 
 typedef enum { CUT_FIELDS = 0, CUT_CHARS = 1, CUT_BYTES = 2 } cut_mode_t;
 
@@ -23,6 +26,9 @@ typedef struct {
     int        any;                  // at least one valid range parsed
     uint32_t   open_from;            // >0 => also select every position >= open_from ("N-")
     uint8_t    sel[CUT_MAXPOS + 1];  // sel[p] != 0 => 1-based position p is selected
+    uint32_t   hi_lo[CUT_MAXHI];     // closed ranges [hi_lo,hi_hi] with an upper bound past
+    uint32_t   hi_hi[CUT_MAXHI];     // CUT_MAXPOS, kept exactly (the bitmap can't hold them)
+    int        n_hi;                 // number of such high ranges in use
 } cut_spec_t;
 
 // cut_line returns this to mean "suppress the whole line" (emit nothing, not even a newline).

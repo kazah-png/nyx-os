@@ -6,6 +6,8 @@ static int cut_selected(const cut_spec_t* s, uint32_t p) {
     if (p == 0) return 0;
     if (s->open_from && p >= s->open_from) return 1;
     if (p <= CUT_MAXPOS && s->sel[p]) return 1;
+    for (int i = 0; i < s->n_hi; i++)                  // closed ranges past the bitmap ceiling
+        if (p >= s->hi_lo[i] && p <= s->hi_hi[i]) return 1;
     return 0;
 }
 
@@ -53,11 +55,12 @@ int cut_parse_list(const char* list, cut_spec_t* spec) {
             if (spec->open_from == 0 || rlo < spec->open_from) spec->open_from = rlo;
         } else {
             uint32_t a = rlo, b = rhi;
-            if (b > CUT_MAXPOS) {                              // range past the bitmap ceiling:
-                if (spec->open_from == 0 || a < spec->open_from) spec->open_from = a;  // treat
-                b = CUT_MAXPOS;                                // its tail as open-ended
+            uint32_t bm = (b > CUT_MAXPOS) ? CUT_MAXPOS : b;   // fill the bitmap up to the ceiling
+            for (uint32_t q = a; q <= bm; q++) spec->sel[q] = 1;
+            if (b > CUT_MAXPOS) {                              // keep the exact closed range past
+                if (spec->n_hi >= CUT_MAXHI) return -1;        // the ceiling (NOT open-ended)
+                spec->hi_lo[spec->n_hi] = a; spec->hi_hi[spec->n_hi] = b; spec->n_hi++;
             }
-            for (uint32_t q = a; q <= b; q++) spec->sel[q] = 1;
         }
         spec->any = 1;
     }
@@ -137,5 +140,14 @@ int cut_selftest(void) {
     memset_asm(&s, 0, sizeof s); s.mode = CUT_CHARS; s.delim = ','; s.odelim = ',';
     if (cut_parse_list("1,3-4", &s) != 0) return 15;
     n = cut_line(&s, "hello", 5, out, sizeof out); if (!cut_streq(out, n, "hll")) return 16;
+    // A closed range past the bitmap ceiling (CUT_MAXPOS) is kept EXACTLY, not turned open-ended.
+    memset_asm(&s, 0, sizeof s); s.mode = CUT_CHARS;
+    if (cut_parse_list("1025-1027", &s) != 0) return 17;
+    if (cut_selected(&s, 1024) || !cut_selected(&s, 1025) ||
+        !cut_selected(&s, 1027) || cut_selected(&s, 1028)) return 18;
+    // A single position past the ceiling selects only itself, not everything after it.
+    memset_asm(&s, 0, sizeof s); s.mode = CUT_CHARS;
+    if (cut_parse_list("2000", &s) != 0) return 19;
+    if (!cut_selected(&s, 2000) || cut_selected(&s, 2001) || cut_selected(&s, 1999)) return 20;
     return 0;
 }
