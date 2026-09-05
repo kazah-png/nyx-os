@@ -1,0 +1,54 @@
+// gstructfn.npp — function and closure types as fields of generic structs
+// (M6.4c3b).
+//
+// A generic struct's field may be a function type or a closure type that
+// names the struct's type parameters: `Pair<T>` keeps a `second: Fn(T) -> T`,
+// `Op<T>` a plain `f: fn(T) -> T`. nppc keeps such a field as the type's
+// token span and spells it out per instantiation with the parameters
+// substituted — `__g_Pair_i64` gets `second: Fn(i64) -> i64`, which the
+// closure pass then names `__Fn_i64__i64` like any other — so a lambda in
+// a `Pair<T>{ … }` literal inside a template lifts as a generic closure,
+// one in a concrete `Pair<i64>{ … }` literal lifts plain, and a call
+// through the field, `p.second(0)`, is rewritten like a call through any
+// closure field. One limit: a generic use inside such a field's type
+// (`fn(T) -> Box<T>`) is refused for now.
+
+extern syscall {
+    fn write(fd: i32, buf: *u8, len: isize) -> i64 = 1
+}
+
+fn put(s: str) {
+    write(1, s.ptr as *u8, s.len as isize);
+}
+
+struct Pair<T> {
+    first: T,
+    second: Fn(T) -> T,
+}
+
+struct Op<T> {
+    name: str,
+    f: fn(T) -> T,
+}
+
+fn mk<T>(x: T) -> Pair<T> {
+    Pair<T>{ first: x, second: fn(v: T) -> T { x } }
+}
+
+fn dbl(x: i64) -> i64 {
+    x * 2
+}
+
+fn main() -> i64 {
+    p := mk<i64>(7);
+    q := mk<str>("seven");
+    a := p.second(0);
+    b := q.second("x");
+    r := Pair<i64>{ first: 40, second: fn(v: i64) -> i64 { v + 2 } };
+    c := r.second(r.first);
+    o := Op<i64>{ name: "dbl", f: dbl };
+    g := o.f;
+    d := g(21);
+    put("{a} {b} {c} {d} {o.name}\n");
+    0
+}

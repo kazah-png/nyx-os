@@ -380,9 +380,11 @@ typedef struct {
     int ptok[MAXP]; int nparams;          /* type-param IDENT tokens */
     int declstart, declend;               /* source span of the whole declaration */
     /* struct-only: the field templates */
-    struct { int fname; int ptrs; int base; int nest; } fields[MAXF];
+    struct { int fname; int ptrs; int base; int nest; int ts, te; } fields[MAXF];
     int nfields;                          /* base: token index of the field type name;
-                                           * nest: its nested generic use, or -1 (M6.3h) */
+                                           * nest: its nested generic use, or -1 (M6.3h);
+                                           * ts..te: a function or closure type's token
+                                           * span, te = 0 otherwise (M6.4c3b) */
     /* fn-only: the token bounds the span-splice emit walks */
     int angleclose;                       /* token index of `>` closing the params */
     int lasttok;                          /* token index of the body's closing `}` */
@@ -392,6 +394,7 @@ typedef struct {
 } GStruct;
 static GStruct GS[MAXG];
 static int NGS;
+static int skip_type(int t);              /* a type's token extent (below, with the lambdas) */
 
 typedef struct {
     int gi;                               /* which GStruct */
@@ -464,16 +467,27 @@ static void collect_generic_decls(void) {
                     FILENAME, TOKS[j].line);
             int ptrs = 0;
             while (TOKS[j].k == T_STAR) { ptrs++; j++; }
-            if (TOKS[j].k == T_KW_FN || (TOKS[j].k == T_IDENT && TOKS[j + 1].k == T_LP))
-                die("%s:%d: a function or closure type as a field of generic struct '%.*s' is not supported yet — keep such a field in a plain struct",
-                    FILENAME, TOKS[j].line, TOKS[i + 1].slen, TOKS[i + 1].s);
-            if (TOKS[j].k != T_IDENT)
-                die("%s:%d: expected a field type", FILENAME, TOKS[j].line);
             if (g->nfields >= MAXF) die("%s: too many fields", FILENAME);
             g->fields[g->nfields].fname = fname;
             g->fields[g->nfields].ptrs = ptrs;
-            g->fields[g->nfields].base = j;
             g->fields[g->nfields].nest = -1;
+            g->fields[g->nfields].ts = g->fields[g->nfields].te = 0;
+            if (TOKS[j].k == T_KW_FN || (TOKS[j].k == T_IDENT && TOKS[j + 1].k == T_LP)) {
+                /* A function or closure type (M6.4c3b): kept as a token span
+                 * the emit renders with the type parameters substituted. */
+                int e = skip_type(j);
+                if (e < 0) die("%s:%d: malformed function type", FILENAME, TOKS[j].line);
+                g->fields[g->nfields].base = j;
+                g->fields[g->nfields].ts = j;
+                g->fields[g->nfields].te = e;
+                g->nfields++;
+                j = e;
+                if (TOKS[j].k == T_COMMA) j++;
+                continue;
+            }
+            if (TOKS[j].k != T_IDENT)
+                die("%s:%d: expected a field type", FILENAME, TOKS[j].line);
+            g->fields[g->nfields].base = j;
             int base = j++;
             if (TOKS[j].k == T_LT) {
                 /* A generic type — `a: Box<T>` (M6.3h): a nested use of the
@@ -788,12 +802,30 @@ static void nested_inst(Inst* outer, Nest* ns, Inst* out) {
     out->end = -1;
 }
 
+/* A function or closure type span of a struct template, rendered for one
+ * instantiation: each type parameter replaced by its argument, the rest
+ * spelled token by token (M6.4c3b). Returns the characters written. */
+static int span_subst(GStruct* g, Inst* it, int ts, int te, char* out) {
+    int n = 0;
+    for (int t = ts; t < te; t++) {
+        if (t > ts && (TOKS[t - 1].k == T_COMMA || TOKS[t - 1].k == T_ARROW || TOKS[t].k == T_ARROW ||
+                       TOKS[t - 1].k == T_ATTR_USER || TOKS[t - 1].k == T_KW_RAW))
+            out[n++] = ' ';
+        int p = -1;
+        if (TOKS[t].k == T_IDENT)
+            for (int q = 0; q < g->nparams; q++) if (tokspan_eq(g->ptok[q], t)) { p = q; break; }
+        if (p >= 0) n += sprintf(out + n, "%.*s", it->alen[p], it->aname[p]);
+        else n += sprintf(out + n, "%.*s", TOKS[t].end - TOKS[t].start, SRC + TOKS[t].start);
+    }
+    return n;
+}
+
 /* The concrete N struct for one instantiation: the template body with each
  * type parameter replaced by the matching argument. */
 static char* concrete_struct(Inst* it) {
     GStruct* g = &GS[it->gi];
     char* mn = mangle(it);
-    char* out = xmalloc(4096);
+    char* out = xmalloc(4096 + 512 * (size_t)g->nfields);
     int n = 0;
     n += sprintf(out + n, "struct %s {\n", mn);
     for (int fi = 0; fi < g->nfields; fi++) {
@@ -805,7 +837,9 @@ static char* concrete_struct(Inst* it) {
         n += sprintf(out + n, "    %.*s: ", TOKS[g->fields[fi].fname].slen,
                      TOKS[g->fields[fi].fname].s);
         for (int s = 0; s < stars; s++) out[n++] = '*';
-        if (g->fields[fi].nest >= 0) {    /* `Box<T>` -> `__g_Box_i64` (M6.3h) */
+        if (g->fields[fi].te > 0) {       /* `fn(T) -> T` / `Fn(T) -> T` (M6.4c3b) */
+            n += span_subst(g, it, g->fields[fi].ts, g->fields[fi].te, out + n);
+        } else if (g->fields[fi].nest >= 0) {    /* `Box<T>` -> `__g_Box_i64` (M6.3h) */
             Inst ni;
             nested_inst(it, &g->nested[g->fields[fi].nest], &ni);
             n += sprintf(out + n, "%s", mangle(&ni));
@@ -970,6 +1004,14 @@ static void guard_templates(void) {
         if (g->kind == 0) {               /* struct fields are parsed, not spliced: resolve
                                            * the generic each generic-typed field names */
             for (int f = 0; f < g->nfields; f++) {
+                if (g->fields[f].te > 0) {    /* a function-typed field: no generic use inside yet */
+                    for (int t = g->fields[f].ts; t < g->fields[f].te; t++)
+                        if (TOKS[t].k == T_IDENT && TOKS[t + 1].k == T_LT && gfind(t) >= 0)
+                            die("%s:%d: a generic use inside the function-typed field '%.*s' of generic struct '%.*s' is not supported yet — name a concrete type or a type parameter there",
+                                FILENAME, TOKS[t].line, TOKS[g->fields[f].fname].slen, TOKS[g->fields[f].fname].s,
+                                TOKS[g->nametok].slen, TOKS[g->nametok].s);
+                    continue;
+                }
                 int ne = g->fields[f].nest;
                 if (ne < 0) continue;
                 int b = g->fields[f].base;

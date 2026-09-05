@@ -241,11 +241,25 @@ callee's parameter type with the call's explicit arguments standing in
 for the callee's type parameters (`apply<i64>(fn(v: i64) -> i64 { … },
 40)` reads `Fn(i64) -> i64`, and a lambda in `main` stays plain). A
 named function passed to a generic call gets its adapter in that second
-pass. One limit stays: a generic struct's fields keep the M6.3 grammar
-(`*…NAME<args>`), so a closure-typed field lives in a plain struct —
-the refusal names it.
+pass.
 [`../examples/gfnclosure.npp`](../examples/gfnclosure.npp) is the worked
 example, held by stage [10s].
+
+**Function and closure types as fields of generic structs (M6.4c3b).**
+A generic struct's field may be a function type or a closure type that
+names the struct's type parameters — `struct Pair<T> { first: T,
+second: Fn(T) -> T }`, `struct Op<T> { f: fn(T) -> T }`. The generic
+pass keeps such a field as the type's token span and spells it out per
+instantiation with the parameters substituted, so `__g_Pair_i64` reads
+`second: Fn(i64) -> i64` and the closure pass names it `__Fn_i64__i64`
+like any other slot; a lambda in a `Pair<T>{ … }` literal inside a
+template lifts as a generic closure, one in a concrete `Pair<i64>{ … }`
+literal lifts plain, and a call through the field, `p.second(0)`, is
+rewritten like a call through any closure field. A generic use inside
+such a field's type (`f: fn(T) -> Box<T>`) is refused for now, with the
+fix named.
+[`../examples/gstructfn.npp`](../examples/gstructfn.npp) is the worked
+example, held by stage [10t].
 
 [`../examples/closure.npp`](../examples/closure.npp) is the worked
 example: four lambdas — an argument, a struct field, another argument,
