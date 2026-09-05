@@ -3253,6 +3253,31 @@ static int tr_expand(const char* s, unsigned char* out, int max) {
     return n;
 }
 
+// Map one input byte for `tr`: returns the byte to emit, or -1 to drop it. `s2present`
+// says a second set was given (translate mode); `*last` carries the previous emitted
+// byte so -s can squeeze runs. When a byte occurs more than once in SET1 the LAST
+// mapping wins, matching GNU tr (`tr aa bc` maps 'a' to 'c', not 'b'). Pure — pinned by
+// tr_selftest. cmd_tr streams the results with putchar; the KAT drives it off-stack.
+static int tr_map(int del, int sqz, const unsigned char* set1, int n1,
+                  int s2present, const unsigned char* set2, int n2,
+                  unsigned char c, int* last) {
+    int idx = -1;
+    for (int k = 0; k < n1; k++) if (set1[k] == c) idx = k;   // last match wins (GNU tr)
+    if (del && idx >= 0) return -1;                           // -d drops matched bytes
+    unsigned char out = c;
+    if (!del && s2present && idx >= 0)                        // translate SET1[idx] -> SET2 (last repeats)
+        out = (n2 == 0) ? c : (idx < n2 ? set2[idx] : set2[n2 - 1]);
+    if (sqz) {
+        const unsigned char* ss = (s2present ? set2 : set1);
+        int sn = (s2present ? n2 : n1);
+        int in_set = 0;
+        for (int k = 0; k < sn; k++) if (ss[k] == out) { in_set = 1; break; }
+        if (in_set && (int)out == *last) return -1;          // collapse a run to one
+    }
+    *last = out;
+    return out;
+}
+
 // tr [-d] [-s] SET1 [SET2] <file> — translate, delete or squeeze characters read
 // from <file>. NyxOS shell builtins are file-oriented (there is no stdin into a
 // kernel builtin), so tr takes a file argument like rev/sort/wc rather than the
@@ -3294,26 +3319,37 @@ static void cmd_tr(int argc, char** argv) {
 
     int last = -1;                               // last emitted byte (for squeeze runs)
     for (int i = 0; i < bytes; i++) {
-        unsigned char c = (unsigned char)buf[i];
-        int idx = -1;
-        for (int k = 0; k < n1; k++) if (set1[k] == c) { idx = k; break; }
-
-        if (del && idx >= 0) continue;           // -d: drop matched characters
-
-        unsigned char out = c;
-        if (!del && s2 && idx >= 0)              // translate SET1[idx] -> SET2 (last char repeats)
-            out = (n2 == 0) ? c : (idx < n2 ? set2[idx] : set2[n2 - 1]);
-
-        if (sqz) {                               // collapse adjacent repeats of squeeze-set chars
-            const unsigned char* ss = (s2 ? set2 : set1);
-            int sn = (s2 ? n2 : n1);
-            int in_set = 0;
-            for (int k = 0; k < sn; k++) if (ss[k] == out) { in_set = 1; break; }
-            if (in_set && (int)out == last) continue;
-        }
-        putchar(out);
-        last = out;
+        int out = tr_map(del, sqz, set1, n1, s2 != 0, set2, n2, (unsigned char)buf[i], &last);
+        if (out >= 0) putchar((unsigned char)out);
     }
+}
+
+// Known-answer self-test (`tr`) — pins tr_expand's range handling and tr_map's translate/
+// delete/squeeze rules, including the GNU "last mapping wins" rule for a duplicated SET1.
+int tr_selftest(void) {
+    unsigned char a[256], b[256];
+    int last, o, n1, n2;
+    char out[64];
+    // helper: run a whole string through tr_map and NUL-terminate `out`
+    #define TR_RUN(del,sqz,S1,S2) do { \
+        n1 = tr_expand(S1, a, 256); \
+        int _h = ((S2) != 0); n2 = _h ? tr_expand((S2), b, 256) : 0; \
+        last = -1; o = 0; \
+        for (const char* _p = in; *_p; _p++) { \
+            int _r = tr_map(del, sqz, a, n1, _h, b, n2, (unsigned char)*_p, &last); \
+            if (_r >= 0) out[o++] = (char)_r; \
+        } out[o] = '\0'; } while (0)
+    const char* in;
+    in = "aabbccdef"; TR_RUN(0,0,"abc","xyz"); if (strcmp(out,"xxyyzzdef")) return 1;
+    in = "Hello World"; TR_RUN(0,0,"a-z","A-Z"); if (strcmp(out,"HELLO WORLD")) return 2;
+    in = "abcabc";    TR_RUN(0,0,"abc","x");   if (strcmp(out,"xxxxxx")) return 3;   // short SET2 repeats
+    in = "aaa";       TR_RUN(0,0,"aa","bc");   if (strcmp(out,"ccc")) return 4;      // dup SET1: last wins
+    in = "abcabc";    TR_RUN(0,0,"abca","wxyz"); if (strcmp(out,"zxyzxy")) return 5; // 'a' -> last ('z')
+    in = "the quick"; TR_RUN(1,0,"aeiou",0);   if (strcmp(out,"th qck")) return 6;   // delete
+    in = "a    b  c"; TR_RUN(0,1," ",0);       if (strcmp(out,"a b c")) return 7;    // squeeze spaces
+    in = "aabbcc";    TR_RUN(0,1,"abc","xxx"); if (strcmp(out,"x")) return 8;        // translate then squeeze
+    #undef TR_RUN
+    return 0;
 }
 
 // --- sed: literal-string substitution -------------------------------------
@@ -10293,7 +10329,7 @@ static void run_selftests(void) {
         {"tac",          tac_selftest},           {"seq",           seq_selftest},
         {"paste",        paste_selftest},         {"wc",            wc_selftest},
         {"expand",       expand_selftest},        {"unexpand",      unexpand_selftest},
-        {"fold",         fold_selftest},
+        {"fold",         fold_selftest},          {"tr",            tr_selftest},
         {"vfs",          vfs_selftest},
         {"securezero",   secure_zero_selftest},
         {"chacha20",     chacha20_selftest},        {"siphash",       siphash_selftest},
