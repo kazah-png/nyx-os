@@ -95,8 +95,9 @@ long time(long* t) {
     return tv.tv_sec;
 }
 
-struct nyx_tm_ { int tm_sec, tm_min, tm_hour, tm_mday, tm_mon, tm_year, tm_wday, tm_yday, tm_isdst; };
-void* localtime(const long* t) { (void)t; static struct nyx_tm_ z; return &z; }  /* M0 stub */
+/* localtime() and struct tm now come from the NyxOS libc (added v6.5.111): tcc links
+ * the real localtime out of libc.so via --just-symbols, so the old M0 stub is gone
+ * (keeping it clashed with libc.h's struct tm* localtime(const time_t*)). */
 
 /* --- stdlib float parsing + math (v6.4.6) ------------------------------------
  * tcc's lexer (tccpp.c parse_number) turns EVERY floating-point literal into a
