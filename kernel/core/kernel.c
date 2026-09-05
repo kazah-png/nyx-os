@@ -39,6 +39,7 @@
 #include "base58.h"
 #include "cut.h"
 #include "uniq.h"
+#include "od.h"
 #include "join.h"
 #include "calc.h"
 #include "json.h"
@@ -196,6 +197,7 @@ static void cmd_seq(int argc, char** argv);
 static void cmd_urlcode(int argc, char** argv);
 static void cmd_paste(int argc, char** argv);
 static void cmd_cut(int argc, char** argv);
+static void cmd_od(int argc, char** argv);
 static void cmd_xargs(int argc, char** argv);
 static void cmd_timeout(int argc, char** argv);
 static void cmd_uniq(int argc, char** argv);
@@ -489,6 +491,7 @@ static const command_t commands[] = {
     {"clip",      cmd_clip,      "Clipboard: clip <text> to copy, clip to paste, clip -c to clear", false},
     {"notify",    cmd_notify,    "Show a desktop notification: notify <title> [message...]", false},
     {"cut",       cmd_cut,       "Select fields/chars of each line: cut -f|-c|-b LIST [-d C] [-s] <file>", false},
+    {"od",        cmd_od,        "Dump a file: od [-A o|x|d|n] [-t o1|o2|x1|x2|c] [-c] <file>", false},
     {"uniq",      cmd_uniq,      "Collapse adjacent equal lines: uniq [-c|-d|-u|-i|-f N|-s N|-w N] <file>", false},
     {"xargs",     cmd_xargs,     "Build command lines from piped words: <producer> | xargs [-n N] [cmd]", false},
     {"join",      cmd_join,      "Join two sorted files on a field: join [-t C] [-1/-2/-j N] [-a 1|2] <f1> <f2>", false},
@@ -971,7 +974,7 @@ void execute_command(const char* cmd_line) {
 typedef struct { const char* title; const char* const* names; } help_cat_t;
 static const char* const HC_shell[] = {"help","man","version","clear","history","alias","unalias","exec","spawn","jobs","wait","nice","renice","taskset",0};
 static const char* const HC_files[] = {"ls","cd","pwd","pushd","popd","dirs","cat","file","identify","tar","iniget","open","touch","mkdir","rm","shred","cp","mv","tree","find","which","basename","dirname","realpath","stat","files","df","du","disks","lsblk","lspci","nvme","nyxpart","mkfs","nyxinstall","nyxgrub","mount","ext2ls","ext2cat",0};
-static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","sed","patch","fold","fmt","nl","expand","unexpand","factor","isprime","strings","sha256sum","sha512sum","sha1sum","md5sum","seq","paste","clip","cut","uniq","join","comm","printf","wc","write","hexdump",0};
+static const char* const HC_text[]  = {"echo","head","tail","grep","sort","rev","tac","csv","tsort","tr","sed","patch","fold","fmt","nl","expand","unexpand","factor","isprime","strings","sha256sum","sha512sum","sha1sum","md5sum","seq","paste","clip","cut","uniq","join","comm","printf","wc","write","hexdump","od",0};
 static const char* const HC_sys[]   = {"ps","top","time","kill","pgrep","pkill","mem","cpus","uname","date","reboot","env","export","layout","setres","mode","beep","desktop","gui","fonttest","nyxfetch","fastfetch","vfsstat","screenshot","stackcheck",0};
 static const char* const HC_user[]  = {"useradd","users",0};
 static const char* const HC_net[]   = {"ifconfig","route","arp","netstat","dhcp","dns","ping","setip","httpget","httpd","tls","ipcalc",0};
@@ -1096,6 +1099,7 @@ static const man_page_t man_pages[] = {
     {"notify",   "Post a desktop notification toast. `notify <title> [message...]` pops a small purple Nyx card in the top-right of the desktop (title on the first line, the rest of the arguments joined as the message below) that stays up for a few seconds and then dismisses itself — the compositor keeps repainting while a toast is alive so it fades out on its own. Up to a few toasts stack at once; a new one past that evicts the oldest. Useful for surfacing background events (a finished job, a download) to the user without stealing focus."},
     {"clip",     "A system text clipboard (like pbcopy/pbpaste). `clip <text...>` copies the arguments (joined with spaces) to the clipboard; `clip` with no arguments pastes - prints the current contents; `clip -c` clears it. The clipboard holds up to 4096 bytes and persists across commands, so you can copy a value from one command's output and paste it into another. The same buffer is exposed to the rest of the kernel (clipboard_get/set), so the GUI terminal and editor can be wired to copy/paste through it."},
     {"paste",    "Merge corresponding lines of files. By default the i-th line of each file is printed on one row, separated by a tab, continuing until every file runs out (a spent file leaves its column empty). -s writes each file's lines onto a single line instead. -d LIST replaces the tab with the characters of LIST used in turn (\\t, \\n, \\\\ escapes recognised). Reads each whole file; up to 16 files. Matches GNU paste for newline-delimited text."},
+    {"od",       "Dump <file> in the classic `od` layout: an address column, then 16 bytes per row. -A sets the address radix (o = octal, the default; x = hex; d = decimal; n = none), -t the item format: o1/o2 = octal bytes/words, x1/x2 = hex bytes/words, c = named-escape/printable/octal characters (`-c` is shorthand for `-t c`; `-b`=`-t o1`, `-x`=`-t x2`, `-o`=`-t o2`). A run of identical 16-byte rows collapses to a single `*`, and a final line prints the total size in the address radix. Little-endian 16-bit words, upper-case hex address but lower-case hex data — byte-for-byte with GNU od. Dumps up to the first 16 KiB of the file."},
     {"cut",      "Print selected parts of each line of <file>. Choose one mode: -f LIST cuts fields (a field is text between delimiters; the delimiter is a TAB by default, or the single character given by -d C), -c LIST cuts characters, -b LIST cuts bytes. A LIST is a comma-separated set of 1-based ranges: 'N' one position, 'N-M' the inclusive range, 'N-' from N to the end, '-M' the same as '1-M'. Selected parts are always emitted in increasing position order, never duplicated, so the order the ranges are written in does not matter. In field mode a line that contains no delimiter is printed unchanged, unless -s suppresses such lines; selected fields are re-joined with the delimiter. Matches GNU cut byte-for-byte for newline-delimited text (chars and bytes coincide for ASCII). Reads a bounded chunk of each file; several files may be given."},
     {"join",     "Join two files, <f1> and <f2>, on a common field — the relational join of the shell. Both files must already be SORTED on their join field (join is a merge join; sort first). For every pair of lines whose join fields match it prints the join field, then the other fields of <f1>, then the other fields of <f2>; a repeated key prints the full cartesian product of the matching lines. By default the join field is field 1 and fields are separated by runs of blanks (collapsed to a single space on output). -t C uses the single character C as the field separator on input and output. -1 N / -2 N set the join field for file 1 / file 2 (or -j N for both). -a 1 or -a 2 additionally prints the unpaired lines of that file (reformatted). Matches GNU join byte-for-byte under the C locale (byte-ordered keys). Reads a bounded chunk of each file."},
     {"xargs",    "Build and run command lines from a list of words. Used at the end of a pipe: `<producer> | xargs [-n N] [command [args...]]` reads the producer's output, splits it into whitespace-separated words (spaces, tabs and newlines all separate), and runs `command` with those words appended as extra arguments. With no command it defaults to `echo`, so `ls | xargs` prints every name on one line. -n N runs the command repeatedly with at most N words each time (e.g. `... | xargs -n 1 echo` echoes one word per line). The command must be a builtin (dispatched the same way the pipe operator dispatches its right-hand side). Handy for turning a column of names into arguments — the classic `find ... | xargs ...` shape."},
@@ -2976,6 +2980,44 @@ static void cmd_xargs(int argc, char** argv) {
         if (next <= start) break;                            // guarantee forward progress
         start = next;
     }
+}
+
+// od [-A o|x|d|n] [-t o1|o2|x1|x2|c] [-c] <file> — GNU-style octal/hex/char dump. The formatting
+// lives in od.c (od_format, KAT + host-verified vs GNU od); this only parses argv and reads the file.
+static void cmd_od(int argc, char** argv) {
+    char radix = 'o'; int type = OD_O2; const char* path = 0;
+    for (int i = 1; i < argc; i++) {
+        if (strcmp(argv[i], "-A") == 0 && i + 1 < argc) radix = argv[++i][0];
+        else if (strcmp(argv[i], "-t") == 0 && i + 1 < argc) {
+            const char* t = argv[++i];
+            if (!strcmp(t, "o1")) type = OD_O1; else if (!strcmp(t, "o2")) type = OD_O2;
+            else if (!strcmp(t, "x1")) type = OD_X1; else if (!strcmp(t, "x2")) type = OD_X2;
+            else if (!strcmp(t, "c")) type = OD_C;
+            else { printf("od: unsupported format '%s' (use o1/o2/x1/x2/c)\n", t); return; }
+        }
+        else if (strcmp(argv[i], "-c") == 0) type = OD_C;
+        else if (strcmp(argv[i], "-b") == 0) type = OD_O1;
+        else if (strcmp(argv[i], "-x") == 0) type = OD_X2;
+        else if (strcmp(argv[i], "-o") == 0) type = OD_O2;
+        else if (argv[i][0] == '-' && argv[i][1]) { printf("od: unknown option %s\n", argv[i]); return; }
+        else path = argv[i];
+    }
+    if (radix != 'o' && radix != 'x' && radix != 'd' && radix != 'n') { printf("od: address radix must be o, x, d or n\n"); return; }
+    if (!path) { printf("Usage: od [-A o|x|d|n] [-t o1|o2|x1|x2|c] [-c] <file>\n"); return; }
+    int fd = vfs_open(path, 0, 0);
+    if (fd < 0) { printf("od: %s: cannot open\n", path); return; }
+    uint32_t size = vfs_fsize(fd);
+    uint8_t* data = vfs_fdata(fd);
+    if (!data) { vfs_close(fd); printf("od: %s: no data\n", path); return; }
+    uint32_t n = size > 16384 ? 16384 : size;             // dump up to 16 KiB (bounded, like the other coreutils)
+    uint32_t cap = n * 5 + 128;                           // worst case ~4.5 bytes of output per input byte
+    char* out = (char*)kmalloc(cap);
+    if (!out) { vfs_close(fd); printf("od: out of memory\n"); return; }
+    od_format(data, n, radix, type, out, cap);
+    printf("%s", out);
+    if (size > n) printf("od: dumped the first %u of %u bytes\n", n, size);
+    kfree(out);
+    vfs_close(fd);
 }
 
 static void cmd_cut(int argc, char** argv) {
@@ -10428,6 +10470,7 @@ static void run_selftests(void) {
         {"edfind",       editor_find_selftest},   {"edreplace",     editor_replace_selftest},
         {"edgoto",       editor_goto_selftest},   {"selenenav",     selene_nav_selftest},
         {"cut",          cut_selftest},           {"xargs",         xargs_selftest},
+        {"od",           od_selftest},
         {"trunc",        trunc_selftest},         {"pstree",        pstree_selftest},
         {"mktemp",       mktemp_selftest},        {"tri",           tri_selftest},
         {"chmod",        chmod_selftest},         {"pr",            pr_selftest},
