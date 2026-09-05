@@ -172,7 +172,11 @@ The rules at this rung (M6.4a):
   local of the enclosing function there is refused with the fix named.
   (A local a token scan cannot see, such as a `match` arm's bind, is
   refused by N instead, as an undeclared variable in the lifted
-  function.) Captures inside generic templates wait for M6.4c3.
+  function.) Inside a generic template a capture works the same way: the
+  environment struct and its maker come out as templates over the type
+  parameters the captured types mention (`keep<T>` keeps an `x: T` in
+  `__E_N<T>`, made by `__mk_E_N<T>`), instantiated with the function
+  around them (M6.4c3).
 - **lambdas nest.** The pass runs to a fixpoint, innermost first, so a
   lambda inside a lambda is lifted before the one around it copies its
   text.
@@ -216,13 +220,32 @@ parameter and the expression becomes the closure value
 wrapped in an adapter of the same shape (`fn __c_N(_env: addr, a0: i64)
 -> i64 { dbl(a0) }`). The environment is 0 when the closure captures
 nothing; a capturing one carries its environment struct's address (the
-capture bullet above). An `Fn` that names a type parameter inside a
-generic template is refused for now (M6.4c3: one struct per
-instantiation); `fn(T) -> R`, the plain function value, works there.
+capture bullet above).
 [`../examples/closurety.npp`](../examples/closurety.npp) is the worked
 example, held by stage [10q];
 [`../examples/capture.npp`](../examples/capture.npp) captures, stage
 [10r].
+
+**`Fn` inside generic templates (M6.4c3).** An `Fn` that names a type
+parameter of the template around it — `fn apply<T>(f: Fn(T) -> T, x: T)`
+— is left as written while the generic pass instantiates the template,
+and the closure pass runs once more over the result: `Fn(i64) -> i64`
+inside `__g_apply_i64` is concrete then, so it becomes the same
+`__Fn_i64__i64` a plain function uses (declared once, whichever pass
+meets it first), its calls are rewritten, and a closure made outside
+(`inc := adder(1); twice<i64>(inc, 40)`) passes straight in. A lambda in
+such a slot lifts as a generic `__c_N<T>` and its closure value is
+spelled with the slot's type until that second pass names the struct —
+`Fn(T) -> T{ env: 0, call: __c_N<T> }` — where the slot's type is the
+callee's parameter type with the call's explicit arguments standing in
+for the callee's type parameters (`apply<i64>(fn(v: i64) -> i64 { … },
+40)` reads `Fn(i64) -> i64`, and a lambda in `main` stays plain). A
+named function passed to a generic call gets its adapter in that second
+pass. One limit stays: a generic struct's fields keep the M6.3 grammar
+(`*…NAME<args>`), so a closure-typed field lives in a plain struct —
+the refusal names it.
+[`../examples/gfnclosure.npp`](../examples/gfnclosure.npp) is the worked
+example, held by stage [10s].
 
 [`../examples/closure.npp`](../examples/closure.npp) is the worked
 example: four lambdas — an argument, a struct field, another argument,
@@ -232,4 +255,4 @@ run; a capture refused).
 [`../examples/gclosure.npp`](../examples/gclosure.npp) is the generic
 case, stage [10p]: a lambda in `boxed<T>` lifts to `__c_0<T>` and comes
 out as `__g___c_0_i64` and `__g___c_0_str`; one in `count<T>` that names
-no type parameter lifts plain; a capture in a generic body refused.
+no type parameter lifts plain.

@@ -1,0 +1,49 @@
+// gfnclosure.npp — closures inside generic templates (M6.4c3).
+//
+// A closure type may name a type parameter of the template around it:
+// `apply<T>` takes an `f: Fn(T) -> T`. nppc leaves such a type as written
+// while the generic pass instantiates the template, then runs the closure
+// pass again — `Fn(i64) -> i64` inside `__g_apply_i64` is concrete now, so
+// it becomes the same `__Fn_i64__i64` struct a plain function uses, and a
+// closure value made outside (`adder(1)`) passes straight in. A lambda in
+// such a slot lifts as a generic `__c_N<T>` and instantiates with the
+// template; when it captures, its environment struct and maker are
+// templates too (`keep<T>` keeps an x of type T). Every other closure rule
+// holds: a capture needs an `Fn` slot, and its type must be evident.
+
+extern syscall {
+    fn write(fd: i32, buf: *u8, len: isize) -> i64 = 1
+}
+
+fn put(s: str) {
+    write(1, s.ptr as *u8, s.len as isize);
+}
+
+fn apply<T>(f: Fn(T) -> T, x: T) -> T {
+    f(x)
+}
+
+fn twice<T>(f: Fn(T) -> T, x: T) -> T {
+    f(f(x))
+}
+
+fn keep<T>(x: T) -> Fn(i64) -> T {
+    fn(k: i64) -> T { x }
+}
+
+fn adder(k: i64) -> Fn(i64) -> i64 {
+    fn(x: i64) -> i64 { x + k }
+}
+
+fn main() -> i64 {
+    a := apply<i64>(fn(v: i64) -> i64 { v + 2 }, 40);
+    s := apply<str>(fn(v: str) -> str { v }, "same");
+    inc := adder(1);
+    t := twice<i64>(inc, 40);
+    k := keep<str>("kept");
+    w := k(0);
+    n := 3;
+    c := twice<i64>(fn(v: i64) -> i64 { v + n }, 36);
+    put("{a} {s} {t} {w} {c}\n");
+    0
+}
