@@ -208,10 +208,13 @@ struct __Fn_i64__i64 {
 }
 ```
 
-declared once, ahead of the program's first struct or function; the
+declared once, ahead of the program's first struct or function — or,
+when the signature names a struct or enum by value, right after the
+last one it names, since N lays types out in declaration order; the
 struct's name is the signature's spelling with its punctuation as
-underscores (`Fn()` is `__Fn__`, `Fn(*u8, Box<i64>) -> bool` is
-`__Fn_pu8_Box_i64__bool`). A call through a closure — a parameter of
+underscores and a generic type inside spelled as its instantiation's
+name (`Fn()` is `__Fn__`, `Fn(*u8, Box<i64>) -> bool` is
+`__Fn_pu8___g_Box_i64__bool` — the same name whichever pass meets it). A call through a closure — a parameter of
 `Fn` type, a local bound from a call returning one, or the `Fn` field of
 a struct-typed parameter or local — becomes `f.call(f.env, a)`. A lambda
 written where a closure is expected takes the environment as its first
@@ -255,11 +258,19 @@ instantiation with the parameters substituted, so `__g_Pair_i64` reads
 like any other slot; a lambda in a `Pair<T>{ … }` literal inside a
 template lifts as a generic closure, one in a concrete `Pair<i64>{ … }`
 literal lifts plain, and a call through the field, `p.second(0)`, is
-rewritten like a call through any closure field. A generic use inside
-such a field's type (`f: fn(T) -> Box<T>`) is refused for now, with the
-fix named.
+rewritten like a call through any closure field.
 [`../examples/gstructfn.npp`](../examples/gstructfn.npp) is the worked
-example, held by stage [10t].
+example, held by stage [10t]. Such a field's type may name another
+generic over the struct's parameters (M6.4c3c) — `struct Op<T> { f:
+fn(T) -> Box<T> }`, `struct Ap<T> { run: Fn(Box<T>) -> T }`: the use is
+a nested generic use of the struct, instantiated with it (`Op<i64>`
+brings `Box<i64>` into being and reads `f: fn(i64) -> __g_Box_i64`), and
+a closure type that names a generic spells it by that concrete name, so
+the closure made in `main` and the field it lands in agree on their
+struct. A use with the wrong arity, or of a name that is not generic, is
+refused as anywhere else.
+[`../examples/gstructnest.npp`](../examples/gstructnest.npp) is the
+worked example, held by stage [10u].
 
 [`../examples/closure.npp`](../examples/closure.npp) is the worked
 example: four lambdas — an argument, a struct field, another argument,

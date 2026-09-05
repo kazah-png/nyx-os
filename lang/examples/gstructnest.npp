@@ -1,0 +1,45 @@
+// gstructnest.npp — a generic use inside a function-typed field of a
+// generic struct (M6.4c3c).
+//
+// A generic struct's function-typed or closure-typed field may name
+// another generic over the struct's own parameters: `Op<T>` keeps an
+// `f: fn(T) -> Box<T>`, `Ap<T>` a `run: Fn(Box<T>) -> T`. The use inside
+// the field's type is a nested generic use of the struct, instantiated
+// with it — `Op<i64>` brings `Box<i64>` into being and reads
+// `f: fn(i64) -> __g_Box_i64` — and a closure type that names a generic
+// spells it by that same concrete name (`__Fn___g_Box_i64__i64`), so the
+// closure made in `main` and the field it lands in agree on their struct.
+
+extern syscall {
+    fn write(fd: i32, buf: *u8, len: isize) -> i64 = 1
+}
+
+fn put(s: str) {
+    write(1, s.ptr as *u8, s.len as isize);
+}
+
+struct Box<T> {
+    val: T,
+}
+
+struct Op<T> {
+    f: fn(T) -> Box<T>,
+}
+
+struct Ap<T> {
+    run: Fn(Box<T>) -> T,
+}
+
+fn boxit(x: i64) -> Box<i64> {
+    Box<i64>{ val: x }
+}
+
+fn main() -> i64 {
+    o := Op<i64>{ f: boxit };
+    g := o.f;
+    b := g(41);
+    a := Ap<i64>{ run: fn(bx: Box<i64>) -> i64 { bx.val + 1 } };
+    r := a.run(b);
+    put("{b.val} {r}\n");
+    0
+}

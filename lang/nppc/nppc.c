@@ -803,14 +803,28 @@ static void nested_inst(Inst* outer, Nest* ns, Inst* out) {
 }
 
 /* A function or closure type span of a struct template, rendered for one
- * instantiation: each type parameter replaced by its argument, the rest
- * spelled token by token (M6.4c3b). Returns the characters written. */
+ * instantiation: each type parameter replaced by its argument, a generic
+ * use inside (`Box<T>`, recorded on the template by collect_instantiations
+ * and instantiated by expand_nested) by the concrete name it denotes
+ * (M6.4c3c), the rest spelled token by token (M6.4c3b). Returns the
+ * characters written. */
 static int span_subst(GStruct* g, Inst* it, int ts, int te, char* out) {
     int n = 0;
     for (int t = ts; t < te; t++) {
         if (t > ts && (TOKS[t - 1].k == T_COMMA || TOKS[t - 1].k == T_ARROW || TOKS[t].k == T_ARROW ||
                        TOKS[t - 1].k == T_ATTR_USER || TOKS[t - 1].k == T_KW_RAW))
             out[n++] = ' ';
+        if (TOKS[t].k == T_IDENT && TOKS[t + 1].k == T_LT) {
+            int u = 0;
+            while (u < g->nnested && g->nested[u].start != TOKS[t].start) u++;
+            if (u == g->nnested)
+                die("%s:%d: '%.*s' is not a generic type", FILENAME, TOKS[t].line, TOKS[t].slen, TOKS[t].s);
+            Inst ni;
+            nested_inst(it, &g->nested[u], &ni);
+            n += sprintf(out + n, "%s", mangle(&ni));
+            while (TOKS[t].k != T_GT && TOKS[t].k != T_EOF) t++;
+            continue;
+        }
         int p = -1;
         if (TOKS[t].k == T_IDENT)
             for (int q = 0; q < g->nparams; q++) if (tokspan_eq(g->ptok[q], t)) { p = q; break; }
@@ -1004,12 +1018,23 @@ static void guard_templates(void) {
         if (g->kind == 0) {               /* struct fields are parsed, not spliced: resolve
                                            * the generic each generic-typed field names */
             for (int f = 0; f < g->nfields; f++) {
-                if (g->fields[f].te > 0) {    /* a function-typed field: no generic use inside yet */
-                    for (int t = g->fields[f].ts; t < g->fields[f].te; t++)
-                        if (TOKS[t].k == T_IDENT && TOKS[t + 1].k == T_LT && gfind(t) >= 0)
-                            die("%s:%d: a generic use inside the function-typed field '%.*s' of generic struct '%.*s' is not supported yet — name a concrete type or a type parameter there",
-                                FILENAME, TOKS[t].line, TOKS[g->fields[f].fname].slen, TOKS[g->fields[f].fname].s,
-                                TOKS[g->nametok].slen, TOKS[g->nametok].s);
+                if (g->fields[f].te > 0) {    /* a function-typed field: its generic uses must
+                                               * name a generic, with the right arity (M6.4c3c) */
+                    for (int t = g->fields[f].ts; t < g->fields[f].te; t++) {
+                        if (TOKS[t].k != T_IDENT || TOKS[t + 1].k != T_LT) continue;
+                        int inner = gfind(t);
+                        if (inner < 0)
+                            die("%s:%d: '%.*s' is not a generic type", FILENAME, TOKS[t].line,
+                                TOKS[t].slen, TOKS[t].s);
+                        int na = 0;
+                        for (int a = t + 2; TOKS[a].k == T_IDENT; a += 2) {
+                            na++;
+                            if (TOKS[a + 1].k != T_COMMA) break;
+                        }
+                        if (na != GS[inner].nparams)
+                            die("%s:%d: '%.*s' takes %d type argument(s)", FILENAME, TOKS[t].line,
+                                TOKS[t].slen, TOKS[t].s, GS[inner].nparams);
+                    }
                     continue;
                 }
                 int ne = g->fields[f].nest;
@@ -1745,9 +1770,12 @@ static void build_tables(void) {
 static void apps(char** b, size_t* n, size_t* cap, const char* s) { app(b, n, cap, s, strlen(s)); }
 
 /* The struct name of a closure signature: `__` + the type's spelling with
- * every `( ) , -> <` as `_`, `*` as `p`, `#[user]` as `u` — so
+ * every `( ) , -> <` as `_`, `*` as `p`, `#[user]` as `u`, and a generic
+ * type inside spelled as its instantiation's name (`Box<i64>` as
+ * `__g_Box_i64`, which is what the generic pass renames it to — so the
+ * name is the same whichever closure pass meets it, M6.4c3c) — so
  * `Fn(i64) -> i64` is `__Fn_i64__i64`, `Fn()` is `__Fn__`, and
- * `Fn(*u8, Box<i64>) -> bool` is `__Fn_pu8_Box_i64__bool`. */
+ * `Fn(*u8, Box<i64>) -> bool` is `__Fn_pu8___g_Box_i64__bool`. */
 static char* sig_name(int ts, int te) {
     size_t cap = 256, n = 0;
     char* b = xmalloc(cap);
@@ -1755,7 +1783,10 @@ static char* sig_name(int ts, int te) {
     apps(&b, &n, &cap, "__");
     for (int t = ts; t < te; t++) {
         TK k = TOKS[t].k;
-        if (k == T_IDENT) app(&b, &n, &cap, TOKS[t].s, (size_t)TOKS[t].slen);
+        if (k == T_IDENT) {
+            if (TOKS[t + 1].k == T_LT) apps(&b, &n, &cap, "__g_");
+            app(&b, &n, &cap, TOKS[t].s, (size_t)TOKS[t].slen);
+        }
         else if (k == T_STAR) apps(&b, &n, &cap, "p");
         else if (k == T_ATTR_USER) apps(&b, &n, &cap, "u");
         else if (k == T_KW_FN) apps(&b, &n, &cap, "fn");
@@ -2283,6 +2314,17 @@ static char* closure_pass(const char* prog) {
     char* signm[MAXSIG]; char* sigtx[MAXSIG]; int nsig = 0;
     int firstitem = -1, firstprev = -1;   /* the first struct/fn/enum/impl, and the `}` before it */
     int lastfn = -1;                      /* the `}` of the last `__Fn_` struct an earlier pass declared */
+    int after = -1;                       /* the `}` of the last struct or enum a signature names */
+    int tdn[256], tde[256], ntd = 0;      /* the top-level struct/enum declarations: name, closing `}` */
+    for (int t = 0, d = 0; t + 1 < NTOK; t++) {
+        if (TOKS[t].k == T_LB) { d++; continue; }
+        if (TOKS[t].k == T_RB) { d--; continue; }
+        if (d == 0 && (TOKS[t].k == T_KW_STRUCT || TOKS[t].k == T_KW_ENUM) && TOKS[t + 1].k == T_IDENT && ntd < 256) {
+            int b = t + 2;
+            while (TOKS[b].k != T_LB && TOKS[b].k != T_EOF) b++;
+            if (TOKS[b].k == T_LB) { tdn[ntd] = t + 1; tde[ntd] = match_brace(b); ntd++; }
+        }
+    }
     int depth = 0, itemfirst = 0, prevclose = -1;
     for (int t = 0; t + 1 < NTOK; t++) {
         TK k = TOKS[t].k;
@@ -2312,6 +2354,13 @@ static char* closure_pass(const char* prog) {
             }
         if (generic) { t = e - 1; continue; }
         reg_sigs(t, e, signm, sigtx, &nsig);
+        /* A struct or enum the signature names by value must be laid out
+         * first (N emits layouts in declaration order, and a struct field
+         * of function type spells its types out): the block goes after it. */
+        for (int u = t; u < e; u++)
+            if (TOKS[u].k == T_IDENT)
+                for (int d = 0; d < ntd; d++)
+                    if (tokspan_eq(tdn[d], u) && tde[d] > after) after = tde[d];
         if (ne >= MAXI) die("%s: too many rewrites", FILENAME);
         ced[ne].start = TOKS[t].start;
         ced[ne].end = TOKS[e - 1].end;
@@ -2449,14 +2498,16 @@ static char* closure_pass(const char* prog) {
     }
     acc_flush(&ad, ced, &ne);
     /* The signature structs, once, ahead of the first struct or function —
-     * after the ones an earlier pass declared, whose layouts they may use. */
+     * after the ones an earlier pass declared, whose layouts they may use,
+     * and after the last struct or enum a signature names. */
     if (nsig > 0) {
         size_t cap = 256, len = 0;
         char* b = xmalloc(cap);
         b[0] = 0;
         for (int i = 0; i < nsig; i++) apps(&b, &len, &cap, sigtx[i]);
         if (ne >= MAXI) die("%s: too many rewrites", FILENAME);
-        int at = lastfn >= 0 ? lastfn : firstprev;
+        int at = lastfn > after ? lastfn : after;
+        if (at < 0) at = firstprev;
         if (at >= 0) {
             char* r = xmalloc(len + 3);
             sprintf(r, "\n\n%s", b);
