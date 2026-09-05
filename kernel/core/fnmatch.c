@@ -115,6 +115,17 @@ int glob_selftest(void) {
         { "\\?",        "?",          1 },
         // unterminated class -> literal '['
         { "[abc",       "[abc",       1 },
+        // subtle class edges, all verified byte-for-byte against POSIX fnmatch(3):
+        { "[!]a]",      "b",          1 },   // negation; ']' first slot is a literal member
+        { "[!]a]",      "]",          0 },
+        { "[!]a]",      "a",          0 },
+        { "[a-]",       "-",          1 },   // '-' in the last slot is a literal, not a range
+        { "[a-]",       "a",          1 },
+        { "[a-]",       "b",          0 },
+        { "[-a]",       "-",          1 },   // '-' in the first slot is literal too
+        { "[\\]]",      "]",          1 },   // an escaped ']' inside a class matches ']'
+        { "**",         "anything",   1 },   // consecutive '*'s collapse to one
+        { "**",         "",           1 },
         // empty-string edges
         { "",           "",           1 },
         { "",           "x",          0 },
