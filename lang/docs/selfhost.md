@@ -552,6 +552,24 @@ passes then find their entries already made. `fntype.n` and
 `structenum.n` joined the differential: **29 targets byte-identical**,
 the four selfhost sources among them.
 
+The differential's reach is exactly its corpus, and a program the corpus
+never held found the first divergence after the summit: a string
+literal with a **raw newline** in it. ncc decodes escapes at lex time
+and re-encodes the bytes, so a raw newline came out as `\n`; gen.n
+re-encodes the raw body, where the same byte is not an escape, and
+spelled it `\x0a` — two valid C spellings, two different files. The
+fix made the rule explicit and gave both emitters the same one: the
+named escapes for `\n \t \r \" \\`, whether the byte was escaped or raw,
+and **three-digit octal** for every other control or non-ASCII byte —
+never `\xNN`, which turned out to be a latent bug of its own in both
+compilers, since C reads a hex escape as far as the hex digits go and
+`"é1"` spelled `"\xc3\xa91"` folds the `1` into the byte before it.
+[`strbytes.n`](../examples/strbytes.n) holds the cases (a raw newline
+and tab, UTF-8 before a digit, `\0` before a letter) and joined every
+differential; the suite's stage [6d] checks the spelling and the bytes
+the program prints, and the toolbox package `ngen` was regenerated with
+the octal spellings.
+
 ### check.n's anchor
 
 The scout settled the third module's contract, and it is the

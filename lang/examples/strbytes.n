@@ -1,0 +1,34 @@
+// strbytes.n — string literals, byte for byte.
+//
+// A literal may hold a raw newline or tab (so it spans lines — the newline
+// is the file's own line ending), any UTF-8, and the escapes of spec §2.5.
+// ncc and the self-hosted ngen spell every byte of the C literal the same
+// way: the named escapes \n \t \r \\ \" for those bytes — raw or escaped —
+// and three-digit octal for every other control or non-ASCII byte, never
+// \xNN: C reads a hex escape as far as the hex digits go, so "é1" must
+// come out as \303\2511, not \xc3\xa91, or the 1 would fold into the byte
+// before it. The lengths printed first are byte counts.
+
+extern syscall {
+    fn write(fd: i32, buf: *u8, len: isize) -> i64 = 1
+}
+
+fn put(s: str) {
+    write(1, s.ptr as *u8, s.len as isize);
+}
+
+fn main() -> i64 {
+    two := "one
+two";
+    tab := "a	b";
+    acc := "é1";
+    nul := "\0z";
+    put("{two.len} {tab.len} {acc.len} {nul.len}\n");
+    put(two);
+    put("\n");
+    put(tab);
+    put("\n");
+    put(acc);
+    put("\n");
+    0
+}

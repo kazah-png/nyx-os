@@ -2035,6 +2035,11 @@ static void check_expr(Expr* e) {
 
 static void indentf(int ind) { for (int i = 0; i < ind; i++) fputs("    ", OUT); }
 
+/* A C string literal from the decoded bytes of an N literal: the named
+ * escapes for \n \t \r \" \\, three-digit octal for every other control
+ * or non-ASCII byte (NUL included). Never \xNN: C reads a hex escape as
+ * far as the hex digits go, so "\xc3\xa9" + "1" would fold into one byte;
+ * an octal escape stops after three digits whatever follows. */
 static void emit_cstr(const char* s, int n) {
     fputc('"', OUT);
     for (int i = 0; i < n; i++) {
@@ -2045,9 +2050,8 @@ static void emit_cstr(const char* s, int n) {
             case '\r': fputs("\\r", OUT); break;
             case '"':  fputs("\\\"", OUT); break;
             case '\\': fputs("\\\\", OUT); break;
-            case 0:    fputs("\\0", OUT); break;
             default:
-                if (c < 32 || c > 126) fprintf(OUT, "\\x%02x", c);
+                if (c < 32 || c > 126) fprintf(OUT, "\\%03o", c);
                 else fputc(c, OUT);
         }
     }

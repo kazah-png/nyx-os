@@ -821,7 +821,7 @@ nyx_bool cname_fn(nyx_u8* p, nyx_i64* st, nyx_i64 ss, nyx_i64 sl, nyx_i64 ln) {
         __nyx_fmt_str(&__s0, __b0, 256, (nyx_str){": function name '", 17});
         put(__s0);
         put_span(p, ss, sl);
-        put(((nyx_str){"' is a C keyword \xe2\x80\x94 generated code uses names verbatim, pick another name\n", 75}));
+        put(((nyx_str){"' is a C keyword \342\200\224 generated code uses names verbatim, pick another name\n", 75}));
         st[41] = 1;
         return 1;
     }
@@ -1075,7 +1075,7 @@ void cmove(nyx_u8* p, nyx_i64* st, nyx_i64 i, nyx_i64 ln) {
         __nyx_fmt_str(&__s1, __b1, 256, (nyx_str){": own value '", 13});
         put(__s1);
         put_span(p, nd[((i * 8) + 5)], nd[((i * 8) + 6)]);
-        put(((nyx_str){"' cannot move inside a loop \xe2\x80\x94 the move could run zero or many times (v0.18)\n", 78}));
+        put(((nyx_str){"' cannot move inside a loop \342\200\224 the move could run zero or many times (v0.18)\n", 78}));
         st[41] = 1;
         return;
     }
@@ -1086,7 +1086,7 @@ void cmove(nyx_u8* p, nyx_i64* st, nyx_i64 i, nyx_i64 ln) {
         __nyx_fmt_str(&__s2, __b2, 256, (nyx_str){": own value '", 13});
         put(__s2);
         put_span(p, nd[((i * 8) + 5)], nd[((i * 8) + 6)]);
-        put(((nyx_str){"' cannot move inside a match arm \xe2\x80\x94 consume it with if/else instead (v0.18)\n", 77}));
+        put(((nyx_str){"' cannot move inside a match arm \342\200\224 consume it with if/else instead (v0.18)\n", 77}));
         st[41] = 1;
         return;
     }
@@ -1232,7 +1232,7 @@ void cleak(nyx_u8* p, nyx_i64* st, nyx_i64 from, nyx_i64 ln, nyx_i64 w) {
             if (((w == 1) && (st[43] != 1))) {
                 put(((nyx_str){"the end of this block", 21}));
             }
-            put(((nyx_str){" \xe2\x80\x94 return it, pass it on, or give the type a #[drop] destructor\n", 66}));
+            put(((nyx_str){" \342\200\224 return it, pass it on, or give the type a #[drop] destructor\n", 66}));
             st[41] = 1;
             return;
         }
@@ -1498,7 +1498,7 @@ T pty(nyx_u8* p, nyx_i64 n, nyx_i64* st) {
         char __b0[256];
         nyx_str __s0 = __nyx_fmt_begin(__b0, 256);
         __nyx_fmt_i64(&__s0, __b0, 256, (nyx_i64)(tln));
-        __nyx_fmt_str(&__s0, __b0, 256, (nyx_str){": #[user] and raw are mutually exclusive \xe2\x80\x94 raw is the explicit opt-out\n", 73});
+        __nyx_fmt_str(&__s0, __b0, 256, (nyx_str){": #[user] and raw are mutually exclusive \342\200\224 raw is the explicit opt-out\n", 73});
         put(__s0);
         st[41] = 1;
         return ((T){.pt = 0, .us = 0, .s = 0, .l = 0});
@@ -1519,7 +1519,7 @@ T pty(nyx_u8* p, nyx_i64 n, nyx_i64* st) {
             char __b1[256];
             nyx_str __s1 = __nyx_fmt_begin(__b1, 256);
             __nyx_fmt_i64(&__s1, __b1, 256, (nyx_i64)(tln));
-            __nyx_fmt_str(&__s1, __b1, 256, (nyx_str){": a function type is a value of its own \xe2\x80\x94 no pointer, raw or #[user] on it (v0.24)\n", 85});
+            __nyx_fmt_str(&__s1, __b1, 256, (nyx_str){": a function type is a value of its own \342\200\224 no pointer, raw or #[user] on it (v0.24)\n", 85});
             put(__s1);
             st[41] = 1;
             return ((T){.pt = 0, .us = 0, .s = 0, .l = 0});
@@ -1935,7 +1935,7 @@ nyx_i64 pinterp(nyx_u8* p, nyx_i64 n, nyx_i64* st) {
                 __nyx_fmt_str(&__s0, __b0, 256, (nyx_str){": unknown format spec ':", 24});
                 put(__s0);
                 put_span(p, fss, fsl);
-                put(((nyx_str){"' \xe2\x80\x94 the format specs are :x, :X (hex), :wN (width), :zN (zero-pad), and wN/zN composed with a trailing x or X\n", 112}));
+                put(((nyx_str){"' \342\200\224 the format specs are :x, :X (hex), :wN (width), :zN (zero-pad), and wN/zN composed with a trailing x or X\n", 112}));
                 st[41] = 1;
                 return 0;
             }
@@ -3339,7 +3339,7 @@ void pitems(nyx_u8* p, nyx_i64 n, nyx_i64* st, nyx_i64* ps) {
             char __b1[256];
             nyx_str __s1 = __nyx_fmt_begin(__b1, 256);
             __nyx_fmt_i64(&__s1, __b1, 256, (nyx_i64)(ln2));
-            __nyx_fmt_str(&__s1, __b1, 256, (nyx_str){": expected 'own' after #[drop(...)] \xe2\x80\x94 only an own struct has a destructor\n", 76});
+            __nyx_fmt_str(&__s1, __b1, 256, (nyx_str){": expected 'own' after #[drop(...)] \342\200\224 only an own struct has a destructor\n", 76});
             put(__s1);
             st[41] = 1;
             going = 0;
@@ -3398,7 +3398,7 @@ void cexpr(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
                 __nyx_fmt_str(&__s0, __b0, 256, (nyx_str){": syscall '", 11});
                 put(__s0);
                 put_span(p, nd[((i * 8) + 5)], nd[((i * 8) + 6)]);
-                put(((nyx_str){"' is not a value \xe2\x80\x94 only functions declared with fn are (v0.24)\n", 65}));
+                put(((nyx_str){"' is not a value \342\200\224 only functions declared with fn are (v0.24)\n", 65}));
                 st[41] = 1;
                 return;
             }
@@ -3527,7 +3527,7 @@ void cexpr(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
                 __nyx_fmt_str(&__s9, __b9, 256, (nyx_str){": '", 3});
                 put(__s9);
                 put_span(p, nd[((cal * 8) + 5)], nd[((cal * 8) + 6)]);
-                put(((nyx_str){"' requires the syscall capability \xe2\x80\x94 mark the calling function #[caps(syscall)]\n", 81}));
+                put(((nyx_str){"' requires the syscall capability \342\200\224 mark the calling function #[caps(syscall)]\n", 81}));
                 st[41] = 1;
                 return;
             }
@@ -3708,7 +3708,7 @@ void cexpr(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
                     put_span(p, nd[((b1 * 8) + 5)], nd[((b1 * 8) + 6)]);
                     put(((nyx_str){".", 1}));
                     put_span(p, nd[((i * 8) + 5)], nd[((i * 8) + 6)]);
-                    put(((nyx_str){"' carries a payload \xe2\x80\x94 construct it with ", 42}));
+                    put(((nyx_str){"' carries a payload \342\200\224 construct it with ", 42}));
                     put_span(p, nd[((b1 * 8) + 5)], nd[((b1 * 8) + 6)]);
                     put(((nyx_str){".", 1}));
                     put_span(p, nd[((i * 8) + 5)], nd[((i * 8) + 6)]);
@@ -3821,7 +3821,7 @@ void cexpr(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
                 char __b23[256];
                 nyx_str __s23 = __nyx_fmt_begin(__b23, 256);
                 __nyx_fmt_i64(&__s23, __b23, 256, (nyx_i64)(ln8));
-                __nyx_fmt_str(&__s23, __b23, 256, (nyx_str){": compose pageflags from the PROT_* constants \xe2\x80\x94 a parameter's flags are opaque here (fixed at its call sites)\n", 112});
+                __nyx_fmt_str(&__s23, __b23, 256, (nyx_str){": compose pageflags from the PROT_* constants \342\200\224 a parameter's flags are opaque here (fixed at its call sites)\n", 112});
                 put(__s23);
                 st[41] = 1;
                 return;
@@ -3894,7 +3894,7 @@ void cexpr(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
             char __b28[256];
             nyx_str __s28 = __nyx_fmt_begin(__b28, 256);
             __nyx_fmt_i64(&__s28, __b28, 256, (nyx_i64)(ln9));
-            __nyx_fmt_str(&__s28, __b28, 256, (nyx_str){": cannot cast into pageflags \xe2\x80\x94 build it from the PROT_* constants (the W^X proof needs static flag sets)\n", 107});
+            __nyx_fmt_str(&__s28, __b28, 256, (nyx_str){": cannot cast into pageflags \342\200\224 build it from the PROT_* constants (the W^X proof needs static flag sets)\n", 107});
             put(__s28);
             st[41] = 1;
             return;
@@ -3977,7 +3977,7 @@ void cexpr(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
                 char __b33[256];
                 nyx_str __s33 = __nyx_fmt_begin(__b33, 256);
                 __nyx_fmt_i64(&__s33, __b33, 256, (nyx_i64)(ln7));
-                __nyx_fmt_str(&__s33, __b33, 256, (nyx_str){": format specs apply to integers \xe2\x80\x94 a str interpolates as text\n", 64});
+                __nyx_fmt_str(&__s33, __b33, 256, (nyx_str){": format specs apply to integers \342\200\224 a str interpolates as text\n", 64});
                 put(__s33);
                 st[41] = 1;
                 return;
@@ -4301,7 +4301,7 @@ void ctry(nyx_u8* p, nyx_i64* st, nyx_i64 i, nyx_i64 form) {
         __nyx_fmt_str(&__s4, __b4, 256, (nyx_str){": ", 2});
         put(__s4);
         put_span(p, ea[(oe * 4)], ea[((oe * 4) + 1)]);
-        put(((nyx_str){".Ok carries no payload to bind \xe2\x80\x94 use the statement form `expr?;`\n", 67}));
+        put(((nyx_str){".Ok carries no payload to bind \342\200\224 use the statement form `expr?;`\n", 67}));
         st[41] = 1;
         return;
     }
@@ -4326,7 +4326,7 @@ void ctry(nyx_u8* p, nyx_i64* st, nyx_i64 i, nyx_i64 form) {
                 char __b5[256];
                 nyx_str __s5 = __nyx_fmt_begin(__b5, 256);
                 __nyx_fmt_i64(&__s5, __b5, 256, (nyx_i64)(ln));
-                __nyx_fmt_str(&__s5, __b5, 256, (nyx_str){": cannot write through a str index \xe2\x80\x94 str is an immutable view of its text\n", 76});
+                __nyx_fmt_str(&__s5, __b5, 256, (nyx_str){": cannot write through a str index \342\200\224 str is an immutable view of its text\n", 76});
                 put(__s5);
                 st[41] = 1;
                 return;
@@ -4436,7 +4436,7 @@ void cstmt(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
             put_span(p, nd[((i * 8) + 5)], nd[((i * 8) + 6)]);
             put(((nyx_str){"': the function type ", 21}));
             ty_put(p, st, rt2);
-            put(((nyx_str){" is declared nowhere in this program \xe2\x80\x94 pass the function as an argument, or store it in a field, of that type\n", 112}));
+            put(((nyx_str){" is declared nowhere in this program \342\200\224 pass the function as an argument, or store it in a field, of that type\n", 112}));
             st[41] = 1;
             return;
         }
@@ -4449,7 +4449,7 @@ void cstmt(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
             char __b2[256];
             nyx_str __s2 = __nyx_fmt_begin(__b2, 256);
             __nyx_fmt_i64(&__s2, __b2, 256, (nyx_i64)(ln6));
-            __nyx_fmt_str(&__s2, __b2, 256, (nyx_str){": own bindings are immutable \xe2\x80\x94 ownership transfers by move (v0.17)\n", 69});
+            __nyx_fmt_str(&__s2, __b2, 256, (nyx_str){": own bindings are immutable \342\200\224 ownership transfers by move (v0.17)\n", 69});
             put(__s2);
             st[41] = 1;
             return;
@@ -4482,7 +4482,7 @@ void cstmt(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
                 char __b3[256];
                 nyx_str __s3 = __nyx_fmt_begin(__b3, 256);
                 __nyx_fmt_i64(&__s3, __b3, 256, (nyx_i64)(ln));
-                __nyx_fmt_str(&__s3, __b3, 256, (nyx_str){": cannot write through a str index \xe2\x80\x94 str is an immutable view of its text\n", 76});
+                __nyx_fmt_str(&__s3, __b3, 256, (nyx_str){": cannot write through a str index \342\200\224 str is an immutable view of its text\n", 76});
                 put(__s3);
                 st[41] = 1;
                 return;
@@ -4614,7 +4614,7 @@ void cstmt(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
             char __b10[256];
             nyx_str __s10 = __nyx_fmt_begin(__b10, 256);
             __nyx_fmt_i64(&__s10, __b10, 256, (nyx_i64)(ln7));
-            __nyx_fmt_str(&__s10, __b10, 256, (nyx_str){": own result discarded \xe2\x80\x94 bind it so someone owns it\n", 54});
+            __nyx_fmt_str(&__s10, __b10, 256, (nyx_str){": own result discarded \342\200\224 bind it so someone owns it\n", 54});
             put(__s10);
             st[41] = 1;
         }
@@ -4676,7 +4676,7 @@ void cstmt(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
                 __nyx_fmt_str(&__s11, __b11, 256, (nyx_str){": own value '", 13});
                 put(__s11);
                 put_span(p, va7[(j3 * 10)], va7[((j3 * 10) + 1)]);
-                put(((nyx_str){"' is consumed in only one branch of this if \xe2\x80\x94 both branches must agree (v0.18)\n", 81}));
+                put(((nyx_str){"' is consumed in only one branch of this if \342\200\224 both branches must agree (v0.18)\n", 81}));
                 st[41] = 1;
                 return;
             }
@@ -4905,7 +4905,7 @@ void cstmt(nyx_u8* p, nyx_i64* st, nyx_i64 i) {
                     char __b22[256];
                     nyx_str __s22 = __nyx_fmt_begin(__b22, 256);
                     __nyx_fmt_i64(&__s22, __b22, 256, (nyx_i64)(ln4));
-                    __nyx_fmt_str(&__s22, __b22, 256, (nyx_str){": cannot write through a str index \xe2\x80\x94 str is an immutable view of its text\n", 76});
+                    __nyx_fmt_str(&__s22, __b22, 256, (nyx_str){": cannot write through a str index \342\200\224 str is an immutable view of its text\n", 76});
                     put(__s22);
                     st[41] = 1;
                     return;
@@ -5063,7 +5063,7 @@ void cmeth(nyx_u8* p, nyx_i64* st, nyx_i64 mi) {
             put_span(p, ma[((mi * 8) + 2)], ma[((mi * 8) + 3)]);
             put(((nyx_str){"' returns a ", 12}));
             ty_put(p, st, crt2);
-            put(((nyx_str){" \xe2\x80\x94 add a tail expression or a return\n", 39}));
+            put(((nyx_str){" \342\200\224 add a tail expression or a return\n", 39}));
             st[41] = 1;
             return;
         }
@@ -5102,7 +5102,7 @@ void cfn(nyx_u8* p, nyx_i64* st, nyx_i64 fi) {
             put_span(p, ft[(fi * 8)], ft[((fi * 8) + 1)]);
             put(((nyx_str){"' returns a ", 12}));
             ty_put(p, st, crt);
-            put(((nyx_str){" \xe2\x80\x94 add a tail expression or a return\n", 39}));
+            put(((nyx_str){" \342\200\224 add a tail expression or a return\n", 39}));
             st[41] = 1;
             return;
         }
@@ -5152,7 +5152,7 @@ void cdecls(nyx_u8* p, nyx_i64* st) {
             if (((rt.l > 0) && !(nvr))) {
                 put(((nyx_str){" drop function '", 16}));
                 put_span(p, ds, dl);
-                put(((nyx_str){"' must not return a value \xe2\x80\x94 the value ends there\n", 51}));
+                put(((nyx_str){"' must not return a value \342\200\224 the value ends there\n", 51}));
                 st[41] = 1;
                 return;
             }
@@ -5169,7 +5169,7 @@ void cdecls(nyx_u8* p, nyx_i64* st) {
                 put_span(p, sa[(si2 * 8)], sa[((si2 * 8) + 1)]);
                 put(((nyx_str){".", 1}));
                 put_span(p, al[r], al[(r + 1)]);
-                put(((nyx_str){"' \xe2\x80\x94 own values cannot nest in other types (v0.17)\n", 52}));
+                put(((nyx_str){"' \342\200\224 own values cannot nest in other types (v0.17)\n", 52}));
                 st[41] = 1;
                 return;
             }
@@ -5186,7 +5186,7 @@ void cdecls(nyx_u8* p, nyx_i64* st) {
                 if (tyown(p, st, fpty(st, fi2, q2))) {
                     put(((nyx_str){" own type in syscall '", 22}));
                     put_span(p, ft2[(fi2 * 8)], ft2[((fi2 * 8) + 1)]);
-                    put(((nyx_str){"' \xe2\x80\x94 the kernel is not an owner (v0.17)\n", 41}));
+                    put(((nyx_str){"' \342\200\224 the kernel is not an owner (v0.17)\n", 41}));
                     st[41] = 1;
                     return;
                 }
@@ -5210,7 +5210,7 @@ void cdecls(nyx_u8* p, nyx_i64* st) {
                     put_span(p, ea[(ei * 4)], ea[((ei * 4) + 1)]);
                     put(((nyx_str){".", 1}));
                     put_span(p, al[vb], al[(vb + 1)]);
-                    put(((nyx_str){"' \xe2\x80\x94 own values cannot nest in other types (v0.17)\n", 52}));
+                    put(((nyx_str){"' \342\200\224 own values cannot nest in other types (v0.17)\n", 52}));
                     st[41] = 1;
                     return;
                 }
@@ -5236,7 +5236,7 @@ void cdecls(nyx_u8* p, nyx_i64* st) {
         if (((si3 >= 0) && (sa[((si3 * 8) + 4)] == 1))) {
             put(((nyx_str){" impl for own type '", 20}));
             put_span(p, ts, tl);
-            put(((nyx_str){"' \xe2\x80\x94 by-value self would move the receiver (v0.17)\n", 52}));
+            put(((nyx_str){"' \342\200\224 by-value self would move the receiver (v0.17)\n", 52}));
             st[41] = 1;
             return;
         }
@@ -5419,7 +5419,7 @@ void ecstr(nyx_u8* p, nyx_i64 rs, nyx_i64 cnt) {
                 put(((nyx_str){"\\r", 2}));
             }
             if ((e == 48)) {
-                put(((nyx_str){"\\0", 2}));
+                put(((nyx_str){"\\000", 4}));
             }
             if ((e == 92)) {
                 put(((nyx_str){"\\\\", 2}));
@@ -5439,14 +5439,25 @@ void ecstr(nyx_u8* p, nyx_i64 rs, nyx_i64 cnt) {
             i = (i + 2);
         }
         if ((b != 92)) {
+            if ((b == 10)) {
+                put(((nyx_str){"\\n", 2}));
+            }
+            if ((b == 9)) {
+                put(((nyx_str){"\\t", 2}));
+            }
+            if ((b == 13)) {
+                put(((nyx_str){"\\r", 2}));
+            }
             if (((b >= 32) && (b <= 126))) {
                 put_span(p, i, 1);
             }
-            if (((b < 32) || (b > 126))) {
+            if ((((((b < 32) && (b != 10)) && (b != 9)) && (b != 13)) || (b > 126))) {
                 char __b0[256];
                 nyx_str __s0 = __nyx_fmt_begin(__b0, 256);
-                __nyx_fmt_str(&__s0, __b0, 256, (nyx_str){"\\x", 2});
-                __nyx_fmt_num(&__s0, __b0, 256, (nyx_i64)(b), 1, 0, 2, 1);
+                __nyx_fmt_str(&__s0, __b0, 256, (nyx_str){"\\", 1});
+                __nyx_fmt_i64(&__s0, __b0, 256, (nyx_i64)((b / 64)));
+                __nyx_fmt_i64(&__s0, __b0, 256, (nyx_i64)(((b / 8) % 8)));
+                __nyx_fmt_i64(&__s0, __b0, 256, (nyx_i64)((b % 8)));
                 put(__s0);
             }
             i = (i + 1);

@@ -70,7 +70,9 @@ dependencies) implements N v0.24 — type inference (typed `:=` bindings with an
 callees, arity, argument/operand/return/assignment types — all compile errors
 with `file:line` diagnostics), `struct` records with checked literals and
 field access, function types (`fn(i64) -> i64` — functions passed, stored in
-fields and called through, v0.24), Go-style function-scoped `defer`, `enum` tagged unions with an
+fields and called through, v0.24), string literals that may span lines and
+carry any bytes (spelled identically by `ncc` and the self-hosted `ngen`:
+named escapes and three-digit octal, never `\xNN` — [strbytes.n](examples/strbytes.n)), Go-style function-scoped `defer`, `enum` tagged unions with an
 exhaustive `match` usable as a statement or as the value of a
 binding/assignment/return, statically-dispatched `impl` methods, `?` error
 propagation over Ok/Err result enums, counted `for` loops over half-open

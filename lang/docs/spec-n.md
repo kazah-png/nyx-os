@@ -73,7 +73,9 @@ by C's usual rules at the use site (see §9, Limitations).
 ### 2.5 String literals and interpolation
 
 String literals are double-quoted with these escapes:
-`\n \t \r \0 \\ \" \' \{ \}`.
+`\n \t \r \0 \\ \" \' \{ \}`. A literal may also hold a raw newline, tab
+or carriage return — it then spans lines — and any UTF-8; each is the byte
+itself, the same as its escape, and `s.len` counts bytes.
 
 A `{expression}` inside a string literal is **interpolation**: the expression
 is evaluated and formatted into the string at that position.
@@ -1035,7 +1037,7 @@ This section specifies what C the compiler is *required* to emit, because N's
 | `extern syscall fn f(...) -> T = N` | `static inline T' f(...) { return (T')__nyx_syscall6(N, args…, 0…); }` |
 | `fn f(a: A) -> R { … }` | `R' f(A' a) { … }` + forward prototype |
 | `x := e;` | `T' x = e';` where `T` is the inferred type (§6.3) |
-| `str` literal `"abc"` | `((nyx_str){"abc", 3})` |
+| `str` literal `"abc"` | `((nyx_str){"abc", 3})` — the C literal spells `\n \t \r \" \\` by name (a raw newline or tab in the source spells the same as its escape) and every other control or non-ASCII byte as three-digit octal, `"é1"` as `"\303\2511"`, never `\xNN`, which C would run into a hex digit that follows |
 | block tail `e` | `return e';` (in a value-returning function) |
 | `never` return | `void` fn + `for (;;) {}` after the syscall |
 | `x := match s { … }` (§5.6.1) | `T x = 0;` + `{ E __m = s'; T __mres = 0; switch (__m.tag) { … __mres = arm'; … } x = __mres; }` — the zero init is a dead store (the switch is exhaustive) kept so the C is warning-free |

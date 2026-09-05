@@ -4061,10 +4061,13 @@ fn eind(d: i64) {
 }
 
 // A C string literal from a RAW N string body: decode N's escapes and
-// re-encode as C's. N's spellings are C's (\n \t \r \0 \\ \") except
-// the brace escapes, which decode to bare braces; \' decodes to a
-// bare quote character C needs no escape for. Non-ASCII bytes render
-// as \xNN (lowercase, ncc's emit_cstr).
+// re-encode as C's, byte for byte as ncc's emit_cstr does. N's named
+// spellings are C's (\n \t \r \\ \") except the brace escapes, which
+// decode to bare braces, and \' which decodes to a bare quote character
+// C needs no escape for. A raw newline, tab or carriage return in the
+// body is the same byte as its escape and is spelled the same way. Every
+// other control or non-ASCII byte (\0 included) renders as three-digit
+// octal — never \xNN, which C would run into a hex digit that follows.
 fn ecstr(p: *u8, rs: i64, cnt: i64) {
     put("\"");
     mut i := rs;
@@ -4076,7 +4079,7 @@ fn ecstr(p: *u8, rs: i64, cnt: i64) {
             if e == 110 { put("\\n"); }
             if e == 116 { put("\\t"); }
             if e == 114 { put("\\r"); }
-            if e == 48 { put("\\0"); }
+            if e == 48 { put("\\000"); }
             if e == 92 { put("\\\\"); }
             if e == 34 { put("\\\""); }
             if e == 39 { put("'"); }
@@ -4085,8 +4088,13 @@ fn ecstr(p: *u8, rs: i64, cnt: i64) {
             i = i + 2;
         }
         if b != 92 {
+            if b == 10 { put("\\n"); }
+            if b == 9 { put("\\t"); }
+            if b == 13 { put("\\r"); }
             if b >= 32 && b <= 126 { put_span(p, i, 1); }
-            if b < 32 || b > 126 { put("\\x{b:z2x}"); }
+            if (b < 32 && b != 10 && b != 9 && b != 13) || b > 126 {
+                put("\\{b / 64}{(b / 8) % 8}{b % 8}");
+            }
             i = i + 1;
         }
         d = d + 1;
