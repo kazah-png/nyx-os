@@ -401,11 +401,37 @@ static int jpeg_case(const char* name, const uint8_t* file, uint32_t flen, int w
     return ok;
 }
 
+// Malformed streams that must be REJECTED, not decoded: a valid SOI + SOF0 (1 component, 8x8)
+// then an SOS whose DC (td) / AC (ta) Huffman-table selector is 4. The selectors index
+// st->hdc[4] / st->hac[4]; before v6.5.125 (contributor #94) an out-of-range value read out of
+// bounds in jpeg_block. jpeg_decode must return -14 (bad SOS) at the selector check, before any
+// geometry/allocation/decode. Byte 21 is the tdta selector: 0x40 = td 4, 0x04 = ta 4.
+static const uint8_t JPG_BAD_DCSEL[] = {
+    0xFF,0xD8,                                                           // SOI
+    0xFF,0xC0,0x00,0x0B,0x08,0x00,0x08,0x00,0x08,0x01,0x01,0x11,0x00,    // SOF0: 8x8, 1 component
+    0xFF,0xDA,0x00,0x08,0x01,0x01,0x40,0x00,0x3F,0x00                    // SOS: comp1 td=4 (>3)
+};
+static const uint8_t JPG_BAD_ACSEL[] = {
+    0xFF,0xD8,
+    0xFF,0xC0,0x00,0x0B,0x08,0x00,0x08,0x00,0x08,0x01,0x01,0x11,0x00,
+    0xFF,0xDA,0x00,0x08,0x01,0x01,0x04,0x00,0x3F,0x00                    // SOS: comp1 ta=4 (>3)
+};
+// Decode must fail with exactly `want` and must not leak a pixel buffer.
+static int jpeg_reject(const char* name, const uint8_t* file, uint32_t flen, int want) {
+    image_t im; int rc = jpeg_decode(file, flen, &im);
+    if (rc == 0 && im.pixels) kfree(im.pixels);            // must not have decoded; don't leak if it did
+    int ok = (rc == want);
+    printf("jpeg: %s %s (rc=%d want=%d)\n", name, ok ? "PASS" : "FAIL", rc, want);
+    return ok;
+}
+
 int jpeg_selftest(void) {
     int pass = 0, total = 0;
     total++; pass += jpeg_case("grayscale", JPG_GRAY, sizeof(JPG_GRAY), JPG_GRAY_W, JPG_GRAY_H, JPG_GRAY_RGBA, 4, 40);
     total++; pass += jpeg_case("ycbcr-444", JPG_444,  sizeof(JPG_444),  JPG_444_W,  JPG_444_H,  JPG_444_RGBA,  4, 40);
     total++; pass += jpeg_case("ycbcr-420", JPG_420,  sizeof(JPG_420),  JPG_420_W,  JPG_420_H,  JPG_420_RGBA,  6, 60);   // fancy upsampling -> tighter than v5.9.89's 14/250
+    total++; pass += jpeg_reject("reject-sos-dc-selector", JPG_BAD_DCSEL, sizeof(JPG_BAD_DCSEL), -14);
+    total++; pass += jpeg_reject("reject-sos-ac-selector", JPG_BAD_ACSEL, sizeof(JPG_BAD_ACSEL), -14);
     printf("jpeg: self-test %d/%d passed\n", pass, total);
     return (pass == total) ? 0 : -1;
 }
