@@ -34,7 +34,17 @@ const char* filetype_identify(const char* name, const uint8_t* data, uint32_t le
     if (len == 0) return "empty";
 
     // ---- magic numbers: the content signature wins over any extension ----
-    if (ft_starts(data, len, "\x7f" "ELF", 4))                    return "ELF executable";
+    if (ft_starts(data, len, "\x7f" "ELF", 4)) {                  // refine by e_type @ offset 16 (ELF's own endianness)
+        if (len >= 18) {
+            unsigned et = (data[5] == 2) ? ((unsigned)data[16] << 8 | data[17])   // EI_DATA=MSB
+                                         : ((unsigned)data[17] << 8 | data[16]);  // LSB (NyxOS default)
+            if (et == 1) return "ELF relocatable";
+            if (et == 2) return "ELF executable";
+            if (et == 3) return "ELF shared object";
+            if (et == 4) return "ELF core file";
+        }
+        return "ELF executable";                                  // magic only / short header: historical label
+    }
     if (ft_starts(data, len, "\x89PNG\r\n\x1a\n", 8))             return "PNG image data";
     if (ft_starts(data, len, "GIF87a", 6) ||
         ft_starts(data, len, "GIF89a", 6))                        return "GIF image data";
@@ -110,9 +120,16 @@ const char* filetype_label(const char* name, int is_dir) {
 
 // ---- known-answer self-test (`filetype`) ----
 int filetype_selftest(void) {
+    // Full 18-byte ELF headers (LSB, class-64) differing only in e_type @ offset 16.
+    static const unsigned char elf_rel[18]  = {0x7f,'E','L','F',2,1,1,0,0,0,0,0,0,0,0,0, 1,0};
+    static const unsigned char elf_exec[18] = {0x7f,'E','L','F',2,1,1,0,0,0,0,0,0,0,0,0, 2,0};
+    static const unsigned char elf_dyn[18]  = {0x7f,'E','L','F',2,1,1,0,0,0,0,0,0,0,0,0, 3,0};
     struct { const char* name; const char* data; uint32_t len; const char* want; } t[] = {
         { "empty.dat", "",                              0,  "empty" },
-        { "a.out",     "\x7f" "ELF\x02\x01\x01",        7,  "ELF executable" },
+        { "a.out",     "\x7f" "ELF\x02\x01\x01",        7,  "ELF executable" },   // short header -> fallback label
+        { "reloc.o",   (const char*)elf_rel,            18, "ELF relocatable" },
+        { "prog",      (const char*)elf_exec,           18, "ELF executable" },
+        { "lib.so",    (const char*)elf_dyn,            18, "ELF shared object" },
         { "x.png",     "\x89PNG\r\n\x1a\n" "IHDR",      12, "PNG image data" },
         { "x.gif",     "GIF89a\x10\x00",                8,  "GIF image data" },
         { "x.jpg",     "\xff\xd8\xff\xe0",              4,  "JPEG image data" },
