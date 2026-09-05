@@ -34,6 +34,10 @@ static int parse_num(const char* s, unsigned long long* out) {
     for (; *p; p++) {
         int d = digit_val(*p);
         if (d < 0 || d >= base) return -1;
+        // Reject a value that does not fit in 64 bits instead of silently wrapping: the
+        // header promises an out-of-range NUM is an error (exit 1). Same overflow guard
+        // the kernel's numparse.c uses.
+        if (v > (0xFFFFFFFFFFFFFFFFULL - (unsigned long long)d) / (unsigned long long)base) return -1;
         v = v * (unsigned long long)base + (unsigned long long)d;
     }
     *out = v;
