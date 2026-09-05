@@ -1057,7 +1057,7 @@ static const man_page_t man_pages[] = {
     {"mkdir",    "Create a new, empty directory: `mkdir [-p] <dir>...`. With -p, create any missing parent directories too (and don't error if it already exists)."},
     {"ln",       "Create a symbolic link: `ln -s <target> <linkname>` makes <linkname> a symlink pointing at <target>. Opening/`cat`/`cd` through the link transparently reaches the target (resolve_path follows it, bounded to 8 hops so a cyclic link can't loop); `readlink <linkname>` shows the raw target without following. Hard links aren't supported by the ramdisk node model, so `-s` is required."},
     {"readlink", "Print the target path a symbolic link points at, without following it: `readlink <symlink>`."},
-    {"chmod",    "Change a file's permission bits, octal or symbolic: `chmod <octal|symbolic> <file>` (e.g. `chmod 644 f`, `chmod +x f`, `chmod u+w f`, `chmod go-rwx f`, `chmod a=r f`, `chmod u+w,go-w f`). Symbolic: who `[ugoa]` (default all) + op `+`/`-`/`=` + perms `[rwx]`, comma-separated clauses. Clearing the owner-write bit (`chmod 444 f` or `chmod -w f`) makes the file read-only — `vfs_write_file`/overwrites are refused until you make it writable again. Applies to the ramdisk tree; new files default to 644, directories to 755."},
+    {"chmod",    "Change a file's permission bits, octal or symbolic: `chmod <octal|symbolic> <file>` (e.g. `chmod 644 f`, `chmod +x f`, `chmod u+w f`, `chmod go-rwx f`, `chmod a=r f`, `chmod u+w,go-w f`, `chmod u+x-w f`). Symbolic: who `[ugoa]` (default all) + one or more op `+`/`-`/`=` + perms `[rwx]` groups per clause, comma-separated clauses. Clearing the owner-write bit (`chmod 444 f` or `chmod -w f`) makes the file read-only — `vfs_write_file`/overwrites are refused until you make it writable again. Applies to the ramdisk tree; new files default to 644, directories to 755."},
     {"echo",     "Write the arguments to standard output separated by spaces and followed by a newline. `echo text > file` writes to a file instead of the screen."},
     {"grep",     "Print the lines of <file> that match <pattern>. -i ignores letter case, -n prefixes each match with its line number, -v inverts the search to print the lines that do NOT match, and -c prints only the COUNT of matching lines (honouring -i/-v) instead of the lines themselves."},
     {"sort",     "Sort the lines of <file>. -r reverses the result; -n sorts numerically by the integer at the start of each line instead of alphabetically; -f folds case (compare case-insensitively); -u drops duplicate lines (keep one per equal key, like GNU sort -u). Flags combine, e.g. sort -fu."},
@@ -8595,7 +8595,8 @@ static void mode_to_rwx(int mode, char* buf) {
 }
 
 // Parse a POSIX symbolic mode spec against the current mode, writing the new low-12
-// bits to *out. Grammar: one or more comma-separated clauses, each `[ugoa]* [+-=] [rwx]*`.
+// bits to *out. Grammar: one or more comma-separated clauses, each `[ugoa]* ([+-=] [rwx]*)+`
+// (several op-perm groups may share one who-list, e.g. `u+x-w`, `u=rw+x`, `a+r-w`).
 // No 'who' means all classes (ugo); '+' adds, '-' removes, '=' sets exactly for the named
 // classes (setuid/sticky high bits are preserved — who never exceeds 0777). Returns 0 on
 // success, -1 on any syntax error (incl. a leading digit, which is an octal spec, not
@@ -8618,20 +8619,21 @@ static int chmod_parse_symbolic(int cur, const char* s, int* out) {
             p++;
         }
         if (!who_given) who = 0777;             // no who => all classes
-        char op = *p;
-        if (op != '+' && op != '-' && op != '=') return -1;
-        p++;
-        int perm = 0;
-        while (*p == 'r' || *p == 'w' || *p == 'x') {
-            if      (*p == 'r') perm |= 0444;
-            else if (*p == 'w') perm |= 0222;
-            else                perm |= 0111;   // 'x'
-            p++;
+        if (*p != '+' && *p != '-' && *p != '=') return -1;    // a clause needs at least one op
+        while (*p == '+' || *p == '-' || *p == '=') {          // POSIX: several op-perm groups may share one who
+            char op = *p++;
+            int perm = 0;
+            while (*p == 'r' || *p == 'w' || *p == 'x') {
+                if      (*p == 'r') perm |= 0444;
+                else if (*p == 'w') perm |= 0222;
+                else                perm |= 0111;   // 'x'
+                p++;
+            }
+            int bits = perm & who;                  // the bits this op actually touches
+            if      (op == '+') mode |= bits;
+            else if (op == '-') mode &= ~bits;
+            else                mode = (mode & ~who) | bits;   // '=' sets the named classes exactly
         }
-        int bits = perm & who;                  // the bits this clause actually touches
-        if      (op == '+') mode |= bits;
-        else if (op == '-') mode &= ~bits;
-        else                mode = (mode & ~who) | bits;   // '=' sets the named classes exactly
         if (*p == '\0') break;
         if (*p != ',')  return -1;              // junk between clauses
         p++;
@@ -8670,6 +8672,11 @@ int chmod_selftest(void) {
     if (chmod_parse_symbolic(0644, "+q",       &nm) != -1)              return 23;  // bad perm char
     if (chmod_parse_symbolic(0644, "u+w,",     &nm) != -1)              return 24;  // trailing comma
     if (chmod_parse_symbolic(0644, "",         &nm) != -1)              return 25;  // empty spec
+    // multiple op-perm groups sharing one who-list (POSIX), verified vs GNU chmod:
+    if (chmod_parse_symbolic(0644, "u+x-w",    &nm) != 0 || nm != 0544) return 26;  // owner: +x then -w
+    if (chmod_parse_symbolic(0600, "u=rw+x",   &nm) != 0 || nm != 0700) return 27;  // owner: set rw then +x
+    if (chmod_parse_symbolic(0666, "a+r-w",    &nm) != 0 || nm != 0444) return 28;  // all: +r then -w
+    if (chmod_parse_symbolic(0644, "go-r+x",   &nm) != 0 || nm != 0611) return 29;  // g/o: -r then +x
     return 0;
 }
 
