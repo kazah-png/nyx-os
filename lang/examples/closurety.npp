@@ -1,0 +1,58 @@
+// closurety.npp — N++ closure type (M6.4c1): Fn(A) -> R.
+//
+// `Fn(i64) -> i64` is the type of a closure: a function value that may carry
+// an environment. N's own `fn(i64) -> i64` is a bare function and has
+// nowhere to keep one, so nppc lowers each distinct Fn signature to a struct
+// of its own — `__Fn_i64__i64 { env: addr, call: fn(addr, i64) -> i64 }` —
+// and a call through a closure, `f(a)`, becomes `f.call(f.env, a)`. A lambda
+// written where a closure is expected takes the environment as its first
+// parameter and becomes the value `__Fn_i64__i64{ env: 0, call: __c_N }`; a
+// named function passed there is wrapped in an adapter of the same shape.
+// The environment is 0 at this rung: closures still capture nothing
+// (M6.4c2 fills it). Fn types work in parameters, struct fields and return
+// types, and a closure held in a local or a field is called like any
+// function.
+
+extern syscall {
+    fn write(fd: i32, buf: *u8, len: isize) -> i64 = 1
+}
+
+struct Btn {
+    label: str,
+    on: Fn(i64) -> i64,
+}
+
+fn put(s: str) {
+    write(1, s.ptr as *u8, s.len as isize);
+}
+
+fn each(f: Fn(i64) -> i64, a: i64, b: i64) {
+    x := f(a);
+    y := f(b);
+    put("{x} {y}\n");
+}
+
+fn dbl(x: i64) -> i64 {
+    x * 2
+}
+
+fn pick(k: i64) -> Fn(i64) -> i64 {
+    if k == 0 {
+        return fn(x: i64) -> i64 { x + 1 };
+    }
+    fn(x: i64) -> i64 { x - 1 }
+}
+
+fn main() -> i64 {
+    each(fn(x: i64) -> i64 { x * x }, 3, 4);
+    each(dbl, 5, 6);
+    b := Btn{ label: "add3", on: fn(x: i64) -> i64 { x + 3 } };
+    r := b.on(39);
+    put("{b.label}: {r}\n");
+    g := pick(0);
+    h := pick(1);
+    v := g(41);
+    w := h(43);
+    put("{v} {w}\n");
+    0
+}

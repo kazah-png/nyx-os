@@ -1467,6 +1467,7 @@ static int match_brace(int b) {           /* token of the `}` closing `{` at b *
  * function type `fn(A, B) -> R` — and return the token after it (-1 if
  * the tokens do not shape a type). */
 static int skip_type(int t) {
+    if (TOKS[t].k == T_KW_OWN) t++;
     if (TOKS[t].k == T_ATTR_USER) t++;
     if (TOKS[t].k == T_KW_RAW) t++;
     while (TOKS[t].k == T_STAR) t++;
@@ -1481,6 +1482,15 @@ static int skip_type(int t) {
         return t;
     }
     if (TOKS[t].k != T_IDENT) return -1;
+    if (TOKS[t].slen == 2 && !memcmp(TOKS[t].s, "Fn", 2) && TOKS[t + 1].k == T_LP) {
+        int depth = 0;                    /* Fn(A, B) -> R: the closure type (M6.4c) */
+        for (t++; TOKS[t].k != T_EOF; t++) {
+            if (TOKS[t].k == T_LP) depth++;
+            else if (TOKS[t].k == T_RP && --depth == 0) { t++; break; }
+        }
+        if (TOKS[t].k == T_ARROW) return skip_type(t + 1);
+        return t;
+    }
     t++;
     if (TOKS[t].k == T_LT) {              /* generic arguments */
         int depth = 0;
@@ -1574,9 +1584,218 @@ static int generic_item_name(int itemfirst) {
     return -1;
 }
 
+/* ---- the closure type (M6.4c1): Fn(A, B) -> R ------------------------ */
+/* N's `fn(A) -> R` is a bare function value; it has nowhere to keep an   */
+/* environment, so a closure needs a type of its own. `Fn(A, B) -> R` is  */
+/* that type: it lowers to one N struct per distinct signature —          */
+/* `struct __Fn_i64__i64 { env: addr, call: fn(addr, i64) -> i64 }` — and  */
+/* a call through a closure value `f(a)` becomes `f.call(f.env, a)`. A    */
+/* lambda written where a closure is expected takes the environment as   */
+/* its first parameter and the expression becomes the closure value       */
+/* `__Fn_i64__i64{ env: 0, call: __c_N }`; a named function there gets an  */
+/* adapter of the same shape. At this rung the environment is always 0:  */
+/* lambdas still capture nothing (M6.4c2 fills the env). The struct name  */
+/* is the signature's spelling with its punctuation as underscores.       */
+
+static int is_Fn(int t) {                 /* the IDENT `Fn` opening a closure type */
+    return TOKS[t].k == T_IDENT && TOKS[t].slen == 2 && !memcmp(TOKS[t].s, "Fn", 2) &&
+           TOKS[t + 1].k == T_LP;
+}
+
+/* The program's named functions and structs, by token scan: each with its
+ * parameter (or field) names and type token ranges, and a function's
+ * return type range. Rebuilt whenever the token buffer changes. */
+#define MAXTAB 512
+#define MAXTP 32
+typedef struct {
+    int name;
+    int np; int pname[MAXTP], pts[MAXTP], pte[MAXTP];
+    int rts, rte;                         /* return type, or -1 */
+    int body, end;                        /* the `{` and its `}` */
+} Item;
+static Item FNT[MAXTAB]; static int NFNT;
+static Item STT[MAXTAB]; static int NSTT;
+
+static int fnt_find(int t) {
+    for (int i = 0; i < NFNT; i++) if (tokspan_eq(FNT[i].name, t)) return i;
+    return -1;
+}
+static int stt_find(int t) {
+    for (int i = 0; i < NSTT; i++) if (tokspan_eq(STT[i].name, t)) return i;
+    return -1;
+}
+static int range_is_Fn(int ts, int te) { return ts >= 0 && ts < te && is_Fn(ts); }
+
+static void build_tables(void) {
+    NFNT = NSTT = 0;
+    for (int i = 0; i + 2 < NTOK; i++) {
+        if (TOKS[i].k == T_KW_FN && TOKS[i + 1].k == T_IDENT) {   /* a named fn (a lambda has `(` here) */
+            Item* f = &FNT[NFNT];
+            f->name = i + 1; f->np = 0; f->rts = f->rte = -1;
+            int j = i + 2;
+            if (TOKS[j].k == T_LT) { while (TOKS[j].k != T_GT && TOKS[j].k != T_EOF) j++; j++; }
+            if (TOKS[j].k != T_LP) continue;
+            j++;
+            while (TOKS[j].k != T_RP && TOKS[j].k != T_EOF) {
+                if (TOKS[j].k != T_IDENT) break;
+                if (TOKS[j + 1].k == T_COLON) {
+                    int ts = j + 2, te = skip_type(ts);
+                    if (te < 0) break;
+                    if (f->np < MAXTP) { f->pname[f->np] = j; f->pts[f->np] = ts; f->pte[f->np] = te; f->np++; }
+                    j = te;
+                } else j++;               /* `self` */
+                if (TOKS[j].k == T_COMMA) j++;
+            }
+            if (TOKS[j].k != T_RP) continue;
+            j++;
+            if (TOKS[j].k == T_ARROW) {
+                f->rts = j + 1; f->rte = skip_type(j + 1);
+                if (f->rte < 0) continue;
+                j = f->rte;
+            }
+            if (TOKS[j].k != T_LB) continue;     /* an extern declaration: no body */
+            f->body = j; f->end = match_brace(j);
+            if (NFNT < MAXTAB) NFNT++;
+        } else if (TOKS[i].k == T_KW_STRUCT && TOKS[i + 1].k == T_IDENT) {
+            Item* s = &STT[NSTT];
+            s->name = i + 1; s->np = 0; s->rts = s->rte = -1;
+            int j = i + 2;
+            if (TOKS[j].k == T_LT) { while (TOKS[j].k != T_GT && TOKS[j].k != T_EOF) j++; j++; }
+            if (TOKS[j].k != T_LB) continue;
+            s->body = j; s->end = match_brace(j);
+            for (j++; j < s->end; ) {
+                if (TOKS[j].k != T_IDENT || TOKS[j + 1].k != T_COLON) break;
+                int ts = j + 2, te = skip_type(ts);
+                if (te < 0) break;
+                if (s->np < MAXTP) { s->pname[s->np] = j; s->pts[s->np] = ts; s->pte[s->np] = te; s->np++; }
+                j = te;
+                if (TOKS[j].k == T_COMMA) j++;
+            }
+            if (NSTT < MAXTAB) NSTT++;
+        }
+    }
+}
+
+static void apps(char** b, size_t* n, size_t* cap, const char* s) { app(b, n, cap, s, strlen(s)); }
+
+/* The struct name of a closure signature: `__` + the type's spelling with
+ * every `( ) , -> <` as `_`, `*` as `p`, `#[user]` as `u` — so
+ * `Fn(i64) -> i64` is `__Fn_i64__i64`, `Fn()` is `__Fn__`, and
+ * `Fn(*u8, Box<i64>) -> bool` is `__Fn_pu8_Box_i64__bool`. */
+static char* sig_name(int ts, int te) {
+    size_t cap = 256, n = 0;
+    char* b = xmalloc(cap);
+    b[0] = 0;
+    apps(&b, &n, &cap, "__");
+    for (int t = ts; t < te; t++) {
+        TK k = TOKS[t].k;
+        if (k == T_IDENT) app(&b, &n, &cap, TOKS[t].s, (size_t)TOKS[t].slen);
+        else if (k == T_STAR) apps(&b, &n, &cap, "p");
+        else if (k == T_ATTR_USER) apps(&b, &n, &cap, "u");
+        else if (k == T_KW_FN) apps(&b, &n, &cap, "fn");
+        else if (k == T_LP || k == T_RP || k == T_COMMA || k == T_ARROW || k == T_LT) apps(&b, &n, &cap, "_");
+    }
+    return b;
+}
+
+/* The parameter type ranges and the return type range of the closure
+ * signature at [t, e): `Fn ( A , B ) -> R`. */
+static void sig_parts(int t, int e, int* pts, int* pte, int* np, int* rts, int* rte) {
+    int depth = 0, cur = t + 2, u;
+    *np = 0;
+    for (u = t + 2; u < e; u++) {
+        TK k = TOKS[u].k;
+        if (k == T_LP || k == T_LT) depth++;
+        else if (k == T_GT) depth--;
+        else if (k == T_RP) { if (depth == 0) break; depth--; }
+        else if (k == T_COMMA && depth == 0) {
+            if (*np < MAXTP) { pts[*np] = cur; pte[*np] = u; (*np)++; }
+            cur = u + 1;
+        }
+    }
+    if (u > cur && *np < MAXTP) { pts[*np] = cur; pte[*np] = u; (*np)++; }
+    u++;
+    if (u < e && TOKS[u].k == T_ARROW) { *rts = u + 1; *rte = e; }
+    else { *rts = -1; *rte = -1; }
+}
+
+/* A type range as N text, a nested closure type spelled by its struct name. */
+static void render_type(int ts, int te, char** b, size_t* n, size_t* cap) {
+    for (int t = ts; t < te; t++) {
+        if (is_Fn(t)) {
+            int e = skip_type(t);
+            apps(b, n, cap, sig_name(t, e));
+            t = e - 1;
+            continue;
+        }
+        if (t > ts && (TOKS[t - 1].k == T_COMMA || TOKS[t - 1].k == T_ARROW || TOKS[t].k == T_ARROW ||
+                       TOKS[t - 1].k == T_ATTR_USER || TOKS[t - 1].k == T_KW_RAW))
+            apps(b, n, cap, " ");
+        app(b, n, cap, SRC + TOKS[t].start, (size_t)(TOKS[t].end - TOKS[t].start));
+    }
+}
+
+/* The closure value literal for a signature and a lifted function. */
+static char* closure_value(int ts, int te, const char* fname) {
+    size_t cap = 256, n = 0;
+    char* b = xmalloc(cap);
+    b[0] = 0;
+    apps(&b, &n, &cap, sig_name(ts, te));
+    apps(&b, &n, &cap, "{ env: 0, call: ");
+    apps(&b, &n, &cap, fname);
+    apps(&b, &n, &cap, " }");
+    return b;
+}
+
+/* Does the lambda at token i (body `{`..`}` ending at token end) sit where
+ * a closure is expected? A call argument whose parameter is Fn-typed, a
+ * struct-literal field of Fn type, or the `return` / tail value of a
+ * function returning Fn. Yields the Fn type's token range. */
+static int fn_slot(int i, int end, int* ts, int* te) {
+    TK p = i > 0 ? TOKS[i - 1].k : T_EOF;
+    if (p == T_LP || p == T_COMMA) {      /* an argument: which parameter? */
+        int depth = 0, k = 0, j = i - 1;
+        for (; j > 0; j--) {
+            TK q = TOKS[j].k;
+            if (q == T_RP || q == T_RB || q == T_RBRACK) depth++;
+            else if (q == T_LB || q == T_LBRACK) { if (depth == 0) return 0; depth--; }
+            else if (q == T_LP) { if (depth == 0) break; depth--; }
+            else if (q == T_COMMA && depth == 0) k++;
+        }
+        if (j <= 0 || TOKS[j - 1].k != T_IDENT) return 0;
+        int f = fnt_find(j - 1);
+        if (f < 0 || k >= FNT[f].np || !range_is_Fn(FNT[f].pts[k], FNT[f].pte[k])) return 0;
+        *ts = FNT[f].pts[k]; *te = FNT[f].pte[k];
+        return 1;
+    }
+    if (p == T_COLON && i >= 2 && TOKS[i - 2].k == T_IDENT) {   /* a struct-literal field */
+        int depth = 0, j = i - 3;
+        for (; j > 0; j--) {
+            TK q = TOKS[j].k;
+            if (q == T_RB) depth++;
+            else if (q == T_LB) { if (depth == 0) break; depth--; }
+        }
+        if (j <= 0 || TOKS[j - 1].k != T_IDENT) return 0;
+        int s = stt_find(j - 1);
+        if (s < 0) return 0;
+        for (int q = 0; q < STT[s].np; q++)
+            if (tokspan_eq(STT[s].pname[q], i - 2) && range_is_Fn(STT[s].pts[q], STT[s].pte[q])) {
+                *ts = STT[s].pts[q]; *te = STT[s].pte[q];
+                return 1;
+            }
+        return 0;
+    }
+    int f = -1;                           /* `return` of, or the tail of, a fn returning Fn */
+    for (int q = 0; q < NFNT; q++) if (FNT[q].body < i && i < FNT[q].end) { f = q; break; }
+    if (f < 0 || !range_is_Fn(FNT[f].rts, FNT[f].rte)) return 0;
+    if (p == T_KW_RETURN || end + 1 == FNT[f].end) { *ts = FNT[f].rts; *te = FNT[f].rte; return 1; }
+    return 0;
+}
+
 static char* lambda_pass(const char* prog) {
     static Edit led[MAXI];
     int ne = 0;
+    build_tables();
     int depth = 0, prevclose = -1, itemfirst = 0;
     int accitem = -1, accprev = -1;       /* the item whose lifted text is accumulating */
     size_t an = 0, acap = 256;
@@ -1616,6 +1835,8 @@ static char* lambda_pass(const char* prog) {
             for (int u = i + 1; u <= end; u++)
                 if (tokspan_eq(tp[q], u)) { used[nused++] = q; break; }
         refuse_capture(itemfirst, i, body, end);
+        int sts = -1, ste = -1;           /* a closure slot (M6.4c1)? */
+        int closure = fn_slot(i, end, &sts, &ste);
         char* name = xmalloc(24 + (size_t)nused * 64);
         int nn = sprintf(name, "__c_%d", NLAMBDA++);
         if (nused) {                      /* `__c_N<A, B>`: the declaration header and the use */
@@ -1644,11 +1865,16 @@ static char* lambda_pass(const char* prog) {
         if (an) app(&acc, &an, &acap, "\n\n", 2);
         app(&acc, &an, &acap, "fn ", 3);
         app(&acc, &an, &acap, name, strlen(name));
-        app(&acc, &an, &acap, SRC + TOKS[i + 1].start, (size_t)(TOKS[end].end - TOKS[i + 1].start));
+        if (closure) {                    /* the environment comes first */
+            app(&acc, &an, &acap, "(_env: addr", 11);
+            if (TOKS[i + 2].k != T_RP) app(&acc, &an, &acap, ", ", 2);
+            app(&acc, &an, &acap, SRC + TOKS[i + 2].start, (size_t)(TOKS[end].end - TOKS[i + 2].start));
+        } else
+            app(&acc, &an, &acap, SRC + TOKS[i + 1].start, (size_t)(TOKS[end].end - TOKS[i + 1].start));
         if (ne >= MAXI) die("%s: too many lambdas", FILENAME);
         led[ne].start = TOKS[i].start;
         led[ne].end = TOKS[end].end;
-        led[ne].repl = name;
+        led[ne].repl = closure ? closure_value(sts, ste, name) : name;
         ne++;
         i = end;                          /* the body's braces are balanced */
     }
@@ -1672,6 +1898,248 @@ static char* lambda_pass(const char* prog) {
         app(&out, &n, &cap, prog + prev, (size_t)(led[e].start - prev));
         app(&out, &n, &cap, led[e].repl, strlen(led[e].repl));
         prev = led[e].end;
+    }
+    app(&out, &n, &cap, prog + prev, strlen(prog) - (size_t)prev);
+    return out;
+}
+
+/* Text accumulating before one top-level item (lifted adapters), flushed
+ * as one insert after the item before it — or at the item's start when
+ * there is none. */
+typedef struct { int item, prev; char* acc; size_t n, cap; } Acc;
+
+static void acc_flush(Acc* a, Edit* ed, int* ne) {
+    if (a->item < 0) return;
+    if (*ne >= MAXI) die("%s: too many rewrites", FILENAME);
+    char* r = xmalloc(a->n + 3);
+    if (a->prev >= 0) { ed[*ne].start = ed[*ne].end = TOKS[a->prev].end; sprintf(r, "\n\n%s", a->acc); }
+    else { ed[*ne].start = ed[*ne].end = TOKS[a->item].start; sprintf(r, "%s\n\n", a->acc); }
+    ed[*ne].repl = r;
+    (*ne)++;
+    a->item = -1; a->n = 0; a->acc[0] = 0;
+}
+
+static void acc_add(Acc* a, int item, int prev, const char* text, Edit* ed, int* ne) {
+    if (a->item != item) { acc_flush(a, ed, ne); a->item = item; a->prev = prev; }
+    if (a->n) apps(&a->acc, &a->n, &a->cap, "\n\n");
+    apps(&a->acc, &a->n, &a->cap, text);
+}
+
+/* One closure signature's struct: nested closure types register first, so
+ * their layouts precede the one that holds them. */
+#define MAXSIG 64
+static void reg_sigs(int t, int e, char** nm, char** tx, int* n) {
+    for (int u = t + 1; u < e; u++)
+        if (is_Fn(u)) { int ue = skip_type(u); reg_sigs(u, ue, nm, tx, n); u = ue - 1; }
+    char* name = sig_name(t, e);
+    for (int i = 0; i < *n; i++) if (!strcmp(nm[i], name)) return;
+    if (*n >= MAXSIG) die("%s: too many closure signatures", FILENAME);
+    int pts[MAXTP], pte[MAXTP], np, rts, rte;
+    sig_parts(t, e, pts, pte, &np, &rts, &rte);
+    size_t cap = 256, len = 0;
+    char* b = xmalloc(cap);
+    b[0] = 0;
+    apps(&b, &len, &cap, "struct ");
+    apps(&b, &len, &cap, name);
+    apps(&b, &len, &cap, " {\n    env: addr,\n    call: fn(addr");
+    for (int p = 0; p < np; p++) { apps(&b, &len, &cap, ", "); render_type(pts[p], pte[p], &b, &len, &cap); }
+    apps(&b, &len, &cap, ")");
+    if (rts >= 0) { apps(&b, &len, &cap, " -> "); render_type(rts, rte, &b, &len, &cap); }
+    apps(&b, &len, &cap, ",\n}\n\n");
+    nm[*n] = name; tx[*n] = b; (*n)++;
+}
+
+/* The closure pass (M6.4c1), after the lambdas are lifted: every `Fn(...)`
+ * type slot becomes its struct name (the structs declared once, ahead of
+ * the first struct or function), calls through closure-typed parameters,
+ * locals and struct fields go through `.call(.env, ...)`, and a named
+ * function passed where a closure is expected is wrapped in an adapter.
+ * A program that never spells `Fn` is returned untouched. */
+static char* closure_pass(const char* prog) {
+    build_tables();
+    static Edit ced[MAXI];
+    int ne = 0;
+    char* signm[MAXSIG]; char* sigtx[MAXSIG]; int nsig = 0;
+    int firstitem = -1, firstprev = -1;   /* the first struct/fn/enum/impl, and the `}` before it */
+    int depth = 0, itemfirst = 0, prevclose = -1;
+    for (int t = 0; t + 1 < NTOK; t++) {
+        TK k = TOKS[t].k;
+        if (k == T_LB) { depth++; continue; }
+        if (k == T_RB) { if (--depth == 0) { prevclose = t; itemfirst = t + 1; } continue; }
+        if (depth == 0 && firstitem < 0 &&
+            (k == T_KW_STRUCT || k == T_KW_FN || k == T_KW_ENUM || k == T_KW_IMPL)) {
+            firstitem = itemfirst; firstprev = prevclose;
+        }
+        if (!is_Fn(t)) continue;
+        int e = skip_type(t);
+        if (e < 0) die("%s:%d: malformed Fn type", FILENAME, TOKS[t].line);
+        int gname = generic_item_name(itemfirst);
+        if (gname >= 0)                   /* a type parameter inside: M6.4c3 */
+            for (int q = gname + 2; TOKS[q].k == T_IDENT; q += 2) {
+                for (int u = t; u < e; u++)
+                    if (tokspan_eq(q, u))
+                        die("%s:%d: Fn naming type parameter '%.*s' inside generic '%.*s' comes with M6.4c3 — take a plain function value, fn(...), here for now",
+                            FILENAME, TOKS[t].line, TOKS[q].slen, TOKS[q].s, TOKS[gname].slen, TOKS[gname].s);
+                if (TOKS[q + 1].k != T_COMMA) break;
+            }
+        reg_sigs(t, e, signm, sigtx, &nsig);
+        if (ne >= MAXI) die("%s: too many rewrites", FILENAME);
+        ced[ne].start = TOKS[t].start;
+        ced[ne].end = TOKS[e - 1].end;
+        ced[ne].repl = sig_name(t, e);
+        ne++;
+        t = e - 1;
+    }
+    if (nsig == 0) return (char*)prog;
+    /* Calls through closure values, per function body: parameters of Fn
+     * type, locals bound from a call returning Fn, and the Fn fields of a
+     * struct-typed parameter or local (bound from a literal or a call). */
+    for (int f = 0; f < NFNT; f++) {
+        Item* fi = &FNT[f];
+        int cl[128], ncl = 0, sn[128], sv[128], nsn = 0;
+        for (int p = 0; p < fi->np; p++) {
+            if (range_is_Fn(fi->pts[p], fi->pte[p])) { if (ncl < 128) cl[ncl++] = fi->pname[p]; }
+            else if (fi->pte[p] == fi->pts[p] + 1) {
+                int s = stt_find(fi->pts[p]);
+                if (s >= 0 && nsn < 128) { sn[nsn] = fi->pname[p]; sv[nsn] = s; nsn++; }
+            }
+        }
+        for (int u = fi->body + 1; u + 2 < fi->end; u++) {
+            if (TOKS[u].k != T_IDENT || TOKS[u + 1].k != T_WALRUS || TOKS[u + 2].k != T_IDENT) continue;
+            int r = u + 2;
+            if (TOKS[r + 1].k == T_LB) {  /* x := S{ ... } */
+                int s = stt_find(r);
+                if (s >= 0 && nsn < 128) { sn[nsn] = u; sv[nsn] = s; nsn++; }
+            } else if (TOKS[r + 1].k == T_LP) {   /* x := g(...) */
+                int g = fnt_find(r);
+                if (g < 0) continue;
+                if (range_is_Fn(FNT[g].rts, FNT[g].rte)) { if (ncl < 128) cl[ncl++] = u; }
+                else if (FNT[g].rts >= 0 && FNT[g].rte == FNT[g].rts + 1) {
+                    int s = stt_find(FNT[g].rts);
+                    if (s >= 0 && nsn < 128) { sn[nsn] = u; sv[nsn] = s; nsn++; }
+                }
+            }
+        }
+        if (!ncl && !nsn) continue;
+        for (int u = fi->body + 1; u + 1 < fi->end; u++) {
+            if (TOKS[u].k != T_IDENT || TOKS[u - 1].k == T_DOT || TOKS[u - 1].k == T_KW_FN) continue;
+            if (TOKS[u + 1].k == T_LP) {  /* f(a) -> f.call(f.env, a) */
+                int isc = 0;
+                for (int c = 0; c < ncl && !isc; c++) if (tokspan_eq(cl[c], u)) isc = 1;
+                if (!isc) continue;
+                char* r = xmalloc((size_t)TOKS[u].slen * 2 + 24);
+                sprintf(r, "%.*s.call(%.*s.env%s", TOKS[u].slen, TOKS[u].s, TOKS[u].slen, TOKS[u].s,
+                        TOKS[u + 2].k == T_RP ? "" : ", ");
+                if (ne >= MAXI) die("%s: too many rewrites", FILENAME);
+                ced[ne].start = TOKS[u].start; ced[ne].end = TOKS[u + 1].end; ced[ne].repl = r; ne++;
+                continue;
+            }
+            if (TOKS[u + 1].k == T_DOT && TOKS[u + 2].k == T_IDENT && TOKS[u + 3].k == T_LP) {
+                int s = -1;               /* o.run(a) -> o.run.call(o.run.env, a) */
+                for (int c = 0; c < nsn && s < 0; c++) if (tokspan_eq(sn[c], u)) s = sv[c];
+                if (s < 0) continue;
+                int fld = -1;
+                for (int q = 0; q < STT[s].np && fld < 0; q++) if (tokspan_eq(STT[s].pname[q], u + 2)) fld = q;
+                if (fld < 0 || !range_is_Fn(STT[s].pts[fld], STT[s].pte[fld])) continue;
+                char* r = xmalloc((size_t)(TOKS[u].slen + TOKS[u + 2].slen) * 2 + 24);
+                sprintf(r, "%.*s.%.*s.call(%.*s.%.*s.env%s", TOKS[u].slen, TOKS[u].s, TOKS[u + 2].slen, TOKS[u + 2].s,
+                        TOKS[u].slen, TOKS[u].s, TOKS[u + 2].slen, TOKS[u + 2].s,
+                        TOKS[u + 4].k == T_RP ? "" : ", ");
+                if (ne >= MAXI) die("%s: too many rewrites", FILENAME);
+                ced[ne].start = TOKS[u].start; ced[ne].end = TOKS[u + 3].end; ced[ne].repl = r; ne++;
+                u += 3;
+            }
+        }
+    }
+    /* A named function where a closure is expected: an adapter taking the
+     * environment first, and the closure value in its place. */
+    Acc ad = { -1, -1, xmalloc(256), 0, 256 };
+    ad.acc[0] = 0;
+    depth = 0; itemfirst = 0; prevclose = -1;
+    for (int u = 0; u + 1 < NTOK; u++) {
+        TK k = TOKS[u].k;
+        if (k == T_LB) { depth++; continue; }
+        if (k == T_RB) { if (--depth == 0) { prevclose = u; itemfirst = u + 1; } continue; }
+        if (depth == 0 || k != T_IDENT || TOKS[u + 1].k != T_LP ||
+            (u > 0 && (TOKS[u - 1].k == T_DOT || TOKS[u - 1].k == T_KW_FN))) continue;
+        int g = fnt_find(u);
+        if (g < 0) continue;
+        int d = 0, ai = 0, as = u + 2;
+        for (int v = u + 1; TOKS[v].k != T_EOF; v++) {
+            TK q = TOKS[v].k;
+            int close = 0;
+            if (q == T_LP || q == T_LB || q == T_LBRACK) { d++; continue; }
+            if (q == T_RP || q == T_RB || q == T_RBRACK) { d--; if (d > 0) continue; close = 1; }
+            else if (!(q == T_COMMA && d == 1)) continue;
+            /* one argument [as, v): a bare name of a function, into an Fn parameter */
+            if (v == as + 1 && TOKS[as].k == T_IDENT && ai < FNT[g].np &&
+                range_is_Fn(FNT[g].pts[ai], FNT[g].pte[ai]) && fnt_find(as) >= 0) {
+                int ts = FNT[g].pts[ai], te = FNT[g].pte[ai];
+                int pts[MAXTP], pte[MAXTP], np, rts, rte;
+                sig_parts(ts, te, pts, pte, &np, &rts, &rte);
+                char* name = xmalloc(24);
+                sprintf(name, "__c_%d", NLAMBDA++);
+                size_t cap = 256, len = 0;
+                char* b = xmalloc(cap);
+                b[0] = 0;
+                apps(&b, &len, &cap, "fn ");
+                apps(&b, &len, &cap, name);
+                apps(&b, &len, &cap, "(_env: addr");
+                for (int p = 0; p < np; p++) {
+                    char pn[16];
+                    sprintf(pn, ", a%d: ", p);
+                    apps(&b, &len, &cap, pn);
+                    render_type(pts[p], pte[p], &b, &len, &cap);
+                }
+                apps(&b, &len, &cap, ")");
+                if (rts >= 0) { apps(&b, &len, &cap, " -> "); render_type(rts, rte, &b, &len, &cap); }
+                apps(&b, &len, &cap, " { ");
+                app(&b, &len, &cap, TOKS[as].s, (size_t)TOKS[as].slen);
+                apps(&b, &len, &cap, "(");
+                for (int p = 0; p < np; p++) {
+                    char pn[16];
+                    sprintf(pn, "%sa%d", p ? ", " : "", p);
+                    apps(&b, &len, &cap, pn);
+                }
+                apps(&b, &len, &cap, rts >= 0 ? ") }" : "); }");
+                acc_add(&ad, itemfirst, prevclose, b, ced, &ne);
+                if (ne >= MAXI) die("%s: too many rewrites", FILENAME);
+                ced[ne].start = TOKS[as].start; ced[ne].end = TOKS[as].end;
+                ced[ne].repl = closure_value(ts, te, name); ne++;
+            }
+            if (close) break;
+            ai++; as = v + 1;
+        }
+    }
+    acc_flush(&ad, ced, &ne);
+    /* The signature structs, once, ahead of the first struct or function. */
+    {
+        size_t cap = 256, len = 0;
+        char* b = xmalloc(cap);
+        b[0] = 0;
+        for (int i = 0; i < nsig; i++) apps(&b, &len, &cap, sigtx[i]);
+        if (ne >= MAXI) die("%s: too many rewrites", FILENAME);
+        if (firstprev >= 0) {
+            char* r = xmalloc(len + 3);
+            sprintf(r, "\n\n%s", b);
+            r[len] = 0;                   /* drop the block's own trailing blank line */
+            ced[ne].start = ced[ne].end = TOKS[firstprev].end;
+            ced[ne].repl = r;
+        } else {
+            ced[ne].start = ced[ne].end = firstitem >= 0 ? TOKS[firstitem].start : 0;
+            ced[ne].repl = b;
+        }
+        ne++;
+    }
+    qsort(ced, (size_t)ne, sizeof(Edit), edit_cmp);
+    size_t cap = strlen(prog) + (size_t)ne * 64 + 1, n = 0;
+    char* out = xmalloc(cap);
+    int prev = 0;
+    for (int e = 0; e < ne; e++) {
+        if (ced[e].start < prev) die("%s: overlapping closure rewrites", FILENAME);
+        app(&out, &n, &cap, prog + prev, (size_t)(ced[e].start - prev));
+        app(&out, &n, &cap, ced[e].repl, strlen(ced[e].repl));
+        prev = ced[e].end;
     }
     app(&out, &n, &cap, prog + prev, strlen(prog) - (size_t)prev);
     return out;
@@ -1712,6 +2180,12 @@ int main(int argc, char** argv) {
         if (lam == prog) break;
         prog = lam;
         lex_text(prog, (long)strlen(prog));
+    }
+    /* Closures (M6.4c1): Fn types to their structs, calls through closure
+     * values, adapters for named functions — then re-lex. */
+    {
+        char* cl = closure_pass(prog);
+        if (cl != prog) { prog = cl; lex_text(prog, (long)strlen(prog)); }
     }
     collect_generic_decls();
     collect_generic_fns();

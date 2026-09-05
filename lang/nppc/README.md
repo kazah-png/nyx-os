@@ -179,6 +179,36 @@ The rules at this rung (M6.4a):
   (a parameter, a field, or a return type of that signature) — the rule
   N's spec §3.4 states; the lowering adds nothing to it.
 
+**The closure type `Fn` (M6.4c1).** N's `fn(i64) -> i64` is a bare
+function: it has nowhere to keep an environment, so a closure needs a
+type of its own. `Fn(i64) -> i64` is that type — it may appear in any
+type slot (a parameter, a struct field, a return type) — and nppc lowers
+each distinct signature to one N struct:
+
+```
+struct __Fn_i64__i64 {
+    env: addr,
+    call: fn(addr, i64) -> i64,
+}
+```
+
+declared once, ahead of the program's first struct or function; the
+struct's name is the signature's spelling with its punctuation as
+underscores (`Fn()` is `__Fn__`, `Fn(*u8, Box<i64>) -> bool` is
+`__Fn_pu8_Box_i64__bool`). A call through a closure — a parameter of
+`Fn` type, a local bound from a call returning one, or the `Fn` field of
+a struct-typed parameter or local — becomes `f.call(f.env, a)`. A lambda
+written where a closure is expected takes the environment as its first
+parameter and the expression becomes the closure value
+`__Fn_i64__i64{ env: 0, call: __c_N }`; a named function passed there is
+wrapped in an adapter of the same shape (`fn __c_N(_env: addr, a0: i64)
+-> i64 { dbl(a0) }`). The environment is 0 at this rung — closures still
+capture nothing; M6.4c2 fills it. An `Fn` that names a type parameter
+inside a generic template is refused for now (M6.4c3: one struct per
+instantiation); `fn(T) -> R`, the plain function value, works there.
+[`../examples/closurety.npp`](../examples/closurety.npp) is the worked
+example, held by stage [10q].
+
 [`../examples/closure.npp`](../examples/closure.npp) is the worked
 example: four lambdas — an argument, a struct field, another argument,
 a binding — lifted to `__c_0`…`__c_3`, held by the suite's stage [10o]
