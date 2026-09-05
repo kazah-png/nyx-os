@@ -253,6 +253,9 @@ int jpeg_decode(const uint8_t* src, uint32_t srclen, image_t* img) {
                 st->comp[ci].id = cp[0];
                 st->comp[ci].h = cp[1] >> 4; st->comp[ci].v = cp[1] & 15;
                 st->comp[ci].tq = cp[2];
+                // td/ta default to table 0; SOS overrides them. A scan component that matches no
+                // SOF component id must not leave them uninitialised -> an OOB hdc[]/hac[] index.
+                st->comp[ci].td = 0; st->comp[ci].ta = 0;
                 if (st->comp[ci].h < 1 || st->comp[ci].h > 4 || st->comp[ci].v < 1 || st->comp[ci].v > 4 ||
                     st->comp[ci].tq > 3) { rc = -9; goto done; }
             }
@@ -267,6 +270,9 @@ int jpeg_decode(const uint8_t* src, uint32_t srclen, image_t* img) {
             if (ns != st->ncomp || slen < 1 + (uint32_t)ns * 2 + 3) { rc = -14; goto done; }
             for (int k = 0; k < ns; k++) {
                 int cs = seg[1 + k*2], tdta = seg[2 + k*2];
+                // The DC/AC Huffman table selectors index st->hdc[4] / st->hac[4]; a value > 3
+                // reads out of bounds in jpeg_block. DQT/DHT/SOF already reject > 3; SOS did not.
+                if ((tdta >> 4) > 3 || (tdta & 15) > 3) { rc = -14; goto done; }
                 for (int ci = 0; ci < st->ncomp; ci++) if (st->comp[ci].id == cs) {
                     st->comp[ci].td = tdta >> 4; st->comp[ci].ta = tdta & 15;
                 }
