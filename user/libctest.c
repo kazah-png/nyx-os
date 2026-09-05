@@ -230,6 +230,37 @@ int main(int argc, char** argv) {
         if (!mk_ok) ok = 0;
     }
 
+    /* strptime — parse broken-down time (new v6.5.118); paired with timegm to a known epoch.
+     * Verified field/offset-exact vs glibc strptime in host-sim. */
+    {
+        int sp_ok = 1;
+        struct tm t; char* r;
+        memset(&t, 0, sizeof t);
+        r = strptime("2009-02-13 23:31:30", "%Y-%m-%d %H:%M:%S", &t);
+        if (!r || *r != '\0') sp_ok = 0;
+        if (t.tm_year != 109 || t.tm_mon != 1 || t.tm_mday != 13 ||
+            t.tm_hour != 23 || t.tm_min != 31 || t.tm_sec != 30) sp_ok = 0;
+        if (timegm(&t) != 1234567890) sp_ok = 0;                 /* strptime -> timegm round-trip */
+        memset(&t, 0, sizeof t);
+        r = strptime("Feb 13, 2009", "%b %d, %Y", &t);
+        if (!r || t.tm_mon != 1 || t.tm_mday != 13 || t.tm_year != 109) sp_ok = 0;
+        memset(&t, 0, sizeof t);
+        r = strptime("11:31 PM", "%I:%M %p", &t);
+        if (!r || t.tm_hour != 23 || t.tm_min != 31) sp_ok = 0;
+        memset(&t, 0, sizeof t);
+        r = strptime("2026-09-05rest", "%Y-%m-%d", &t);          /* returns past the parsed date */
+        if (!r || strcmp(r, "rest") != 0) sp_ok = 0;
+        if (strptime("nope", "%Y", &t) != 0) sp_ok = 0;          /* mismatch -> NULL */
+        {   /* strftime -> strptime -> timegm round-trip */
+            char buf[32]; time_t e = 1700000000; struct tm g, h;
+            strftime(buf, sizeof buf, "%Y-%m-%d %H:%M:%S", gmtime_r(&e, &g));
+            memset(&h, 0, sizeof h);
+            if (!strptime(buf, "%Y-%m-%d %H:%M:%S", &h) || timegm(&h) != e) sp_ok = 0;
+        }
+        printf("LIBCTEST: strptime %s\n", sp_ok ? "PASS" : "FAIL");
+        if (!sp_ok) ok = 0;
+    }
+
     /* string/stdlib extras: memchr, strrchr, strncat, strdup, qsort. */
     {
         int se_ok = 1;

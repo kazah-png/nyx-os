@@ -589,6 +589,71 @@ size_t strftime(char* s, size_t max, const char* fmt, const struct tm* tm) {
     return (size_t)(p - s);
 }
 
+/* strptime — parse a broken-down time from a string per `fmt`, the inverse of the strftime
+ * subset. Sets ONLY the fields named in the format (POSIX / musl semantics: it does NOT
+ * recompute tm_wday/tm_yday from a parsed date — use mktime()/timegm() for that, the portable
+ * idiom). Supports %Y %y %C %m %d %e %H %I %M %S %j %p %A %a %B %b %h %F %T %R %D %n %t %%,
+ * and matches a run of whitespace in the format to zero-or-more whitespace in the input.
+ * Returns a pointer to the first unprocessed input byte, or NULL if the input doesn't match.
+ * Verified field- and offset-exact against glibc strptime. */
+static int strp_num(const char** sp, int maxd, int* out) {
+    const char* s = *sp;
+    while (isspace((unsigned char)*s)) s++;                 /* numeric fields skip leading blanks */
+    int v = 0, n = 0;
+    while (n < maxd && *s >= '0' && *s <= '9') { v = v * 10 + (*s - '0'); s++; n++; }
+    if (n == 0) return 0;
+    *out = v; *sp = s; return 1;
+}
+static int strp_ci(const char* s, const char* name) {       /* case-insensitive prefix length, or 0 */
+    int i = 0;
+    while (name[i]) { if (tolower((unsigned char)s[i]) != tolower((unsigned char)name[i])) return 0; i++; }
+    return i;
+}
+static int strp_name(const char** sp, const char* const* full, const char* const* abbr, int n) {
+    for (int i = 0; i < n; i++) { int l = strp_ci(*sp, full[i]); if (l) { *sp += l; return i; } }
+    for (int i = 0; i < n; i++) { int l = strp_ci(*sp, abbr[i]); if (l) { *sp += l; return i; } }
+    return -1;                                              /* try full names, then abbreviations */
+}
+char* strptime(const char* s, const char* fmt, struct tm* tm) {
+    int v;
+    for (const char* f = fmt; *f; f++) {
+        if (*f == '%') {
+            f++;
+            switch (*f) {
+                case 'Y': if (!strp_num(&s, 4, &v)) return 0; tm->tm_year = v - 1900; break;
+                case 'y': if (!strp_num(&s, 2, &v)) return 0; tm->tm_year = (v < 69) ? v + 100 : v; break;
+                case 'C': if (!strp_num(&s, 2, &v)) return 0; tm->tm_year = v * 100 - 1900 + (tm->tm_year + 1900) % 100; break;
+                case 'm': if (!strp_num(&s, 2, &v)) return 0; tm->tm_mon = v - 1; break;
+                case 'd': case 'e': if (!strp_num(&s, 2, &v)) return 0; tm->tm_mday = v; break;
+                case 'H': case 'I': if (!strp_num(&s, 2, &v)) return 0; tm->tm_hour = v; break;
+                case 'M': if (!strp_num(&s, 2, &v)) return 0; tm->tm_min = v; break;
+                case 'S': if (!strp_num(&s, 2, &v)) return 0; tm->tm_sec = v; break;
+                case 'j': if (!strp_num(&s, 3, &v)) return 0; tm->tm_yday = v - 1; break;
+                case 'p':
+                    if      (strp_ci(s, "AM")) { s += 2; if (tm->tm_hour == 12) tm->tm_hour = 0; }
+                    else if (strp_ci(s, "PM")) { s += 2; if (tm->tm_hour < 12) tm->tm_hour += 12; }
+                    else return 0;
+                    break;
+                case 'A': case 'a': { int i = strp_name(&s, tm_wd, tm_wda, 7);  if (i < 0) return 0; tm->tm_wday = i; break; }
+                case 'B': case 'b': case 'h': { int i = strp_name(&s, tm_mo, tm_moa, 12); if (i < 0) return 0; tm->tm_mon = i; break; }
+                case 'n': case 't': while (isspace((unsigned char)*s)) s++; break;
+                case '%': if (*s != '%') return 0; s++; break;
+                case 'F': { char* r = strptime(s, "%Y-%m-%d", tm); if (!r) return 0; s = r; break; }
+                case 'T': { char* r = strptime(s, "%H:%M:%S", tm); if (!r) return 0; s = r; break; }
+                case 'R': { char* r = strptime(s, "%H:%M",    tm); if (!r) return 0; s = r; break; }
+                case 'D': { char* r = strptime(s, "%m/%d/%y", tm); if (!r) return 0; s = r; break; }
+                default: return 0;                          /* unsupported specifier */
+            }
+        } else if (isspace((unsigned char)*f)) {
+            while (isspace((unsigned char)*s)) s++;         /* format WS matches 0+ input WS */
+        } else {
+            if (*s != *f) return 0;
+            s++;
+        }
+    }
+    return (char*)s;
+}
+
 /* =========== Stdio =========== */
 
 void putchar(int c) {

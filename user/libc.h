@@ -168,6 +168,7 @@ struct tm* gmtime_r(const time_t* t, struct tm* r);
 struct tm* localtime(const time_t* t);
 struct tm* localtime_r(const time_t* t, struct tm* r);
 size_t strftime(char* s, size_t max, const char* fmt, const struct tm* tm);
+char* strptime(const char* s, const char* fmt, struct tm* tm);  /* parse; sets only named fields */
 time_t mktime(struct tm* tm);     /* broken-down local time -> epoch (== timegm: RTC is UTC) */
 time_t timegm(struct tm* tm);     /* broken-down UTC time -> epoch; normalizes the struct */
 double difftime(time_t end, time_t beginning);
