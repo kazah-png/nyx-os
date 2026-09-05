@@ -8,10 +8,10 @@
 // written where a closure is expected takes the environment as its first
 // parameter and becomes the value `__Fn_i64__i64{ env: 0, call: __c_N }`; a
 // named function passed there is wrapped in an adapter of the same shape.
-// The environment is 0 at this rung: closures still capture nothing
-// (M6.4c2 fills it). Fn types work in parameters, struct fields and return
-// types, and a closure held in a local or a field is called like any
-// function.
+// The environment is 0 here: none of these closures captures anything
+// (capture.npp shows ones that do). Fn types work in parameters, struct
+// fields and return types, and a closure held in a local or a field is
+// called like any function.
 
 extern syscall {
     fn write(fd: i32, buf: *u8, len: isize) -> i64 = 1

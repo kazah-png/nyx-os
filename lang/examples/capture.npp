@@ -1,0 +1,52 @@
+// capture.npp — N++ captures by value (M6.4c2).
+//
+// A lambda written where a closure is expected may name the locals of the
+// function around it. Each such local is captured BY VALUE when the closure
+// is born: nppc gathers them into an environment struct `__E_N`, a
+// generated maker copies them onto the bump heap (`sys_sbrk`, declared by
+// nppc when the program does not) and returns the address the closure
+// carries as its `env`, and the lifted function reads them back as
+// `__e.name`. The closure may then outlive the frame it was born in —
+// `adder` returns one. A captured local's type must be evident to a token
+// scan: a declared parameter, a literal, a call to a known function, or a
+// struct literal. Every other lambda rule holds: captures need a closure
+// slot (an `Fn` type), never a plain `fn(...)` one.
+
+extern syscall {
+    fn write(fd: i32, buf: *u8, len: isize) -> i64 = 1
+}
+
+struct Btn {
+    label: str,
+    on: Fn(i64) -> i64,
+}
+
+fn put(s: str) {
+    write(1, s.ptr as *u8, s.len as isize);
+}
+
+fn adder(k: i64) -> Fn(i64) -> i64 {
+    fn(x: i64) -> i64 { x + k }
+}
+
+fn each(f: Fn(i64) -> i64, a: i64, b: i64) {
+    x := f(a);
+    y := f(b);
+    put("{x} {y}\n");
+}
+
+fn button(label: str, step: i64) -> Btn {
+    Btn{ label: label, on: fn(x: i64) -> i64 { put("{label}: "); x + step } }
+}
+
+fn main() -> i64 {
+    add5 := adder(5);
+    r := add5(37);
+    put("{r}\n");
+    k := 3;
+    each(fn(x: i64) -> i64 { x * k }, 4, 5);
+    b := button("bump", 10);
+    v := b.on(32);
+    put("{v}\n");
+    0
+}

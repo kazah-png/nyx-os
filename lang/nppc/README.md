@@ -152,15 +152,27 @@ a type slot has none.
 
 The rules at this rung (M6.4a):
 
-- **lambdas capture nothing.** A body may use its own parameters and the
-  program's items (functions, types, syscalls) — never a local of the
-  enclosing function. One that names such a local is refused: `lambda
-  captures 'n', a local of the enclosing function — closures capture
-  nothing yet (M6.4a); pass it as a parameter`. (A local a token scan
-  cannot see, such as a `match` arm's bind, is refused by N instead, as
-  an undeclared variable in the lifted function.) Captures come with
-  M6.4c, as design §6.2 lays them out: a capture struct plus a first
-  parameter.
+- **a lambda in a closure slot captures by value (M6.4c2).** Where an
+  `Fn` type is expected (below), a lambda may name the enclosing
+  function's locals. Each is copied into an environment struct `__E_N`
+  when the closure is born — a generated maker `__mk_E_N` puts the copy
+  on the bump heap (`sys_sbrk`, 16 bytes per field, never freed; nppc
+  declares the syscall when the program does not) and the closure
+  carries its address as `env` — and the lifted function reads them back
+  as `__e.name` (a captured closure is called through its `call` field),
+  so the closure may outlive its frame: `adder(5)` returns one. A
+  captured local's type must be evident to a token scan — a declared
+  parameter, a literal (`i64`, `str`, `bool`), a call to a known
+  function, a struct literal, or a name so typed; anything else is
+  refused: `cannot capture 'n': its type is not evident — bind it with a
+  literal, a call or a struct literal, or pass it as a parameter`. An
+  `own` value captured is moved, as N's rules say.
+- **elsewhere, lambdas capture nothing.** In a plain `fn(...)` slot or a
+  `:=` binding there is no environment to keep a capture in: naming a
+  local of the enclosing function there is refused with the fix named.
+  (A local a token scan cannot see, such as a `match` arm's bind, is
+  refused by N instead, as an undeclared variable in the lifted
+  function.) Captures inside generic templates wait for M6.4c3.
 - **lambdas nest.** The pass runs to a fixpoint, innermost first, so a
   lambda inside a lambda is lifted before the one around it copies its
   text.
@@ -202,12 +214,15 @@ written where a closure is expected takes the environment as its first
 parameter and the expression becomes the closure value
 `__Fn_i64__i64{ env: 0, call: __c_N }`; a named function passed there is
 wrapped in an adapter of the same shape (`fn __c_N(_env: addr, a0: i64)
--> i64 { dbl(a0) }`). The environment is 0 at this rung — closures still
-capture nothing; M6.4c2 fills it. An `Fn` that names a type parameter
-inside a generic template is refused for now (M6.4c3: one struct per
+-> i64 { dbl(a0) }`). The environment is 0 when the closure captures
+nothing; a capturing one carries its environment struct's address (the
+capture bullet above). An `Fn` that names a type parameter inside a
+generic template is refused for now (M6.4c3: one struct per
 instantiation); `fn(T) -> R`, the plain function value, works there.
 [`../examples/closurety.npp`](../examples/closurety.npp) is the worked
-example, held by stage [10q].
+example, held by stage [10q];
+[`../examples/capture.npp`](../examples/capture.npp) captures, stage
+[10r].
 
 [`../examples/closure.npp`](../examples/closure.npp) is the worked
 example: four lambdas — an argument, a struct field, another argument,

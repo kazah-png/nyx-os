@@ -4,11 +4,12 @@
 // argument, a struct-literal field, the right-hand side of a binding — is
 // lifted by nppc to a top-level function `__c_N` and the expression becomes
 // that name: a function value, typed by N v0.24's function types exactly
-// like a named function would be. Lambdas capture nothing yet: a body may
-// use its parameters and the program's items, never a local of the
-// enclosing function (captures come with M6.4c). A lambda bound with `:=`
-// needs its function type declared somewhere in the program (N's binding
-// rule); `each` and `twice` declare `fn(i64) -> i64` here.
+// like a named function would be. In a plain function slot like these a
+// lambda captures nothing: a body may use its parameters and the program's
+// items, never a local of the enclosing function — capturing needs a
+// closure slot, an `Fn` type (capture.npp). A lambda bound with `:=` needs
+// its function type declared somewhere in the program (N's binding rule);
+// `each` and `twice` declare `fn(i64) -> i64` here.
 
 extern syscall {
     fn write(fd: i32, buf: *u8, len: isize) -> i64 = 1

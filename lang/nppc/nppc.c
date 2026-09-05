@@ -1532,12 +1532,15 @@ static int binds_at(int t, int insig) {
     return -1;
 }
 
-/* Refuse a lambda that names a local of the enclosing function: the
+/* The references a lambda makes to locals of the enclosing function: the
  * function's parameters (its signature's `x :` names) and every binding
  * before the lambda, minus what the lambda binds itself. A token scan
  * sees these; what it cannot see (a match arm's binds) N refuses in the
- * lifted function as an undeclared variable. */
-static void refuse_capture(int itemfirst, int lam, int body, int end) {
+ * lifted function as an undeclared variable. Every reference token is
+ * returned in order (a name may appear several times); with `refuse` set
+ * the first one is an error — a lambda in a plain `fn(...)` slot has no
+ * environment to keep a capture in. */
+static int scan_captures(int itemfirst, int lam, int body, int end, int* refs, int max, int refuse) {
     int locals[512], nl = 0;
     int t = itemfirst, insig = 0;
     for (; t < lam; t++) {                /* the item's header parentheses */
@@ -1559,6 +1562,7 @@ static void refuse_capture(int itemfirst, int lam, int body, int end) {
         int b = binds_at(u, u < body && depth > 0);
         if (b >= 0 && nb < 256) bound[nb++] = b;
     }
+    int nref = 0;
     for (int u = body + 1; u < end; u++) {
         if (TOKS[u].k != T_IDENT) continue;
         if (TOKS[u - 1].k == T_DOT || TOKS[u + 1].k == T_COLON) continue;   /* a field */
@@ -1567,9 +1571,12 @@ static void refuse_capture(int itemfirst, int lam, int body, int end) {
         if (!captured) continue;
         for (int k = 0; k < nb; k++) if (tokspan_eq(bound[k], u)) { captured = 0; break; }
         if (!captured) continue;
-        die("%s:%d: lambda captures '%.*s', a local of the enclosing function — closures capture nothing yet (M6.4a); pass it as a parameter",
-            FILENAME, TOKS[u].line, TOKS[u].slen, TOKS[u].s);
+        if (refuse)
+            die("%s:%d: lambda captures '%.*s', a local of the enclosing function — only a lambda in a closure slot (an Fn type) can capture; pass it as a parameter",
+                FILENAME, TOKS[u].line, TOKS[u].slen, TOKS[u].s);
+        if (nref < max) refs[nref++] = u;
     }
+    return nref;
 }
 
 /* The name of a generic item starting at token itemfirst, or -1 for a
@@ -1735,16 +1742,149 @@ static void render_type(int ts, int te, char** b, size_t* n, size_t* cap) {
     }
 }
 
-/* The closure value literal for a signature and a lifted function. */
-static char* closure_value(int ts, int te, const char* fname) {
+/* The closure value literal for a signature, an environment expression
+ * (`0` when the closure captures nothing) and a lifted function. */
+static char* closure_value(int ts, int te, const char* env, const char* fname) {
     size_t cap = 256, n = 0;
     char* b = xmalloc(cap);
     b[0] = 0;
     apps(&b, &n, &cap, sig_name(ts, te));
-    apps(&b, &n, &cap, "{ env: 0, call: ");
+    apps(&b, &n, &cap, "{ env: ");
+    apps(&b, &n, &cap, env);
+    apps(&b, &n, &cap, ", call: ");
     apps(&b, &n, &cap, fname);
     apps(&b, &n, &cap, " }");
     return b;
+}
+
+/* ---- captures by value (M6.4c2) --------------------------------------- */
+/* A lambda in a closure slot may name the enclosing function's locals.  */
+/* They are captured BY VALUE when the closure is born: an environment    */
+/* struct `__E_N` holds them, a generated maker copies them onto the bump */
+/* heap (`sys_sbrk`) and returns the address the closure carries as its  */
+/* `env`, and the lifted function reads them back as `__e.name`. The     */
+/* closure may then outlive the frame it was born in. A captured local's */
+/* type must be evident to a token scan — a declared parameter, a       */
+/* literal, a call to a known function, a struct literal, or a name so  */
+/* typed; anything else is refused with the fix named.                   */
+
+/* The type text of local `name` of the item starting at itemfirst, as
+ * seen just before token lam, or NULL when it is not evident. */
+static char* local_type(int itemfirst, int lam, int name, int depth) {
+    char* ty = NULL;
+    int t = itemfirst, insig = 0;
+    for (; t < lam; t++) {                /* a declared parameter */
+        if (TOKS[t].k == T_LP) insig++;
+        else if (TOKS[t].k == T_RP) insig--;
+        else if (TOKS[t].k == T_LB) break;
+        if (insig > 0 && TOKS[t].k == T_IDENT && TOKS[t + 1].k == T_COLON && tokspan_eq(t, name)) {
+            int ts = t + 2, te = skip_type(ts);
+            if (te > 0) {
+                size_t cap = 64, n = 0;
+                ty = xmalloc(cap);
+                ty[0] = 0;
+                render_type(ts, te, &ty, &n, &cap);
+            }
+        }
+    }
+    for (; t < lam; t++) {                /* bindings before the lambda; the last one wins */
+        if (TOKS[t].k != T_IDENT || TOKS[t + 1].k != T_WALRUS || !tokspan_eq(t, name)) continue;
+        int r = t + 2;
+        TK k = TOKS[r].k;
+        char* nt = NULL;
+        if (k == T_INT) nt = "i64";
+        else if (k == T_STR || k == T_STR_HEAD) nt = "str";
+        else if (k == T_KW_TRUE || k == T_KW_FALSE) nt = "bool";
+        else if (k == T_IDENT && TOKS[r + 1].k == T_LP) {
+            int g = fnt_find(r);
+            if (g >= 0 && FNT[g].rts >= 0) {
+                size_t cap = 64, n = 0;
+                char* b = xmalloc(cap);
+                b[0] = 0;
+                render_type(FNT[g].rts, FNT[g].rte, &b, &n, &cap);
+                nt = b;
+            }
+        } else if (k == T_IDENT && TOKS[r + 1].k == T_LB) {
+            if (stt_find(r) >= 0) nt = xstrndup(TOKS[r].s, (size_t)TOKS[r].slen);
+        } else if (k == T_IDENT && TOKS[r + 1].k == T_SEMI && depth < 4) {
+            nt = local_type(itemfirst, t, r, depth + 1);
+        }
+        ty = nt;
+    }
+    return ty;
+}
+
+/* The environment of a capturing lambda: the struct `__E_N` over the
+ * captured names, the maker `__mk_E_N` that copies them onto the heap
+ * (16 bytes per field, `str` being the widest value — a bump allocation,
+ * never freed), and the birth expression `__mk_E_N(a, b)`. */
+static char* env_text(int itemfirst, int lam, int* caps, int ncap, int lamno, char** birth, char** tys) {
+    for (int c = 0; c < ncap; c++) {
+        tys[c] = local_type(itemfirst, lam, caps[c], 0);
+        if (!tys[c])
+            die("%s:%d: cannot capture '%.*s': its type is not evident — bind it with a literal, a call or a struct literal, or pass it as a parameter",
+                FILENAME, TOKS[caps[c]].line, TOKS[caps[c]].slen, TOKS[caps[c]].s);
+    }
+    char en[32], mk[32], sz[32];
+    sprintf(en, "__E_%d", lamno);
+    sprintf(mk, "__mk_E_%d", lamno);
+    sprintf(sz, "%d", 16 * ncap + 16);
+    size_t cap = 256, n = 0;
+    char* b = xmalloc(cap);
+    b[0] = 0;
+    apps(&b, &n, &cap, "struct ");
+    apps(&b, &n, &cap, en);
+    apps(&b, &n, &cap, " {\n");
+    for (int c = 0; c < ncap; c++) {
+        apps(&b, &n, &cap, "    ");
+        app(&b, &n, &cap, TOKS[caps[c]].s, (size_t)TOKS[caps[c]].slen);
+        apps(&b, &n, &cap, ": ");
+        apps(&b, &n, &cap, tys[c]);
+        apps(&b, &n, &cap, ",\n");
+    }
+    apps(&b, &n, &cap, "}\n\n#[caps(syscall)]\nfn ");
+    apps(&b, &n, &cap, mk);
+    apps(&b, &n, &cap, "(");
+    for (int c = 0; c < ncap; c++) {
+        if (c) apps(&b, &n, &cap, ", ");
+        app(&b, &n, &cap, TOKS[caps[c]].s, (size_t)TOKS[caps[c]].slen);
+        apps(&b, &n, &cap, ": ");
+        apps(&b, &n, &cap, tys[c]);
+    }
+    apps(&b, &n, &cap, ") -> addr {\n    __m := sys_sbrk(");   /* `__m`: no captured name can clash */
+    apps(&b, &n, &cap, sz);
+    apps(&b, &n, &cap, ") as *");
+    apps(&b, &n, &cap, en);
+    apps(&b, &n, &cap, ";\n    __m[0] = ");
+    apps(&b, &n, &cap, en);
+    apps(&b, &n, &cap, "{ ");
+    for (int c = 0; c < ncap; c++) {
+        if (c) apps(&b, &n, &cap, ", ");
+        app(&b, &n, &cap, TOKS[caps[c]].s, (size_t)TOKS[caps[c]].slen);
+        apps(&b, &n, &cap, ": ");
+        app(&b, &n, &cap, TOKS[caps[c]].s, (size_t)TOKS[caps[c]].slen);
+    }
+    apps(&b, &n, &cap, " };\n    __m as addr\n}");
+    size_t bcap = 128, bn = 0;
+    char* bt = xmalloc(bcap);
+    bt[0] = 0;
+    apps(&bt, &bn, &bcap, mk);
+    apps(&bt, &bn, &bcap, "(");
+    for (int c = 0; c < ncap; c++) {
+        if (c) apps(&bt, &bn, &bcap, ", ");
+        app(&bt, &bn, &bcap, TOKS[caps[c]].s, (size_t)TOKS[caps[c]].slen);
+    }
+    apps(&bt, &bn, &bcap, ")");
+    *birth = bt;
+    return b;
+}
+
+/* Does the program declare `sys_sbrk` (in an extern block)? */
+static int declares_sbrk(void) {
+    for (int t = 1; t + 1 < NTOK; t++)
+        if (TOKS[t].k == T_IDENT && TOKS[t - 1].k == T_KW_FN && TOKS[t].slen == 8 &&
+            !memcmp(TOKS[t].s, "sys_sbrk", 8)) return 1;
+    return 0;
 }
 
 /* Does the lambda at token i (body `{`..`}` ending at token end) sit where
@@ -1794,7 +1934,7 @@ static int fn_slot(int i, int end, int* ts, int* te) {
 
 static char* lambda_pass(const char* prog) {
     static Edit led[MAXI];
-    int ne = 0;
+    int ne = 0, madeenv = 0;
     build_tables();
     int depth = 0, prevclose = -1, itemfirst = 0;
     int accitem = -1, accprev = -1;       /* the item whose lifted text is accumulating */
@@ -1834,11 +1974,22 @@ static char* lambda_pass(const char* prog) {
         for (int q = 0; q < ntp; q++)
             for (int u = i + 1; u <= end; u++)
                 if (tokspan_eq(tp[q], u)) { used[nused++] = q; break; }
-        refuse_capture(itemfirst, i, body, end);
         int sts = -1, ste = -1;           /* a closure slot (M6.4c1)? */
         int closure = fn_slot(i, end, &sts, &ste);
+        int refs[256];                    /* references to enclosing locals (M6.4c2) */
+        int nref = scan_captures(itemfirst, i, body, end, refs, 256, !closure);
+        int caps[32], ncap = 0;           /* the distinct captured names, first use first */
+        for (int r = 0; r < nref; r++) {
+            int dup = 0;
+            for (int c = 0; c < ncap && !dup; c++) if (tokspan_eq(caps[c], refs[r])) dup = 1;
+            if (!dup && ncap < 32) caps[ncap++] = refs[r];
+        }
+        if (ncap && gname >= 0)
+            die("%s:%d: a capturing lambda inside generic '%.*s' comes with M6.4c3 — pass '%.*s' as a parameter",
+                FILENAME, TOKS[i].line, TOKS[gname].slen, TOKS[gname].s, TOKS[caps[0]].slen, TOKS[caps[0]].s);
+        int lamno = NLAMBDA++;
         char* name = xmalloc(24 + (size_t)nused * 64);
-        int nn = sprintf(name, "__c_%d", NLAMBDA++);
+        int nn = sprintf(name, "__c_%d", lamno);
         if (nused) {                      /* `__c_N<A, B>`: the declaration header and the use */
             nn += sprintf(name + nn, "<");
             for (int q = 0; q < nused; q++)
@@ -1863,18 +2014,50 @@ static char* lambda_pass(const char* prog) {
             accitem = itemfirst; accprev = prevclose;
         }
         if (an) app(&acc, &an, &acap, "\n\n", 2);
+        char* birth = "0";
+        char* tys[32] = {0};
+        if (ncap) {                       /* the environment struct and its maker */
+            apps(&acc, &an, &acap, env_text(itemfirst, i, caps, ncap, lamno, &birth, tys));
+            apps(&acc, &an, &acap, "\n\n");
+            madeenv = 1;
+        }
         app(&acc, &an, &acap, "fn ", 3);
         app(&acc, &an, &acap, name, strlen(name));
         if (closure) {                    /* the environment comes first */
             app(&acc, &an, &acap, "(_env: addr", 11);
             if (TOKS[i + 2].k != T_RP) app(&acc, &an, &acap, ", ", 2);
-            app(&acc, &an, &acap, SRC + TOKS[i + 2].start, (size_t)(TOKS[end].end - TOKS[i + 2].start));
+            if (ncap) {                   /* the body reads its captures as __e.name */
+                char en[32];
+                sprintf(en, "__E_%d", lamno);
+                app(&acc, &an, &acap, SRC + TOKS[i + 2].start, (size_t)(TOKS[body].end - TOKS[i + 2].start));
+                apps(&acc, &an, &acap, " __p := _env as *");
+                apps(&acc, &an, &acap, en);
+                apps(&acc, &an, &acap, "; __e := __p[0];");
+                int pos = TOKS[body].end;
+                for (int r = 0; r < nref; r++) {
+                    int u = refs[r];
+                    app(&acc, &an, &acap, SRC + pos, (size_t)(TOKS[u].start - pos));
+                    apps(&acc, &an, &acap, "__e.");
+                    app(&acc, &an, &acap, TOKS[u].s, (size_t)TOKS[u].slen);
+                    pos = TOKS[u].end;
+                    int c = 0;            /* a captured closure, called: through its call field */
+                    while (c < ncap && !tokspan_eq(caps[c], u)) c++;
+                    if (TOKS[u + 1].k == T_LP && c < ncap && !strncmp(tys[c], "__Fn_", 5)) {
+                        apps(&acc, &an, &acap, ".call(__e.");
+                        app(&acc, &an, &acap, TOKS[u].s, (size_t)TOKS[u].slen);
+                        apps(&acc, &an, &acap, TOKS[u + 2].k == T_RP ? ".env" : ".env, ");
+                        pos = TOKS[u + 1].end;
+                    }
+                }
+                app(&acc, &an, &acap, SRC + pos, (size_t)(TOKS[end].end - pos));
+            } else
+                app(&acc, &an, &acap, SRC + TOKS[i + 2].start, (size_t)(TOKS[end].end - TOKS[i + 2].start));
         } else
             app(&acc, &an, &acap, SRC + TOKS[i + 1].start, (size_t)(TOKS[end].end - TOKS[i + 1].start));
         if (ne >= MAXI) die("%s: too many lambdas", FILENAME);
         led[ne].start = TOKS[i].start;
         led[ne].end = TOKS[end].end;
-        led[ne].repl = closure ? closure_value(sts, ste, name) : name;
+        led[ne].repl = closure ? closure_value(sts, ste, birth, name) : name;
         ne++;
         i = end;                          /* the body's braces are balanced */
     }
@@ -1890,6 +2073,12 @@ static char* lambda_pass(const char* prog) {
         ne++;
     }
     if (ne == 0) return (char*)prog;
+    if (madeenv && !declares_sbrk()) {    /* the makers need the syscall declared */
+        if (ne >= MAXI) die("%s: too many lambdas", FILENAME);
+        led[ne].start = led[ne].end = TOKS[0].start;
+        led[ne].repl = "extern syscall {\n    fn sys_sbrk(incr: i64) -> i64 = 7\n}\n\n";
+        ne++;
+    }
     qsort(led, (size_t)ne, sizeof(Edit), edit_cmp);
     size_t cap = strlen(prog) + (size_t)ne * 64 + 1, n = 0;
     char* out = xmalloc(cap);
@@ -2105,7 +2294,7 @@ static char* closure_pass(const char* prog) {
                 acc_add(&ad, itemfirst, prevclose, b, ced, &ne);
                 if (ne >= MAXI) die("%s: too many rewrites", FILENAME);
                 ced[ne].start = TOKS[as].start; ced[ne].end = TOKS[as].end;
-                ced[ne].repl = closure_value(ts, te, name); ne++;
+                ced[ne].repl = closure_value(ts, te, "0", name); ne++;
             }
             if (close) break;
             ai++; as = v + 1;
