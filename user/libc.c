@@ -498,6 +498,39 @@ struct tm* gmtime(const time_t* t)         { static struct tm b; return gmtime_r
 struct tm* localtime_r(const time_t* t, struct tm* r) { return gmtime_r(t, r); }
 struct tm* localtime(const time_t* t)      { return gmtime(t); }
 
+/* days since 1970-01-01 for a proleptic-Gregorian y/m/d (Howard Hinnant); m in 1..12,
+ * d may be any value (the caller absorbs the excess). Inverse of gmtime_r's civil-from-days. */
+static long days_from_civil(long y, unsigned m, unsigned d) {
+    y -= (m <= 2);
+    long era = (y >= 0 ? y : y - 399) / 400;
+    unsigned yoe = (unsigned)(y - era * 400);                     /* [0,399] */
+    unsigned doy = (153u*(m > 2 ? m - 3 : m + 9) + 2)/5 + d - 1;  /* [0,365] */
+    unsigned doe = yoe*365 + yoe/4 - yoe/100 + doy;               /* [0,146096] */
+    return era*146097 + (long)doe - 719468;
+}
+
+/* timegm/mktime: build a time_t from a broken-down time and canonicalize the struct.
+ * NyxOS keeps the RTC in UTC and has no timezone database, so mktime == timegm. The month
+ * is floored into 0..11 (carrying into the year); the linear second arithmetic then absorbs
+ * any out-of-range sec/min/hour/mday, and gmtime_r re-derives wday/yday and the normalized
+ * fields — matching glibc's timegm across overflow and pre-epoch inputs. */
+time_t timegm(struct tm* tm) {
+    long year = (long)tm->tm_year + 1900;
+    long mon  = tm->tm_mon;
+    long ym = mon / 12, mr = mon % 12;
+    if (mr < 0) { mr += 12; ym -= 1; }                 /* floor, so a negative month borrows a year */
+    mon = mr; year += ym;
+    long days = days_from_civil(year, (unsigned)(mon + 1), 1) + (long)tm->tm_mday - 1;
+    time_t t = (time_t)days*86400 + (long)tm->tm_hour*3600
+             + (long)tm->tm_min*60 + (long)tm->tm_sec;
+    gmtime_r(&t, tm);
+    return t;
+}
+time_t mktime(struct tm* tm) { return timegm(tm); }
+
+/* Seconds between two times, as a double (C standard). */
+double difftime(time_t end, time_t beginning) { return (double)end - (double)beginning; }
+
 static char* tmf_str(char* p, char* end, const char* s) { while (*s && p < end) *p++ = *s++; return p; }
 static char* tmf_num(char* p, char* end, long v, int width, char pad) {
     char tmp[24]; int n = 0; long a = v < 0 ? -v : v;

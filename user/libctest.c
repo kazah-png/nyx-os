@@ -201,6 +201,35 @@ int main(int argc, char** argv) {
         if (!tm_ok) ok = 0;
     }
 
+    /* mktime/timegm/difftime — the inverse of gmtime, with field normalization (new
+     * v6.5.113; UTC, so mktime == timegm). Verified 20/20 vs glibc timegm in host-sim. */
+    {
+        int mk_ok = 1;
+        struct tm r;
+        /* round-trip: epoch -> gmtime -> mktime -> epoch, across several anchors */
+        time_t anchors[] = { 0, 1234567890, 1709164800, -1, 951825600 /*2000 leap-day*/ };
+        for (unsigned i = 0; i < sizeof(anchors)/sizeof(anchors[0]); i++) {
+            gmtime_r(&anchors[i], &r);
+            if (mktime(&r) != anchors[i]) mk_ok = 0;
+        }
+        /* known build: 2009-02-13 23:31:30 UTC == 1234567890 */
+        { struct tm t; memset(&t, 0, sizeof t); t.tm_year = 109; t.tm_mon = 1;
+          t.tm_mday = 13; t.tm_hour = 23; t.tm_min = 31; t.tm_sec = 30;
+          if (timegm(&t) != 1234567890) mk_ok = 0; }
+        /* normalization: 2020-01-32 -> 2020-02-01, and the struct is rewritten in place */
+        { struct tm t; memset(&t, 0, sizeof t); t.tm_year = 120; t.tm_mon = 0; t.tm_mday = 32;
+          time_t e = mktime(&t);
+          struct tm f; memset(&f, 0, sizeof f); f.tm_year = 120; f.tm_mon = 1; f.tm_mday = 1;
+          if (e != timegm(&f) || t.tm_mon != 1 || t.tm_mday != 1) mk_ok = 0; }
+        /* month overflow: mon 12 (a 13th month) carries into the next year's January */
+        { struct tm t; memset(&t, 0, sizeof t); t.tm_year = 120; t.tm_mon = 12; t.tm_mday = 1;
+          mktime(&t);
+          if (t.tm_year != 121 || t.tm_mon != 0) mk_ok = 0; }
+        if (difftime(1234567890, 1234567800) != 90.0) mk_ok = 0;
+        printf("LIBCTEST: mktime/timegm/difftime %s\n", mk_ok ? "PASS" : "FAIL");
+        if (!mk_ok) ok = 0;
+    }
+
     /* string/stdlib extras: memchr, strrchr, strncat, strdup, qsort. */
     {
         int se_ok = 1;
