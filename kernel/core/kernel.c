@@ -5372,6 +5372,30 @@ static int sort_cmp(const char* a, const char* b, int numeric, int fold) {
     return fold ? sort_casecmp(a, b) : strcmp(a, b);
 }
 
+// Order `lines[0..lc)` in place (stable insertion of a bubble pass) with GNU sort semantics:
+// the primary key is numeric/fold/byte, and when two keys tie GNU applies a whole-line
+// byte comparison as the LAST RESORT — except under -u, which suppresses it. -r reverses the
+// whole result (tiebreak included). With uniq, equal-key adjacent runs are then collapsed to
+// their first survivor (packed to the front) and the surviving count returned; else lc.
+// Pinned by sort_selftest. Shared by cmd_sort and matches user/sort.elf.
+static int sort_run(char** lines, int lc, int reverse, int numeric, int fold, int uniq) {
+    for (int i = 0; i < lc - 1; i++) {
+        for (int j = 0; j < lc - i - 1; j++) {
+            int cmp = sort_cmp(lines[j], lines[j+1], numeric, fold);
+            if (cmp == 0 && !uniq) cmp = strcmp(lines[j], lines[j+1]);  // GNU whole-line last resort
+            if (reverse) cmp = -cmp;
+            if (cmp > 0) { char* tmp = lines[j]; lines[j] = lines[j+1]; lines[j+1] = tmp; }
+        }
+    }
+    if (!uniq) return lc;
+    int w = 0;
+    for (int i = 0; i < lc; i++) {
+        if (i > 0 && sort_cmp(lines[i], lines[w-1], numeric, fold) == 0) continue;  // drop equal-key run
+        lines[w++] = lines[i];
+    }
+    return w;
+}
+
 static void cmd_sort(int argc, char** argv) {
     int reverse = 0, numeric = 0, fold = 0, uniq = 0, ai = 1;
     for (; ai < argc && argv[ai][0] == '-' && argv[ai][1]; ai++)
@@ -5396,17 +5420,33 @@ static void cmd_sort(int argc, char** argv) {
     for (int i = 0; buf[i] && lc < 256; i++) {
         if (buf[i] == '\n') { buf[i] = '\0'; if (buf[i+1]) lines[lc++] = &buf[i+1]; }
     }
-    for (int i = 0; i < lc - 1; i++) {
-        for (int j = 0; j < lc - i - 1; j++) {
-            int cmp = sort_cmp(lines[j], lines[j+1], numeric, fold);
-            if (reverse) cmp = -cmp;
-            if (cmp > 0) { char* tmp = lines[j]; lines[j] = lines[j+1]; lines[j+1] = tmp; }
-        }
-    }
-    for (int i = 0; i < lc; i++) {
-        if (uniq && i > 0 && sort_cmp(lines[i], lines[i-1], numeric, fold) == 0) continue;  // -u: drop equal-key runs
-        printf("%s\n", lines[i]);
-    }
+    int n = sort_run(lines, lc, reverse, numeric, fold, uniq);
+    for (int i = 0; i < n; i++) printf("%s\n", lines[i]);
+}
+
+// Known-answer self-test (`sort`) — pins the GNU whole-line last-resort tiebreak (equal
+// primary keys fall back to a byte compare, suppressed by -u) plus -n/-f/-r/-u behavior.
+// Verified byte-for-byte against GNU sort (LC_ALL=C) in host-sim before landing.
+int sort_selftest(void) {
+    // equal numeric keys -> tiebreak by whole line (NOT input order)
+    { char a[]="5 banana", b[]="5 apple", c[]="5 cherry"; char* L[]={a,b,c};
+      if (sort_run(L,3,0,1,0,0) != 3 || strcmp(L[0],"5 apple") || strcmp(L[1],"5 banana") || strcmp(L[2],"5 cherry")) return 1; }
+    // plain byte sort
+    { char a[]="banana", b[]="apple", c[]="cherry"; char* L[]={a,b,c};
+      sort_run(L,3,0,0,0,0); if (strcmp(L[0],"apple") || strcmp(L[1],"banana") || strcmp(L[2],"cherry")) return 2; }
+    // numeric ordering (10 after 9, not lexical)
+    { char a[]="10", b[]="9", c[]="100", d[]="2"; char* L[]={a,b,c,d};
+      sort_run(L,4,0,1,0,0); if (strcmp(L[0],"2")||strcmp(L[1],"9")||strcmp(L[2],"10")||strcmp(L[3],"100")) return 3; }
+    // -f fold: equal fold-keys tiebreak by byte ('A'(65) < 'a'(97))
+    { char a[]="apple", b[]="Apple"; char* L[]={a,b};
+      sort_run(L,2,0,0,1,0); if (strcmp(L[0],"Apple") || strcmp(L[1],"apple")) return 4; }
+    // -u dedup by key, survivors packed to the front
+    { char a[]="a", b[]="b", c[]="a", d[]="c", e[]="b"; char* L[]={a,b,c,d,e};
+      if (sort_run(L,5,0,0,0,1) != 3 || strcmp(L[0],"a")||strcmp(L[1],"b")||strcmp(L[2],"c")) return 5; }
+    // -r reverses the whole result (tiebreak included)
+    { char a[]="a", b[]="c", c[]="b"; char* L[]={a,b,c};
+      sort_run(L,3,1,0,0,0); if (strcmp(L[0],"c")||strcmp(L[1],"b")||strcmp(L[2],"a")) return 6; }
+    return 0;
 }
 
 static void cmd_wc(int argc, char** argv) {
@@ -10402,6 +10442,7 @@ static void run_selftests(void) {
         {"paste",        paste_selftest},         {"wc",            wc_selftest},
         {"expand",       expand_selftest},        {"unexpand",      unexpand_selftest},
         {"fold",         fold_selftest},          {"tr",            tr_selftest},
+        {"sort",         sort_selftest},
         {"vfs",          vfs_selftest},
         {"securezero",   secure_zero_selftest},
         {"chacha20",     chacha20_selftest},        {"siphash",       siphash_selftest},
