@@ -1158,6 +1158,65 @@ void* memchr(const void* s, int c, size_t n) {
     return 0;
 }
 
+/* Length of s, examining at most n bytes (POSIX strnlen). */
+size_t strnlen(const char* s, size_t n) {
+    size_t i = 0;
+    while (i < n && s[i]) i++;
+    return i;
+}
+
+/* Copy src (incl. its NUL) into dst; return a pointer to dst's terminating NUL so copies can be
+ * chained without re-scanning (POSIX stpcpy). */
+char* stpcpy(char* dst, const char* src) {
+    while ((*dst = *src)) { dst++; src++; }
+    return dst;
+}
+
+/* Like strchr, but return a pointer to the terminating NUL (not NULL) when c is absent; c==0
+ * finds the NUL (GNU strchrnul). */
+char* strchrnul(const char* s, int c) {
+    char ch = (char)c;
+    while (*s && *s != ch) s++;
+    return (char*)s;
+}
+
+/* Last byte equal to c in the first n bytes of s, or NULL (GNU memrchr). */
+void* memrchr(const void* s, int c, size_t n) {
+    const unsigned char* p = (const unsigned char*)s;
+    unsigned char ch = (unsigned char)c;
+    while (n) { if (p[n - 1] == ch) return (void*)(p + n - 1); n--; }
+    return 0;
+}
+
+/* First occurrence of needle (nlen bytes) within hay (hlen bytes), or NULL; an empty needle
+ * matches at the start (glibc memmem). */
+void* memmem(const void* hay, size_t hlen, const void* needle, size_t nlen) {
+    const unsigned char* h = (const unsigned char*)hay;
+    const unsigned char* nd = (const unsigned char*)needle;
+    if (nlen == 0) return (void*)hay;
+    if (nlen > hlen) return 0;
+    for (size_t i = 0; i + nlen <= hlen; i++) {
+        size_t k = 0;
+        while (k < nlen && h[i + k] == nd[k]) k++;
+        if (k == nlen) return (void*)(h + i);
+    }
+    return 0;
+}
+
+/* Split *stringp at the first byte found in delim: NUL-terminate that token in place, advance
+ * *stringp past the delimiter, return the token. No delimiter -> return the whole remainder and
+ * set *stringp=NULL; *stringp already NULL -> return NULL. Empty fields are preserved, unlike
+ * strtok (BSD/POSIX strsep). */
+char* strsep(char** stringp, const char* delim) {
+    char* start = *stringp;
+    if (!start) return 0;
+    for (char* p = start; ; p++) {
+        if (*p == '\0') { *stringp = 0; return start; }          // no delimiter: last token
+        for (const char* d = delim; *d; d++)
+            if (*p == *d) { *p = '\0'; *stringp = p + 1; return start; }
+    }
+}
+
 /* Find the LAST occurrence of c in s (c==0 matches the terminating NUL). */
 char* strrchr(const char* s, int c) {
     const char* last = 0;

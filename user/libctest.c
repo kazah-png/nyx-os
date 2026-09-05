@@ -403,6 +403,30 @@ int main(int argc, char** argv) {
         if (!ss_ok) ok = 0;
     }
 
+    /* strnlen / stpcpy / strchrnul / memrchr / memmem / strsep (added v6.5.131) */
+    {
+        int sx_ok = 1;
+        if (strnlen("hello", 10) != 5 || strnlen("hello", 3) != 3 || strnlen("", 4) != 0) sx_ok = 0;
+        char sb[16]; char* se = stpcpy(sb, "abc");
+        if (se != sb + 3 || strcmp(sb, "abc") != 0) sx_ok = 0;
+        const char* h = "hello";
+        if (strchrnul(h, 'l') != h + 2 || strchrnul(h, 'z') != h + 5) sx_ok = 0;   /* absent -> the NUL */
+        static const char m[5] = { 'a','b','a','b','a' };
+        if (memrchr(m, 'a', 5) != m + 4 || memrchr(m, 'b', 5) != m + 3 || memrchr(m, 'z', 5) != 0) sx_ok = 0;
+        const char* hay = "the quick brown fox";
+        if (memmem(hay, 19, "quick", 5) != hay + 4 || memmem(hay, 19, "zzz", 3) != 0 ||
+            memmem(hay, 19, "", 0) != hay) sx_ok = 0;                              /* empty needle -> start */
+        char buf[16]; strcpy(buf, "a,,b");
+        char* sp = buf;
+        char* t0 = strsep(&sp, ",");    /* "a" */
+        char* t1 = strsep(&sp, ",");    /* ""  (empty field preserved) */
+        char* t2 = strsep(&sp, ",");    /* "b" */
+        char* t3 = strsep(&sp, ",");    /* NULL */
+        if (!t0 || strcmp(t0, "a") || !t1 || t1[0] != '\0' || !t2 || strcmp(t2, "b") || t3 != 0) sx_ok = 0;
+        printf("LIBCTEST: strnlen/stpcpy/strchrnul/memrchr/memmem/strsep %s\n", sx_ok ? "PASS" : "FAIL");
+        if (!sx_ok) ok = 0;
+    }
+
     printf("LIBCTEST: %s\n", ok ? "ALL PASS" : "SOME FAIL");
     return ok ? 0 : 1;
 }

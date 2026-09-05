@@ -95,6 +95,12 @@ double atof(const char* nptr);
 
 /* String / stdlib extras a compiler leans on. */
 void* memchr(const void* s, int c, size_t n);
+size_t strnlen(const char* s, size_t n);            /* POSIX */
+char* stpcpy(char* dst, const char* src);           /* POSIX; returns dst's end NUL */
+char* strchrnul(const char* s, int c);              /* GNU; returns the NUL if c absent */
+void* memrchr(const void* s, int c, size_t n);      /* GNU; last c in s[0..n) */
+void* memmem(const void* hay, size_t hlen, const void* needle, size_t nlen);  /* GNU */
+char* strsep(char** stringp, const char* delim);    /* BSD/POSIX; preserves empty fields */
 char* strrchr(const char* s, int c);
 char* strncat(char* dest, const char* src, size_t n);
 char* strdup(const char* s);
